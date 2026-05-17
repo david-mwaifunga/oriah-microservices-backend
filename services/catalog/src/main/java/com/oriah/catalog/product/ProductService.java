@@ -4,6 +4,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,9 +23,13 @@ public class ProductService {
         return repository.findById(id);
     }
 
+    /**
+     * Returns a page of products, optionally filtered by a single tag.
+     * Null {@code tag} means "no filter."
+     */
     @Transactional(readOnly = true)
-    public List<Product> findAll() {
-        return repository.findAll();
+    public Page<Product> findAll(String tag, Pageable pageable) {
+        return repository.findOptionallyFilteredByTag(tag, pageable);
     }
 
     /**

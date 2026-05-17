@@ -1,12 +1,14 @@
 package com.oriah.catalog.product;
 
-import java.util.List;
 import java.util.UUID;
 
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -20,10 +22,10 @@ public class ProductController {
     }
 
     @GetMapping
-    public List<ProductResponse> list() {
-        return service.findAll().stream()
-                .map(ProductResponse::from)
-                .toList();
+    public PageResponse<ProductResponse> list(
+            @RequestParam(value = "tag", required = false) String tag,
+            @PageableDefault(size = 20) Pageable pageable) {
+        return PageResponse.from(service.findAll(tag, pageable), ProductResponse::from);
     }
 
     @GetMapping("/{id}")

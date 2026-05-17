@@ -11,12 +11,20 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.Collections;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 @WebMvcTest(ProductController.class)
 class ProductControllerTest {
@@ -57,32 +65,68 @@ class ProductControllerTest {
     }
 
     @Test
-    @DisplayName("GET /api/v1/products returns all products as a JSON array")
-    void listReturnsAllProducts() throws Exception {
+    @DisplayName("GET /api/v1/products returns a paginated page of products with no filter")
+    void listReturnsPagedProducts() throws Exception {
         var aurelia = new Product(UUID.fromString("11111111-1111-1111-1111-111111111111"),
                 "Aurelia", null, List.of("rings"));
         var lume = new Product(UUID.fromString("22222222-2222-2222-2222-222222222222"),
                 "Lume", "Pendant in 14k gold.", List.of("necklaces"));
 
-        when(service.findAll()).thenReturn(List.of(aurelia, lume));
+        Page<Product> page = new PageImpl<>(List.of(aurelia, lume), PageRequest.of(0, 20), 2);
+        when(service.findAll(isNull(), any(Pageable.class))).thenReturn(page);
 
         mvc.perform(get("/api/v1/products"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].title").value("Aurelia"))
-                .andExpect(jsonPath("$[1].title").value("Lume"))
-                .andExpect(jsonPath("$[1].description").value("Pendant in 14k gold."));
+                .andExpect(jsonPath("$.content").isArray())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.content[0].title").value("Aurelia"))
+                .andExpect(jsonPath("$.content[1].description").value("Pendant in 14k gold."))
+                .andExpect(jsonPath("$.totalElements").value(2))
+                .andExpect(jsonPath("$.totalPages").value(1))
+                .andExpect(jsonPath("$.page").value(0))
+                .andExpect(jsonPath("$.size").value(20));
     }
 
     @Test
-    @DisplayName("GET /api/v1/products returns an empty array when no products exist")
-    void listReturnsEmptyArrayWhenNoProducts() throws Exception {
-        when(service.findAll()).thenReturn(Collections.emptyList());
+    @DisplayName("GET /api/v1/products returns an empty page when no products exist")
+    void listReturnsEmptyPageWhenNoProducts() throws Exception {
+        Page<Product> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(0, 20), 0);
+        when(service.findAll(isNull(), any(Pageable.class))).thenReturn(empty);
 
         mvc.perform(get("/api/v1/products"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$").isArray())
-                .andExpect(jsonPath("$.length()").value(0));
+                .andExpect(jsonPath("$.content").isArray())
+                .andExpect(jsonPath("$.content.length()").value(0))
+                .andExpect(jsonPath("$.totalElements").value(0));
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/products?tag=rings filters by tag")
+    void listFilteredByTag() throws Exception {
+        var aurelia = new Product(UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                "Aurelia", null, List.of("rings"));
+
+        Page<Product> page = new PageImpl<>(List.of(aurelia), PageRequest.of(0, 20), 1);
+        when(service.findAll(eq("rings"), any(Pageable.class))).thenReturn(page);
+
+        mvc.perform(get("/api/v1/products").param("tag", "rings"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].title").value("Aurelia"))
+                .andExpect(jsonPath("$.totalElements").value(1));
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/products honors page and size query parameters")
+    void listHonorsPagingParameters() throws Exception {
+        Page<Product> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(2, 5), 12);
+        when(service.findAll(isNull(), any(Pageable.class))).thenReturn(empty);
+
+        mvc.perform(get("/api/v1/products").param("page", "2").param("size", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page").value(2))
+                .andExpect(jsonPath("$.size").value(5))
+                .andExpect(jsonPath("$.totalElements").value(12))
+                .andExpect(jsonPath("$.totalPages").value(3));
     }
 }
