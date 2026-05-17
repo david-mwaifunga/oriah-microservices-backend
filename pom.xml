@@ -32,7 +32,17 @@
         <!-- Platform versions: change in one place. -->
         <spring-boot.version>4.0.6</spring-boot.version>
         <!-- Spring Cloud release train for Spring Boot 4 — verify exact GA when we add config server. -->
-        <spring-cloud.version>2026.0.0</spring-cloud.version>
+        <!--
+            Spring Cloud version is intentionally NOT pinned to a real number.
+            As of this commit there is no Spring Cloud release train that targets
+            Spring Boot 4: the latest stable is 2025.0.0 (Spring Boot 3.5),
+            which crashes on SB 4 with NoClassDefFoundError for
+            WebServerInitializedEvent (moved/removed in Spring Framework 7).
+            See docs/ARCHITECTURE.md "Spring Cloud blocker" section.
+            Iterations 3-5 (Config Server, Eureka, Gateway) are deferred until
+            a 2026.x train ships.
+        -->
+        <spring-cloud.version>UNSET-pending-2026-train</spring-cloud.version>
         <springdoc.version>3.0.2</springdoc.version>
         <!-- Maven plugin versions (pin so the build is reproducible regardless of what Maven defaults to). -->
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
@@ -62,9 +72,10 @@
             </dependency>
 
             <!--
-                Spring Cloud BOM will be uncommented when we add the first cloud
-                module (config server, in step 3 of the plan). Until then, services
-                stay vanilla Spring Boot to keep the surface area small.
+                Spring Cloud BOM — to be uncommented when a Spring-Boot-4-compatible
+                Spring Cloud release ships. Confirmed broken with 2025.0.0:
+                NoClassDefFoundError on WebServerInitializedEvent (Framework-7
+                removal). See docs/ARCHITECTURE.md.
 
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
@@ -74,6 +85,7 @@
                 <scope>import</scope>
             </dependency>
             -->
+
         </dependencies>
     </dependencyManagement>
 

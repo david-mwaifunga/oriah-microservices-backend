@@ -9,6 +9,79 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
+## Spring Cloud blocker (Iteration 3+ deferred)
+
+**Decision:** Defer Iterations 3, 4, 5 (Config Server, Eureka, Gateway) until
+a Spring-Boot-4-compatible Spring Cloud release ships.
+
+**Why:** As of this commit (2026-05-17) Maven Central has no Spring Cloud
+release train targeting Spring Boot 4. The latest stable is `2025.0.0`
+(paired with Spring Boot 3.5), and the Spring milestone repo holds nothing
+newer than `2025.0.0-RC1`. A probe — adding the 2025.0.0 BOM to a
+Config Server module on our SB 4.0.6 parent — failed at runtime:
+
+```
+java.lang.NoClassDefFoundError:
+  org/springframework/boot/web/context/WebServerInitializedEvent
+```
+
+That class existed in Spring Boot 3.x; in Spring Framework 7 / Spring
+Boot 4 the package was reorganized and the class is gone. Spring Cloud
+2025.0.0 was compiled against the old class so its config-server jar
+won't load on SB 4. There is no version of Spring Cloud Config Server
+we can pull from Maven Central today that runs on SB 4.
+
+**What we did:** rolled the experiment back. `infra/` is a placeholder
+again. The Spring Cloud BOM import in `pom.xml` is commented out with
+a `spring-cloud.version = UNSET-pending-2026-train` property so the
+intent (and the trap) are obvious to the next reader.
+
+**How to apply:** when a Spring Cloud release explicitly targeting Spring
+Boot 4 ships, pick up Iteration 3 again. Until then, prioritize work
+that doesn't need Spring Cloud — adding services (catalog already done,
+inventory still possible without discovery), polishing observability,
+documentation, the React frontend, or downgrading the whole codebase to
+SB 3.5.x (significant rework, last resort).
+
+This is the trade-off we accepted when we chose to stay on SB 4.0.6
+(see next section).
+
+---
+
+## Logging conventions
+
+**Decision:** Use SLF4J via Lombok's `@Slf4j`. Log business events at INFO,
+read paths at DEBUG, recoverable issues at WARN, failures at ERROR.
+
+**Why Lombok over a hand-rolled logger field:**
+- `@Slf4j` generates the conventional `private static final Logger log` for us.
+- We already have Lombok on the classpath for `@Getter/@Builder` etc., so it's
+  not a new dependency.
+- The field name `log` is the Spring/Java community convention; consistent
+  naming makes searching for log calls easy.
+
+**Where to log:**
+
+| Layer | Default level | Rationale |
+|---|---|---|
+| `service/` (state-changing methods: create/update/delete) | **INFO** | The audit trail for "who changed what." One line per operation; sufficient to reconstruct activity without the DB audit table. |
+| `service/` (read methods) | DEBUG | These run on every page render. INFO would dwarf the genuinely-interesting state-change events. |
+| `controller/` | DEBUG | Inbound request landed. Avoid duplicating the service's INFO line. Spring already logs every HTTP at its own DEBUG level. |
+| `model/`, `dto/`, `repository/` | None | Domain entities, request/response records, and Spring Data interfaces don't carry log statements — their behavior is observed through the service-layer logs. |
+
+**Style:**
+- Always parameterized substitution: `log.info("Created product id={} title=\"{}\"", id, title)`.
+  Never `+` concatenation: that builds the string even when the level is disabled.
+- Quote string values that may contain spaces (`title="{}"`) so a grep can find them.
+- Log structured field counts, not full collections, at INFO. (`tagCount=3` not
+  `tags=[a, b, c]`.) Keeps the line scannable and avoids leaking large payloads.
+
+**Production logging level:** the YAML default has `root: INFO` and
+`com.oriah.catalog: DEBUG`. For prod we'd tighten our own package to INFO
+via a profile-specific override or the (future) Config Server.
+
+---
+
 ## Spring Boot 4.0.6 (not 3.5.x)
 
 **Decision:** Use Spring Boot 4.0.6 — the new major version.

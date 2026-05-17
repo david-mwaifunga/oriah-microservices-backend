@@ -13,7 +13,28 @@ import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.repository.ProductRepository;
 
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * Transactional business operations on the {@link Product} aggregate.
+ *
+ * <p>Public methods are the unit of business-meaningful work — they wrap a
+ * single transaction and emit the audit-level log line for the operation.
+ * Calling code (controllers, future event listeners) should always go
+ * through here rather than touch {@link ProductRepository} directly so the
+ * transactional boundary and the log trail are guaranteed.
+ *
+ * <h2>Logging</h2>
+ * <ul>
+ *   <li><b>INFO</b> on every state-changing operation (create / update /
+ *       delete) so the application log is sufficient for "who changed what
+ *       when" reconstruction without needing the DB audit table.</li>
+ *   <li><b>DEBUG</b> on read paths — these run on every page render in
+ *       production, so info-level logging would be too noisy.</li>
+ * </ul>
+ */
 @Service
+@Slf4j
 public class ProductService {
 
     private final ProductRepository repository;
@@ -22,8 +43,13 @@ public class ProductService {
         this.repository = repository;
     }
 
+    /**
+     * Find a product by its id. Returns {@link Optional#empty()} when the
+     * id is unknown; the controller maps that to a 404.
+     */
     @Transactional(readOnly = true)
     public Optional<Product> findById(UUID id) {
+        log.debug("findById id={}", id);
         return repository.findById(id);
     }
 
@@ -33,6 +59,7 @@ public class ProductService {
      */
     @Transactional(readOnly = true)
     public Page<Product> findAll(String tag, Pageable pageable) {
+        log.debug("findAll tag={} page={} size={}", tag, pageable.getPageNumber(), pageable.getPageSize());
         return repository.findOptionallyFilteredByTag(tag, pageable);
     }
 
@@ -44,8 +71,13 @@ public class ProductService {
      */
     @Transactional
     public Product create(String title, String description, List<String> tags) {
+        // Tag-count logging is friendlier than printing the full list: keeps
+        // the line scannable and avoids leaking large payloads at INFO.
+        int tagCount = tags == null ? 0 : tags.size();
         Product product = new Product(title, description, tags);
-        return repository.save(product);
+        Product saved = repository.save(product);
+        log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);
+        return saved;
     }
 
     /**
@@ -60,18 +92,30 @@ public class ProductService {
      */
     @Transactional
     public Optional<Product> update(UUID id, ProductUpdateRequest request) {
-        return repository.findById(id).map(product -> {
+        Optional<Product> result = repository.findById(id).map(product -> {
+            // Track which fields actually changed so the log line is useful
+            // when investigating "why did this product's title change?"
+            StringBuilder changedFields = new StringBuilder();
             if (request.title() != null) {
                 product.updateTitle(request.title());
+                changedFields.append("title ");
             }
             if (request.description() != null) {
                 product.updateDescription(request.description());
+                changedFields.append("description ");
             }
             if (request.tags() != null) {
                 product.updateTags(request.tags());
+                changedFields.append("tags ");
             }
+            log.info("Updated product id={} changedFields=[{}]", product.id(), changedFields.toString().trim());
             return product;
         });
+
+        if (result.isEmpty()) {
+            log.debug("Update skipped, product not found id={}", id);
+        }
+        return result;
     }
 
     /**
@@ -82,11 +126,18 @@ public class ProductService {
      */
     @Transactional
     public boolean deleteById(UUID id) {
-        return repository.findById(id)
+        boolean removed = repository.findById(id)
                 .map(product -> {
                     repository.delete(product);
                     return true;
                 })
                 .orElse(false);
+
+        if (removed) {
+            log.info("Deleted product id={}", id);
+        } else {
+            log.debug("Delete skipped, product not found id={}", id);
+        }
+        return removed;
     }
 }
