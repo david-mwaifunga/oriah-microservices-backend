@@ -63,4 +63,20 @@ public class ProductService {
             return product;
         });
     }
+
+    /**
+     * Deletes the product with the given id. Returns true if a product was
+     * found and removed, false if no product had that id. The two-step
+     * lookup-then-delete lets the controller return 404 vs 204 unambiguously
+     * — {@code repository.deleteById} is silent when the id is missing.
+     */
+    @Transactional
+    public boolean deleteById(UUID id) {
+        return repository.findById(id)
+                .map(product -> {
+                    repository.delete(product);
+                    return true;
+                })
+                .orElse(false);
+    }
 }

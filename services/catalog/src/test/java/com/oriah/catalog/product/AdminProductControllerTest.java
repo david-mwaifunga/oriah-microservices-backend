@@ -18,6 +18,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -173,6 +174,26 @@ class AdminProductControllerTest {
         mvc.perform(patch("/api/v1/admin/products/{id}", id)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("DELETE /api/v1/admin/products/{id} returns 204 when the product exists")
+    void deleteReturns204OnExistingProduct() throws Exception {
+        var id = UUID.fromString("88888888-8888-8888-8888-888888888888");
+        when(service.deleteById(id)).thenReturn(true);
+
+        mvc.perform(delete("/api/v1/admin/products/{id}", id))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    @DisplayName("DELETE /api/v1/admin/products/{id} returns 404 when the product does not exist")
+    void deleteReturns404WhenNotFound() throws Exception {
+        var id = UUID.fromString("99999999-9999-9999-9999-999999999999");
+        when(service.deleteById(id)).thenReturn(false);
+
+        mvc.perform(delete("/api/v1/admin/products/{id}", id))
                 .andExpect(status().isNotFound());
     }
 }
