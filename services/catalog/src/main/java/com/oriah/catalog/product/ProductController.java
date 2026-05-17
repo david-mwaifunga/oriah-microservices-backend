@@ -1,5 +1,6 @@
 package com.oriah.catalog.product;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
@@ -16,6 +17,13 @@ public class ProductController {
 
     public ProductController(ProductService service) {
         this.service = service;
+    }
+
+    @GetMapping
+    public List<ProductResponse> list() {
+        return service.findAll().stream()
+                .map(ProductResponse::from)
+                .toList();
     }
 
     @GetMapping("/{id}")

@@ -1,5 +1,6 @@
 package com.oriah.catalog.product;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -16,5 +17,9 @@ public class ProductService {
 
     public Optional<Product> findById(UUID id) {
         return repository.findById(id);
+    }
+
+    public List<Product> findAll() {
+        return repository.findAll();
     }
 }
