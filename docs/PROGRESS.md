@@ -7,7 +7,7 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — REST GET endpoint working. 12/12 tests green.
+**Iteration 1: catalog-service standalone with TDD** — both GET endpoints working. 15/15 tests green.
 
 ### What works right now
 
@@ -16,25 +16,29 @@ update this before ending and read it at the start.
 - `Product` aggregate complete: id (auto UUID), title (required), description (Optional), tags (immutable view). Persisted via JPA + Flyway `V1__create_products.sql` (products + product_tags tables).
 - `ProductRepository extends JpaRepository<Product, UUID>`.
 - `ProductService` wraps the repo.
-- `ProductController` exposes `GET /api/v1/products/{id}` → `ProductResponse` DTO. Returns 200 with body or 404.
-- 12 tests: 9 pure unit (ProductTest), 1 JPA slice (ProductRepositoryTest), 1 MVC slice (ProductControllerTest), 1 full-stack contextLoads (CatalogServiceApplicationTests).
-- All tests pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~20s total when container is cached.
+- `ProductController` exposes:
+  - `GET /api/v1/products` → JSON array of `ProductResponse`. Empty array (not 204) when no products.
+  - `GET /api/v1/products/{id}` → `ProductResponse` (200) or 404.
+- 15 tests: 9 ProductTest + 4 ProductControllerTest + 1 ProductRepositoryTest + 1 contextLoads.
+- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~22s total when container is cached.
 
 ### Next exact action
 
-**TDD cycle 8: list products** — `GET /api/v1/products` returns all products as JSON array.
+**TDD cycle 9: POST /api/v1/admin/products** — create a product.
+   - Introduces a separate request DTO (`ProductCreateRequest`) so the wire format is decoupled from the JPA entity.
+   - Drives Bean Validation: `@NotBlank` on title, `@Size(max = …)` on description, etc. — declared on the DTO, enforced by `@Valid` in the controller.
    - Suggested test order:
-     1. `ProductControllerTest.listReturnsEmptyArrayWhenNoProducts()` — slice test, mock service returns `List.of()`.
-     2. `ProductControllerTest.listReturnsAllProducts()` — slice test, mock service returns 2 products.
-     3. (Optional) Extend `ProductService` test if/when one exists; or `ProductRepositoryTest.findAllReturnsEveryRow()`.
-   - Add `ProductService.findAll(): List<Product>`.
-   - Add `ProductController.list(): List<ProductResponse>`.
-   - Pagination comes in a later cycle (cycle 9 or 10) when the wireframes' PLP demands it.
+     1. `createReturns201WithLocationHeader()` — happy path. Mock service.create(request) returns saved Product; assert 201 + Location: /api/v1/products/{id} + body has fresh id.
+     2. `createWithBlankTitleReturns400()` — drives Bean Validation. Body has problem-details JSON identifying the field.
+     3. `createWithTooLongTitleReturns400()` — triangulate the size rule.
+   - Add `ProductCreateRequest` record (title, description, tags) with Bean Validation annotations.
+   - Add `ProductService.create(ProductCreateRequest): Product`.
+   - Add `ProductController.create(@Valid ProductCreateRequest)`.
+   - Spring auto-configures `@RestControllerAdvice` for validation failures in SB 4 — verify the 400 response shape (RFC 7807 Problem Details by default).
 
 Then:
-- **Cycle 9: POST /api/v1/admin/products** — create a product. Drives request DTO + Bean Validation (`@NotBlank`, `@Size`) + 201 Created with Location header + service `create()` method.
 - **Cycle 10: PATCH /api/v1/admin/products/{id}** — partial update.
-- **Cycle 11: pagination + filtering** for the PLP.
+- **Cycle 11: pagination + filtering** for the PLP wireframe.
 - **Cycle 12: full-stack integration test** at `@SpringBootTest` + Testcontainers level: HTTP → controller → service → repository → real PG. Covers the slice tests' interaction gap.
 
 ### Package convention
@@ -50,7 +54,8 @@ com.oriah.catalog.collection/   future
 ### Recent commits
 
 ```
-(pending)  feat: expose GET /api/v1/products/{id} (TDD cycle 7)
+e2ed6d2    feat: expose GET /api/v1/products (list all) (TDD cycle 8)
+4c0cd92    feat: expose GET /api/v1/products/{id} (TDD cycle 7)
 f05303b    feat: persist Product via JPA + Flyway (TDD cycle 6)
 b6dc5aa    test: Product auto-assigns a unique id at creation (TDD cycle 5)
 a68742a    test: Product can be tagged (TDD cycle 4)
