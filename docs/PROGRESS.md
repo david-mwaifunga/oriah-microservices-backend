@@ -7,7 +7,9 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — ✅ **complete**. Full CRUD + pagination + tag filter, layer-by-layer packages, full-stack integration tests. 31/31 tests green.
+**Iteration 1: catalog-service standalone with TDD** — ✅ **complete**. Full CRUD + pagination + tag filter, layer-by-layer packages, full-stack integration tests, SLF4J logging, per-package Javadoc. 31/31 tests green.
+
+**Iterations 3/4/5 (Spring Cloud Config/Eureka/Gateway)** — ⛔ **blocked**. Spring Cloud has no SB-4-compatible release yet. Probe confirmed `NoClassDefFoundError: WebServerInitializedEvent` against `2025.0.0`. See `docs/ARCHITECTURE.md → "Spring Cloud blocker"` for the full story. Next pickup: when a Spring Cloud `2026.x` release ships, or sooner if we choose to downgrade to SB 3.5.x.
 
 ### What works right now
 
@@ -41,34 +43,41 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 1 is done.** Pick one of:
+Iteration 3 was probed and confirmed blocked. Decision point — pick a track
+that doesn't depend on Spring Cloud:
 
-**A) Iteration 3 — Spring Cloud Config Server.** Externalize catalog's configuration
-   to a Git-backed config server. Set up `infra/configserver/` module with
-   `@EnableConfigServer`. Add `spring-cloud-starter-config` to catalog. Uncomment
-   the Spring Cloud BOM in the root POM. Verify the SB-4-compatible Spring Cloud
-   release train version (currently a placeholder `2026.0.0` — may need
-   adjustment depending on what's actually GA at this date).
-   The natural next step in the microservices ladder.
+**A) Iteration 6 — add `inventory` service** *(recommended for forward motion)*.
+   New `services/inventory/` module modeled after catalog's layer-by-layer layout.
+   Pure REST + JPA + Testcontainers, no Cloud dependencies.
+   - Domain: track on-hand and reserved quantities per product variant.
+   - Endpoint shape: `GET /api/v1/inventory/{variantId}`,
+     `POST /api/v1/admin/inventory/{variantId}/reserve`,
+     `POST /api/v1/admin/inventory/{variantId}/release`.
+   - Inter-service call from catalog → inventory: defer Resilience4j +
+     OpenFeign (both Spring Cloud) until 2026.x ships. Use plain
+     `RestClient` (Spring 6+ native) or even `RestTemplate` for the
+     handful of cross-service calls we need; document the trade-off.
 
-**B) Iteration 1 polish (small).**
-   - Configure Mockito as a `-javaagent` in Surefire to silence the
-     self-attach deprecation warning. Edit:
-     `oriah-api/pom.xml` → `pluginManagement` → add surefire plugin with
-     `argLine` referencing the Mockito jar in the local repository.
-   - Add a shared-container pattern: hoist the `PostgreSQLContainer` into
-     a `@Singleton`/`static` field so two `@SpringBootTest` classes share
-     one container, cutting boot time. Optional.
+**B) Iteration 7 — Keycloak + Spring Security OAuth2 Resource Server**.
+   Doesn't strictly need Spring Cloud — Spring Security alone handles
+   JWT validation. Would secure the admin endpoints we've built.
 
-**C) Add the second service (inventory).** Jumps to iteration 6 but defers the
-   Spring Cloud infrastructure. Pure REST + JPA again, similar shape to
-   catalog. Would let us delay learning Cloud Config until we have a
-   reason for it. Less ideal pedagogically — splits services without the
-   discovery/gateway plumbing they need to actually talk safely.
+**C) Iteration 9 — Docker Compose for local dev**. Wrap the catalog +
+   its Postgres in a `docker-compose.yml` so a developer can
+   `docker compose up` instead of relying on Testcontainers.
 
-**Recommended: A.** It's the most pedagogical — externalized config is
-the smallest Spring Cloud concept, sets up the BOM that all later cloud
-modules need, and David hasn't seen the pattern yet.
+**D) Iteration 10 — React + TypeScript + Vite storefront**. Build the
+   `oriah-web/` repo. Talks straight to catalog's REST API (no gateway
+   in front of it yet). Useful work; lets the user see the system end-to-end.
+
+**E) Downgrade everything to Spring Boot 3.5.x**. Unblocks iterations 3-5
+   but undoes the SB 4 work: revert split test starters,
+   `spring-boot-starter-webmvc` → `-web`, package paths under
+   `spring-boot.<feature>.test.autoconfigure.*` → flatter SB-3 layout, etc.
+   ~1-2 hours of mechanical rework. Last resort.
+
+**F) Wait it out**. Stop here until Spring Cloud 2026 ships. Best if the
+   user has competing priorities.
 
 ### Cycle 9–10 notes
 
@@ -109,7 +118,9 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  docs: iteration 1 complete after cycle 13
+(pending)  docs: PROGRESS — iteration 3 deferred, logging landed
+a40a4e9    feat: SLF4J logging via @Slf4j + package-info docs; defer Spring Cloud
+9bc133e    docs: iteration 1 complete after cycle 13
 2fc48c9    test: add full-stack integration tests for catalog (TDD cycle 13)
 9317f84    docs: PROGRESS commit hash for restructure
 799e881    refactor: organize catalog by layer (controller/service/repository/model/dto)
