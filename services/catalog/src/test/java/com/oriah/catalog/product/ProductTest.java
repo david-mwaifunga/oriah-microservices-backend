@@ -23,4 +23,20 @@ class ProductTest {
 
         assertThat(product.title()).isEqualTo("Aurelia Solitaire Ring");
     }
+
+    @Test
+    @DisplayName("a product can have a description")
+    void canHaveADescription() {
+        var product = new Product("Aurelia", "A single-stone solitaire in 18k recycled gold.");
+
+        assertThat(product.description()).hasValue("A single-stone solitaire in 18k recycled gold.");
+    }
+
+    @Test
+    @DisplayName("description is empty when not provided")
+    void descriptionIsEmptyWhenNotProvided() {
+        var product = new Product("Aurelia");
+
+        assertThat(product.description()).isEmpty();
+    }
 }
