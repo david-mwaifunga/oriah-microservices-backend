@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: eurekaserver
+
+server:
+  # Eureka's well-known port. Clients that don't override
+  # eureka.client.service-url.defaultZone find this server automatically.
+  port: 8761
+
+eureka:
+  instance:
+    hostname: localhost
+  client:
+    # This Eureka instance is itself the registry — it does not
+    # register with another Eureka, and it doesn't fetch a registry
+    # snapshot from one either. Standalone mode.
+    register-with-eureka: false
+    fetch-registry: false
+    service-url:
+      # The URL clients should hit to register or look up services.
+      # When we move to a HA Eureka cluster, this changes to a CSV of
+      # peer URLs and the booleans above flip to true.
+      defaultZone: http://${eureka.instance.hostname}:${server.port}/eureka/
+  server:
+    # Self-preservation guards a Eureka against false-positive
+    # "instance went away" decisions during a network partition. Useful
+    # in production. Disabled here because in a single-node dev setup
+    # it makes the dashboard look alarmist (it warns about renewal
+    # threshold every restart). Re-enable in non-dev profiles.
+    enable-self-preservation: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.oriah.eurekaserver: DEBUG
+    # Eureka's startup logs are very chatty at INFO. Tame them to WARN
+    # so the relevant lines (port bound, server ready) stand out.
+    com.netflix.eureka: WARN
+    com.netflix.discovery: WARN

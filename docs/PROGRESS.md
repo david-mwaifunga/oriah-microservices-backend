@@ -13,6 +13,8 @@ update this before ending and read it at the start.
 
 **Iteration 3b: catalog wired as a Config Client** — ✅ **complete**. Catalog imports config from `optional:configserver:http://localhost:8888` at startup. `springdoc.*` and `logging.level.com.oriah.catalog` moved out of catalog's local `application.yaml` — they now live exclusively in the server's `catalog.yaml`. The `optional:` prefix means catalog still boots and 31/31 tests pass when the Config Server isn't running.
 
+**Iteration 4a: Eureka discovery server module** — ✅ **complete**. New `infra/eurekaserver/` standalone Eureka on port 8761. 3 smoke tests via real-port + `java.net.http.HttpClient` (the more portable path; MockMvc can't reach Eureka's Jersey-served `/eureka/*` endpoints, and SB 4 moved `TestRestTemplate`/`@LocalServerPort` off our minimal test classpath).
+
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
@@ -34,7 +36,7 @@ update this before ending and read it at the start.
   JPA dirty-checking persists changes within the `@Transactional` service method.
 - `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
   (stable across Spring versions; clear contract for the frontend).
-- 33 tests across six modules:
+- 36 tests across six modules:
   - 9 `catalog.model.ProductTest` — pure JVM, domain invariants
   - 1 `catalog.repository.ProductRepositoryTest` — `@DataJpaTest` + real PG
   - 6 `catalog.controller.ProductControllerTest` — `@WebMvcTest` slice
@@ -42,10 +44,14 @@ update this before ending and read it at the start.
   - 5 `catalog.integration.CatalogIntegrationTest` — `@SpringBootTest` + MockMvc + real PG
   - 1 `catalog.CatalogServiceApplicationTests.contextLoads`
   - 2 `configserver.ConfigServerApplicationTests` — boots `@EnableConfigServer`, hits `/catalog/default`
-- All pass: `mvnw test` → BUILD SUCCESS, ~50s total when container is cached.
+  - 3 `eurekaserver.EurekaServerApplicationTests` — dashboard, `/eureka/apps`, actuator health
+- All pass: `mvnw test` → BUILD SUCCESS, ~57s total when containers are cached.
 - Config Server runs at `http://localhost:8888` when started:
   `mvnw -pl infra/configserver spring-boot:run`
   Hit `http://localhost:8888/catalog/default` to see what it would serve.
+- Eureka server runs at `http://localhost:8761` when started:
+  `mvnw -pl infra/eurekaserver spring-boot:run`
+  Hit `http://localhost:8761/` for the dashboard, `/eureka/apps` for the registry.
 - **End-to-end smoke test** (manual):
   1. Terminal A: `mvnw -pl infra/configserver spring-boot:run`
   2. Terminal B: `mvnw -pl services/catalog spring-boot:test-run`
@@ -62,40 +68,41 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 4: Eureka discovery server.**
+**Iteration 4b: register catalog + configserver as Eureka clients.**
 
-Spring Cloud Netflix Eureka. Services register with the discovery server
-on startup; clients ask Eureka for "an instance of `catalog`" instead of
-hardcoding `localhost:8081`. Sets us up for the gateway in iteration 5.
+Eureka standalone is up. Next sub-cycle has catalog and configserver
+*register* themselves so the registry actually has something in it.
 
-1. Generate (or hand-write) `infra/eurekaserver/` module modeled on
-   `infra/configserver/`. Dependencies:
-   ```
-   org.springframework.cloud:spring-cloud-starter-netflix-eureka-server
-   org.springframework.boot:spring-boot-starter-actuator
-   org.projectlombok:lombok (optional)
-   ```
-2. `@SpringBootApplication` + `@EnableEurekaServer` on the
-   `EurekaServerApplication` class.
-3. `application.yaml`:
+1. Add `spring-cloud-starter-netflix-eureka-client` to both
+   `services/catalog/pom.xml` and `infra/configserver/pom.xml`. Version
+   is BOM-managed.
+2. In each client's `application.yaml`, add:
    ```yaml
-   server:
-     port: 8761        # Eureka's well-known port
    eureka:
      client:
-       register-with-eureka: false   # the server itself doesn't register
-       fetch-registry: false
+       service-url:
+         defaultZone: http://localhost:8761/eureka/
+     instance:
+       prefer-ip-address: true
    ```
-4. Smoke tests: boot context, hit `GET /eureka/apps` and assert 200.
-5. Make catalog and configserver Eureka clients in a follow-up sub-cycle
-   (add `spring-cloud-starter-netflix-eureka-client` and confirm they
-   show up in the registry).
+   The Eureka client auto-registers on startup using
+   `spring.application.name` as the registration name.
+3. With Eureka running locally, start configserver and catalog. Visit
+   `http://localhost:8761/` — both names should appear under "Instances
+   currently registered with Eureka."
+4. Heartbeats: clients send a renew every 30s by default; if the renew
+   stops, Eureka evicts the instance after 90s.
+5. The Eureka clients will try to register at startup. If Eureka is
+   down, this throws a startup error unless `eureka.client.enabled: false`
+   or registration is wrapped in `eureka.client.fetch-registry: false`
+   plus retry config. For tests, we'll set `eureka.client.enabled: false`
+   via `@TestPropertySource` so tests don't depend on Eureka being up.
 
 Then:
 - **Cycle 3c**: swap Config Server's native backend for a Git repo (real
-  GitOps pattern). Can come before or after Eureka; minor.
+  GitOps pattern).
 - **Iteration 5 — Spring Cloud Gateway** — `infra/gatewayserver/`. Single
-  entry point at `localhost:8080` routing to catalog through Eureka.
+  entry point at `localhost:8080` routing through Eureka to catalog.
 - **Iteration 6** — inventory service + OpenFeign + Resilience4j.
 - **Iteration 7+** as before.
 
@@ -138,7 +145,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: catalog as Spring Cloud Config Client (Iteration 3b)
+(pending)  feat: Eureka discovery server (Iteration 4a)
+7a550d1    feat: catalog as Spring Cloud Config Client (Iteration 3b)
 9c32b42    feat: Spring Cloud Config Server on 2025.1.1 (Iteration 3a)
 64326e2    docs: PROGRESS - iteration 3 deferred, logging landed   (superseded)
 a40a4e9    feat: SLF4J logging via @Slf4j + package-info docs; defer Spring Cloud
