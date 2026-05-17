@@ -1,0 +1,12 @@
+# Defaults applied to every client service that pulls config from this server.
+# Service-specific files (e.g. catalog.yaml) override these keys.
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+logging:
+  level:
+    root: INFO

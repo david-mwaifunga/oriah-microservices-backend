@@ -1,0 +1,16 @@
+# Externalized configuration for the catalog service.
+#
+# Catalog will fetch this at startup once it becomes a config-client
+# (next cycle). Values here override what catalog ships in its own
+# application.yaml AND the application.yaml in this same folder
+# (more specific wins).
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    com.oriah.catalog: DEBUG

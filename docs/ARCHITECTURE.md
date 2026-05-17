@@ -9,42 +9,44 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
-## Spring Cloud blocker (Iteration 3+ deferred)
+## Spring Cloud version selection (and the lesson learned)
 
-**Decision:** Defer Iterations 3, 4, 5 (Config Server, Eureka, Gateway) until
-a Spring-Boot-4-compatible Spring Cloud release ships.
+**Decision:** Use Spring Cloud **`2025.1.1`** (not `2025.0.x`) for Spring Boot 4.
 
-**Why:** As of this commit (2026-05-17) Maven Central has no Spring Cloud
-release train targeting Spring Boot 4. The latest stable is `2025.0.0`
-(paired with Spring Boot 3.5), and the Spring milestone repo holds nothing
-newer than `2025.0.0-RC1`. A probe — adding the 2025.0.0 BOM to a
-Config Server module on our SB 4.0.6 parent — failed at runtime:
+Spring Cloud ships two parallel release lines around a Spring Boot major:
+
+| Release train | Targets | Status |
+|---|---|---|
+| `2025.0.x` | Spring Boot 3.5 (Spring Framework 6) | Stable for SB 3 |
+| `2025.1.x` | Spring Boot 4.0 (Spring Framework 7) | **Stable for SB 4 — use this** |
+
+The line distinction is easy to miss because the major number is the same.
+Both branches receive patches; pick by what Spring Boot version you're on.
+
+**Lesson learned:** in an earlier session I probed `2025.0.0` against our
+SB 4.0.6 parent. Maven Central search via the public solr API only
+returned the `2025.0.x` and earlier majors, so I didn't see `2025.1.x`.
+The probe failed at runtime:
 
 ```
 java.lang.NoClassDefFoundError:
   org/springframework/boot/web/context/WebServerInitializedEvent
 ```
 
-That class existed in Spring Boot 3.x; in Spring Framework 7 / Spring
-Boot 4 the package was reorganized and the class is gone. Spring Cloud
-2025.0.0 was compiled against the old class so its config-server jar
-won't load on SB 4. There is no version of Spring Cloud Config Server
-we can pull from Maven Central today that runs on SB 4.
+That class existed in Spring Boot 3.x; Spring Framework 7 (Spring Boot 4)
+reorganized the package and the class is gone. Spring Cloud `2025.0.x`
+was compiled against the old class. The fix turned out to be picking the
+other release line, not waiting for `2026.x`.
 
-**What we did:** rolled the experiment back. `infra/` is a placeholder
-again. The Spring Cloud BOM import in `pom.xml` is commented out with
-a `spring-cloud.version = UNSET-pending-2026-train` property so the
-intent (and the trap) are obvious to the next reader.
+**How to find the right Spring Cloud version going forward:** generate
+a throwaway project at [start.spring.io](https://start.spring.io/) with
+the Spring Boot version you're targeting and a Spring Cloud starter
+checked. The Initializr's version matrix is more authoritative than any
+Maven search — David caught this exact slip by doing that. When in doubt,
+trust the Initializr.
 
-**How to apply:** when a Spring Cloud release explicitly targeting Spring
-Boot 4 ships, pick up Iteration 3 again. Until then, prioritize work
-that doesn't need Spring Cloud — adding services (catalog already done,
-inventory still possible without discovery), polishing observability,
-documentation, the React frontend, or downgrading the whole codebase to
-SB 3.5.x (significant rework, last resort).
-
-This is the trade-off we accepted when we chose to stay on SB 4.0.6
-(see next section).
+Documented in `pom.xml` comments where the BOM is imported so future
+readers see "use 2025.1.x for SB 4, not 2025.0.x."
 
 ---
 

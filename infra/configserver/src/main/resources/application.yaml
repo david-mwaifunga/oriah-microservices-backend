@@ -1,0 +1,34 @@
+spring:
+  application:
+    name: configserver
+  profiles:
+    # 'native' tells Spring Cloud Config to serve from local files instead of Git.
+    # Swap to 'git' once we add a backing repository in a later cycle.
+    active: native
+  cloud:
+    config:
+      server:
+        native:
+          # Classpath-based backend: serves the YAML files we ship in
+          # src/main/resources/config/. Future cycle switches this to
+          # file:./config-repo/ (a local clone) or a remote Git URL.
+          search-locations: classpath:/config/
+
+server:
+  # Spring Cloud Config's well-known port. Clients default to here.
+  port: 8888
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,env,configprops
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.oriah.configserver: DEBUG

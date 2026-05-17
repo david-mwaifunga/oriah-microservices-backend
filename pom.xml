@@ -19,6 +19,7 @@
     </description>
 
     <modules>
+        <module>infra</module>
         <module>services</module>
     </modules>
 
@@ -33,16 +34,12 @@
         <spring-boot.version>4.0.6</spring-boot.version>
         <!-- Spring Cloud release train for Spring Boot 4 — verify exact GA when we add config server. -->
         <!--
-            Spring Cloud version is intentionally NOT pinned to a real number.
-            As of this commit there is no Spring Cloud release train that targets
-            Spring Boot 4: the latest stable is 2025.0.0 (Spring Boot 3.5),
-            which crashes on SB 4 with NoClassDefFoundError for
-            WebServerInitializedEvent (moved/removed in Spring Framework 7).
-            See docs/ARCHITECTURE.md "Spring Cloud blocker" section.
-            Iterations 3-5 (Config Server, Eureka, Gateway) are deferred until
-            a 2026.x train ships.
+            Spring Cloud release train. The 2025.0.x line targets Spring Boot
+            3.5; the 2025.1.x line is the parallel branch built against Spring
+            Boot 4 / Spring Framework 7. Spring Initializr confirms 2025.1.1
+            works with SB 4.0.6 (David verified by generating a starter).
         -->
-        <spring-cloud.version>UNSET-pending-2026-train</spring-cloud.version>
+        <spring-cloud.version>2025.1.1</spring-cloud.version>
         <springdoc.version>3.0.2</springdoc.version>
         <!-- Maven plugin versions (pin so the build is reproducible regardless of what Maven defaults to). -->
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
@@ -72,11 +69,13 @@
             </dependency>
 
             <!--
-                Spring Cloud BOM — to be uncommented when a Spring-Boot-4-compatible
-                Spring Cloud release ships. Confirmed broken with 2025.0.0:
-                NoClassDefFoundError on WebServerInitializedEvent (Framework-7
-                removal). See docs/ARCHITECTURE.md.
-
+                Spring Cloud BOM. Version 2025.1.1 is the Spring-Boot-4 line
+                (2025.0.x is the SB 3.5 line — do NOT use that branch with our
+                stack). Manages versions for spring-cloud-config-server,
+                spring-cloud-starter-config, spring-cloud-starter-netflix-eureka-*,
+                spring-cloud-starter-gateway, spring-cloud-starter-openfeign,
+                spring-cloud-starter-circuitbreaker-resilience4j.
+            -->
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
@@ -84,7 +83,6 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            -->
 
         </dependencies>
     </dependencyManagement>

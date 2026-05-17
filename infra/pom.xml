@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>oriah-api-parent</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>infra</artifactId>
+    <packaging>pom</packaging>
+
+    <name>infra</name>
+    <description>
+        Aggregator for platform / infrastructure services: Config Server,
+        Eureka, Gateway. Each child is an independently deployable Spring Boot
+        application that provides cross-cutting machinery rather than domain logic.
+    </description>
+
+    <modules>
+        <module>configserver</module>
+    </modules>
+</project>

@@ -9,7 +9,7 @@ update this before ending and read it at the start.
 
 **Iteration 1: catalog-service standalone with TDD** — ✅ **complete**. Full CRUD + pagination + tag filter, layer-by-layer packages, full-stack integration tests, SLF4J logging, per-package Javadoc. 31/31 tests green.
 
-**Iterations 3/4/5 (Spring Cloud Config/Eureka/Gateway)** — ⛔ **blocked**. Spring Cloud has no SB-4-compatible release yet. Probe confirmed `NoClassDefFoundError: WebServerInitializedEvent` against `2025.0.0`. See `docs/ARCHITECTURE.md → "Spring Cloud blocker"` for the full story. Next pickup: when a Spring Cloud `2026.x` release ships, or sooner if we choose to downgrade to SB 3.5.x.
+**Iteration 3a: Spring Cloud Config Server module** — ✅ **complete**. Boots on Spring Cloud `2025.1.1` (the SB-4-targeted line — `2025.0.x` is the SB 3.5 line). Native filesystem backend at `classpath:/config/`. Serves `/{application}/{profile}` endpoints. 2 smoke tests green. See `docs/ARCHITECTURE.md → "Spring Cloud version selection"` for the version-line lesson.
 
 ### What works right now
 
@@ -32,52 +32,63 @@ update this before ending and read it at the start.
   JPA dirty-checking persists changes within the `@Transactional` service method.
 - `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
   (stable across Spring versions; clear contract for the frontend).
-- 31 tests across five layers:
-  - 9 `model.ProductTest` — pure JVM, domain invariants
-  - 1 `repository.ProductRepositoryTest` — `@DataJpaTest` + real PG
-  - 6 `controller.ProductControllerTest` — `@WebMvcTest` slice, mocked service
-  - 9 `controller.AdminProductControllerTest` — `@WebMvcTest` slice, mocked service
-  - 5 `integration.CatalogIntegrationTest` — `@SpringBootTest` + MockMvc + real PG
-  - 1 `CatalogServiceApplicationTests.contextLoads` — sanity check
-- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~30s total when container is cached.
+- 33 tests across six modules:
+  - 9 `catalog.model.ProductTest` — pure JVM, domain invariants
+  - 1 `catalog.repository.ProductRepositoryTest` — `@DataJpaTest` + real PG
+  - 6 `catalog.controller.ProductControllerTest` — `@WebMvcTest` slice
+  - 9 `catalog.controller.AdminProductControllerTest` — `@WebMvcTest` slice
+  - 5 `catalog.integration.CatalogIntegrationTest` — `@SpringBootTest` + MockMvc + real PG
+  - 1 `catalog.CatalogServiceApplicationTests.contextLoads`
+  - 2 `configserver.ConfigServerApplicationTests` — boots `@EnableConfigServer`, hits `/catalog/default`
+- All pass: `mvnw test` → BUILD SUCCESS, ~50s total when container is cached.
+- Config Server runs at `http://localhost:8888` when started:
+  `mvnw -pl infra/configserver spring-boot:run`
+  Hit `http://localhost:8888/catalog/default` to see what it would serve.
 
 ### Next exact action
 
-Iteration 3 was probed and confirmed blocked. Decision point — pick a track
-that doesn't depend on Spring Cloud:
+**Iteration 3b: wire catalog as a config client.**
 
-**A) Iteration 6 — add `inventory` service** *(recommended for forward motion)*.
-   New `services/inventory/` module modeled after catalog's layer-by-layer layout.
-   Pure REST + JPA + Testcontainers, no Cloud dependencies.
-   - Domain: track on-hand and reserved quantities per product variant.
-   - Endpoint shape: `GET /api/v1/inventory/{variantId}`,
-     `POST /api/v1/admin/inventory/{variantId}/reserve`,
-     `POST /api/v1/admin/inventory/{variantId}/release`.
-   - Inter-service call from catalog → inventory: defer Resilience4j +
-     OpenFeign (both Spring Cloud) until 2026.x ships. Use plain
-     `RestClient` (Spring 6+ native) or even `RestTemplate` for the
-     handful of cross-service calls we need; document the trade-off.
+The Config Server is up but no one uses it yet. The next cycle makes
+catalog fetch some of its config from `http://localhost:8888` at startup.
 
-**B) Iteration 7 — Keycloak + Spring Security OAuth2 Resource Server**.
-   Doesn't strictly need Spring Cloud — Spring Security alone handles
-   JWT validation. Would secure the admin endpoints we've built.
+1. Add `spring-cloud-starter-config` to `services/catalog/pom.xml`.
+   Version is managed by the Spring Cloud BOM already imported at the
+   parent.
+2. Add a top-level `spring.config.import` to catalog's `application.yaml`:
+   ```yaml
+   spring:
+     application:
+       name: catalog          # tells Config Server which file to serve
+     config:
+       import: "optional:configserver:http://localhost:8888"
+   ```
+   The `optional:` prefix means catalog still boots when the Config
+   Server is down — important for local dev and tests where we don't
+   spin up the server.
+3. Move catalog-specific config (springdoc paths, logging levels) from
+   `catalog/src/main/resources/application.yaml` to
+   `configserver/src/main/resources/config/catalog.yaml` — the file
+   the Config Server already serves. Verify the values still take effect
+   by reading them via `/actuator/env` once both apps are running.
+4. The integration test trades-off: should we wire catalog's
+   `@SpringBootTest` against a Config-Server-on-localhost? My instinct
+   is **no** — keep tests hermetic via the `optional:` prefix so they
+   pass with no config server, and add a separate end-to-end test (later
+   cycle) that boots both processes via Testcontainers' generic container
+   or Spring's own `SpringBootTestcontainers` if available.
+5. After verifying locally with both apps running, commit and proceed
+   to **Iteration 4 (Eureka)**.
 
-**C) Iteration 9 — Docker Compose for local dev**. Wrap the catalog +
-   its Postgres in a `docker-compose.yml` so a developer can
-   `docker compose up` instead of relying on Testcontainers.
-
-**D) Iteration 10 — React + TypeScript + Vite storefront**. Build the
-   `oriah-web/` repo. Talks straight to catalog's REST API (no gateway
-   in front of it yet). Useful work; lets the user see the system end-to-end.
-
-**E) Downgrade everything to Spring Boot 3.5.x**. Unblocks iterations 3-5
-   but undoes the SB 4 work: revert split test starters,
-   `spring-boot-starter-webmvc` → `-web`, package paths under
-   `spring-boot.<feature>.test.autoconfigure.*` → flatter SB-3 layout, etc.
-   ~1-2 hours of mechanical rework. Last resort.
-
-**F) Wait it out**. Stop here until Spring Cloud 2026 ships. Best if the
-   user has competing priorities.
+After that:
+- **Cycle 3c**: swap Config Server's native backend for a Git repo (real
+  GitOps pattern). Decide between an in-repo `config-repo/` folder or a
+  separate `oriah-config/` Git repo.
+- **Iteration 4 — Eureka** — `infra/eurekaserver/`. Catalog + configserver
+  both register; we can address services by logical name not host:port.
+- **Iteration 5 — Spring Cloud Gateway** — `infra/gatewayserver/`. Single
+  entry point at `localhost:8080` routing to catalog through Eureka.
+- **Iteration 6** onward as before.
 
 ### Cycle 9–10 notes
 
@@ -118,7 +129,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  docs: PROGRESS — iteration 3 deferred, logging landed
+(pending)  feat: Spring Cloud Config Server on 2025.1.1 (Iteration 3a)
+64326e2    docs: PROGRESS - iteration 3 deferred, logging landed   (superseded)
 a40a4e9    feat: SLF4J logging via @Slf4j + package-info docs; defer Spring Cloud
 9bc133e    docs: iteration 1 complete after cycle 13
 2fc48c9    test: add full-stack integration tests for catalog (TDD cycle 13)
