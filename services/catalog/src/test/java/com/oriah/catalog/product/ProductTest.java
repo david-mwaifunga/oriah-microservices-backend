@@ -66,4 +66,21 @@ class ProductTest {
         assertThatThrownBy(() -> product.tags().add("ring"))
                 .isInstanceOf(UnsupportedOperationException.class);
     }
+
+    @Test
+    @DisplayName("a product has an id auto-assigned at creation")
+    void hasAnId() {
+        var product = new Product("Aurelia");
+
+        assertThat(product.id()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("two products with the same title still have different ids")
+    void hasUniqueIdAcrossInstances() {
+        var first = new Product("Aurelia");
+        var second = new Product("Aurelia");
+
+        assertThat(first.id()).isNotEqualTo(second.id());
+    }
 }
