@@ -1,15 +1,40 @@
 package com.oriah.catalog.product;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.Column;
+import jakarta.persistence.ElementCollection;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.Table;
+
+@Entity
+@Table(name = "products")
 public class Product {
 
-    private final UUID id;
-    private final String title;
-    private final String description;
-    private final List<String> tags;
+    @Id
+    private UUID id;
+
+    @Column(nullable = false)
+    private String title;
+
+    @Column
+    private String description;
+
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "product_tags", joinColumns = @JoinColumn(name = "product_id"))
+    @Column(name = "tag", nullable = false)
+    private List<String> tags = new ArrayList<>();
+
+    protected Product() {
+        // For JPA hydration only — do not call from application code.
+    }
 
     public Product(String title) {
         this(title, null, null);
@@ -26,7 +51,7 @@ public class Product {
         this.id = UUID.randomUUID();
         this.title = title;
         this.description = description;
-        this.tags = tags == null ? List.of() : List.copyOf(tags);
+        this.tags = tags == null ? new ArrayList<>() : new ArrayList<>(tags);
     }
 
     public UUID id() {
@@ -42,6 +67,6 @@ public class Product {
     }
 
     public List<String> tags() {
-        return tags;
+        return List.copyOf(tags);
     }
 }
