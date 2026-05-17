@@ -68,7 +68,7 @@ com.oriah.catalog.collection/   future
 ### Recent commits
 
 ```
-(pending)  feat: PATCH /api/v1/admin/products/{id} (TDD cycle 10)
+9e06c27    feat: PATCH /api/v1/admin/products/{id} (TDD cycle 10)
 c49e8f6    docs: update PROGRESS commit list for cycle 9
 23536af    feat: POST /api/v1/admin/products + Bean Validation (TDD cycle 9)
 e2ed6d2    feat: expose GET /api/v1/products (list all) (TDD cycle 8)
