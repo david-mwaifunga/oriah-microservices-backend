@@ -1,0 +1,8 @@
+Placeholder for platform modules:
+  - configserver/  (Spring Cloud Config Server — externalized config)
+  - eurekaserver/  (Netflix Eureka — service discovery)
+  - gatewayserver/ (Spring Cloud Gateway — API gateway, Keycloak integration)
+
+These will be added in iterations 3, 4, and 5 of the project plan. When the first
+module lands here, this file is replaced by an `infra/pom.xml` aggregator and
+this folder becomes a `<module>` in the root pom.

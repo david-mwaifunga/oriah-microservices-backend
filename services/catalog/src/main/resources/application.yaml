@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: catalog
+  # Datasource is left unset on purpose:
+  # - In tests, the @ServiceConnection PostgreSQLContainer in TestcontainersConfiguration
+  #   supplies url/username/password automatically.
+  # - For local dev (running via TestCatalogServiceApplication.main),
+  #   the same Testcontainer is reused.
+  # - In production, datasource properties are supplied externally (env vars,
+  #   Spring Cloud Config, or Kubernetes secrets).
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  port: 8081
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+  info:
+    env:
+      enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+    com.oriah.catalog: DEBUG
