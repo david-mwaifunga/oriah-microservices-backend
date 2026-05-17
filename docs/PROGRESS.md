@@ -7,7 +7,7 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — full CRUD-minus-D working. 22/22 tests green.
+**Iteration 1: catalog-service standalone with TDD** — full CRUD + pagination + tag filter. 26/26 tests green.
 
 ### What works right now
 
@@ -17,33 +17,43 @@ update this before ending and read it at the start.
 - `ProductRepository extends JpaRepository<Product, UUID>`.
 - `ProductService` wraps the repo.
 - `ProductController` (public, `/api/v1/products`):
-  - `GET /api/v1/products` → JSON array of `ProductResponse`. Empty array (not 204) when no products.
+  - `GET /api/v1/products` → `PageResponse<ProductResponse>` envelope `{content, page, size, totalElements, totalPages}`.
+    Default page=0, size=20. Empty `content` array when no products.
+  - `GET /api/v1/products?tag=rings` → tag-filtered page. JPQL `MEMBER OF` against `@ElementCollection`.
+  - `GET /api/v1/products?page=2&size=5` → Spring resolves `Pageable` from query params (`@PageableDefault(size=20)`).
   - `GET /api/v1/products/{id}` → `ProductResponse` (200) or 404.
 - `AdminProductController` (admin, `/api/v1/admin/products`):
-  - `POST /api/v1/admin/products` → 201 Created + `Location: /api/v1/products/{id}` + `ProductResponse` body.
-    `@Valid` enforces Bean Validation on `ProductCreateRequest`; failures return 400 (RFC 7807 default).
-  - `PATCH /api/v1/admin/products/{id}` → 200 + updated body, or 404. Partial updates via
-    `ProductUpdateRequest` (all fields nullable; null = no change). Bean Validation still
-    fires on provided fields (`@Size(min=1, max=200)` on title catches blank + oversize).
-- `Product` has encapsulated mutators: `updateTitle`, `updateDescription`, `updateTags`.
+  - `POST` → 201 + `Location: /api/v1/products/{id}` + body. Bean Validation on `ProductCreateRequest`.
+  - `PATCH /{id}` → 200 + updated body, or 404. Partial updates; null = no change.
+  - `DELETE /{id}` → 204, or 404 when not found.
+- `Product` has encapsulated mutators (`updateTitle`/`updateDescription`/`updateTags`).
   JPA dirty-checking persists changes within the `@Transactional` service method.
-- `ProductService` methods are `@Transactional` (read-only on queries, default on mutations).
-- 22 tests: 9 ProductTest + 4 ProductControllerTest + 7 AdminProductControllerTest + 1 ProductRepositoryTest + 1 contextLoads.
-- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~24s total when container is cached.
+- `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
+  (stable across Spring versions; clear contract for the frontend).
+- 26 tests: 9 ProductTest + 6 ProductControllerTest + 9 AdminProductControllerTest + 1 ProductRepositoryTest + 1 contextLoads.
+- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~25s total when container is cached.
 
 ### Next exact action
 
-**TDD cycle 11: DELETE /api/v1/admin/products/{id}** — remove a product.
-   - Suggested tests:
-     1. `deleteReturns204OnExistingProduct()` — service.deleteById returns true (or completes); assert 204.
-     2. `deleteReturns404WhenNotFound()` — service returns false / empty; assert 404.
-   - Add `ProductService.deleteById(UUID): boolean` returning true if removed, false if absent.
-   - Add `AdminProductController.delete(@PathVariable("id"))` returning ResponseEntity<Void>.
-   - Decision point: DELETE on a non-existent resource — 404 or 204? Idempotent semantics argue for 204; debuggability argues for 404 on first call. We're going with 404 to match the GET-by-id behavior the wireframes lean on.
+**TDD cycle 13: full-stack integration test.** Exercises HTTP → controller → service →
+JPA → real Postgres end-to-end. Catches the bugs slice tests can't (serializer
+quirks, validation pipeline interactions, transaction boundaries, real SQL behavior).
+   - New class `services/catalog/src/test/java/com/oriah/catalog/CatalogIntegrationTest.java`.
+   - `@SpringBootTest(webEnvironment = MOCK)` + `@AutoConfigureMockMvc` + `@Import(TestcontainersConfiguration.class)`.
+   - Each test cleans state via `@BeforeEach productRepository.deleteAll()`.
+   - Suggested tests (one per scenario):
+     1. `createReadRoundTrip()` — POST a product, then GET-by-id, assert body matches.
+     2. `createIncrementsTotalCount()` — POST 3 products, GET list, assert `totalElements = 3`.
+     3. `tagFilterReturnsMatchingProductsOnly()` — POST 3 products with different tags, GET with `?tag=rings`, assert content has only the matching one.
+     4. `patchPersistsAcrossRequests()` — POST, PATCH, GET; assert updated value in DB.
+     5. `deleteRemovesFromList()` — POST, DELETE, GET; assert 404 on get, list has 0.
+   - This will be ~1 of these tests per ~5s of clock time (real container, real HTTP path), so the suite total may grow to ~50s. Worth it.
 
-Then:
-- **Cycle 12: pagination + filtering** for the PLP wireframe (`GET /api/v1/products?page=0&size=20&tag=rings`). Drives Spring Data `Pageable`. Tag filtering can use either `findAllByTagsContaining` (derived query) or a `Specification`.
-- **Cycle 13: full-stack integration test** at `@SpringBootTest` + Testcontainers + real HTTP (MockMvc + full context, not slice). Closes the slice-test gap end-to-end.
+Then iteration 1 polish (small, optional):
+- **Mockito self-attach warning**: configure surefire `argLine` with `-javaagent:.../mockito-core.jar` to silence the deprecation.
+- **`@SpringBootTest` slow start**: investigate `@DirtiesContext` and shared-container pattern to keep the cached container across tests.
+
+After that, **iteration 3 onward** (Spring Cloud Config Server, Eureka, Gateway, second service, Keycloak, Kafka, Docker Compose, frontend).
 
 ### Cycle 9–10 notes
 
@@ -68,6 +78,9 @@ com.oriah.catalog.collection/   future
 ### Recent commits
 
 ```
+0ba298b    feat: paginate + tag-filter GET /api/v1/products (TDD cycle 12)
+c77ef51    feat: DELETE /api/v1/admin/products/{id} (TDD cycle 11)
+528522a    docs: PROGRESS commit list for cycle 10
 9e06c27    feat: PATCH /api/v1/admin/products/{id} (TDD cycle 10)
 c49e8f6    docs: update PROGRESS commit list for cycle 9
 23536af    feat: POST /api/v1/admin/products + Bean Validation (TDD cycle 9)
