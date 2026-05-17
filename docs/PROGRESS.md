@@ -20,13 +20,32 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-1. **`git init` + first commit** at `oriah-api/`. Commit message: `chore: scaffold multi-module Maven skeleton with catalog service (SB 4.0.6, Java 21)`.
-2. Begin **TDD step 1**: write a failing test for the `Product` domain object.
-   - Suggested path: `services/catalog/src/test/java/com/oriah/catalog/domain/ProductTest.java`
-   - First test: `aProductRequiresANonBlankTitle()` — invoking `Product.create("", ...)` throws `IllegalArgumentException` (or whatever rule we pick).
-   - Confirm red: no `Product` class exists yet → compile error is the failing state.
-   - Implement minimal `Product` record/class to pass.
-3. From there, drive each layer (entity, repository, service, controller) via tests in order.
+1. ~~`git init` + first commit~~ ✅ done. Branch `main`, commit `1fea8f0` (20 files, 1419 insertions).
+2. ~~TDD cycle 1: Product requires non-blank title~~ ✅ done. Test in `com/oriah/catalog/product/ProductTest.java`; minimal impl in `Product.java`. Title is **not stored** yet — strict TDD, no field until a test demands it. Both tests (contextLoads + Product rule) green.
+3. **TDD cycle 2 — choose one:**
+   - **(a) `aProductRemembersItsTitle()`** — forces a `title()` accessor and a stored field. Most natural next step.
+   - (b) `aProductRejectsAWhitespaceOnlyTitle()` — locks in the `isBlank()` rule against whitespace-only strings.
+   - (c) `aProductRejectsANullTitle()` — locks in the null check.
+   - (d) `aProductIsEqualToAnotherProductWithTheSameTitle()` — drives `equals`/`hashCode`. Premature until we have more fields.
+   - Recommended: **(a)** first, then weave (b)/(c) into single triangulation. Get storage working before locking in edge-case nulls.
+4. Once Product has a stored title, expand to other fields the architecture spec calls out: `description`, `seo`, `tags`, and a unique `id`. Each via its own failing test.
+5. After the pure domain model is shaped, introduce JPA: `@Entity` + `Flyway V1__create_products.sql` + `ProductRepository extends JpaRepository`. Drive with an integration test using `@DataJpaTest` slice + Testcontainers.
+
+### Package convention
+
+Aggregate-per-package, not layer-per-package:
+```
+com.oriah.catalog.product/      Product, ProductRepository, ProductService, ProductController, ProductDto
+com.oriah.catalog.variant/      future
+com.oriah.catalog.collection/   future
+```
+
+### Recent commits
+
+```
+(pending)  test: drive Product domain with first failing rule (TDD cycle 1)
+1fea8f0    chore: scaffold multi-module Maven skeleton with catalog service
+```
 
 ### Known issues / things to revisit
 
