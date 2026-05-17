@@ -1,8 +1,11 @@
 package com.oriah.catalog.product;
 
 import java.net.URI;
+import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -32,5 +35,15 @@ public class AdminProductController {
         Product saved = service.create(request.title(), request.description(), request.tags());
         URI location = URI.create("/api/v1/products/" + saved.id());
         return ResponseEntity.created(location).body(ProductResponse.from(saved));
+    }
+
+    @PatchMapping("/{id}")
+    public ResponseEntity<ProductResponse> update(
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody ProductUpdateRequest request) {
+        return service.update(id, request)
+                .map(ProductResponse::from)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 }

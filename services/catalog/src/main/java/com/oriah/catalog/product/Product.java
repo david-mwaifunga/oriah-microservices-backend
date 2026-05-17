@@ -79,4 +79,32 @@ public class Product {
     public List<String> tags() {
         return List.copyOf(tags);
     }
+
+    /**
+     * Updates the product's title. Same invariant as construction:
+     * must not be blank.
+     */
+    public void updateTitle(String newTitle) {
+        if (newTitle == null || newTitle.isBlank()) {
+            throw new IllegalArgumentException("title must not be blank");
+        }
+        this.title = newTitle;
+    }
+
+    /**
+     * Replaces the product's description. Null is rejected via DTO-level
+     * validation in {@code ProductUpdateRequest}; if called with null
+     * directly, the field stays unchanged (we use this method only for
+     * non-null updates from the service layer).
+     */
+    public void updateDescription(String newDescription) {
+        this.description = newDescription;
+    }
+
+    /**
+     * Replaces the product's tag list with a fresh copy.
+     */
+    public void updateTags(List<String> newTags) {
+        this.tags = newTags == null ? new ArrayList<>() : new ArrayList<>(newTags);
+    }
 }

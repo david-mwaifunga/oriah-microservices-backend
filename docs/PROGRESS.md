@@ -7,7 +7,7 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — full read + create surface working. 18/18 tests green.
+**Iteration 1: catalog-service standalone with TDD** — full CRUD-minus-D working. 22/22 tests green.
 
 ### What works right now
 
@@ -22,35 +22,38 @@ update this before ending and read it at the start.
 - `AdminProductController` (admin, `/api/v1/admin/products`):
   - `POST /api/v1/admin/products` → 201 Created + `Location: /api/v1/products/{id}` + `ProductResponse` body.
     `@Valid` enforces Bean Validation on `ProductCreateRequest`; failures return 400 (RFC 7807 default).
+  - `PATCH /api/v1/admin/products/{id}` → 200 + updated body, or 404. Partial updates via
+    `ProductUpdateRequest` (all fields nullable; null = no change). Bean Validation still
+    fires on provided fields (`@Size(min=1, max=200)` on title catches blank + oversize).
+- `Product` has encapsulated mutators: `updateTitle`, `updateDescription`, `updateTags`.
+  JPA dirty-checking persists changes within the `@Transactional` service method.
 - `ProductService` methods are `@Transactional` (read-only on queries, default on mutations).
-- 18 tests: 9 ProductTest + 4 ProductControllerTest + 3 AdminProductControllerTest + 1 ProductRepositoryTest + 1 contextLoads.
-- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~22s total when container is cached.
+- 22 tests: 9 ProductTest + 4 ProductControllerTest + 7 AdminProductControllerTest + 1 ProductRepositoryTest + 1 contextLoads.
+- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~24s total when container is cached.
 
 ### Next exact action
 
-**TDD cycle 10: PATCH /api/v1/admin/products/{id}** — partial update.
-   - Add `ProductUpdateRequest` record with **all fields Optional / nullable** so callers can send only what changes (title, description, tags).
-   - Suggested test order:
-     1. `updateChangesTitle()` — slice test. PATCH with `{"title": "New name"}` only; mock service.update(id, …) returns updated Product; assert 200 + updated body.
-     2. `updateClearsDescription()` — send `{"description": null}` explicitly; assert description cleared.
-     3. `updateRejectsBlankTitle()` — `{"title": ""}` returns 400 (the constraint still applies when a title is provided).
-     4. `updateReturns404WhenNotFound()` — service returns Optional.empty.
-   - Add `Product` mutators or `Product.applyUpdate(...)` (decide in cycle): I lean toward an `applyUpdate` method on the entity so invariants stay encapsulated, vs raw setters.
-   - Add `ProductService.update(UUID, ProductUpdateRequest): Optional<Product>`.
-   - Add `AdminProductController.update(@PathVariable("id") UUID, @Valid @RequestBody ProductUpdateRequest)`.
-   - Use `@JsonInclude(NON_NULL)` or just keep null as "don't touch this field"; document the convention.
+**TDD cycle 11: DELETE /api/v1/admin/products/{id}** — remove a product.
+   - Suggested tests:
+     1. `deleteReturns204OnExistingProduct()` — service.deleteById returns true (or completes); assert 204.
+     2. `deleteReturns404WhenNotFound()` — service returns false / empty; assert 404.
+   - Add `ProductService.deleteById(UUID): boolean` returning true if removed, false if absent.
+   - Add `AdminProductController.delete(@PathVariable("id"))` returning ResponseEntity<Void>.
+   - Decision point: DELETE on a non-existent resource — 404 or 204? Idempotent semantics argue for 204; debuggability argues for 404 on first call. We're going with 404 to match the GET-by-id behavior the wireframes lean on.
 
 Then:
-- **Cycle 11: DELETE /api/v1/admin/products/{id}** — return 204.
-- **Cycle 12: pagination + filtering** for the PLP wireframe (`GET /api/v1/products?page=0&size=20&tag=rings`). Drives Spring Data `Pageable` + `Specification`.
-- **Cycle 13: full-stack integration test** at `@SpringBootTest` + Testcontainers + real HTTP (MockMvc + full context, not slice). Covers the gap between slice tests by exercising the whole stack end-to-end.
+- **Cycle 12: pagination + filtering** for the PLP wireframe (`GET /api/v1/products?page=0&size=20&tag=rings`). Drives Spring Data `Pageable`. Tag filtering can use either `findAllByTagsContaining` (derived query) or a `Specification`.
+- **Cycle 13: full-stack integration test** at `@SpringBootTest` + Testcontainers + real HTTP (MockMvc + full context, not slice). Closes the slice-test gap end-to-end.
 
-### Cycle 9 notes
+### Cycle 9–10 notes
 
 - **Admin endpoints get their own controller** (`AdminProductController` at `/api/v1/admin/products`) so we can apply distinct security/rate-limit policies later. Matches the wireframes' API split.
-- **Service signature takes plain values** (`create(String, String, List<String>)`), not the DTO. Keeps HTTP types out of the service layer. Controller does DTO → values mapping inside the method body.
-- **Bean Validation drives the 400 path** — `@NotBlank`, `@Size` on the DTO; `@Valid` in the controller. Spring Boot 4 auto-configures the validation pipeline; no explicit `@ControllerAdvice` needed. RFC 7807 Problem Details JSON is the default 400 body in SB 3.4+.
-- **`@Transactional(readOnly = true)`** on query methods is a small but standard discipline — pessimistic locking off, dirty checking off, can short-circuit some round-trips.
+- **Service signature takes plain values**, not the DTO — except `update(UUID, ProductUpdateRequest)` which keeps the partial-update intent as one object. Either pattern is defensible; we lean toward "plain values" when the parameter count stays small, and "request DTO into service" when there are many optional fields and we'd otherwise need overloads.
+- **Bean Validation drives 400** for both POST (`@NotBlank` + `@Size`) and PATCH (`@Size(min=1, max=200)` — fires only when the field is non-null, which is what we want for partial updates). Spring Boot 4 auto-configures the pipeline; no explicit `@ControllerAdvice` needed yet.
+- **PATCH null-as-no-change**: simple semantic, no extra deps. Trade-off: can't clear an existing description via PATCH; we'd add `JsonNullable<T>` or per-field DELETE endpoints if that becomes a real need.
+- **JPA dirty checking persists PATCH** automatically inside `@Transactional` — no explicit `repository.save()` call.
+- **`Product` mutators encapsulate invariants**: `updateTitle(...)` enforces the non-blank rule the constructor does. Better than exposing public setters because the rules stay with the entity.
+- **`@Transactional(readOnly = true)`** on query methods is a small but standard discipline — Hibernate skips dirty checking, can short-circuit some round-trips.
 
 ### Package convention
 
@@ -65,6 +68,8 @@ com.oriah.catalog.collection/   future
 ### Recent commits
 
 ```
+(pending)  feat: PATCH /api/v1/admin/products/{id} (TDD cycle 10)
+c49e8f6    docs: update PROGRESS commit list for cycle 9
 23536af    feat: POST /api/v1/admin/products + Bean Validation (TDD cycle 9)
 e2ed6d2    feat: expose GET /api/v1/products (list all) (TDD cycle 8)
 4c0cd92    feat: expose GET /api/v1/products/{id} (TDD cycle 7)

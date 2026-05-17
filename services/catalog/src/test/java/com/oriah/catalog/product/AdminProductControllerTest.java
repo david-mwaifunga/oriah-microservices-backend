@@ -11,11 +11,14 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.Optional;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -98,5 +101,78 @@ class AdminProductControllerTest {
                 .andExpect(status().isBadRequest());
 
         verify(service, never()).create(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("PATCH /api/v1/admin/products/{id} updates the title and returns 200")
+    void updateChangesTitle() throws Exception {
+        var id = UUID.fromString("44444444-4444-4444-4444-444444444444");
+        var updated = new Product(id, "Aurelia Renamed",
+                "A single-stone solitaire in 18k recycled gold.",
+                List.of("rings", "engagement"));
+
+        when(service.update(eq(id), any(ProductUpdateRequest.class)))
+                .thenReturn(Optional.of(updated));
+
+        String body = """
+                {"title": "Aurelia Renamed"}
+                """;
+
+        mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(id.toString()))
+                .andExpect(jsonPath("$.title").value("Aurelia Renamed"));
+    }
+
+    @Test
+    @DisplayName("PATCH /api/v1/admin/products/{id} returns 400 when title is blank")
+    void updateRejectsBlankTitle() throws Exception {
+        var id = UUID.fromString("55555555-5555-5555-5555-555555555555");
+        String body = """
+                {"title": ""}
+                """;
+
+        mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+
+        verify(service, never()).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("PATCH /api/v1/admin/products/{id} returns 400 when title exceeds max size")
+    void updateRejectsTooLongTitle() throws Exception {
+        var id = UUID.fromString("66666666-6666-6666-6666-666666666666");
+        String oversizedTitle = "x".repeat(201);
+        String body = """
+                {"title": "%s"}
+                """.formatted(oversizedTitle);
+
+        mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest());
+
+        verify(service, never()).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("PATCH /api/v1/admin/products/{id} returns 404 when the product does not exist")
+    void updateReturns404WhenNotFound() throws Exception {
+        var id = UUID.fromString("77777777-7777-7777-7777-777777777777");
+        when(service.update(eq(id), any(ProductUpdateRequest.class)))
+                .thenReturn(Optional.empty());
+
+        String body = """
+                {"title": "Anything"}
+                """;
+
+        mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isNotFound());
     }
 }

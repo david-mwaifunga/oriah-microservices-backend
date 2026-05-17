@@ -37,4 +37,30 @@ public class ProductService {
         Product product = new Product(title, description, tags);
         return repository.save(product);
     }
+
+    /**
+     * Applies a partial update to an existing product. Returns
+     * {@link Optional#empty()} when no product exists with the given id.
+     *
+     * <p>Null fields in {@code request} are treated as "do not touch."
+     * Non-null fields replace the corresponding entity field. Changes are
+     * persisted automatically by JPA dirty checking because this method
+     * runs inside a {@code @Transactional} boundary and the entity is in
+     * managed state.
+     */
+    @Transactional
+    public Optional<Product> update(UUID id, ProductUpdateRequest request) {
+        return repository.findById(id).map(product -> {
+            if (request.title() != null) {
+                product.updateTitle(request.title());
+            }
+            if (request.description() != null) {
+                product.updateDescription(request.description());
+            }
+            if (request.tags() != null) {
+                product.updateTags(request.tags());
+            }
+            return product;
+        });
+    }
 }
