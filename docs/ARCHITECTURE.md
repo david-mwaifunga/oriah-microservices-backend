@@ -132,6 +132,37 @@ The wireframes' `ArchitectureScreen` lists 16 eventual services. Iteration 6 add
 
 ---
 
+## Spring Boot 4 test annotation packages
+
+**Decision:** Use the SB 4 package layout for test annotations, not the SB 3 layout.
+
+In Spring Boot 3.x, test annotations lived under one umbrella:
+
+```
+org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest
+org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase
+org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest
+```
+
+Spring Boot 4 split test annotations into per-feature jars and gave each its own
+`<feature>.test.autoconfigure` package:
+
+```
+org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest        (spring-boot-data-jpa-test)
+org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase   (spring-boot-jdbc-test)
+org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest           (spring-boot-webmvc-test)
+```
+
+**Why this trips you up:** any SB 3 tutorial, blog post, or AI-generated code
+will use the old imports — they compile fine on SB 3 but fail on SB 4 with
+"package does not exist." When porting an SB 3 example, the fix is mechanical:
+move `test.autoconfigure.<feature>` → `<feature>.test.autoconfigure`.
+
+The actual annotation usage (`@DataJpaTest`, `@AutoConfigureTestDatabase`,
+`@WebMvcTest`, etc.) is identical — only the import paths changed.
+
+---
+
 ## Package naming: `com.oriah.catalog` (not `com.oriah.catalog_service`)
 
 **Decision:** Java package is `com.oriah.catalog`. The Maven `artifactId` is `catalog`.

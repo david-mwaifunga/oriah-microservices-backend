@@ -7,35 +7,42 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — scaffold complete, ready for first TDD test.
+**Iteration 1: catalog-service standalone with TDD** — REST GET endpoint working. 12/12 tests green.
 
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
-- Parent POM imports Spring Boot 4.0.6 BOM and SpringDoc 3.0.2 in `<dependencyManagement>`. Spring Cloud BOM is commented out — uncomment when iteration 3 starts.
-- Catalog service compiles. Package = `com.oriah.catalog`. Application class = `CatalogServiceApplication`.
-- `application.yaml` configured: port 8081, JPA `validate`, Flyway enabled, actuator + Prometheus endpoints exposed, Swagger UI at `/swagger-ui.html`.
-- Testcontainers wired: `TestcontainersConfiguration` provides `postgres:16-alpine` via `@ServiceConnection`. `TestCatalogServiceApplication.main()` lets you run the app locally against the container.
-- **Verified green:** `mvnw clean install` succeeds; `CatalogServiceApplicationTests.contextLoads()` passes against a real PostgreSQL 16 container (~80s, mostly first-time Docker image pulls; subsequent runs ~5–10s).
+- Parent POM imports Spring Boot 4.0.6 BOM and SpringDoc 3.0.2. Compiler set to `-parameters` for Spring binding. Spring Cloud BOM still commented (iteration 3).
+- `Product` aggregate complete: id (auto UUID), title (required), description (Optional), tags (immutable view). Persisted via JPA + Flyway `V1__create_products.sql` (products + product_tags tables).
+- `ProductRepository extends JpaRepository<Product, UUID>`.
+- `ProductService` wraps the repo.
+- `ProductController` exposes `GET /api/v1/products/{id}` → `ProductResponse` DTO. Returns 200 with body or 404.
+- 12 tests: 9 pure unit (ProductTest), 1 JPA slice (ProductRepositoryTest), 1 MVC slice (ProductControllerTest), 1 full-stack contextLoads (CatalogServiceApplicationTests).
+- All tests pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~20s total when container is cached.
 
 ### Next exact action
 
-1. ~~`git init` + first commit~~ ✅ done. Branch `main`, commit `1fea8f0` (20 files, 1419 insertions).
-2. ~~TDD cycle 1: Product requires non-blank title~~ ✅ done. Test in `com/oriah/catalog/product/ProductTest.java`; minimal impl in `Product.java`. Title is **not stored** yet — strict TDD, no field until a test demands it. Both tests (contextLoads + Product rule) green.
-3. **TDD cycle 2 — choose one:**
-   - **(a) `aProductRemembersItsTitle()`** — forces a `title()` accessor and a stored field. Most natural next step.
-   - (b) `aProductRejectsAWhitespaceOnlyTitle()` — locks in the `isBlank()` rule against whitespace-only strings.
-   - (c) `aProductRejectsANullTitle()` — locks in the null check.
-   - (d) `aProductIsEqualToAnotherProductWithTheSameTitle()` — drives `equals`/`hashCode`. Premature until we have more fields.
-   - Recommended: **(a)** first, then weave (b)/(c) into single triangulation. Get storage working before locking in edge-case nulls.
-4. Once Product has a stored title, expand to other fields the architecture spec calls out: `description`, `seo`, `tags`, and a unique `id`. Each via its own failing test.
-5. After the pure domain model is shaped, introduce JPA: `@Entity` + `Flyway V1__create_products.sql` + `ProductRepository extends JpaRepository`. Drive with an integration test using `@DataJpaTest` slice + Testcontainers.
+**TDD cycle 8: list products** — `GET /api/v1/products` returns all products as JSON array.
+   - Suggested test order:
+     1. `ProductControllerTest.listReturnsEmptyArrayWhenNoProducts()` — slice test, mock service returns `List.of()`.
+     2. `ProductControllerTest.listReturnsAllProducts()` — slice test, mock service returns 2 products.
+     3. (Optional) Extend `ProductService` test if/when one exists; or `ProductRepositoryTest.findAllReturnsEveryRow()`.
+   - Add `ProductService.findAll(): List<Product>`.
+   - Add `ProductController.list(): List<ProductResponse>`.
+   - Pagination comes in a later cycle (cycle 9 or 10) when the wireframes' PLP demands it.
+
+Then:
+- **Cycle 9: POST /api/v1/admin/products** — create a product. Drives request DTO + Bean Validation (`@NotBlank`, `@Size`) + 201 Created with Location header + service `create()` method.
+- **Cycle 10: PATCH /api/v1/admin/products/{id}** — partial update.
+- **Cycle 11: pagination + filtering** for the PLP.
+- **Cycle 12: full-stack integration test** at `@SpringBootTest` + Testcontainers level: HTTP → controller → service → repository → real PG. Covers the slice tests' interaction gap.
 
 ### Package convention
 
 Aggregate-per-package, not layer-per-package:
 ```
-com.oriah.catalog.product/      Product, ProductRepository, ProductService, ProductController, ProductDto
+com.oriah.catalog.product/      Product (JPA entity), ProductRepository, ProductService,
+                                ProductController, ProductResponse (DTO)
 com.oriah.catalog.variant/      future
 com.oriah.catalog.collection/   future
 ```
@@ -43,16 +50,31 @@ com.oriah.catalog.collection/   future
 ### Recent commits
 
 ```
-(pending)  test: drive Product domain with first failing rule (TDD cycle 1)
+(pending)  feat: expose GET /api/v1/products/{id} (TDD cycle 7)
+f05303b    feat: persist Product via JPA + Flyway (TDD cycle 6)
+b6dc5aa    test: Product auto-assigns a unique id at creation (TDD cycle 5)
+a68742a    test: Product can be tagged (TDD cycle 4)
+59667fd    test: Product has an optional description (TDD cycle 3)
+334731c    test: Product stores and returns its title (TDD cycle 2)
+08582ad    test: drive Product domain with first failing rule (TDD cycle 1)
 1fea8f0    chore: scaffold multi-module Maven skeleton with catalog service
 ```
+
+### Cycle 7 notes (Spring Boot 4 gotchas hit and fixed)
+
+- **`-parameters` compiler flag**: not inherited automatically because we don't use `spring-boot-starter-parent` as parent. Added to `pom.xml` pluginManagement. Without it, `@PathVariable UUID id` fails at runtime with "Name for argument not specified."
+- **`@MockitoBean` over `@MockBean`**: `org.springframework.test.context.bean.override.mockito.MockitoBean` is the Spring Framework 7 / SB 4 replacement. Old `@MockBean` from `org.springframework.boot.test.mock.mockito` is removed in SB 4.
+- **`@WebMvcTest` import path**: `org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest` (per-feature SB 4 layout), not `org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest`.
+- **`@PathVariable("id")` explicit**: belt-and-suspenders even with `-parameters` on. Survives accidental config drift.
+- **Mockito self-attach warning**: cosmetic for now; future JDK will require explicit `-javaagent` for Mockito's inline mock maker. Add to surefire config when convenient — does not block tests.
 
 ### Known issues / things to revisit
 
 - **Spring Cloud train version is a placeholder** (`2026.0.0` in `pom.xml`). Verify the actual GA version for Spring Boot 4 when we add the config server (iteration 3).
+- **Mockito self-attach warning** during tests: *"Mockito is currently self-attaching to enable the inline-mock-maker. This will no longer work in future releases of the JDK."* Fix when we first write a `@MockitoBean` or `mock(...)` test — declare Mockito as a Java agent in Surefire/Failsafe plugin config. Not blocking today.
 - **`HELP.md`** is the Initializr-generated noise file. `.gitignore` already excludes it. Safe to leave or delete.
-- **`build-output.log`** is created on each `mvnw` run. Not in `.gitignore` yet — add `build-output.log` to `.gitignore` before first commit, or rely on `target/` (it's not in `target/`, so add it explicitly).
-- **No Flyway migrations yet.** `db/migration/` is empty. Will create `V1__init.sql` driven by the first JPA entity test (TDD).
+- **`build-output.log`** is created on each `mvnw` run when we use `Tee-Object`. Added to `.gitignore`.
+- **No Flyway migrations yet.** `db/migration/` is empty. Will create `V1__create_products.sql` driven by the first JPA entity test (TDD).
 - **The original `pom.xml` from Initializr** had empty `<name/>`, `<description/>`, `<licenses>`, `<developers>`, `<scm>` stubs. We fixed `<name>` and `<description>` on the rewritten catalog pom; the parent and services poms have clean values too.
 
 ---

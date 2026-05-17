@@ -37,18 +37,28 @@ public class Product {
     }
 
     public Product(String title) {
-        this(title, null, null);
+        this(UUID.randomUUID(), title, null, null);
     }
 
     public Product(String title, String description) {
-        this(title, description, null);
+        this(UUID.randomUUID(), title, description, null);
     }
 
     public Product(String title, String description, List<String> tags) {
+        this(UUID.randomUUID(), title, description, tags);
+    }
+
+    /**
+     * Used to reconstitute a Product when the id is already known (e.g. mapping
+     * from a request DTO that supplies one, or constructing test fixtures).
+     * Package-private so application code outside this aggregate must go through
+     * the public constructors that generate fresh ids.
+     */
+    Product(UUID id, String title, String description, List<String> tags) {
         if (title == null || title.isBlank()) {
             throw new IllegalArgumentException("title must not be blank");
         }
-        this.id = UUID.randomUUID();
+        this.id = id;
         this.title = title;
         this.description = description;
         this.tags = tags == null ? new ArrayList<>() : new ArrayList<>(tags);

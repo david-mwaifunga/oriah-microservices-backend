@@ -99,6 +99,15 @@
                     <version>${maven-compiler-plugin.version}</version>
                     <configuration>
                         <release>${java.version}</release>
+                        <!--
+                            Preserve method parameter names in bytecode. Spring needs
+                            these to bind @PathVariable / @RequestParam / @RequestHeader
+                            without forcing every parameter to spell its name explicitly
+                            (@PathVariable("id") UUID id). spring-boot-starter-parent sets
+                            this by default; we don't inherit from it (we inherit BOMs
+                            instead), so we set it ourselves.
+                        -->
+                        <parameters>true</parameters>
                         <!-- Lombok version is managed by Spring Boot BOM. -->
                         <annotationProcessorPaths>
                             <path>
