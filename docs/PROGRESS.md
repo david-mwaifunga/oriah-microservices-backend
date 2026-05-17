@@ -94,7 +94,7 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  refactor: organize catalog by layer (controller/service/repository/model/dto)
+799e881    refactor: organize catalog by layer (controller/service/repository/model/dto)
 1d5f689    docs: PROGRESS for cycles 11-12 (DELETE + pagination)
 0ba298b    feat: paginate + tag-filter GET /api/v1/products (TDD cycle 12)
 c77ef51    feat: DELETE /api/v1/admin/products/{id} (TDD cycle 11)
