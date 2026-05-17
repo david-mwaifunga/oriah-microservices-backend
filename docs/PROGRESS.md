@@ -65,7 +65,7 @@ com.oriah.catalog.collection/   future
 ### Recent commits
 
 ```
-(pending)  feat: POST /api/v1/admin/products + Bean Validation (TDD cycle 9)
+23536af    feat: POST /api/v1/admin/products + Bean Validation (TDD cycle 9)
 e2ed6d2    feat: expose GET /api/v1/products (list all) (TDD cycle 8)
 4c0cd92    feat: expose GET /api/v1/products/{id} (TDD cycle 7)
 f05303b    feat: persist Product via JPA + Flyway (TDD cycle 6)
