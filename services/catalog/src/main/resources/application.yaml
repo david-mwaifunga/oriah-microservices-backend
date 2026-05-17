@@ -1,6 +1,15 @@
 spring:
   application:
+    # Tells the Config Server which file to serve us (catalog.yaml).
     name: catalog
+  config:
+    # Pull additional config from the Config Server at startup.
+    # 'optional:' prefix means catalog still boots if the Config Server
+    # is unreachable — keeps tests and offline dev unblocked. In a real
+    # production deploy we'd drop 'optional:' so a missing Config Server
+    # is a fail-fast condition.
+    import: "optional:configserver:http://localhost:8888"
+
   # Datasource is left unset on purpose:
   # - In tests, the @ServiceConnection PostgreSQLContainer in TestcontainersConfiguration
   #   supplies url/username/password automatically.
@@ -21,6 +30,9 @@ spring:
     locations: classpath:db/migration
 
 server:
+  # Port stays local — different services need different ports on the
+  # same host during dev, and the Config Server can't help here because
+  # the port is needed before the Config Client has a chance to fetch.
   port: 8081
   error:
     include-message: always
@@ -30,7 +42,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        # NOTE: the actual exposure list is overridden by config/application.yaml
+        # on the Config Server when it's reachable. This local default keeps
+        # /actuator/health up even in offline mode.
+        include: health,info
   endpoint:
     health:
       show-details: when-authorized
@@ -40,13 +55,8 @@ management:
     env:
       enabled: true
 
-springdoc:
-  swagger-ui:
-    path: /swagger-ui.html
-  api-docs:
-    path: /v3/api-docs
-
-logging:
-  level:
-    root: INFO
-    com.oriah.catalog: DEBUG
+# springdoc.* and logging.level.com.oriah.catalog moved to the Config
+# Server (see infra/configserver/src/main/resources/config/catalog.yaml).
+# When the server is reachable, those settings override these local
+# defaults. When it's not, catalog still works — it just uses the
+# Spring Boot defaults for those keys.

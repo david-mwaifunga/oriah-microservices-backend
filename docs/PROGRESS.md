@@ -11,6 +11,8 @@ update this before ending and read it at the start.
 
 **Iteration 3a: Spring Cloud Config Server module** — ✅ **complete**. Boots on Spring Cloud `2025.1.1` (the SB-4-targeted line — `2025.0.x` is the SB 3.5 line). Native filesystem backend at `classpath:/config/`. Serves `/{application}/{profile}` endpoints. 2 smoke tests green. See `docs/ARCHITECTURE.md → "Spring Cloud version selection"` for the version-line lesson.
 
+**Iteration 3b: catalog wired as a Config Client** — ✅ **complete**. Catalog imports config from `optional:configserver:http://localhost:8888` at startup. `springdoc.*` and `logging.level.com.oriah.catalog` moved out of catalog's local `application.yaml` — they now live exclusively in the server's `catalog.yaml`. The `optional:` prefix means catalog still boots and 31/31 tests pass when the Config Server isn't running.
+
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
@@ -44,51 +46,58 @@ update this before ending and read it at the start.
 - Config Server runs at `http://localhost:8888` when started:
   `mvnw -pl infra/configserver spring-boot:run`
   Hit `http://localhost:8888/catalog/default` to see what it would serve.
+- **End-to-end smoke test** (manual):
+  1. Terminal A: `mvnw -pl infra/configserver spring-boot:run`
+  2. Terminal B: `mvnw -pl services/catalog spring-boot:test-run`
+  3. Terminal C: `curl -s http://localhost:8081/actuator/env | findstr configserver`
+     — should show a `propertySource` named
+     `configserver:configserver:http://localhost:8888` confirming catalog
+     pulled config from the server.
+  4. To prove the Server's config actually takes effect: catalog's
+     local `application.yaml` exposes only `health,info` under
+     `management.endpoints.web.exposure.include`. The Config Server's
+     `config/application.yaml` overrides that to also include
+     `metrics,prometheus`. After step 2, `curl -s http://localhost:8081/actuator/`
+     should list all four.
 
 ### Next exact action
 
-**Iteration 3b: wire catalog as a config client.**
+**Iteration 4: Eureka discovery server.**
 
-The Config Server is up but no one uses it yet. The next cycle makes
-catalog fetch some of its config from `http://localhost:8888` at startup.
+Spring Cloud Netflix Eureka. Services register with the discovery server
+on startup; clients ask Eureka for "an instance of `catalog`" instead of
+hardcoding `localhost:8081`. Sets us up for the gateway in iteration 5.
 
-1. Add `spring-cloud-starter-config` to `services/catalog/pom.xml`.
-   Version is managed by the Spring Cloud BOM already imported at the
-   parent.
-2. Add a top-level `spring.config.import` to catalog's `application.yaml`:
-   ```yaml
-   spring:
-     application:
-       name: catalog          # tells Config Server which file to serve
-     config:
-       import: "optional:configserver:http://localhost:8888"
+1. Generate (or hand-write) `infra/eurekaserver/` module modeled on
+   `infra/configserver/`. Dependencies:
    ```
-   The `optional:` prefix means catalog still boots when the Config
-   Server is down — important for local dev and tests where we don't
-   spin up the server.
-3. Move catalog-specific config (springdoc paths, logging levels) from
-   `catalog/src/main/resources/application.yaml` to
-   `configserver/src/main/resources/config/catalog.yaml` — the file
-   the Config Server already serves. Verify the values still take effect
-   by reading them via `/actuator/env` once both apps are running.
-4. The integration test trades-off: should we wire catalog's
-   `@SpringBootTest` against a Config-Server-on-localhost? My instinct
-   is **no** — keep tests hermetic via the `optional:` prefix so they
-   pass with no config server, and add a separate end-to-end test (later
-   cycle) that boots both processes via Testcontainers' generic container
-   or Spring's own `SpringBootTestcontainers` if available.
-5. After verifying locally with both apps running, commit and proceed
-   to **Iteration 4 (Eureka)**.
+   org.springframework.cloud:spring-cloud-starter-netflix-eureka-server
+   org.springframework.boot:spring-boot-starter-actuator
+   org.projectlombok:lombok (optional)
+   ```
+2. `@SpringBootApplication` + `@EnableEurekaServer` on the
+   `EurekaServerApplication` class.
+3. `application.yaml`:
+   ```yaml
+   server:
+     port: 8761        # Eureka's well-known port
+   eureka:
+     client:
+       register-with-eureka: false   # the server itself doesn't register
+       fetch-registry: false
+   ```
+4. Smoke tests: boot context, hit `GET /eureka/apps` and assert 200.
+5. Make catalog and configserver Eureka clients in a follow-up sub-cycle
+   (add `spring-cloud-starter-netflix-eureka-client` and confirm they
+   show up in the registry).
 
-After that:
+Then:
 - **Cycle 3c**: swap Config Server's native backend for a Git repo (real
-  GitOps pattern). Decide between an in-repo `config-repo/` folder or a
-  separate `oriah-config/` Git repo.
-- **Iteration 4 — Eureka** — `infra/eurekaserver/`. Catalog + configserver
-  both register; we can address services by logical name not host:port.
+  GitOps pattern). Can come before or after Eureka; minor.
 - **Iteration 5 — Spring Cloud Gateway** — `infra/gatewayserver/`. Single
   entry point at `localhost:8080` routing to catalog through Eureka.
-- **Iteration 6** onward as before.
+- **Iteration 6** — inventory service + OpenFeign + Resilience4j.
+- **Iteration 7+** as before.
 
 ### Cycle 9–10 notes
 
@@ -129,7 +138,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Spring Cloud Config Server on 2025.1.1 (Iteration 3a)
+(pending)  feat: catalog as Spring Cloud Config Client (Iteration 3b)
+9c32b42    feat: Spring Cloud Config Server on 2025.1.1 (Iteration 3a)
 64326e2    docs: PROGRESS - iteration 3 deferred, logging landed   (superseded)
 a40a4e9    feat: SLF4J logging via @Slf4j + package-info docs; defer Spring Cloud
 9bc133e    docs: iteration 1 complete after cycle 13
