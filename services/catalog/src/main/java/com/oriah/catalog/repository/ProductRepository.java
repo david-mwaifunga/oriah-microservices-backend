@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.repository;
 
 import java.util.UUID;
 
@@ -7,6 +7,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+
+import com.oriah.catalog.model.Product;
 
 public interface ProductRepository extends JpaRepository<Product, UUID> {
 

@@ -163,6 +163,49 @@ The actual annotation usage (`@DataJpaTest`, `@AutoConfigureTestDatabase`,
 
 ---
 
+## Package layout: layer-by-layer (not aggregate-per-package)
+
+**Decision:** Each service organizes its sources by **architectural role**, not by aggregate:
+
+```
+com.oriah.<service>/
+├── <Service>Application.java
+├── controller/        @RestController classes
+├── service/           @Service classes (transactional, business logic)
+├── repository/        Spring Data repositories
+├── model/             JPA @Entity classes + pure domain types
+└── dto/               Request/response records, validation lives here
+```
+
+**Why this convention (over aggregate-per-package, e.g. `com.oriah.catalog.product/`):**
+
+- **Industry standard for Spring Boot.** Most tutorials, codebases, and books a new
+  Spring developer encounters use this layout. Lowering cognitive load matters for a
+  team learning microservices.
+- **Easy to enforce architectural rules.** "Controllers may depend on services but not
+  on repositories" becomes a one-glance grep. "DTOs never import from model" is a
+  static-analysis rule we can wire in later (e.g. ArchUnit).
+- **Easy to scan by role.** "Show me every endpoint" → open `controller/`.
+- **Trivial to introduce cross-aggregate code.** When the catalog later spans
+  product + collection + variant aggregates, they share the same `controller/`,
+  `service/`, etc. — no naming gymnastics.
+
+**Trade-off we accepted:**
+- Lost some package-private encapsulation. Specifically, `Product`'s reconstitution
+  constructor `Product(UUID id, String title, …)` is now **public** because callers
+  in `controller/` and tests under `controller/`+`repository/` live in different
+  packages from `model/`. With aggregate-per-package, that constructor could stay
+  package-private. We judged the navigability win to be worth the small encapsulation
+  loss.
+- Cross-package imports get verbose. Each controller imports DTOs from `..dto.*`,
+  the service from `..service.*`, sometimes the entity from `..model.*`.
+  Java doesn't have package re-exports, so this is the cost of the layout.
+
+**Where this is documented in code:** the public-constructor Javadoc on `Product`
+explains the visibility choice so it's not mysterious for the next reader.
+
+---
+
 ## Package naming: `com.oriah.catalog` (not `com.oriah.catalog_service`)
 
 **Decision:** Java package is `com.oriah.catalog`. The Maven `artifactId` is `catalog`.

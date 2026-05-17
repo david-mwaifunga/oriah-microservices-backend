@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.dto;
 
 import java.util.List;
 
@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Size;
 
 /**
  * Wire-format payload for creating a product. Kept separate from the
- * {@link Product} entity so the API contract can evolve independently of
+ * {@code Product} entity so the API contract can evolve independently of
  * the persistence model. Bean Validation annotations are enforced when
  * the controller method parameter is marked {@code @Valid}.
  *

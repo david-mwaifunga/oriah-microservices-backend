@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.model;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -14,6 +14,17 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Table;
 
+/**
+ * Product aggregate root for the catalog domain.
+ *
+ * <p>This is both the JPA entity (mapped to {@code products} +
+ * {@code product_tags} tables by {@code V1__create_products.sql}) and the
+ * in-memory domain model. The class enforces its invariants in the
+ * constructor and update methods so business rules stay close to the data.
+ *
+ * <p>Identity is a UUID generated at construction (not by the database) so
+ * callers can refer to a product before it has been persisted.
+ */
 @Entity
 @Table(name = "products")
 public class Product {
@@ -49,12 +60,17 @@ public class Product {
     }
 
     /**
-     * Used to reconstitute a Product when the id is already known (e.g. mapping
-     * from a request DTO that supplies one, or constructing test fixtures).
-     * Package-private so application code outside this aggregate must go through
-     * the public constructors that generate fresh ids.
+     * Reconstitution constructor used when the id is already known —
+     * e.g. mapping from a persisted record, mapping from a request DTO that
+     * supplies one, or constructing test fixtures with a deterministic id.
+     *
+     * <p>Public because, under the layer-by-layer package layout, controllers
+     * and tests in other packages legitimately need to materialize a Product
+     * with a specific id. With aggregate-per-package this could stay
+     * package-private, but the encapsulation gain isn't worth duplicating
+     * factory methods across packages.
      */
-    Product(UUID id, String title, String description, List<String> tags) {
+    public Product(UUID id, String title, String description, List<String> tags) {
         if (title == null || title.isBlank()) {
             throw new IllegalArgumentException("title must not be blank");
         }
@@ -94,8 +110,8 @@ public class Product {
     /**
      * Replaces the product's description. Null is rejected via DTO-level
      * validation in {@code ProductUpdateRequest}; if called with null
-     * directly, the field stays unchanged (we use this method only for
-     * non-null updates from the service layer).
+     * directly, the field is set to null (use this only for non-null
+     * updates routed through the service).
      */
     public void updateDescription(String newDescription) {
         this.description = newDescription;

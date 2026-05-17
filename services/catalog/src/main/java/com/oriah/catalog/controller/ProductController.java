@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.controller;
 
 import java.util.UUID;
 
@@ -10,6 +10,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import com.oriah.catalog.dto.PageResponse;
+import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.service.ProductService;
 
 @RestController
 @RequestMapping("/api/v1/products")

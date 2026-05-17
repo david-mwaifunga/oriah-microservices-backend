@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.service;
 
 import java.util.List;
 import java.util.Optional;
@@ -8,6 +8,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import com.oriah.catalog.dto.ProductUpdateRequest;
+import com.oriah.catalog.model.Product;
+import com.oriah.catalog.repository.ProductRepository;
 
 @Service
 public class ProductService {
@@ -73,7 +77,7 @@ public class ProductService {
     /**
      * Deletes the product with the given id. Returns true if a product was
      * found and removed, false if no product had that id. The two-step
-     * lookup-then-delete lets the controller return 404 vs 204 unambiguously
+     * lookup-then-delete lets the controller return 204 vs 404 unambiguously
      * — {@code repository.deleteById} is silent when the id is missing.
      */
     @Transactional

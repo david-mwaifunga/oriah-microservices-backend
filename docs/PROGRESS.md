@@ -7,7 +7,7 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — full CRUD + pagination + tag filter. 26/26 tests green.
+**Iteration 1: catalog-service standalone with TDD** — full CRUD + pagination + tag filter, restructured into layer-by-layer packages (controller/, service/, repository/, model/, dto/). 26/26 tests green.
 
 ### What works right now
 
@@ -67,17 +67,35 @@ After that, **iteration 3 onward** (Spring Cloud Config Server, Eureka, Gateway,
 
 ### Package convention
 
-Aggregate-per-package, not layer-per-package:
+**Layer-by-layer**, per industry-standard Spring Boot convention. See
+`docs/ARCHITECTURE.md` for the trade-off discussion (notably: `Product`'s
+reconstitution constructor must be public under this layout).
+
 ```
-com.oriah.catalog.product/      Product (JPA entity), ProductRepository, ProductService,
-                                ProductController, ProductResponse (DTO)
-com.oriah.catalog.variant/      future
-com.oriah.catalog.collection/   future
+com.oriah.catalog/
+├── CatalogServiceApplication.java
+├── controller/        ProductController, AdminProductController
+├── service/           ProductService
+├── repository/        ProductRepository
+├── model/             Product (JPA @Entity)
+└── dto/               ProductCreateRequest, ProductUpdateRequest,
+                       ProductResponse, PageResponse<T>
 ```
+
+Test source mirrors this layout: tests under `controller/` are slice tests for
+controllers, tests under `repository/` use `@DataJpaTest`, tests under `model/` are
+pure JVM unit tests for domain rules. `TestcontainersConfiguration` and the
+Spring Boot harness tests stay at the root test package since they apply across layers.
+
+Future services follow the same template. When iteration 3+ adds infra modules
+(configserver, eurekaserver, gatewayserver), they use the same packaging where
+applicable — though pure platform modules may only need `controller/` and `config/`.
 
 ### Recent commits
 
 ```
+(pending)  refactor: organize catalog by layer (controller/service/repository/model/dto)
+1d5f689    docs: PROGRESS for cycles 11-12 (DELETE + pagination)
 0ba298b    feat: paginate + tag-filter GET /api/v1/products (TDD cycle 12)
 c77ef51    feat: DELETE /api/v1/admin/products/{id} (TDD cycle 11)
 528522a    docs: PROGRESS commit list for cycle 10

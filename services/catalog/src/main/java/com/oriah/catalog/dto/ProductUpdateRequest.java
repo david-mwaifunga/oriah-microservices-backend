@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.dto;
 
 import java.util.List;
 

@@ -1,4 +1,4 @@
-package com.oriah.catalog.product;
+package com.oriah.catalog.controller;
 
 import java.net.URI;
 import java.util.UUID;
@@ -11,6 +11,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import com.oriah.catalog.dto.ProductCreateRequest;
+import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.dto.ProductUpdateRequest;
+import com.oriah.catalog.model.Product;
+import com.oriah.catalog.service.ProductService;
 
 import jakarta.validation.Valid;
 
