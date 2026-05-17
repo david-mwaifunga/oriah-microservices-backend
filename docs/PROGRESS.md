@@ -7,7 +7,7 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-17
 
-**Iteration 1: catalog-service standalone with TDD** — full CRUD + pagination + tag filter, restructured into layer-by-layer packages (controller/, service/, repository/, model/, dto/). 26/26 tests green.
+**Iteration 1: catalog-service standalone with TDD** — ✅ **complete**. Full CRUD + pagination + tag filter, layer-by-layer packages, full-stack integration tests. 31/31 tests green.
 
 ### What works right now
 
@@ -30,30 +30,45 @@ update this before ending and read it at the start.
   JPA dirty-checking persists changes within the `@Transactional` service method.
 - `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
   (stable across Spring versions; clear contract for the frontend).
-- 26 tests: 9 ProductTest + 6 ProductControllerTest + 9 AdminProductControllerTest + 1 ProductRepositoryTest + 1 contextLoads.
-- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~25s total when container is cached.
+- 31 tests across five layers:
+  - 9 `model.ProductTest` — pure JVM, domain invariants
+  - 1 `repository.ProductRepositoryTest` — `@DataJpaTest` + real PG
+  - 6 `controller.ProductControllerTest` — `@WebMvcTest` slice, mocked service
+  - 9 `controller.AdminProductControllerTest` — `@WebMvcTest` slice, mocked service
+  - 5 `integration.CatalogIntegrationTest` — `@SpringBootTest` + MockMvc + real PG
+  - 1 `CatalogServiceApplicationTests.contextLoads` — sanity check
+- All pass: `mvnw -pl services/catalog clean test` → BUILD SUCCESS, ~30s total when container is cached.
 
 ### Next exact action
 
-**TDD cycle 13: full-stack integration test.** Exercises HTTP → controller → service →
-JPA → real Postgres end-to-end. Catches the bugs slice tests can't (serializer
-quirks, validation pipeline interactions, transaction boundaries, real SQL behavior).
-   - New class `services/catalog/src/test/java/com/oriah/catalog/CatalogIntegrationTest.java`.
-   - `@SpringBootTest(webEnvironment = MOCK)` + `@AutoConfigureMockMvc` + `@Import(TestcontainersConfiguration.class)`.
-   - Each test cleans state via `@BeforeEach productRepository.deleteAll()`.
-   - Suggested tests (one per scenario):
-     1. `createReadRoundTrip()` — POST a product, then GET-by-id, assert body matches.
-     2. `createIncrementsTotalCount()` — POST 3 products, GET list, assert `totalElements = 3`.
-     3. `tagFilterReturnsMatchingProductsOnly()` — POST 3 products with different tags, GET with `?tag=rings`, assert content has only the matching one.
-     4. `patchPersistsAcrossRequests()` — POST, PATCH, GET; assert updated value in DB.
-     5. `deleteRemovesFromList()` — POST, DELETE, GET; assert 404 on get, list has 0.
-   - This will be ~1 of these tests per ~5s of clock time (real container, real HTTP path), so the suite total may grow to ~50s. Worth it.
+**Iteration 1 is done.** Pick one of:
 
-Then iteration 1 polish (small, optional):
-- **Mockito self-attach warning**: configure surefire `argLine` with `-javaagent:.../mockito-core.jar` to silence the deprecation.
-- **`@SpringBootTest` slow start**: investigate `@DirtiesContext` and shared-container pattern to keep the cached container across tests.
+**A) Iteration 3 — Spring Cloud Config Server.** Externalize catalog's configuration
+   to a Git-backed config server. Set up `infra/configserver/` module with
+   `@EnableConfigServer`. Add `spring-cloud-starter-config` to catalog. Uncomment
+   the Spring Cloud BOM in the root POM. Verify the SB-4-compatible Spring Cloud
+   release train version (currently a placeholder `2026.0.0` — may need
+   adjustment depending on what's actually GA at this date).
+   The natural next step in the microservices ladder.
 
-After that, **iteration 3 onward** (Spring Cloud Config Server, Eureka, Gateway, second service, Keycloak, Kafka, Docker Compose, frontend).
+**B) Iteration 1 polish (small).**
+   - Configure Mockito as a `-javaagent` in Surefire to silence the
+     self-attach deprecation warning. Edit:
+     `oriah-api/pom.xml` → `pluginManagement` → add surefire plugin with
+     `argLine` referencing the Mockito jar in the local repository.
+   - Add a shared-container pattern: hoist the `PostgreSQLContainer` into
+     a `@Singleton`/`static` field so two `@SpringBootTest` classes share
+     one container, cutting boot time. Optional.
+
+**C) Add the second service (inventory).** Jumps to iteration 6 but defers the
+   Spring Cloud infrastructure. Pure REST + JPA again, similar shape to
+   catalog. Would let us delay learning Cloud Config until we have a
+   reason for it. Less ideal pedagogically — splits services without the
+   discovery/gateway plumbing they need to actually talk safely.
+
+**Recommended: A.** It's the most pedagogical — externalized config is
+the smallest Spring Cloud concept, sets up the BOM that all later cloud
+modules need, and David hasn't seen the pattern yet.
 
 ### Cycle 9–10 notes
 
@@ -94,6 +109,9 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
+(pending)  docs: iteration 1 complete after cycle 13
+2fc48c9    test: add full-stack integration tests for catalog (TDD cycle 13)
+9317f84    docs: PROGRESS commit hash for restructure
 799e881    refactor: organize catalog by layer (controller/service/repository/model/dto)
 1d5f689    docs: PROGRESS for cycles 11-12 (DELETE + pagination)
 0ba298b    feat: paginate + tag-filter GET /api/v1/products (TDD cycle 12)
