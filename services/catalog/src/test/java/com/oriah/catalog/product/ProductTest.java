@@ -1,5 +1,7 @@
 package com.oriah.catalog.product;
 
+import java.util.List;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -38,5 +40,30 @@ class ProductTest {
         var product = new Product("Aurelia");
 
         assertThat(product.description()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a product can be tagged")
+    void canBeTagged() {
+        var product = new Product("Aurelia", null, List.of("solitaire", "engagement", "18k"));
+
+        assertThat(product.tags()).containsExactly("solitaire", "engagement", "18k");
+    }
+
+    @Test
+    @DisplayName("tags are empty when not provided")
+    void tagsAreEmptyWhenNotProvided() {
+        var product = new Product("Aurelia");
+
+        assertThat(product.tags()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("tags returned to callers cannot be mutated")
+    void tagsAreImmutable() {
+        var product = new Product("Aurelia", null, List.of("solitaire"));
+
+        assertThatThrownBy(() -> product.tags().add("ring"))
+                .isInstanceOf(UnsupportedOperationException.class);
     }
 }
