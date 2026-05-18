@@ -19,6 +19,10 @@ update this before ending and read it at the start.
 
 **Iteration 5: Spring Cloud Gateway** — ✅ **complete**. New `infra/gatewayserver/` reactive (Netty+WebFlux) gateway on port 8080. Routes `/api/v1/products/**` and `/api/v1/admin/products/**` to `lb://catalog` (Eureka-load-balanced). Three SCG 2025.1.x gotchas surfaced + documented: artifact rename to `*-gateway-server-webflux`, YAML path moved to `spring.cloud.gateway.server.webflux.routes`, `/actuator/gateway/routes` is gated by default. 2 smoke tests via `/actuator/env`.
 
+**Iteration 6a: inventory microservice** — ✅ **complete**. Second domain service, same layered structure as catalog. Tracks `onHand` + `reserved` per variant; reserve/release/confirm/restock operations with DB CHECK constraints + domain invariants. 18 tests (11 domain + 1 repo + 5 integration + 1 contextLoads). Runs on port 8082.
+
+**Iteration 6b: catalog → inventory via OpenFeign + Resilience4j** — ✅ **complete**. The first real inter-service call. `GET /api/v1/products/{id}` now carries an `availability` field (IN_STOCK / LOW_STOCK / OUT_OF_STOCK / UNKNOWN) sourced from inventory via `@FeignClient(name="inventory")`. Resilience4j circuit breaker + 2s timeout wraps every call; when inventory is down (as in tests), the fallback returns `null` and catalog surfaces `UNKNOWN` instead of failing. Integration test proves the resilience pattern works end-to-end.
+
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
@@ -40,17 +44,13 @@ update this before ending and read it at the start.
   JPA dirty-checking persists changes within the `@Transactional` service method.
 - `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
   (stable across Spring versions; clear contract for the frontend).
-- 38 tests across seven modules:
-  - 9 `catalog.model.ProductTest` — pure JVM, domain invariants
-  - 1 `catalog.repository.ProductRepositoryTest` — `@DataJpaTest` + real PG
-  - 6 `catalog.controller.ProductControllerTest` — `@WebMvcTest` slice
-  - 9 `catalog.controller.AdminProductControllerTest` — `@WebMvcTest` slice
-  - 5 `catalog.integration.CatalogIntegrationTest` — `@SpringBootTest` + MockMvc + real PG
-  - 1 `catalog.CatalogServiceApplicationTests.contextLoads`
-  - 2 `configserver.ConfigServerApplicationTests` — boots `@EnableConfigServer`, hits `/catalog/default`
-  - 3 `eurekaserver.EurekaServerApplicationTests` — dashboard, `/eureka/apps`, actuator health
-  - 2 `gatewayserver.GatewayServerApplicationTests` — routes loaded (via `/actuator/env`), actuator health
-- All pass: `mvnw test` → BUILD SUCCESS.
+- 56 tests across eight modules:
+  - **catalog (31):** 9 model + 1 repo + 6 controller + 9 admin-controller + 5 integration + 1 contextLoads
+  - **inventory (18):** 11 model + 1 repo + 5 integration + 1 contextLoads
+  - **configserver (2):** `/catalog/default` + unknown-app
+  - **eurekaserver (3):** dashboard + `/eureka/apps` + actuator health
+  - **gatewayserver (2):** routes loaded (via `/actuator/env`) + actuator health
+- All pass: `mvnw test` → BUILD SUCCESS in ~102s with containers cached.
 - Config Server runs at `http://localhost:8888` when started:
   `mvnw -pl infra/configserver spring-boot:run`
   Hit `http://localhost:8888/catalog/default` to see what it would serve.
@@ -61,6 +61,12 @@ update this before ending and read it at the start.
   `mvnw -pl infra/gatewayserver spring-boot:run`
   With Eureka and catalog also running, `curl http://localhost:8080/api/v1/products`
   proxies through the gateway → Eureka lookup → catalog's actual host/port.
+- Inventory service runs at `http://localhost:8082`:
+  `mvnw -pl services/inventory spring-boot:test-run`
+  Seed: `curl -X POST http://localhost:8082/api/v1/admin/inventory -H "Content-Type: application/json" -d '{"variantId":"...","onHand":10}'`.
+  With inventory running, catalog's PDP endpoint shows real availability:
+  `curl http://localhost:8081/api/v1/products/{id}` → `"availability": "IN_STOCK"`.
+  Stop inventory → catalog still returns the product, availability flips to `"UNKNOWN"`.
 - **End-to-end smoke test** (manual):
   1. Terminal A: `mvnw -pl infra/configserver spring-boot:run`
   2. Terminal B: `mvnw -pl services/catalog spring-boot:test-run`
@@ -77,47 +83,39 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 6: inventory service + inter-service calls.**
+**Iteration 7: Keycloak + Spring Security OAuth2 Resource Server.**
 
-Catalog is alone. The wireframes' spec talks about a separate
-inventory service tracking stock-on-hand per variant — and catalog's
-PDP needs the "few left" badge driven by inventory data. This iteration:
+Today the admin endpoints (`/api/v1/admin/**`) are wide open. Real
+production microservices secure them with OAuth2 + JWT validated
+against an IdP. Keycloak is the canonical open-source IdP and the one
+the wireframes spec named.
 
-1. New `services/inventory/` module modeled exactly on catalog's
-   layer-by-layer layout (controller / service / repository / model / dto).
-   Same Spring Cloud Config + Eureka client wiring (just change
-   `spring.application.name` to `inventory`).
-2. Domain: `Inventory` aggregate keyed by variant id (UUID), with
-   `onHand` and `reserved` int counts. Domain rules:
-   - `reserve(qty)` decrements available, increments reserved; throws
-     if not enough on hand.
-   - `release(qty)` reverses a reservation.
-   - `confirm(qty)` decrements reserved (the items have shipped).
-3. REST endpoints:
-   - `GET    /api/v1/inventory/{variantId}`           public read
-   - `POST   /api/v1/admin/inventory/{id}/reserve`    write
-   - `POST   /api/v1/admin/inventory/{id}/release`    write
-   - `POST   /api/v1/admin/inventory/{id}/confirm`    write
-4. Same test pattern: unit tests for domain rules, `@DataJpaTest` for
-   repo, `@WebMvcTest` slices for both controllers, one full-stack
-   `@SpringBootTest` integration test.
-5. **Then** inter-service: catalog's GET-by-id endpoint should
-   optionally include inventory info ("availability": "in_stock" /
-   "low_stock" / "out_of_stock"). The call from catalog → inventory:
-   - Try `spring-cloud-starter-openfeign` (declarative HTTP client
-     with Eureka resolution via `@FeignClient(name = "inventory")`).
-     OpenFeign is in Spring Cloud 2025.1.x; verify artifact exists
-     before deep-diving.
-   - Wrap with `spring-cloud-starter-circuitbreaker-resilience4j` so
-     inventory being down doesn't take catalog down. Fallback returns
-     "availability_unknown" instead.
+1. Bring up Keycloak in Docker (single-process for dev; Docker Compose
+   wiring lands in iteration 9).
+2. Seed a realm `oriah` with:
+   - A client `oriah-admin` (confidential, client_credentials grant)
+   - Roles `CATALOG_ADMIN`, `INVENTORY_ADMIN`
+   - One test user with both roles
+3. Catalog + inventory get `spring-boot-starter-oauth2-resource-server`.
+   Each validates incoming JWTs against Keycloak's JWKS endpoint.
+4. `@PreAuthorize("hasRole('CATALOG_ADMIN')")` on AdminProductController.
+   Same for AdminInventoryController.
+5. Gateway picks up the OAuth2 client flow (browser login redirects to
+   Keycloak, callback sets a session cookie, gateway adds the JWT on the
+   downstream call). Spring Cloud Gateway's
+   `TokenRelayGatewayFilterFactory` does this automatically.
+6. Tests: `@WithMockJwt` (or equivalent) on the admin endpoint slice
+   tests; assert 401 without a token, 403 with wrong role, 200 with the
+   right role.
 
-Then:
-- **Cycle 3c**: swap Config Server's native backend for a Git repo.
-- **Iteration 7** — Keycloak + Spring Security OAuth2 Resource Server.
-- **Iteration 8** — Kafka + Spring Cloud Stream.
-- **Iteration 9** — Docker Compose.
-- **Iteration 10** — React + TS + Vite frontend.
+After that:
+- **Iteration 8** — Kafka + Spring Cloud Stream (catalog publishes
+  `product.updated`; future order service consumes).
+- **Iteration 9** — Docker Compose so all 8 modules + Keycloak + Postgres
+  start with one command.
+- **Iteration 10** — React + TS + Vite storefront against the gateway.
+- **Cycle 3c** (lower priority) — swap Config Server native backend
+  for a Git repo backend.
 
 ### Cycle 9–10 notes
 
@@ -158,7 +156,9 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Spring Cloud Gateway (Iteration 5)
+(pending)  feat: catalog -> inventory via OpenFeign + Resilience4j (Iteration 6b)
+ca1ad8f    feat: inventory microservice (Iteration 6a)
+cfebf8f    feat: Spring Cloud Gateway (Iteration 5)
 22609c4    feat: catalog + configserver as Eureka clients (Iteration 4b)
 9edc5e9    feat: Eureka discovery server (Iteration 4)
 7a550d1    feat: catalog as Spring Cloud Config Client (Iteration 3b)

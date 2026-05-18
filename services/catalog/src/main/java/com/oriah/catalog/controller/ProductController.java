@@ -62,7 +62,10 @@ public class ProductController {
     @GetMapping("/{id}")
     public ResponseEntity<ProductResponse> getById(@PathVariable("id") UUID id) {
         log.debug("GET /api/v1/products/{}", id);
-        return service.findById(id)
+        // PDP endpoint: enrich with availability via the inventory service.
+        // Resilience4j wraps the inventory call so catalog stays up even
+        // when inventory is down (availability falls back to UNKNOWN).
+        return service.findByIdWithAvailability(id)
                 .map(ProductResponse::from)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());

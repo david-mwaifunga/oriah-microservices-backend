@@ -93,7 +93,12 @@ class CatalogIntegrationTest {
                 .andExpect(jsonPath("$.title").value("Aurelia Solitaire Ring"))
                 .andExpect(jsonPath("$.description").value("A single-stone solitaire in 18k recycled gold."))
                 .andExpect(jsonPath("$.tags.length()").value(3))
-                .andExpect(jsonPath("$.tags").value(org.hamcrest.Matchers.containsInAnyOrder("rings", "engagement", "18k")));
+                .andExpect(jsonPath("$.tags").value(org.hamcrest.Matchers.containsInAnyOrder("rings", "engagement", "18k")))
+                // No inventory service running in tests + Eureka client
+                // disabled, so the Resilience4j fallback engages and
+                // availability comes back as UNKNOWN. This is the exact
+                // behavior we want when inventory is unreachable in prod.
+                .andExpect(jsonPath("$.availability").value("UNKNOWN"));
     }
 
     @Test

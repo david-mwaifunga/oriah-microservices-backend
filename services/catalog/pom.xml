@@ -81,6 +81,32 @@
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
 
+        <!--
+            OpenFeign: declarative HTTP client. Catalog uses an @FeignClient
+            interface to call the inventory service via Eureka lookup
+            (@FeignClient(name = "inventory")). The Feign auto-config wires
+            in Spring Cloud LoadBalancer behind the scenes so we get
+            client-side load balancing across however many inventory
+            instances are registered.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+
+        <!--
+            Resilience4j circuit breaker. Wraps every Feign call: if
+            inventory is unreachable or slow, the circuit opens and
+            subsequent calls short-circuit to the fallback returning
+            "availability unknown" — catalog stays up even when inventory
+            is down. Enabled via feign.circuitbreaker.enabled: true in
+            application.yaml.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+        </dependency>
+
         <!-- Boilerplate reduction -->
         <dependency>
             <groupId>org.projectlombok</groupId>

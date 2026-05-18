@@ -16,8 +16,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
+import com.oriah.catalog.service.ProductWithAvailability;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -37,14 +39,15 @@ class ProductControllerTest {
     private ProductService service;
 
     @Test
-    @DisplayName("GET /api/v1/products/{id} returns the product as JSON")
-    void getReturnsProductById() throws Exception {
+    @DisplayName("GET /api/v1/products/{id} returns the product enriched with availability")
+    void getReturnsProductByIdWithAvailability() throws Exception {
         var id = UUID.fromString("11111111-1111-1111-1111-111111111111");
         var aurelia = new Product(id, "Aurelia Solitaire Ring",
                 "A single-stone solitaire in 18k recycled gold.",
                 List.of("rings", "engagement"));
+        var enriched = new ProductWithAvailability(aurelia, Availability.LOW_STOCK);
 
-        when(service.findById(id)).thenReturn(Optional.of(aurelia));
+        when(service.findByIdWithAvailability(id)).thenReturn(Optional.of(enriched));
 
         mvc.perform(get("/api/v1/products/{id}", id))
                 .andExpect(status().isOk())
@@ -52,14 +55,15 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.title").value("Aurelia Solitaire Ring"))
                 .andExpect(jsonPath("$.description").value("A single-stone solitaire in 18k recycled gold."))
                 .andExpect(jsonPath("$.tags[0]").value("rings"))
-                .andExpect(jsonPath("$.tags[1]").value("engagement"));
+                .andExpect(jsonPath("$.tags[1]").value("engagement"))
+                .andExpect(jsonPath("$.availability").value("LOW_STOCK"));
     }
 
     @Test
     @DisplayName("GET /api/v1/products/{id} returns 404 when the product does not exist")
     void getReturns404WhenNotFound() throws Exception {
         var id = UUID.fromString("22222222-2222-2222-2222-222222222222");
-        when(service.findById(id)).thenReturn(Optional.empty());
+        when(service.findByIdWithAvailability(id)).thenReturn(Optional.empty());
 
         mvc.perform(get("/api/v1/products/{id}", id))
                 .andExpect(status().isNotFound());

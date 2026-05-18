@@ -9,7 +9,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.oriah.catalog.client.InventoryClient;
+import com.oriah.catalog.client.InventoryDto;
 import com.oriah.catalog.dto.ProductUpdateRequest;
+import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.repository.ProductRepository;
 
@@ -38,9 +41,18 @@ import lombok.extern.slf4j.Slf4j;
 public class ProductService {
 
     private final ProductRepository repository;
+    private final InventoryClient inventoryClient;
 
-    public ProductService(ProductRepository repository) {
+    /**
+     * "Low stock" cut-off — fewer than this many available units flips
+     * the badge from IN_STOCK to LOW_STOCK ("Only N left"). Hardcoded
+     * for now; could become a Config-Server-managed property.
+     */
+    private static final int LOW_STOCK_THRESHOLD = 5;
+
+    public ProductService(ProductRepository repository, InventoryClient inventoryClient) {
         this.repository = repository;
+        this.inventoryClient = inventoryClient;
     }
 
     /**
@@ -51,6 +63,46 @@ public class ProductService {
     public Optional<Product> findById(UUID id) {
         log.debug("findById id={}", id);
         return repository.findById(id);
+    }
+
+    /**
+     * Find a product and enrich it with stock availability looked up from
+     * the inventory service.
+     *
+     * <p>The inventory call goes through the Resilience4j circuit breaker
+     * wrapping {@link InventoryClient}. If inventory is down or slow, the
+     * fallback returns {@code null} and we surface
+     * {@link Availability#UNKNOWN} rather than failing — catalog stays up
+     * even when inventory doesn't.
+     *
+     * <p>Catalog doesn't have a {@code Variant} entity yet, so we use
+     * the product's id as the variant id when calling inventory. When
+     * variants land (future iteration), this becomes a per-variant
+     * lookup instead.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ProductWithAvailability> findByIdWithAvailability(UUID id) {
+        log.debug("findByIdWithAvailability id={}", id);
+        return repository.findById(id)
+                .map(product -> new ProductWithAvailability(product, lookupAvailability(product.id())));
+    }
+
+    /**
+     * Translates the inventory service's numeric response into the
+     * domain {@link Availability} enum the wire format exposes.
+     */
+    private Availability lookupAvailability(UUID variantId) {
+        InventoryDto inventory = inventoryClient.getByVariantId(variantId);
+        if (inventory == null) {
+            return Availability.UNKNOWN;
+        }
+        if (inventory.available() <= 0) {
+            return Availability.OUT_OF_STOCK;
+        }
+        if (inventory.available() < LOW_STOCK_THRESHOLD) {
+            return Availability.LOW_STOCK;
+        }
+        return Availability.IN_STOCK;
     }
 
     /**

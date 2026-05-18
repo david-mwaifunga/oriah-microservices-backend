@@ -29,6 +29,14 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  cloud:
+    openfeign:
+      circuitbreaker:
+        # Wrap every Feign call with a Resilience4j circuit breaker.
+        # When the circuit is open or the call fails, Feign delegates to
+        # the bean named in the @FeignClient(fallback = ...) attribute.
+        enabled: true
+
 server:
   # Port stays local — different services need different ports on the
   # same host during dev, and the Config Server can't help here because
@@ -74,3 +82,23 @@ eureka:
     # services can reach this instance reliably on a developer laptop
     # (avoids "Could not resolve hostname 'maya-laptop.local'" surprises).
     prefer-ip-address: true
+
+# Resilience4j circuit breaker config for the inventory call.
+# Reasonable production-ish defaults.
+resilience4j:
+  circuitbreaker:
+    instances:
+      inventory:
+        # After 10 calls, if more than half failed, open the circuit.
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        # 30s in OPEN state before allowing a trial call.
+        wait-duration-in-open-state: 30s
+        # In HALF_OPEN, send 3 trial calls; promote to CLOSED if they pass.
+        permitted-number-of-calls-in-half-open-state: 3
+  timelimiter:
+    instances:
+      inventory:
+        # If inventory takes longer than 2 seconds, treat it as a failure
+        # and short-circuit to the fallback.
+        timeout-duration: 2s
