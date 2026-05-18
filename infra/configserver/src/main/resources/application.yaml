@@ -28,6 +28,16 @@ management:
       probes:
         enabled: true
 
+eureka:
+  client:
+    # Config Server registers with Eureka so catalog (and other clients)
+    # can discover it via the registry instead of hardcoding
+    # localhost:8888. Disabled in tests via @TestPropertySource.
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
 logging:
   level:
     root: INFO

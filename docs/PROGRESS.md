@@ -15,6 +15,8 @@ update this before ending and read it at the start.
 
 **Iteration 4a: Eureka discovery server module** — ✅ **complete**. New `infra/eurekaserver/` standalone Eureka on port 8761. 3 smoke tests via real-port + `java.net.http.HttpClient` (the more portable path; MockMvc can't reach Eureka's Jersey-served `/eureka/*` endpoints, and SB 4 moved `TestRestTemplate`/`@LocalServerPort` off our minimal test classpath).
 
+**Iteration 4b: catalog + configserver as Eureka clients** — ✅ **complete**. Both services have `spring-cloud-starter-netflix-eureka-client` and auto-register on startup. Tests stay hermetic via `eureka.client.enabled=false` `@TestPropertySource` on the three full-context test classes.
+
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
@@ -68,43 +70,50 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 4b: register catalog + configserver as Eureka clients.**
+**Iteration 5: Spring Cloud Gateway.**
 
-Eureka standalone is up. Next sub-cycle has catalog and configserver
-*register* themselves so the registry actually has something in it.
+The gateway is the single front door for the API. Browser hits the
+gateway at `localhost:8080`, gateway routes through Eureka to whichever
+service can serve the request (`catalog` for `/api/v1/products/**`).
 
-1. Add `spring-cloud-starter-netflix-eureka-client` to both
-   `services/catalog/pom.xml` and `infra/configserver/pom.xml`. Version
-   is BOM-managed.
-2. In each client's `application.yaml`, add:
-   ```yaml
-   eureka:
-     client:
-       service-url:
-         defaultZone: http://localhost:8761/eureka/
-     instance:
-       prefer-ip-address: true
+1. New module `infra/gatewayserver/` modeled on the other two infra
+   modules. Dependencies:
    ```
-   The Eureka client auto-registers on startup using
-   `spring.application.name` as the registration name.
-3. With Eureka running locally, start configserver and catalog. Visit
-   `http://localhost:8761/` — both names should appear under "Instances
-   currently registered with Eureka."
-4. Heartbeats: clients send a renew every 30s by default; if the renew
-   stops, Eureka evicts the instance after 90s.
-5. The Eureka clients will try to register at startup. If Eureka is
-   down, this throws a startup error unless `eureka.client.enabled: false`
-   or registration is wrapped in `eureka.client.fetch-registry: false`
-   plus retry config. For tests, we'll set `eureka.client.enabled: false`
-   via `@TestPropertySource` so tests don't depend on Eureka being up.
+   org.springframework.cloud:spring-cloud-starter-gateway
+   org.springframework.cloud:spring-cloud-starter-netflix-eureka-client
+   org.springframework.boot:spring-boot-starter-actuator
+   ```
+   Note: Spring Cloud Gateway is reactive (Netty + WebFlux), not MVC.
+   That's a deliberate choice by Spring — keep the data plane (catalog)
+   on the more familiar servlet/MVC stack, push the high-throughput
+   gateway onto reactive.
+2. `@SpringBootApplication` on `GatewayServerApplication`. No
+   `@EnableX` annotation needed — Spring Cloud Gateway is enabled by
+   the starter being on the classpath.
+3. `application.yaml` declares the routes. Initial pair:
+   ```yaml
+   spring:
+     cloud:
+       gateway:
+         routes:
+           - id: catalog-route
+             uri: lb://catalog            # Eureka-discovered, load-balanced
+             predicates:
+               - Path=/api/v1/products/**,/api/v1/admin/products/**
+   ```
+4. Smoke tests:
+   - Boot context loads.
+   - Hit `/actuator/gateway/routes` (actuator-exposed) and confirm
+     `catalog-route` is listed.
+5. End-to-end manual: with Eureka, catalog, and gateway all running,
+   `curl http://localhost:8080/api/v1/products` should return the same
+   `PageResponse` JSON catalog serves at `:8081`.
 
 Then:
-- **Cycle 3c**: swap Config Server's native backend for a Git repo (real
-  GitOps pattern).
-- **Iteration 5 — Spring Cloud Gateway** — `infra/gatewayserver/`. Single
-  entry point at `localhost:8080` routing through Eureka to catalog.
+- **Cycle 3c**: swap Config Server's native backend for a Git repo
+  (real GitOps pattern).
 - **Iteration 6** — inventory service + OpenFeign + Resilience4j.
-- **Iteration 7+** as before.
+- **Iteration 7+** — Keycloak, Kafka, Docker Compose, frontend.
 
 ### Cycle 9–10 notes
 
@@ -145,7 +154,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Eureka discovery server (Iteration 4a)
+(pending)  feat: catalog + configserver as Eureka clients (Iteration 4b)
+9edc5e9    feat: Eureka discovery server (Iteration 4)
 7a550d1    feat: catalog as Spring Cloud Config Client (Iteration 3b)
 9c32b42    feat: Spring Cloud Config Server on 2025.1.1 (Iteration 3a)
 64326e2    docs: PROGRESS - iteration 3 deferred, logging landed   (superseded)

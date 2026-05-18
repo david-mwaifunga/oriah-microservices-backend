@@ -69,6 +69,18 @@
             <artifactId>spring-cloud-starter-config</artifactId>
         </dependency>
 
+        <!--
+            Spring Cloud Eureka Client. Auto-registers catalog with the Eureka
+            server on startup using spring.application.name (= "catalog") so
+            other services (gateway, future inventory) can look it up by name
+            instead of host:port. Disabled in tests via @TestPropertySource so
+            tests don't depend on Eureka being up.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
         <!-- Boilerplate reduction -->
         <dependency>
             <groupId>org.projectlombok</groupId>

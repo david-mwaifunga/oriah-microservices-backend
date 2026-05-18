@@ -30,6 +30,17 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!--
+            Eureka Client. The Config Server registers with Eureka so domain
+            services (catalog, future inventory) can discover its URL via the
+            registry rather than hardcoding localhost:8888. Disabled in tests
+            via @TestPropertySource.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
         <!-- Lombok: @Slf4j for the logger field on ConfigServerApplication. -->
         <dependency>
             <groupId>org.projectlombok</groupId>

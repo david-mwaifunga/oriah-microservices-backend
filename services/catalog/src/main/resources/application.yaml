@@ -60,3 +60,17 @@ management:
 # When the server is reachable, those settings override these local
 # defaults. When it's not, catalog still works — it just uses the
 # Spring Boot defaults for those keys.
+
+eureka:
+  client:
+    # Where to register and where to look up other services.
+    # Clients default to http://localhost:8761/eureka/ when this is
+    # absent, but keep it explicit so the dependency is obvious in
+    # logs and ops dashboards.
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    # Register by IP rather than hostname so the gateway and other
+    # services can reach this instance reliably on a developer laptop
+    # (avoids "Could not resolve hostname 'maya-laptop.local'" surprises).
+    prefer-ip-address: true
