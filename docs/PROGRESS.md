@@ -7,6 +7,8 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-18
 
+**Iteration 10: React + TS + Vite storefront** — ✅ **complete**. New separate repo at `../oriah-web/`. PLP (`/`) + PDP (`/products/:id`) only — cart/checkout/admin defer to later iterations. Vite 7 dev server proxies `/api/*` to the gateway at :8080, so the browser hits same-origin. Stack: React 19 + TS 5.9 strict + react-router-dom 7 + TanStack Query 5 + Tailwind 3 + Vitest 3 + Testing Library. **14 component/route tests green** covering AvailabilityBadge enum mapping, ProductCard rendering + link semantics, ProductList loading/error/empty/populated states, ProductDetail with availability badge + 404 path. End-to-end verified live: dev server returns 200 on `/`, `/api/v1/products` proxied successfully and returned 3 product records from the running docker stack. Frontend deliberately NOT in docker-compose — Vite hot-reload + npm-only iteration loop wins for dev.
+
 **Iteration 8: Kafka + Spring Cloud Stream** — ✅ **complete**. Catalog now publishes `product.created` / `product.updated` / `product.deleted` events on the `catalog.product` Kafka topic; inventory consumes them and maintains its own `product_index` table. Apache Kafka 3.9 in KRaft mode (no ZooKeeper) added to compose. Catalog uses `ApplicationEventPublisher` + a separate `@TransactionalEventListener(phase = AFTER_COMMIT)` bridge so events only flow on commit, not rollback. Inventory uses Spring Cloud Stream functional model — one `@Bean Consumer<Message<byte[]>>` switch-dispatches on the `event-type` header. Upsert keyed by PK makes consumption idempotent on at-least-once delivery. Strict TDD throughout: 5 service tests + 4 bridge tests on catalog, 6 consumer tests on inventory, all green. End-to-end smoke test now includes step 5 verifying the event flow.
 
 **Iteration 9: Docker Compose for local dev** — ✅ **complete**. The 5-terminal manual smoke test is replaced by a single `docker compose up -d` that brings up two PostgreSQL instances, Keycloak (port 7080, oriah realm pre-imported), Config Server, Eureka, Gateway, catalog, and inventory — all coordinated by healthcheck-gated `depends_on`. End-to-end smoke test (`smoke-test.ps1`) proves: JWT from Keycloak → POST product through gateway with token → seed inventory → GET product back with `availability: IN_STOCK` enriched via OpenFeign+Eureka lookup → 401 without token. See `docs/ARCHITECTURE.md → "Docker Compose for local dev (Iteration 9)"` for the design notes (Buildpacks vs Dockerfiles, the `iss`/`jwk-set-uri` split that lets host curl and in-container services share one Keycloak, why the tiny-image healthcheck story drove us to `run-noble-base`).
@@ -104,25 +106,21 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 10: React + TS + Vite storefront** at `github/oriah/oriah-web/`
-(separate repo). Wires the wireframes (`design/`) to the gateway:
-storefront PLP/PDP/cart screens hit `http://localhost:8080/api/v1/products/*`,
-admin screens use the Keycloak login flow (oauth2-pkce client) for the
-`/api/v1/admin/**` paths. TanStack Query + React Hook Form + Zod;
-OpenAPI-typed client generated from `gatewayserver`'s aggregated docs.
-
-**Deferred — Iteration 3c: Git-backed Config Server.** Swap the native
-filesystem backend for a Git repo and demonstrate hot config refresh
-via `@RefreshScope` + `POST /actuator/refresh`. Smaller scope; pulls
-in a separate git repo for the config files.
+**Iteration 3c: Git-backed Config Server.** Swap the native filesystem
+backend (`spring.profiles.active=native`, classpath:/config/) for a
+real Git repo. Demonstrates the hot config refresh pattern via
+`@RefreshScope` + `POST /actuator/refresh` (or, better, the Spring
+Cloud Bus `/monitor` webhook flow). Requires a separate git repo at
+`oriah/config-repo/` (or a remote, e.g. github.com/oriah/config-repo).
 
 **Polish — Mockito javaagent.** Wire `mockito-core` as a Surefire/Failsafe
-`-javaagent` to silence the "Mockito is currently self-attaching" warning
-on every test run (cosmetic, but future JDK will require it).
+`-javaagent` to silence the "Mockito is currently self-attaching"
+warning on every test run (cosmetic, but future JDK will require it).
 
 **Past skipped iteration — Iteration 7: ~~Keycloak + Spring Security OAuth2~~** ✅ DONE.
 **Past skipped iteration — Iteration 8: ~~Kafka + Spring Cloud Stream~~** ✅ DONE.
 **Past skipped iteration — Iteration 9: ~~Docker Compose for local dev~~** ✅ DONE.
+**Past skipped iteration — Iteration 10: ~~React + TS + Vite storefront~~** ✅ DONE.
 
 Today the admin endpoints (`/api/v1/admin/**`) are wide open. Real
 production microservices secure them with OAuth2 + JWT validated
@@ -195,7 +193,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Kafka + Spring Cloud Stream — product.* events (Iteration 8)
+(pending)  feat: oriah-web — PLP + PDP storefront (Iteration 10)    [separate repo: ../oriah-web]
+9ee5fa4    feat: Kafka + Spring Cloud Stream — product.* events (Iteration 8)
 c8cf203    feat: Docker Compose for local dev (Iteration 9)
 181aaaf    feat: Keycloak + OAuth2 Resource Server (Iteration 7)
 1e44490    feat: catalog -> inventory via OpenFeign + Resilience4j (Iteration 6b)
@@ -249,6 +248,18 @@ a68742a    test: Product can be tagged (TDD cycle 4)
 ---
 
 ## Session log
+
+### 2026-05-18 — Iteration 10: oriah-web (PLP + PDP)
+
+- New repo at `github/oriah/oriah-web/`, separate from oriah-api per the kickoff decision. Scaffolded by hand (not `npm create vite`) to avoid an interactive prompt and to make every config file explicit.
+- Stack: React 19, TypeScript 5.9 (strict + noUncheckedIndexedAccess), Vite 7, react-router-dom 7, TanStack Query 5, Tailwind 3, Vitest 3 + Testing Library + jsdom 27.
+- **Scope = PLP + PDP only**, per the AskUserQuestion answer. No cart, no auth, no admin yet.
+- **Codegen approach:** kept hand-curated `src/api/types.ts` as the import surface for components, with `npm run codegen` available to regenerate a full `schema.gen.ts` from catalog's springdoc (hits `:8081/v3/api-docs`). Hand-curated types stay small and intentional; codegen is a drift check.
+- **Vite proxy** forwards `/api/*` → `http://localhost:8080` (the gateway), so the browser makes same-origin requests and React code never needs CORS or absolute URLs.
+- **14 component/route tests** (Vitest + RTL + jsdom) cover: AvailabilityBadge maps each enum value to its label, ProductCard renders title + tags + correct PDP link + omits description block when null, ProductList shows loading/error/empty/populated states, ProductDetail renders title+badge+description and handles UNKNOWN availability + 404. **Cut corner here vs strict TDD:** wrote production components before tests this iteration — the tests do still drive observable behavior, but they didn't go red first. Acknowledged.
+- `npm install` needed `--legacy-peer-deps` because React 19's ecosystem peer ranges aren't fully settled (mostly `@testing-library/*`). Documented in oriah-web/README.md.
+- **Browser smoke**: `npm run dev` serves http://localhost:5173 (HTTP 200 confirmed); curl-equivalent to `http://localhost:5173/api/v1/products` proxied to the gateway and returned 3 product records from the running docker stack. PLP would render those 3 product cards.
+- Frontend deliberately **not** in `docker-compose.yml` — Vite HMR + the npm-only iteration loop wins for development. A production nginx-stage container is a future polish.
 
 ### 2026-05-18 — Iteration 8: Kafka + Spring Cloud Stream (after iteration 9 landed)
 
