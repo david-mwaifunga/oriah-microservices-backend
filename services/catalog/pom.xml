@@ -123,6 +123,19 @@
             <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
         </dependency>
 
+        <!--
+            Spring Cloud Stream + Kafka binder. Catalog publishes
+            product.created / product.updated / product.deleted domain
+            events on a single 'catalog.product' topic via StreamBridge.
+            Spring Cloud Stream's functional model means we just declare
+            a destination in YAML and call StreamBridge.send — no
+            @StreamListener boilerplate.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-stream-kafka</artifactId>
+        </dependency>
+
         <!-- Boilerplate reduction -->
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -192,6 +205,18 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Spring Cloud Stream test binder. Replaces the kafka binder with
+            an in-memory TestChannelBinder so tests can verify "X was
+            published to topic Y" without spinning up a real Kafka container.
+            Imported via TestChannelBinderConfiguration in the test classes.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-stream-test-binder</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -12,6 +13,9 @@ import org.springframework.transaction.annotation.Transactional;
 import com.oriah.catalog.client.InventoryClient;
 import com.oriah.catalog.client.InventoryDto;
 import com.oriah.catalog.dto.ProductUpdateRequest;
+import com.oriah.catalog.events.ProductCreatedEvent;
+import com.oriah.catalog.events.ProductDeletedEvent;
+import com.oriah.catalog.events.ProductUpdatedEvent;
 import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.repository.ProductRepository;
@@ -42,6 +46,7 @@ public class ProductService {
 
     private final ProductRepository repository;
     private final InventoryClient inventoryClient;
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * "Low stock" cut-off — fewer than this many available units flips
@@ -50,9 +55,13 @@ public class ProductService {
      */
     private static final int LOW_STOCK_THRESHOLD = 5;
 
-    public ProductService(ProductRepository repository, InventoryClient inventoryClient) {
+    public ProductService(
+            ProductRepository repository,
+            InventoryClient inventoryClient,
+            ApplicationEventPublisher eventPublisher) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -129,6 +138,16 @@ public class ProductService {
         Product product = new Product(title, description, tags);
         Product saved = repository.save(product);
         log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);
+        // Publish via Spring's in-process event bus. The KafkaProductEventBridge
+        // listens with @TransactionalEventListener(phase = AFTER_COMMIT) and
+        // only forwards to Kafka after this @Transactional method commits.
+        // Tag list is copied via List.copyOf to decouple the event from the
+        // entity's mutable internal storage.
+        eventPublisher.publishEvent(new ProductCreatedEvent(
+                saved.id(),
+                saved.title(),
+                saved.tags() == null ? List.of() : List.copyOf(saved.tags())
+        ));
         return saved;
     }
 
@@ -161,6 +180,15 @@ public class ProductService {
                 changedFields.append("tags ");
             }
             log.info("Updated product id={} changedFields=[{}]", product.id(), changedFields.toString().trim());
+            // Snapshot the post-update state into the event. We send the
+            // current values for *all* fields (not just changed ones) so
+            // consumers don't need a prior read to reconstruct state.
+            eventPublisher.publishEvent(new ProductUpdatedEvent(
+                    product.id(),
+                    product.title(),
+                    product.description().orElse(null),
+                    product.tags() == null ? List.of() : List.copyOf(product.tags())
+            ));
             return product;
         });
 
@@ -187,6 +215,7 @@ public class ProductService {
 
         if (removed) {
             log.info("Deleted product id={}", id);
+            eventPublisher.publishEvent(new ProductDeletedEvent(id));
         } else {
             log.debug("Delete skipped, product not found id={}", id);
         }

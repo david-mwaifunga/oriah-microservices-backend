@@ -9,6 +9,129 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
+## Kafka + Spring Cloud Stream (Iteration 8)
+
+**Decision:** Catalog publishes domain events (`product.created`,
+`product.updated`, `product.deleted`) on a single Kafka topic
+`catalog.product`. Inventory consumes them to maintain its own
+`product_index` table — its local awareness of which variantIds
+catalog knows about.
+
+The existing synchronous catalog→inventory Feign call for availability
+**stays**. We're adding async events, not removing sync ones.
+
+### Why this split (sync stays, async added)
+
+- **Latency vs. coupling tradeoff.** A storefront PDP rendering
+  "availability: IN_STOCK" needs the answer in milliseconds. A sync
+  Feign call with circuit-breaker fallback wins there. Sending an
+  event, waiting for inventory to consume it, and reading the result
+  is the wrong shape for read-time enrichment.
+- **What async is good for.** Things that don't need an answer right
+  now: keeping inventory's product knowledge in sync with catalog,
+  fanning out to a future search-indexer or notification-service, etc.
+  Those subscribe to `catalog.product` and react on their own clock.
+- **One topic, multiple event types.** Each event carries an
+  `event-type` header (`product.created` / `product.updated` /
+  `product.deleted`). The consumer reads the header before parsing the
+  payload. Trade-off: a consumer pays the cost of receiving event types
+  it doesn't care about. For three closely-related events, that's
+  cheaper than three separate topics with three subscribers each.
+
+### Producer pattern: ApplicationEventPublisher + AFTER_COMMIT bridge
+
+`ProductService.create()` publishes via Spring's in-process
+`ApplicationEventPublisher`. A separate `KafkaProductEventBridge` has
+three `@TransactionalEventListener(phase = AFTER_COMMIT)` methods —
+one per event type — that forward the in-process event to Kafka via
+`StreamBridge.send("productEvents-out-0", message)`.
+
+**Why this two-stage pattern, not direct `streamBridge.send()` from the service:**
+
+1. **Tests don't need Kafka.** `ProductServiceEventPublishingTest`
+   mocks `ApplicationEventPublisher` and verifies the right event is
+   emitted — no test binder, no broker, just Mockito. A separate
+   `KafkaProductEventBridgeTest` boots the full context with the
+   Spring Cloud Stream **test binder** and verifies messages land on
+   the `catalog.product` destination.
+2. **Don't publish on rollback.** `AFTER_COMMIT` means the bridge
+   fires only when the surrounding `@Transactional` method commits.
+   A rolled-back `create()` never reaches Kafka. Without this we'd
+   leak ghost events.
+3. **Honest about what's still unsolved.** Even with AFTER_COMMIT, the
+   JVM can crash between commit and Kafka send. The event is lost. For
+   true at-least-once delivery we'd add a **transactional outbox**:
+   write events to an `outbox` table inside the same transaction, then
+   a separate relay reads the table and publishes. Documented as a
+   future polish — out of scope for this iteration.
+
+### Consumer pattern: one `@Bean Consumer<Message<byte[]>>`, header-dispatched
+
+Spring Cloud Stream's **functional model**: the `@Bean
+Consumer<Message<byte[]>> productEvents()` becomes the binding
+`productEvents-in-0`, wired to the `catalog.product` destination via
+YAML. One bean handles all three event types — it reads the
+`event-type` header and deserializes the payload accordingly.
+
+```yaml
+spring.cloud:
+  function:
+    definition: productEvents
+  stream:
+    bindings:
+      productEvents-in-0:
+        destination: catalog.product
+        group: inventory     # all inventory instances share a group
+```
+
+The `group: inventory` setting matters: when multiple inventory
+instances scale out, Kafka load-balances partitions across them so
+each message is consumed by exactly one instance — same horizontal
+scaling pattern we'd want in production.
+
+### Idempotency via PK-upsert
+
+At-least-once delivery (Kafka's default) means a replayed message
+must not corrupt state. `ProductRef`'s primary key is `variant_id`,
+so handling `product.created` for a known id calls `findById(id)` and
+either inserts (new) or `updateTitle()` (existing) — never inserts a
+duplicate. Replaying `product.deleted` against a missing row is a
+no-op (`deleteById` is silent). Validated by
+`ProductEventConsumerTest.replayedCreatedIsIdempotent`.
+
+### Why duplicated event classes, not a shared library
+
+Catalog and inventory each have their own copy of `ProductCreatedEvent`,
+`ProductUpdatedEvent`, `ProductDeletedEvent`. We deliberately did NOT
+extract a `shared/events/` library:
+
+- A shared library bumps both services' version on every event-shape
+  change. The whole point of microservices is independent deployment.
+- Jackson silently ignores fields the consumer doesn't know about.
+  Adding a new optional field on catalog's side doesn't force inventory
+  to update — they just continue ignoring it until inventory cares.
+- A future polish cycle could add a **Pact contract test** asserting
+  catalog's published shape stays compatible with inventory's expected
+  shape, without forcing them to share code.
+
+### Kafka in KRaft mode (no ZooKeeper)
+
+Apache Kafka 4.x replaced ZooKeeper with a self-managed Raft quorum.
+The compose entry is a single `apache/kafka:3.9.0` container playing
+both the broker and the controller roles. One container, no ZK
+sidecar.
+
+Caveats from setup:
+- `KAFKA_ADVERTISED_LISTENERS` rejects `0.0.0.0` (must be routable);
+  use the compose service name (`kafka:9092`).
+- `CLUSTER_ID` must be a 22-char URL-safe-base64 string (the format
+  `kafka-storage random-uuid` produces). A made-up plain string fails
+  validation.
+- Healthcheck uses `bash`'s `/dev/tcp` builtin (no `curl` in the image),
+  same pattern as the Spring services on `paketobuildpacks/run-noble-base`.
+
+---
+
 ## Docker Compose for local dev (Iteration 9)
 
 **Decision:** A single `docker-compose.yml` at `oriah-api/` root brings up the

@@ -66,7 +66,28 @@ if ($getResp.availability -ne "IN_STOCK") {
     exit 1
 }
 
-Write-Host "[5/5] Confirming 401 without a token..." -ForegroundColor Cyan
+Write-Host "[5/6] Confirming Kafka product.created event reached inventory's product_index..." -ForegroundColor Cyan
+# The consumer is async; poll the inventory DB for up to 10 seconds for
+# the new row. We hit postgres-inventory directly via docker exec since
+# inventory doesn't yet expose an HTTP endpoint listing product_index.
+$indexFound = $false
+for ($i = 0; $i -lt 20; $i++) {
+    $rows = docker exec oriah-postgres-inventory `
+        psql -U inventory -d inventory -t -A -c `
+        "SELECT title FROM product_index WHERE variant_id = '$productId'" 2>$null
+    if ($rows -and $rows.Trim() -eq "Aurelia 18k") {
+        $indexFound = $true
+        break
+    }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $indexFound) {
+    Write-Error "Timed out waiting for product_index row for $productId - did the Kafka event flow break?"
+    exit 1
+}
+Write-Host "    product_index row present, title='Aurelia 18k'" -ForegroundColor Gray
+
+Write-Host "[6/6] Confirming 401 without a token..." -ForegroundColor Cyan
 # In Windows PowerShell 5.1, Invoke-RestMethod throws System.Net.WebException.
 # In PowerShell 7+ it's Microsoft.PowerShell.Commands.HttpResponseException.
 # Catch broadly and inspect the response code so this works on both.

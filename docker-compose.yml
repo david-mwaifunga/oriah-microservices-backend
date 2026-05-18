@@ -119,6 +119,54 @@ services:
       start_period: 60s
     networks: [oriah]
 
+  kafka:
+    # Apache Kafka in KRaft mode (no ZooKeeper). 4.x replaced ZK with a
+    # self-managed Raft quorum; one container is the broker AND the
+    # controller for local-dev. apache/kafka:* is the official image.
+    image: apache/kafka:3.9.0
+    container_name: oriah-kafka
+    environment:
+      # Required KRaft single-node config — node-id 1 is both broker and controller.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      # Two listeners:
+      #   PLAINTEXT — bound to all interfaces on 9092 so external clients
+      #               (host curl) and internal clients (catalog/inventory)
+      #               can both reach it.
+      #   CONTROLLER — internal Raft quorum on 9093, bound to all interfaces.
+      # Advertised listeners are what clients are told to connect to; must
+      # be a routable hostname (0.0.0.0 is rejected by KafkaConfig validation).
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      # Single-node sane defaults — these are all "1" because there's only one broker.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # KRaft requires a 22-char URL-safe-base64 cluster id (the format
+      # `kafka-storage random-uuid` produces). Generated once and pinned
+      # so the metadata log on the host volume stays bound to this id
+      # across container restarts.
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      # The apache/kafka image ships bash + nc-style /dev/tcp via bash.
+      # Brokers bind 9092 only after the controller comes up, so this
+      # check covers full readiness, not just process-started.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks: [oriah]
+
   # ───────────────────────── platform tier ─────────────────────────
 
   configserver:
@@ -199,6 +247,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081"]
       interval: 10s
@@ -224,6 +274,8 @@ services:
       configserver:
         condition: service_healthy
       keycloak:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8082"]

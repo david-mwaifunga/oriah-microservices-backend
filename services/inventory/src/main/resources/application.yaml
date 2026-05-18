@@ -49,3 +49,26 @@ eureka:
       defaultZone: http://localhost:8761/eureka/
   instance:
     prefer-ip-address: true
+
+spring.cloud:
+  function:
+    # Tell Spring Cloud Stream which @Bean is the consumer to wire.
+    # The bean 'productEvents' becomes binding 'productEvents-in-0'.
+    definition: productEvents
+  stream:
+    bindings:
+      productEvents-in-0:
+        destination: catalog.product
+        # All inventory instances share one consumer group so each message
+        # lands at exactly one instance — same horizontal-scaling pattern
+        # we'd want in prod.
+        group: inventory
+        consumer:
+          # Inventory deserializes the payload manually (header-dispatched
+          # to one of three event types) so we tell SCS to leave the
+          # bytes alone.
+          use-native-decoding: false
+    kafka:
+      binder:
+        # Overridden by application-docker.yaml inside the compose network.
+        brokers: localhost:9092

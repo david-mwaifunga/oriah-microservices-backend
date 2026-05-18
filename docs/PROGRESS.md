@@ -7,6 +7,8 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-18
 
+**Iteration 8: Kafka + Spring Cloud Stream** — ✅ **complete**. Catalog now publishes `product.created` / `product.updated` / `product.deleted` events on the `catalog.product` Kafka topic; inventory consumes them and maintains its own `product_index` table. Apache Kafka 3.9 in KRaft mode (no ZooKeeper) added to compose. Catalog uses `ApplicationEventPublisher` + a separate `@TransactionalEventListener(phase = AFTER_COMMIT)` bridge so events only flow on commit, not rollback. Inventory uses Spring Cloud Stream functional model — one `@Bean Consumer<Message<byte[]>>` switch-dispatches on the `event-type` header. Upsert keyed by PK makes consumption idempotent on at-least-once delivery. Strict TDD throughout: 5 service tests + 4 bridge tests on catalog, 6 consumer tests on inventory, all green. End-to-end smoke test now includes step 5 verifying the event flow.
+
 **Iteration 9: Docker Compose for local dev** — ✅ **complete**. The 5-terminal manual smoke test is replaced by a single `docker compose up -d` that brings up two PostgreSQL instances, Keycloak (port 7080, oriah realm pre-imported), Config Server, Eureka, Gateway, catalog, and inventory — all coordinated by healthcheck-gated `depends_on`. End-to-end smoke test (`smoke-test.ps1`) proves: JWT from Keycloak → POST product through gateway with token → seed inventory → GET product back with `availability: IN_STOCK` enriched via OpenFeign+Eureka lookup → 401 without token. See `docs/ARCHITECTURE.md → "Docker Compose for local dev (Iteration 9)"` for the design notes (Buildpacks vs Dockerfiles, the `iss`/`jwk-set-uri` split that lets host curl and in-container services share one Keycloak, why the tiny-image healthcheck story drove us to `run-noble-base`).
 
 **Iteration 1: catalog-service standalone with TDD** — ✅ **complete**. Full CRUD + pagination + tag filter, layer-by-layer packages, full-stack integration tests, SLF4J logging, per-package Javadoc. 31/31 tests green.
@@ -102,26 +104,24 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 8: Kafka + Spring Cloud Stream**. Now that one command spins
-up the whole stack, we replace the sync catalog→inventory call with
-async events: catalog publishes `catalog.product.updated` (and later
-`product.deleted`); a small notification-service (or inventory itself)
-consumes. Adds Kafka + Zookeeper containers to compose, Spring Cloud
-Stream bindings (functional model), tests with `spring-cloud-stream-test-support`.
-
-**Then — Iteration 10: React + TS + Vite frontend** at `github/oriah/oriah-web/`.
-Builds the storefront against the gateway; lets us see the system
-end-to-end through the wireframes. Separate repo.
+**Iteration 10: React + TS + Vite storefront** at `github/oriah/oriah-web/`
+(separate repo). Wires the wireframes (`design/`) to the gateway:
+storefront PLP/PDP/cart screens hit `http://localhost:8080/api/v1/products/*`,
+admin screens use the Keycloak login flow (oauth2-pkce client) for the
+`/api/v1/admin/**` paths. TanStack Query + React Hook Form + Zod;
+OpenAPI-typed client generated from `gatewayserver`'s aggregated docs.
 
 **Deferred — Iteration 3c: Git-backed Config Server.** Swap the native
-filesystem backend for a Git repo, and demonstrate hot config refresh
-via `@RefreshScope` + `POST /actuator/refresh`.
+filesystem backend for a Git repo and demonstrate hot config refresh
+via `@RefreshScope` + `POST /actuator/refresh`. Smaller scope; pulls
+in a separate git repo for the config files.
 
 **Polish — Mockito javaagent.** Wire `mockito-core` as a Surefire/Failsafe
 `-javaagent` to silence the "Mockito is currently self-attaching" warning
 on every test run (cosmetic, but future JDK will require it).
 
 **Past skipped iteration — Iteration 7: ~~Keycloak + Spring Security OAuth2~~** ✅ DONE.
+**Past skipped iteration — Iteration 8: ~~Kafka + Spring Cloud Stream~~** ✅ DONE.
 **Past skipped iteration — Iteration 9: ~~Docker Compose for local dev~~** ✅ DONE.
 
 Today the admin endpoints (`/api/v1/admin/**`) are wide open. Real
@@ -195,7 +195,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Docker Compose for local dev (Iteration 9)
+(pending)  feat: Kafka + Spring Cloud Stream — product.* events (Iteration 8)
+c8cf203    feat: Docker Compose for local dev (Iteration 9)
 181aaaf    feat: Keycloak + OAuth2 Resource Server (Iteration 7)
 1e44490    feat: catalog -> inventory via OpenFeign + Resilience4j (Iteration 6b)
 ca1ad8f    feat: inventory microservice (Iteration 6a)
@@ -248,6 +249,17 @@ a68742a    test: Product can be tagged (TDD cycle 4)
 ---
 
 ## Session log
+
+### 2026-05-18 — Iteration 8: Kafka + Spring Cloud Stream (after iteration 9 landed)
+
+- Wired `spring-cloud-starter-stream-kafka` into catalog and inventory; added `spring-cloud-stream-test-binder` to both test classpaths so tests don't need a real broker.
+- Designed events as **catalog-owned records** (`ProductCreatedEvent` / `ProductUpdatedEvent` / `ProductDeletedEvent`) in `com.oriah.catalog.events`. Inventory has its own matching copies in `com.oriah.inventory.events` — deliberately duplicated, not shared via a library (services own their wire shapes).
+- **TDD on catalog (red → green):** 5 unit tests in `ProductServiceEventPublishingTest` drove a 3-arg `ProductService` constructor (added `ApplicationEventPublisher`) and the `publishEvent` calls inside `create()` / `update()` / `deleteById()`. No publish on unknown-id update/delete. 4 more tests in `KafkaProductEventBridgeTest` use the in-memory `TestChannelBinderConfiguration` + `OutputDestination` to verify the `@TransactionalEventListener(AFTER_COMMIT)` handlers actually translate Spring events into messages on `catalog.product` with the right `event-type` header.
+- **TDD on inventory (red → green):** Flyway `V2__create_product_index.sql` adds the `product_index` table (PK = variant_id for free idempotency). `ProductRef` JPA entity + `ProductRefRepository`. 6 tests in `ProductEventConsumerTest` use `InputDestination` to feed events through and assert row state — created inserts, replayed-created is idempotent, updated mutates, updated-for-unknown is upsert, deleted removes, deleted-for-unknown is a no-op. Consumer is a single `@Bean Consumer<Message<byte[]>> productEvents()` switching on the `event-type` header (one bean handles all three types).
+- **Pattern decision: `ApplicationEventPublisher` + AFTER_COMMIT bridge** (not direct StreamBridge from service) for three reasons documented in ARCHITECTURE.md: lets service tests stay Kafka-free, prevents publish-on-rollback, makes the dual-write problem visible (and the outbox-as-polish path).
+- **Compose:** added `apache/kafka:3.9.0` in KRaft mode (no ZooKeeper). Single container plays both broker and controller. Caught two image gotchas: `KAFKA_ADVERTISED_LISTENERS` rejects `0.0.0.0` (must be routable hostname), and `CLUSTER_ID` must be a 22-char URL-safe-base64 string. Healthcheck reuses the bash-`/dev/tcp` pattern from the Spring services. Catalog + inventory `depends_on` now waits for kafka:service_healthy.
+- **Full smoke test passes** (`smoke-test.ps1`): JWT → POST through gateway → seed inventory → GET back with availability=IN_STOCK (Feign path) → poll postgres-inventory for the product_index row to confirm the Kafka event flow → 401 without token. Inventory container log shows `Consuming product.created id=... title="Aurelia 18k"` confirming the consumer dispatch works end-to-end.
+- 39 catalog tests + 25 inventory tests, all green.
 
 ### 2026-05-18 — Iteration 9: Docker Compose for local dev
 

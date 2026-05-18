@@ -36,6 +36,21 @@ spring:
         # When the circuit is open or the call fails, Feign delegates to
         # the bean named in the @FeignClient(fallback = ...) attribute.
         enabled: true
+    stream:
+      # Spring Cloud Stream functional model: we publish via
+      # StreamBridge.send("productEvents-out-0", message). The binding name
+      # 'productEvents-out-0' maps to the topic below; '-out-0' is the SCS
+      # convention for "first output channel of binding productEvents".
+      bindings:
+        productEvents-out-0:
+          destination: catalog.product
+      kafka:
+        binder:
+          # Overridden in application-docker.yaml to the in-network broker.
+          # Left as a localhost default so a developer running catalog
+          # outside docker (mvnw spring-boot:run) hits a local Kafka if
+          # they're testing the publish path manually.
+          brokers: localhost:9092
 
   security:
     oauth2:
