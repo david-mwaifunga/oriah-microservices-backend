@@ -1,0 +1,71 @@
+{
+  "realm": "oriah",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      {
+        "name": "CATALOG_ADMIN",
+        "description": "Full write access to /api/v1/admin/products on catalog-service",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "INVENTORY_ADMIN",
+        "description": "Full write access to /api/v1/admin/inventory on inventory-service",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "oriah-admin",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "oriah-admin-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "implicitFlowEnabled": false,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": ["http://localhost:8080/*", "http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:8080", "http://localhost:5173"],
+      "attributes": {
+        "access.token.lifespan": "1800"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "maya",
+      "enabled": true,
+      "email": "maya@oriah.local",
+      "emailVerified": true,
+      "firstName": "Maya",
+      "lastName": "Tester",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["CATALOG_ADMIN", "INVENTORY_ADMIN"]
+    },
+    {
+      "username": "service-account-oriah-admin",
+      "enabled": true,
+      "serviceAccountClientId": "oriah-admin",
+      "realmRoles": ["CATALOG_ADMIN", "INVENTORY_ADMIN"]
+    }
+  ]
+}

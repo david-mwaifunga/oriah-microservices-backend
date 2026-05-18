@@ -44,6 +44,21 @@ Backend microservices for **Oriah Jewelry**, an e-commerce platform.
 
 Docker Desktop must be running for tests (Testcontainers needs it).
 
+### Run the whole stack in containers
+
+```powershell
+# Build OCI images for every Spring Boot service (Buildpacks, ~5 min cold):
+powershell.exe -ExecutionPolicy Bypass -File .\build-images.ps1
+
+# Bring up postgres ×2 + keycloak + configserver + eurekaserver + gateway + catalog + inventory:
+docker compose up -d
+
+# Verify end-to-end (gets JWT, POSTs product, checks availability):
+powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
+```
+
+Realm `oriah` with users `maya / password` and roles `CATALOG_ADMIN` + `INVENTORY_ADMIN` is auto-imported on first start. Keycloak admin console at http://localhost:7080 (admin/admin). See `docs/ARCHITECTURE.md → "Docker Compose for local dev"`.
+
 ## Where to read next
 
 - **`docs/PROGRESS.md`** — what's done, current state of the build, exact next step. **Read this every session.**

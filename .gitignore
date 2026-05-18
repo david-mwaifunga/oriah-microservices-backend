@@ -1,5 +1,7 @@
 HELP.md
 build-output.log
+build-*.log
+compose-*.log
 target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/

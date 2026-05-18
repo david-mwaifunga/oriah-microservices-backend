@@ -5,7 +5,9 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-05-17
+## CURRENT STATE — 2026-05-18
+
+**Iteration 9: Docker Compose for local dev** — ✅ **complete**. The 5-terminal manual smoke test is replaced by a single `docker compose up -d` that brings up two PostgreSQL instances, Keycloak (port 7080, oriah realm pre-imported), Config Server, Eureka, Gateway, catalog, and inventory — all coordinated by healthcheck-gated `depends_on`. End-to-end smoke test (`smoke-test.ps1`) proves: JWT from Keycloak → POST product through gateway with token → seed inventory → GET product back with `availability: IN_STOCK` enriched via OpenFeign+Eureka lookup → 401 without token. See `docs/ARCHITECTURE.md → "Docker Compose for local dev (Iteration 9)"` for the design notes (Buildpacks vs Dockerfiles, the `iss`/`jwk-set-uri` split that lets host curl and in-container services share one Keycloak, why the tiny-image healthcheck story drove us to `run-noble-base`).
 
 **Iteration 1: catalog-service standalone with TDD** — ✅ **complete**. Full CRUD + pagination + tag filter, layer-by-layer packages, full-stack integration tests, SLF4J logging, per-package Javadoc. 31/31 tests green.
 
@@ -69,50 +71,58 @@ update this before ending and read it at the start.
   With inventory running, catalog's PDP endpoint shows real availability:
   `curl http://localhost:8081/api/v1/products/{id}` → `"availability": "IN_STOCK"`.
   Stop inventory → catalog still returns the product, availability flips to `"UNKNOWN"`.
-- **End-to-end smoke test** (manual):
-  1. Terminal A: `mvnw -pl infra/configserver spring-boot:run`
-  2. Terminal B: `mvnw -pl services/catalog spring-boot:test-run`
-  3. Terminal C: `curl -s http://localhost:8081/actuator/env | findstr configserver`
-     — should show a `propertySource` named
-     `configserver:configserver:http://localhost:8888` confirming catalog
-     pulled config from the server.
-  4. To prove the Server's config actually takes effect: catalog's
-     local `application.yaml` exposes only `health,info` under
-     `management.endpoints.web.exposure.include`. The Config Server's
-     `config/application.yaml` overrides that to also include
-     `metrics,prometheus`. After step 2, `curl -s http://localhost:8081/actuator/`
-     should list all four.
+- **End-to-end smoke test** (one command, replaces the prior 5-terminal dance):
+
+  ```powershell
+  # 1) Build images (once, after code changes):
+  powershell.exe -ExecutionPolicy Bypass -File .\build-images.ps1
+
+  # 2) Bring everything up:
+  docker compose up -d
+
+  # 3) Wait for healthchecks, then run the end-to-end check:
+  powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
+  # Output ends with: "SMOKE TEST PASSED"
+  ```
+
+  The smoke test gets a JWT from Keycloak for user `maya` (CATALOG_ADMIN +
+  INVENTORY_ADMIN), POSTs a product through the gateway with that token,
+  seeds inventory for the new variant, GETs the product back and asserts
+  `availability: IN_STOCK` (proves Eureka lookup + OpenFeign + Resilience4j
+  wiring all work end-to-end), and confirms a tokenless POST returns 401.
+
+  Compose service map:
+    - `postgres-catalog`, `postgres-inventory`  (port 5433, 5434 on host)
+    - `keycloak`        (port 7080 on host; `oriah` realm pre-imported from `keycloak/import/oriah-realm.json`)
+    - `configserver`    (port 8888)
+    - `eurekaserver`    (port 8761)
+    - `gatewayserver`   (port 8080)
+    - `catalog`         (port 8081)
+    - `inventory`       (port 8082)
 
 ### Next exact action
 
-**Iteration 9: Docker Compose for local dev** *(easier next step)*.
+**Iteration 8: Kafka + Spring Cloud Stream**. Now that one command spins
+up the whole stack, we replace the sync catalog→inventory call with
+async events: catalog publishes `catalog.product.updated` (and later
+`product.deleted`); a small notification-service (or inventory itself)
+consumes. Adds Kafka + Zookeeper containers to compose, Spring Cloud
+Stream bindings (functional model), tests with `spring-cloud-stream-test-support`.
 
-We now have **8 modules** that all run as separate processes during dev.
-Five terminals is too many. A `docker-compose.yml` at `oriah-api/` root
-should bring everything up with one command:
+**Then — Iteration 10: React + TS + Vite frontend** at `github/oriah/oriah-web/`.
+Builds the storefront against the gateway; lets us see the system
+end-to-end through the wireframes. Separate repo.
 
-  - postgres (×2: one for catalog, one for inventory — schema per service)
-  - keycloak (admin/admin on :7080, oriah realm pre-imported)
-  - configserver
-  - eurekaserver
-  - gatewayserver
-  - catalog
-  - inventory
+**Deferred — Iteration 3c: Git-backed Config Server.** Swap the native
+filesystem backend for a Git repo, and demonstrate hot config refresh
+via `@RefreshScope` + `POST /actuator/refresh`.
 
-Services should be containerized via Spring Boot Buildpacks
-(`mvn spring-boot:build-image`), not a hand-written Dockerfile.
-
-**Alternative — Iteration 8: Kafka + Spring Cloud Stream.** Replaces
-the synchronous catalog→inventory call with an event flow. Bigger
-conceptual step (event-driven design, eventual consistency, the
-dual-write problem). Worth doing but maybe after Docker Compose makes
-running the stack easier.
-
-**Alternative — Iteration 10: React + TS + Vite frontend.** Builds the
-storefront against the gateway. Lets you see the system end-to-end
-through the wireframes. Separate repo (`github/oriah/oriah-web`).
+**Polish — Mockito javaagent.** Wire `mockito-core` as a Surefire/Failsafe
+`-javaagent` to silence the "Mockito is currently self-attaching" warning
+on every test run (cosmetic, but future JDK will require it).
 
 **Past skipped iteration — Iteration 7: ~~Keycloak + Spring Security OAuth2~~** ✅ DONE.
+**Past skipped iteration — Iteration 9: ~~Docker Compose for local dev~~** ✅ DONE.
 
 Today the admin endpoints (`/api/v1/admin/**`) are wide open. Real
 production microservices secure them with OAuth2 + JWT validated
@@ -185,7 +195,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Keycloak + OAuth2 Resource Server (Iteration 7)
+(pending)  feat: Docker Compose for local dev (Iteration 9)
+181aaaf    feat: Keycloak + OAuth2 Resource Server (Iteration 7)
 1e44490    feat: catalog -> inventory via OpenFeign + Resilience4j (Iteration 6b)
 ca1ad8f    feat: inventory microservice (Iteration 6a)
 cfebf8f    feat: Spring Cloud Gateway (Iteration 5)
@@ -237,6 +248,19 @@ a68742a    test: Product can be tagged (TDD cycle 4)
 ---
 
 ## Session log
+
+### 2026-05-18 — Iteration 9: Docker Compose for local dev
+
+- Wrote `docker-compose.yml` at oriah-api/ root: 2× postgres, Keycloak (port 7080, oriah realm pre-imported), configserver, eurekaserver, gatewayserver, catalog, inventory. Healthcheck-gated `depends_on` matches the layering: data first → platform/control plane → gateway (waits on eureka) → catalog/inventory (wait on their DB + eureka + config + keycloak).
+- Created `keycloak/import/oriah-realm.json` — realm `oriah`, realm roles `CATALOG_ADMIN` + `INVENTORY_ADMIN`, client `oriah-admin` (confidential, password + service-accounts grants), user `maya / password` with both roles, service-account-oriah-admin user with both roles. Mounted into `/opt/keycloak/data/import/`; container runs `start-dev --import-realm`.
+- Wrote `application-docker.yaml` per Spring module activated by `SPRING_PROFILES_ACTIVE=docker`. Overrides only what differs vs host-dev: datasource URLs (`postgres-catalog:5432` etc.), Eureka URL (`http://eurekaserver:8761/eureka/`), config import (drops `optional:` — in compose it's a hard dep), Keycloak issuer-uri / jwk-set-uri (see below). configserver gets `native,docker` so the native filesystem backend stays active.
+- Containerized via Spring Boot Buildpacks (`./mvnw spring-boot:build-image`) — no hand-written Dockerfiles. `build-images.ps1` runs the goal across all five modules and pins images as `oriah/<name>:dev`.
+- **Keycloak iss/jwks split.** Decided with David: set `KC_HOSTNAME=http://localhost:7080` so every token's `iss` claim is `http://localhost:7080/realms/oriah` regardless of where it was requested from. In-container services validate that iss but fetch JWKS over the docker network at `http://keycloak:8080/.../certs`. Production-clean, no /etc/hosts edits.
+- **Tiny-image trap.** First-build healthchecks failed: `paketobuildpacks/run-jammy-tiny` (the default) has no shell, no curl, no `ls` — even bash is absent. Switched the build to `paketobuildpacks/run-noble-base` (bash + coreutils + grep, ~70MB bigger). With bash available, healthchecks use the `/dev/tcp` bash builtin for TCP-level "port is accepting connections" — no curl/wget needed in the image. Documented in ARCHITECTURE.md so future-me knows why we're not on the tiny variant.
+- **Compose $VAR interpolation gotcha.** Keycloak's healthcheck originally used `echo "$status"` to inspect the HTTP response line. Compose pre-parses `$VAR` references and substituted it to empty before docker saw it. Fix: double the dollar (`$$line`). Documented inline.
+- **configserver Spring profiles trap.** `SPRING_PROFILES_ACTIVE=docker` *replaced* the `active: native` from the base yaml, so Spring Cloud Config tried the Git backend and demanded a URI. Fix: use `native,docker` (CSV) in compose, both load.
+- **End-to-end smoke test passes** via `smoke-test.ps1`: Keycloak issues JWT (1191 chars) → POST `/api/v1/admin/products` through gateway → inventory seed → GET product back with `availability: IN_STOCK` enriched via Feign+Eureka → 401 without token.
+- Architecture write-up added (`docs/ARCHITECTURE.md` → "Docker Compose for local dev"): Buildpacks vs Dockerfiles, the issuer/jwks split, healthcheck/tiny-image trade-off, why we run two postgres containers rather than one with two schemas, the depends_on graph.
 
 ### 2026-05-17 — Project kickoff & multi-module scaffold
 

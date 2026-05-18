@@ -1,0 +1,10 @@
+# Overrides applied when SPRING_PROFILES_ACTIVE=docker.
+#
+# The standalone-Eureka defaults from application.yaml (register-with-eureka
+# = false, fetch-registry = false) still apply. Only the hostname changes —
+# inside the compose network this container resolves as `eurekaserver`,
+# and that's what clients hit.
+
+eureka:
+  instance:
+    hostname: eurekaserver

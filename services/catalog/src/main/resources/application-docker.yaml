@@ -1,0 +1,42 @@
+# Overrides applied when SPRING_PROFILES_ACTIVE=docker.
+# Used by the docker-compose stack at oriah-api/docker-compose.yml.
+#
+# Why a docker profile instead of env vars only:
+# - Spring's relaxed env-var binding for kebab-case map keys (e.g.
+#   eureka.client.service-url.defaultZone) is fiddly. YAML keeps the
+#   key names canonical and the intent obvious.
+# - Secrets (DB password) still come from env on the compose side so
+#   they're not committed.
+
+spring:
+  datasource:
+    # postgres-catalog is the compose service name; resolves via the
+    # docker network DNS. Username/password injected from env in compose.
+    url: jdbc:postgresql://postgres-catalog:5432/catalog
+    username: ${SPRING_DATASOURCE_USERNAME:catalog}
+    password: ${SPRING_DATASOURCE_PASSWORD:catalog}
+
+  # Drop the 'optional:' prefix used in dev — in compose, configserver
+  # is a hard dependency (depends_on + condition: service_healthy), so
+  # failing fast on a missing config server is correct.
+  config:
+    import: "configserver:http://configserver:8888"
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # iss claim of every token Keycloak issues (because we set
+          # KC_HOSTNAME=http://localhost:7080 on the keycloak container).
+          # Host-side curl AND in-container services both see this iss.
+          issuer-uri: http://localhost:7080/realms/oriah
+          # JWKS lookup goes over the docker network — `localhost:7080`
+          # from inside this container is the container itself, not
+          # Keycloak. Splitting issuer-uri (validation) from jwk-set-uri
+          # (key fetch) lets one Keycloak serve both audiences cleanly.
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eurekaserver:8761/eureka/

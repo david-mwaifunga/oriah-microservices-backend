@@ -1,0 +1,242 @@
+# Oriah API local-dev stack.
+#
+# One command to bring everything up:   docker compose up -d
+# One command to tear everything down:  docker compose down
+#
+# Service images for the Spring Boot apps are built via Spring Boot
+# Buildpacks (`./mvnw spring-boot:build-image` — see build-images.ps1).
+# Run that BEFORE `docker compose up` after any code change.
+#
+# Network topology (compose creates an implicit network where service
+# names are DNS hostnames):
+#
+#   ┌─────────── data tier (no deps) ───────────┐
+#   │  postgres-catalog   postgres-inventory     │
+#   │  keycloak                                   │
+#   └─────────────────────────────────────────────┘
+#                  │                │
+#                  ▼                ▼
+#   ┌─── platform tier ───┐   ┌─ control plane ┐
+#   │   configserver       │   │  eurekaserver  │
+#   │   (no deps)          │   │  (no deps)     │
+#   └──────────────────────┘   └────────────────┘
+#                                      │
+#                                      ▼
+#                              ┌─ gatewayserver ─┐
+#                              │  waits: eureka  │
+#                              └─────────────────┘
+#                  ▼                ▼
+#   ┌─ catalog (waits: postgres-catalog, eureka, configserver, keycloak) ─┐
+#   │  inventory (waits: postgres-inventory, eureka, configserver, keycloak) │
+#   └──────────────────────────────────────────────────────────────────────┘
+#
+# Port map (host → container):
+#   5433 → postgres-catalog:5432       # bumped off 5432 so it doesn't clash
+#   5434 → postgres-inventory:5432     # with any local postgres install
+#   7080 → keycloak:8080
+#   8080 → gatewayserver:8080
+#   8081 → catalog:8081                # exposed for direct testing; prod would only expose gateway
+#   8082 → inventory:8082
+#   8761 → eurekaserver:8761
+#   8888 → configserver:8888
+
+services:
+
+  # ─────────────────────────── data tier ───────────────────────────
+
+  postgres-catalog:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-catalog
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: catalog
+      POSTGRES_PASSWORD: catalog
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-catalog-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalog -d catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  postgres-inventory:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-inventory
+    environment:
+      POSTGRES_DB: inventory
+      POSTGRES_USER: inventory
+      POSTGRES_PASSWORD: inventory
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-inventory-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory -d inventory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: oriah-keycloak
+    # start-dev: H2 in-memory DB, no caching, hot-reload — fine for local dev.
+    # --import-realm: read every *.json in /opt/keycloak/data/import on first run.
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Bootstrap admin credentials (Keycloak 26+ uses KC_BOOTSTRAP_* naming).
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # iss-claim hostname. Every token Keycloak issues will carry
+      # iss=http://localhost:7080/realms/oriah, regardless of which network
+      # the token was requested over. Services trust that iss; JWKS lookup
+      # is over the internal network (see application-docker.yaml).
+      KC_HOSTNAME: http://localhost:7080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "7080:8080"
+    volumes:
+      # Read-only mount of the realm export.
+      - ./keycloak/import:/opt/keycloak/data/import:ro
+    healthcheck:
+      # Keycloak 26 UBI ships bash but not curl/wget. We use bash to open
+      # a raw TCP socket, send a one-line HTTP request to /realms/master,
+      # read the status line, and look for "200". This tells us realm
+      # discovery is live (= realm import finished), not just that the
+      # port is bound (which happens earlier).
+      # Compose variable-interpolates $VAR at parse time. To pass a literal
+      # $ to bash (so $line is read as a shell variable, not interpolated to
+      # empty by compose), double it: $$line.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /realms/master HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -r line <&3 && echo \"$$line\" | grep -q '200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [oriah]
+
+  # ───────────────────────── platform tier ─────────────────────────
+
+  configserver:
+    image: oriah/configserver:dev
+    container_name: oriah-configserver
+    environment:
+      # 'native' must stay active — it's what activates Spring Cloud Config's
+      # filesystem backend (NativeEnvironmentRepository). Without it the server
+      # falls back to a Git backend and demands `spring.cloud.config.server.git.uri`.
+      # 'docker' adds the docker-network Eureka URL.
+      SPRING_PROFILES_ACTIVE: native,docker
+    ports:
+      - "8888:8888"
+    healthcheck:
+      # bash + coreutils come from paketo run-noble-base (set per build in
+      # build-images.ps1). The default run-jammy-tiny has none of these.
+      # `/dev/tcp/<host>/<port>` is a bash builtin — opens a TCP socket
+      # and exits 0 if the port is accepting connections. No curl needed
+      # (noble-base doesn't ship curl either).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8888"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [oriah]
+
+  eurekaserver:
+    image: oriah/eurekaserver:dev
+    container_name: oriah-eurekaserver
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8761"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [oriah]
+
+  gatewayserver:
+    image: oriah/gatewayserver:dev
+    container_name: oriah-gatewayserver
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8080:8080"
+    depends_on:
+      eurekaserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [oriah]
+
+  # ───────────────────────── domain tier ───────────────────────────
+
+  catalog:
+    image: oriah/catalog:dev
+    container_name: oriah-catalog
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      # Compose-managed secret. Override in a .env file for non-default values.
+      SPRING_DATASOURCE_USERNAME: catalog
+      SPRING_DATASOURCE_PASSWORD: catalog
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres-catalog:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8081"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  inventory:
+    image: oriah/inventory:dev
+    container_name: oriah-inventory
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: inventory
+      SPRING_DATASOURCE_PASSWORD: inventory
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres-inventory:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8082"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+volumes:
+  postgres-catalog-data:
+  postgres-inventory-data:
+
+networks:
+  oriah:
+    driver: bridge

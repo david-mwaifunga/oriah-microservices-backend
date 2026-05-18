@@ -9,6 +9,138 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
+## Docker Compose for local dev (Iteration 9)
+
+**Decision:** A single `docker-compose.yml` at `oriah-api/` root brings up the
+full stack: two PostgreSQL instances (catalog + inventory), Keycloak, Config
+Server, Eureka, Gateway, catalog, and inventory.
+
+Service images are built via **Spring Boot Buildpacks** (`mvnw spring-boot:build-image`),
+not hand-written Dockerfiles. Build with `./build-images.ps1`, run with
+`docker compose up -d`.
+
+### Why Buildpacks, not Dockerfiles
+
+- Layered JAR by default — dependency layers stay cached when only code changes,
+  so incremental rebuilds are seconds, not minutes.
+- Zero Dockerfile to maintain per service. JVM version, OS base, memory tuning,
+  non-root user, OCI labels — all picked by the buildpack from `pom.xml` metadata.
+- The Paketo run image (`paketobuildpacks/run-jammy-tiny`) is hardened by default
+  (non-root, distroless-ish, minimal CVE surface). Writing a Dockerfile to match
+  that is a project in itself.
+
+The tradeoff is build-time tooling — a Buildpacks build needs Docker running and
+~300MB of base images pulled the first time. For a learning project this is fine;
+for CI we'd cache the builder image.
+
+### The Keycloak `iss` claim problem (and the iss-uri / jwk-set-uri split)
+
+Standard Docker Compose gotcha: a developer fetches a JWT from
+`http://localhost:7080/realms/oriah`. The token's `iss` claim is whatever
+`KC_HOSTNAME` is set to. But inside the catalog container, `localhost:7080`
+is the *container itself*, not the Keycloak container — calls to fetch JWKS
+would fail.
+
+**Fix:** split the two URLs in Spring Security config.
+
+```yaml
+spring.security.oauth2.resourceserver.jwt:
+  issuer-uri:  http://localhost:7080/realms/oriah                                   # iss validation
+  jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs      # internal key fetch
+```
+
+- `issuer-uri` is the URL Spring expects to find in the token's `iss` claim.
+  Keycloak is configured with `KC_HOSTNAME=http://localhost:7080`, so every
+  token (whether requested from host or inside a container) carries that iss.
+- `jwk-set-uri` overrides JWKS lookup. The catalog container hits Keycloak via
+  the docker network DNS name `keycloak:8080`.
+- When both are set, Spring Security skips OIDC discovery (which would try to
+  fetch `<issuer-uri>/.well-known/openid-configuration` and fail from a container)
+  and uses each URL for its declared purpose.
+
+This is set per-service in `application-docker.yaml`, activated by
+`SPRING_PROFILES_ACTIVE=docker` in compose.
+
+### Realm import on first start
+
+`keycloak/import/oriah-realm.json` is mounted into
+`/opt/keycloak/data/import/`. The container runs `start-dev --import-realm`,
+which seeds the `oriah` realm with `CATALOG_ADMIN` + `INVENTORY_ADMIN` realm
+roles, the `oriah-admin` client (confidential, password + client_credentials
+grants enabled), and a test user `maya` with password `password` and both
+roles. The service-account user for `oriah-admin` also carries both roles so
+machine-to-machine flows work.
+
+Import only runs on first start (when the realm doesn't already exist). To
+re-seed, `docker compose down -v` (drops the volume) then `up` again.
+
+### Healthcheck design (the tiny-image trap)
+
+First attempt used Paketo's default `run-jammy-tiny` run image (~80MB,
+distroless-style, no shell utilities). Compose healthchecks immediately
+broke: `OCI runtime exec failed: exec: "bash": executable file not found
+in $PATH`. The tiny image strips out **everything** non-essential — no
+`bash`, no `curl`, no `wget`, no `ls`, no `cat`. Even `/proc/net/tcp`
+inspection is impossible without `grep`.
+
+For dev we switched to `paketobuildpacks/run-noble-base` (~150MB, has
+bash + curl + coreutils):
+
+```powershell
+.\mvnw spring-boot:build-image `
+    "-Dspring-boot.build-image.runImage=paketobuildpacks/run-noble-base:latest"
+```
+
+Healthcheck then hits the actuator endpoint:
+
+```yaml
+healthcheck:
+  test: ["CMD", "curl", "-fsS", "http://localhost:8081/actuator/health"]
+```
+
+This means compose's `condition: service_healthy` actually proves *the
+Spring context is up*, not just that the port is bound. For production
+we'd go back to `run-jammy-tiny` and write a Java health-check helper
+JAR (or use the paketo `health-checker` buildpack), keeping the image
+hardened. Dev favors debuggability.
+
+### Depends-on graph
+
+The startup order matches the user's stated topology:
+
+| Service        | Waits on                                                          |
+|----------------|-------------------------------------------------------------------|
+| postgres-catalog, postgres-inventory, keycloak | nothing — base layer |
+| configserver   | nothing — clients import via `optional:` in case it's slow         |
+| eurekaserver   | nothing                                                            |
+| gatewayserver  | eurekaserver (it's a Eureka client; no DB, no config-server, no Keycloak) |
+| catalog        | postgres-catalog + eurekaserver + configserver + keycloak          |
+| inventory      | postgres-inventory + eurekaserver + configserver + keycloak        |
+
+Compose's `condition: service_healthy` blocks the dependent until the upstream
+healthcheck passes — so catalog won't try to connect to a Postgres that hasn't
+finished initializing.
+
+### Postgres: two instances, not one with two schemas
+
+Each service owns its data store. We use **two postgres containers** (one per
+service) rather than one container with two SQL schemas. Why:
+
+- The "database per service" microservices principle is about ownership and
+  isolation, not literal container count — but two containers is the cleanest
+  way to enforce it on a developer laptop. No team member can accidentally
+  reach across schemas in a query.
+- Container overhead is negligible (~30MB RSS per Postgres at idle).
+- When we later split catalog and inventory across separate K8s clusters or
+  managed RDS instances, the two-container dev setup already mirrors that
+  topology.
+
+Each service connects via env vars in compose (`SPRING_DATASOURCE_URL` etc.)
+that point at its dedicated container by name (`postgres-catalog:5432`,
+`postgres-inventory:5432`).
+
+---
+
 ## Keycloak setup (for the OAuth2 work in Iteration 7)
 
 **Decision:** Use Keycloak as the IdP. Each domain service is an OAuth2

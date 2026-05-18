@@ -1,0 +1,24 @@
+# Overrides applied when SPRING_PROFILES_ACTIVE=docker.
+# Mirror of catalog's docker profile — see that file for the rationale
+# on the issuer-uri / jwk-set-uri split and the docker-profile choice.
+
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-inventory:5432/inventory
+    username: ${SPRING_DATASOURCE_USERNAME:inventory}
+    password: ${SPRING_DATASOURCE_PASSWORD:inventory}
+
+  config:
+    import: "configserver:http://configserver:8888"
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eurekaserver:8761/eureka/
