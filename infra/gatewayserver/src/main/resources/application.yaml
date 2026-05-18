@@ -1,0 +1,57 @@
+spring:
+  application:
+    name: gatewayserver
+  cloud:
+    gateway:
+      server:
+        webflux:
+          # Each route is one (id, uri, predicates, [filters]) tuple.
+          # 'lb://<service-name>' is the magic incantation: Spring Cloud
+          # Gateway resolves <service-name> against Eureka at request time
+          # and load-balances across whatever instances are registered.
+          routes:
+            - id: catalog-public-route
+              uri: lb://catalog
+              predicates:
+                - Path=/api/v1/products/**
+            - id: catalog-admin-route
+              uri: lb://catalog
+              predicates:
+                - Path=/api/v1/admin/products/**
+            # Future:
+            #   - inventory-route       Path=/api/v1/inventory/**
+            #   - catalog-docs-route    Path=/swagger-ui.html, /v3/api-docs/**
+
+server:
+  # The conventional edge port. Frontend code talks to localhost:8080.
+  port: 8080
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # '*' exposes every actuator endpoint — the gateway endpoint id
+        # was renamed in Spring Cloud Gateway 5.0.x and the new id is
+        # discovered by hitting /actuator. Lock down to a narrower set
+        # in production via a profile-specific override.
+        include: '*'
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.oriah.gatewayserver: DEBUG
+    # Tame the very chatty Eureka and Reactor startup logs.
+    com.netflix.eureka: WARN
+    com.netflix.discovery: WARN
+    reactor.netty: WARN

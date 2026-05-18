@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>infra</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>gatewayserver</artifactId>
+    <packaging>jar</packaging>
+
+    <name>gatewayserver</name>
+    <description>Spring Cloud Gateway — single entry point routing to backend services via Eureka.</description>
+
+    <dependencies>
+        <!--
+            Spring Cloud Gateway, reactive (Netty/WebFlux) flavor.
+            NB: in Spring Cloud 2025.1.x the artifact got renamed from the
+            shorter spring-cloud-starter-gateway to this fully-qualified form
+            because there's now also a servlet variant
+            (spring-cloud-starter-gateway-server-webmvc). The webflux variant
+            is what most "Spring Cloud Gateway" docs and books still describe.
+            It pulls in spring-boot-starter-webflux as a transitive — this
+            module is the only WebFlux/Netty piece of our system; the rest
+            stays on MVC.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
+        </dependency>
+
+        <!--
+            Eureka client. The gateway uses Eureka to resolve 'lb://catalog'
+            (and future service names) into concrete host:port pairs at
+            request time. Without this, the lb:// scheme has no resolver.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!--
+            Actuator: exposes /actuator/gateway/routes (the configured route
+            table) and /actuator/health for orchestration probes.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Lombok: @Slf4j on the application class for the startup banner. -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+            Test classpath. Reactive (WebFlux) stack, so we want the
+            webflux-test starter — NOT webmvc-test. webflux-test brings in
+            WebTestClient if we ever want fluent reactive assertions; for
+            the smoke tests we stick with java.net.http.HttpClient like the
+            Eureka tests do, for portability across SB minor versions.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

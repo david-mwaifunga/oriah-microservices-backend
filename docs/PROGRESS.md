@@ -17,6 +17,8 @@ update this before ending and read it at the start.
 
 **Iteration 4b: catalog + configserver as Eureka clients** — ✅ **complete**. Both services have `spring-cloud-starter-netflix-eureka-client` and auto-register on startup. Tests stay hermetic via `eureka.client.enabled=false` `@TestPropertySource` on the three full-context test classes.
 
+**Iteration 5: Spring Cloud Gateway** — ✅ **complete**. New `infra/gatewayserver/` reactive (Netty+WebFlux) gateway on port 8080. Routes `/api/v1/products/**` and `/api/v1/admin/products/**` to `lb://catalog` (Eureka-load-balanced). Three SCG 2025.1.x gotchas surfaced + documented: artifact rename to `*-gateway-server-webflux`, YAML path moved to `spring.cloud.gateway.server.webflux.routes`, `/actuator/gateway/routes` is gated by default. 2 smoke tests via `/actuator/env`.
+
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
@@ -38,7 +40,7 @@ update this before ending and read it at the start.
   JPA dirty-checking persists changes within the `@Transactional` service method.
 - `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
   (stable across Spring versions; clear contract for the frontend).
-- 36 tests across six modules:
+- 38 tests across seven modules:
   - 9 `catalog.model.ProductTest` — pure JVM, domain invariants
   - 1 `catalog.repository.ProductRepositoryTest` — `@DataJpaTest` + real PG
   - 6 `catalog.controller.ProductControllerTest` — `@WebMvcTest` slice
@@ -47,13 +49,18 @@ update this before ending and read it at the start.
   - 1 `catalog.CatalogServiceApplicationTests.contextLoads`
   - 2 `configserver.ConfigServerApplicationTests` — boots `@EnableConfigServer`, hits `/catalog/default`
   - 3 `eurekaserver.EurekaServerApplicationTests` — dashboard, `/eureka/apps`, actuator health
-- All pass: `mvnw test` → BUILD SUCCESS, ~57s total when containers are cached.
+  - 2 `gatewayserver.GatewayServerApplicationTests` — routes loaded (via `/actuator/env`), actuator health
+- All pass: `mvnw test` → BUILD SUCCESS.
 - Config Server runs at `http://localhost:8888` when started:
   `mvnw -pl infra/configserver spring-boot:run`
   Hit `http://localhost:8888/catalog/default` to see what it would serve.
 - Eureka server runs at `http://localhost:8761` when started:
   `mvnw -pl infra/eurekaserver spring-boot:run`
   Hit `http://localhost:8761/` for the dashboard, `/eureka/apps` for the registry.
+- Gateway runs at `http://localhost:8080` when started:
+  `mvnw -pl infra/gatewayserver spring-boot:run`
+  With Eureka and catalog also running, `curl http://localhost:8080/api/v1/products`
+  proxies through the gateway → Eureka lookup → catalog's actual host/port.
 - **End-to-end smoke test** (manual):
   1. Terminal A: `mvnw -pl infra/configserver spring-boot:run`
   2. Terminal B: `mvnw -pl services/catalog spring-boot:test-run`
@@ -70,50 +77,47 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 5: Spring Cloud Gateway.**
+**Iteration 6: inventory service + inter-service calls.**
 
-The gateway is the single front door for the API. Browser hits the
-gateway at `localhost:8080`, gateway routes through Eureka to whichever
-service can serve the request (`catalog` for `/api/v1/products/**`).
+Catalog is alone. The wireframes' spec talks about a separate
+inventory service tracking stock-on-hand per variant — and catalog's
+PDP needs the "few left" badge driven by inventory data. This iteration:
 
-1. New module `infra/gatewayserver/` modeled on the other two infra
-   modules. Dependencies:
-   ```
-   org.springframework.cloud:spring-cloud-starter-gateway
-   org.springframework.cloud:spring-cloud-starter-netflix-eureka-client
-   org.springframework.boot:spring-boot-starter-actuator
-   ```
-   Note: Spring Cloud Gateway is reactive (Netty + WebFlux), not MVC.
-   That's a deliberate choice by Spring — keep the data plane (catalog)
-   on the more familiar servlet/MVC stack, push the high-throughput
-   gateway onto reactive.
-2. `@SpringBootApplication` on `GatewayServerApplication`. No
-   `@EnableX` annotation needed — Spring Cloud Gateway is enabled by
-   the starter being on the classpath.
-3. `application.yaml` declares the routes. Initial pair:
-   ```yaml
-   spring:
-     cloud:
-       gateway:
-         routes:
-           - id: catalog-route
-             uri: lb://catalog            # Eureka-discovered, load-balanced
-             predicates:
-               - Path=/api/v1/products/**,/api/v1/admin/products/**
-   ```
-4. Smoke tests:
-   - Boot context loads.
-   - Hit `/actuator/gateway/routes` (actuator-exposed) and confirm
-     `catalog-route` is listed.
-5. End-to-end manual: with Eureka, catalog, and gateway all running,
-   `curl http://localhost:8080/api/v1/products` should return the same
-   `PageResponse` JSON catalog serves at `:8081`.
+1. New `services/inventory/` module modeled exactly on catalog's
+   layer-by-layer layout (controller / service / repository / model / dto).
+   Same Spring Cloud Config + Eureka client wiring (just change
+   `spring.application.name` to `inventory`).
+2. Domain: `Inventory` aggregate keyed by variant id (UUID), with
+   `onHand` and `reserved` int counts. Domain rules:
+   - `reserve(qty)` decrements available, increments reserved; throws
+     if not enough on hand.
+   - `release(qty)` reverses a reservation.
+   - `confirm(qty)` decrements reserved (the items have shipped).
+3. REST endpoints:
+   - `GET    /api/v1/inventory/{variantId}`           public read
+   - `POST   /api/v1/admin/inventory/{id}/reserve`    write
+   - `POST   /api/v1/admin/inventory/{id}/release`    write
+   - `POST   /api/v1/admin/inventory/{id}/confirm`    write
+4. Same test pattern: unit tests for domain rules, `@DataJpaTest` for
+   repo, `@WebMvcTest` slices for both controllers, one full-stack
+   `@SpringBootTest` integration test.
+5. **Then** inter-service: catalog's GET-by-id endpoint should
+   optionally include inventory info ("availability": "in_stock" /
+   "low_stock" / "out_of_stock"). The call from catalog → inventory:
+   - Try `spring-cloud-starter-openfeign` (declarative HTTP client
+     with Eureka resolution via `@FeignClient(name = "inventory")`).
+     OpenFeign is in Spring Cloud 2025.1.x; verify artifact exists
+     before deep-diving.
+   - Wrap with `spring-cloud-starter-circuitbreaker-resilience4j` so
+     inventory being down doesn't take catalog down. Fallback returns
+     "availability_unknown" instead.
 
 Then:
-- **Cycle 3c**: swap Config Server's native backend for a Git repo
-  (real GitOps pattern).
-- **Iteration 6** — inventory service + OpenFeign + Resilience4j.
-- **Iteration 7+** — Keycloak, Kafka, Docker Compose, frontend.
+- **Cycle 3c**: swap Config Server's native backend for a Git repo.
+- **Iteration 7** — Keycloak + Spring Security OAuth2 Resource Server.
+- **Iteration 8** — Kafka + Spring Cloud Stream.
+- **Iteration 9** — Docker Compose.
+- **Iteration 10** — React + TS + Vite frontend.
 
 ### Cycle 9–10 notes
 
@@ -154,7 +158,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: catalog + configserver as Eureka clients (Iteration 4b)
+(pending)  feat: Spring Cloud Gateway (Iteration 5)
+22609c4    feat: catalog + configserver as Eureka clients (Iteration 4b)
 9edc5e9    feat: Eureka discovery server (Iteration 4)
 7a550d1    feat: catalog as Spring Cloud Config Client (Iteration 3b)
 9c32b42    feat: Spring Cloud Config Server on 2025.1.1 (Iteration 3a)
