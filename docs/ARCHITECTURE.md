@@ -9,6 +9,96 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
+## Keycloak setup (for the OAuth2 work in Iteration 7)
+
+**Decision:** Use Keycloak as the IdP. Each domain service is an OAuth2
+**Resource Server** validating JWTs against Keycloak's JWKS endpoint.
+No session, no CSRF, no centralized auth-service of our own.
+
+**Why Keycloak:** open-source, the canonical Spring Boot IdP, has a
+mature Docker image, supports OIDC discovery (so services need only
+the issuer URL), maps roles into the JWT's {@code realm_access.roles}
+claim which Spring Security can read with a custom converter.
+
+### Running Keycloak locally
+
+```bash
+docker run --rm -p 7080:8080 \
+  -e KEYCLOAK_ADMIN=admin \
+  -e KEYCLOAK_ADMIN_PASSWORD=admin \
+  quay.io/keycloak/keycloak:latest \
+  start-dev
+```
+
+Admin console at `http://localhost:7080/`. Log in as `admin/admin`.
+
+### Realm + roles + user
+
+Create realm **`oriah`**, then in that realm:
+
+1. **Roles** (Realm → Realm roles):
+   - `CATALOG_ADMIN`
+   - `INVENTORY_ADMIN`
+
+2. **User** (Users → Add user):
+   - Username: `maya`
+   - Set a password under Credentials (turn off "Temporary")
+   - Assign both realm roles under "Role mapping"
+
+3. **Client** (Clients → Create client):
+   - Client ID: `oriah-admin`
+   - Client authentication: **on**
+   - Standard flow + Direct access grants (Password grant) enabled
+   - Service accounts roles: assign both realm roles
+
+### Getting a token
+
+```bash
+curl -X POST http://localhost:7080/realms/oriah/protocol/openid-connect/token \
+  -d "client_id=oriah-admin" \
+  -d "client_secret=<from-client-credentials-tab>" \
+  -d "username=maya" \
+  -d "password=<your-password>" \
+  -d "grant_type=password" \
+  | jq -r .access_token
+```
+
+Then:
+
+```bash
+TOKEN=$(curl ... above ...)
+curl -X POST http://localhost:8081/api/v1/admin/products \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Aurelia","description":"18k","tags":["rings"]}'
+```
+
+Without a token → 401. With a token but missing the right role → 403.
+
+### Role mapping in code
+
+Keycloak puts realm roles in the JWT under `realm_access.roles`
+(a JSON array). Spring Security's default
+`JwtAuthenticationConverter` looks at the `scope` claim — wrong for
+Keycloak. Each service has a custom converter
+(`SecurityConfig.grantedAuthoritiesFromKeycloak`) that:
+
+1. reads `realm_access.roles`
+2. uppercases each entry (so realm case differences don't bite)
+3. prefixes with `ROLE_` so `@PreAuthorize("hasRole('CATALOG_ADMIN')")` works
+
+The prefix matters: `hasRole('X')` is `hasAuthority('ROLE_X')`.
+
+### Testing without Keycloak
+
+`@MockitoBean JwtDecoder` replaces the auto-configured decoder so the
+context boots without a running Keycloak. The `with(jwt().authorities(...))`
+post-processor from `spring-security-test` injects a synthetic JWT
+straight into the security context per request, bypassing decoding
+entirely.
+
+---
+
 ## Spring Cloud version selection (and the lesson learned)
 
 **Decision:** Use Spring Cloud **`2025.1.1`** (not `2025.0.x`) for Spring Boot 4.

@@ -16,6 +16,10 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.context.annotation.Import;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+
+import com.oriah.catalog.config.SecurityConfig;
 import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
@@ -30,6 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(ProductController.class)
+@Import(SecurityConfig.class)
 class ProductControllerTest {
 
     @Autowired
@@ -37,6 +42,17 @@ class ProductControllerTest {
 
     @MockitoBean
     private ProductService service;
+
+    /**
+     * Spring Security's OAuth2 resource server auto-config registers a
+     * {@code JwtDecoder} that fetches JWKS from issuer-uri at startup.
+     * With no Keycloak in tests, that fetch fails. Replacing the bean
+     * with a mock keeps the context healthy; we never actually invoke
+     * it because public GETs don't go through auth.
+     */
+    @MockitoBean
+    @SuppressWarnings("unused")
+    private JwtDecoder jwtDecoder;
 
     @Test
     @DisplayName("GET /api/v1/products/{id} returns the product enriched with availability")

@@ -13,9 +13,14 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
 import com.oriah.inventory.TestcontainersConfiguration;
 import com.oriah.inventory.repository.InventoryRepository;
 
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -39,11 +44,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 })
 class InventoryIntegrationTest {
 
+    private static final SimpleGrantedAuthority INVENTORY_ADMIN =
+            new SimpleGrantedAuthority("ROLE_INVENTORY_ADMIN");
+
     @Autowired
     private MockMvc mvc;
 
     @Autowired
     private InventoryRepository repository;
+
+    /**
+     * Replace the OAuth2 resource-server JwtDecoder so context starts
+     * without a live Keycloak. {@code with(jwt())} bypasses it per-request.
+     */
+    @MockitoBean
+    @SuppressWarnings("unused")
+    private JwtDecoder jwtDecoder;
 
     @BeforeEach
     void cleanDatabase() {
@@ -59,6 +75,7 @@ class InventoryIntegrationTest {
 
         // 1) Create with onHand=10
         mvc.perform(post("/api/v1/admin/inventory")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"variantId":"%s","onHand":10}
@@ -70,6 +87,7 @@ class InventoryIntegrationTest {
 
         // 2) Reserve 3
         mvc.perform(post(adminPath + "/reserve")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":3}"))
                 .andExpect(status().isOk())
@@ -78,6 +96,7 @@ class InventoryIntegrationTest {
 
         // 3) Release 1 (customer reduced cart qty)
         mvc.perform(post(adminPath + "/release")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":1}"))
                 .andExpect(status().isOk())
@@ -86,6 +105,7 @@ class InventoryIntegrationTest {
 
         // 4) Confirm 2 (shipment goes out)
         mvc.perform(post(adminPath + "/confirm")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":2}"))
                 .andExpect(status().isOk())
@@ -95,6 +115,7 @@ class InventoryIntegrationTest {
 
         // 5) Restock 5 (warehouse delivery)
         mvc.perform(post(adminPath + "/restock")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":5}"))
                 .andExpect(status().isOk())
@@ -125,6 +146,7 @@ class InventoryIntegrationTest {
         UUID unknown = UUID.fromString("55555555-5555-5555-5555-555555555555");
 
         mvc.perform(post("/api/v1/admin/inventory/{id}/reserve", unknown)
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":1}"))
                 .andExpect(status().isNotFound());
@@ -134,9 +156,20 @@ class InventoryIntegrationTest {
     @DisplayName("POST create rejects null variantId with 400")
     void createRejectsNullVariantId() throws Exception {
         mvc.perform(post("/api/v1/admin/inventory")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"variantId\":null,\"onHand\":10}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("admin endpoint without a JWT returns 401")
+    void adminEndpointRejectsUnauthenticated() throws Exception {
+        UUID anyId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        mvc.perform(post("/api/v1/admin/inventory/{id}/reserve", anyId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":1}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -144,6 +177,7 @@ class InventoryIntegrationTest {
     void reserveRejectsZeroQty() throws Exception {
         UUID variantId = UUID.fromString("66666666-6666-6666-6666-666666666666");
         mvc.perform(post("/api/v1/admin/inventory")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"variantId":"%s","onHand":5}
@@ -151,6 +185,7 @@ class InventoryIntegrationTest {
                 .andExpect(status().isCreated());
 
         mvc.perform(post("/api/v1/admin/inventory/{id}/reserve", variantId)
+                        .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":0}"))
                 .andExpect(status().isBadRequest());

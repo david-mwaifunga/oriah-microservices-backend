@@ -1,5 +1,7 @@
 package com.oriah.catalog.integration;
 
+import java.util.UUID;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,9 +13,14 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.repository.ProductRepository;
 
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -55,11 +62,23 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 })
 class CatalogIntegrationTest {
 
+    private static final SimpleGrantedAuthority CATALOG_ADMIN =
+            new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
+
     @Autowired
     private MockMvc mvc;
 
     @Autowired
     private ProductRepository repository;
+
+    /**
+     * Replaces the OAuth2 resource-server JwtDecoder so the context
+     * starts without a live Keycloak. {@code with(jwt())} bypasses the
+     * decoder entirely on each request — this mock is never invoked.
+     */
+    @MockitoBean
+    @SuppressWarnings("unused")
+    private JwtDecoder jwtDecoder;
 
     @BeforeEach
     void cleanDatabase() {
@@ -78,6 +97,7 @@ class CatalogIntegrationTest {
                 """;
 
         String location = mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
@@ -141,6 +161,7 @@ class CatalogIntegrationTest {
         String location = createProduct("Aurelia Original", "rings");
 
         mvc.perform(patch(location.replace("/api/v1/products", "/api/v1/admin/products"))
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"title": "Aurelia Renamed", "description": "Updated copy."}
@@ -162,7 +183,7 @@ class CatalogIntegrationTest {
         String location = createProduct("Aurelia", "rings");
         String adminPath = location.replace("/api/v1/products", "/api/v1/admin/products");
 
-        mvc.perform(delete(adminPath))
+        mvc.perform(delete(adminPath).with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isNoContent());
 
         mvc.perform(get(location))
@@ -173,8 +194,21 @@ class CatalogIntegrationTest {
                 .andExpect(jsonPath("$.content.length()").value(0))
                 .andExpect(jsonPath("$.totalElements").value(0));
 
-        mvc.perform(delete(adminPath))
+        mvc.perform(delete(adminPath).with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isNotFound());
+    }
+
+    /**
+     * Helper: deletes via the admin path but WITHOUT a JWT, expecting 401.
+     * Confirms the security filter chain rejects unauthenticated requests
+     * before they even reach the controller.
+     */
+    @Test
+    @DisplayName("admin DELETE without a JWT is rejected with 401")
+    void adminEndpointRejectsUnauthenticated() throws Exception {
+        UUID anyId = UUID.fromString("11111111-1111-1111-1111-111111111111");
+        mvc.perform(delete("/api/v1/admin/products/{id}", anyId))
+                .andExpect(status().isUnauthorized());
     }
 
     /**
@@ -191,6 +225,7 @@ class CatalogIntegrationTest {
                 """.formatted(title, tag);
 
         return mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())

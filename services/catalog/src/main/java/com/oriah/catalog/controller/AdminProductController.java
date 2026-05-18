@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import org.springframework.security.access.prepost.PreAuthorize;
+
 import com.oriah.catalog.dto.ProductCreateRequest;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.ProductUpdateRequest;
@@ -37,6 +39,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @RestController
 @RequestMapping("/api/v1/admin/products")
+@PreAuthorize("hasRole('CATALOG_ADMIN')")
 @Slf4j
 public class AdminProductController {
 

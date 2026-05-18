@@ -107,6 +107,22 @@
             <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
         </dependency>
 
+        <!--
+            Spring Security + OAuth2 Resource Server.
+            Catalog validates incoming JWTs against Keycloak's JWKS
+            endpoint (configured via spring.security.oauth2.resourceserver.
+            jwt.issuer-uri). Admin endpoints require the CATALOG_ADMIN
+            role; public reads stay permitAll.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
         <!-- Boilerplate reduction -->
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -165,6 +181,17 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            Spring Security testing utilities. Provides the jwt() post-processor
+            used by MockMvc tests to attach a synthetic JWT to a request
+            so the SecurityContext is populated without a live Keycloak.
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

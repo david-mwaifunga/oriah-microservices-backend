@@ -37,6 +37,18 @@ spring:
         # the bean named in the @FeignClient(fallback = ...) attribute.
         enabled: true
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Keycloak realm issuer. Spring Security fetches the JWKS
+          # endpoint via OIDC discovery (<issuer>/.well-known/
+          # openid-configuration). For local dev, run Keycloak on port
+          # 7080; see docs/ARCHITECTURE.md "Keycloak setup."
+          # Tests override this via @TestPropertySource so they don't
+          # need a live Keycloak.
+          issuer-uri: http://localhost:7080/realms/oriah
+
 server:
   # Port stays local — different services need different ports on the
   # same host during dev, and the Config Server can't help here because

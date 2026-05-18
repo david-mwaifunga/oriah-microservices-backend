@@ -12,6 +12,11 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.context.annotation.Import;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+
+import com.oriah.catalog.config.SecurityConfig;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
@@ -21,6 +26,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -29,13 +35,38 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(AdminProductController.class)
+@Import(SecurityConfig.class)
 class AdminProductControllerTest {
+
+    /**
+     * Helper to attach a JWT with the CATALOG_ADMIN role to a MockMvc
+     * request. {@code jwt()} comes from spring-security-test and skips
+     * the real {@code JwtDecoder} entirely — the authentication object
+     * is constructed in-process and placed straight into the security
+     * context.
+     */
+    private static final SimpleGrantedAuthority CATALOG_ADMIN =
+            new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
 
     @Autowired
     private MockMvc mvc;
 
     @MockitoBean
     private ProductService service;
+
+    /**
+     * Required because Spring Security's OAuth2 resource server
+     * auto-configuration registers a {@code JwtDecoder} bean that, at
+     * context startup, tries to fetch JWKS from the configured
+     * issuer-uri. With no live Keycloak in tests, that fetch fails and
+     * the context can't start. Replacing the bean with a mock makes the
+     * resource server happy at startup; the {@code jwt()} post-processor
+     * bypasses the decoder entirely on each request, so the mock is
+     * never actually invoked.
+     */
+    @MockitoBean
+    @SuppressWarnings("unused")
+    private JwtDecoder jwtDecoder;
 
     @Test
     @DisplayName("POST /api/v1/admin/products creates a product and returns 201 with Location header")
@@ -59,6 +90,7 @@ class AdminProductControllerTest {
                 """;
 
         mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
@@ -80,6 +112,7 @@ class AdminProductControllerTest {
                 """;
 
         mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -100,6 +133,7 @@ class AdminProductControllerTest {
                 """.formatted(oversizedTitle);
 
         mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -123,6 +157,7 @@ class AdminProductControllerTest {
                 """;
 
         mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
@@ -139,6 +174,7 @@ class AdminProductControllerTest {
                 """;
 
         mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -156,6 +192,7 @@ class AdminProductControllerTest {
                 """.formatted(oversizedTitle);
 
         mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -175,6 +212,7 @@ class AdminProductControllerTest {
                 """;
 
         mvc.perform(patch("/api/v1/admin/products/{id}", id)
+                        .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isNotFound());
@@ -186,7 +224,8 @@ class AdminProductControllerTest {
         var id = UUID.fromString("88888888-8888-8888-8888-888888888888");
         when(service.deleteById(id)).thenReturn(true);
 
-        mvc.perform(delete("/api/v1/admin/products/{id}", id))
+        mvc.perform(delete("/api/v1/admin/products/{id}", id)
+                        .with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isNoContent());
     }
 
@@ -196,7 +235,35 @@ class AdminProductControllerTest {
         var id = UUID.fromString("99999999-9999-9999-9999-999999999999");
         when(service.deleteById(id)).thenReturn(false);
 
-        mvc.perform(delete("/api/v1/admin/products/{id}", id))
+        mvc.perform(delete("/api/v1/admin/products/{id}", id)
+                        .with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("POST without a JWT returns 401 — and never reaches the service")
+    void createWithoutAuthReturns401() throws Exception {
+        mvc.perform(post("/api/v1/admin/products")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title": "Aurelia", "description": null, "tags": []}
+                                """))
+                .andExpect(status().isUnauthorized());
+
+        verify(service, never()).create(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("POST with a JWT lacking CATALOG_ADMIN role returns 403")
+    void createWithWrongRoleReturns403() throws Exception {
+        mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_CUSTOMER")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title": "Aurelia", "description": null, "tags": []}
+                                """))
+                .andExpect(status().isForbidden());
+
+        verify(service, never()).create(any(), any(), any());
     }
 }

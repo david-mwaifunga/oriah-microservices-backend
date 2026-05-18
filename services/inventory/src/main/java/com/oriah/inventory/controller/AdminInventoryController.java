@@ -6,6 +6,7 @@ import java.util.function.BiFunction;
 import java.util.Optional;
 
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -36,6 +37,7 @@ import lombok.extern.slf4j.Slf4j;
  */
 @RestController
 @RequestMapping("/api/v1/admin/inventory")
+@PreAuthorize("hasRole('INVENTORY_ADMIN')")
 @Slf4j
 public class AdminInventoryController {
 

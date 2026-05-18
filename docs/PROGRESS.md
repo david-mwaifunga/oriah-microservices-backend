@@ -23,6 +23,8 @@ update this before ending and read it at the start.
 
 **Iteration 6b: catalog → inventory via OpenFeign + Resilience4j** — ✅ **complete**. The first real inter-service call. `GET /api/v1/products/{id}` now carries an `availability` field (IN_STOCK / LOW_STOCK / OUT_OF_STOCK / UNKNOWN) sourced from inventory via `@FeignClient(name="inventory")`. Resilience4j circuit breaker + 2s timeout wraps every call; when inventory is down (as in tests), the fallback returns `null` and catalog surfaces `UNKNOWN` instead of failing. Integration test proves the resilience pattern works end-to-end.
 
+**Iteration 7: Keycloak + Spring Security OAuth2 Resource Server** — ✅ **complete**. Both catalog and inventory are stateless OAuth2 Resource Servers. Public reads stay permitAll; admin endpoints require a JWT with `CATALOG_ADMIN` / `INVENTORY_ADMIN` realm role (Keycloak puts roles in `realm_access.roles` — custom `JwtAuthenticationConverter` extracts and prefixes with `ROLE_`). Tests use `spring-security-test`'s `jwt()` post-processor + `@MockitoBean JwtDecoder` so the suite passes without a live Keycloak; the `@Import(SecurityConfig.class)` line in slice tests is the key — `@WebMvcTest` doesn't auto-load arbitrary `@Configuration` classes. Full Keycloak setup documented in `docs/ARCHITECTURE.md → "Keycloak setup"`.
+
 ### What works right now
 
 - Maven multi-module skeleton: `oriah-api/` parent POM, `services/` aggregator, `services/catalog/` first service.
@@ -44,13 +46,13 @@ update this before ending and read it at the start.
   JPA dirty-checking persists changes within the `@Transactional` service method.
 - `PageResponse<T>` envelope decouples wire shape from Spring's verbose `Page<T>` JSON
   (stable across Spring versions; clear contract for the frontend).
-- 56 tests across eight modules:
-  - **catalog (31):** 9 model + 1 repo + 6 controller + 9 admin-controller + 5 integration + 1 contextLoads
-  - **inventory (18):** 11 model + 1 repo + 5 integration + 1 contextLoads
+- 60 tests across eight modules:
+  - **catalog (34):** 9 model + 1 repo + 6 controller + 11 admin-controller (incl. 401/403) + 6 integration (incl. 401) + 1 contextLoads
+  - **inventory (19):** 11 model + 1 repo + 6 integration (incl. 401) + 1 contextLoads
   - **configserver (2):** `/catalog/default` + unknown-app
   - **eurekaserver (3):** dashboard + `/eureka/apps` + actuator health
   - **gatewayserver (2):** routes loaded (via `/actuator/env`) + actuator health
-- All pass: `mvnw test` → BUILD SUCCESS in ~102s with containers cached.
+- All pass: `mvnw test` → BUILD SUCCESS in ~120s with containers cached.
 - Config Server runs at `http://localhost:8888` when started:
   `mvnw -pl infra/configserver spring-boot:run`
   Hit `http://localhost:8888/catalog/default` to see what it would serve.
@@ -83,7 +85,34 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 7: Keycloak + Spring Security OAuth2 Resource Server.**
+**Iteration 9: Docker Compose for local dev** *(easier next step)*.
+
+We now have **8 modules** that all run as separate processes during dev.
+Five terminals is too many. A `docker-compose.yml` at `oriah-api/` root
+should bring everything up with one command:
+
+  - postgres (×2: one for catalog, one for inventory — schema per service)
+  - keycloak (admin/admin on :7080, oriah realm pre-imported)
+  - configserver
+  - eurekaserver
+  - gatewayserver
+  - catalog
+  - inventory
+
+Services should be containerized via Spring Boot Buildpacks
+(`mvn spring-boot:build-image`), not a hand-written Dockerfile.
+
+**Alternative — Iteration 8: Kafka + Spring Cloud Stream.** Replaces
+the synchronous catalog→inventory call with an event flow. Bigger
+conceptual step (event-driven design, eventual consistency, the
+dual-write problem). Worth doing but maybe after Docker Compose makes
+running the stack easier.
+
+**Alternative — Iteration 10: React + TS + Vite frontend.** Builds the
+storefront against the gateway. Lets you see the system end-to-end
+through the wireframes. Separate repo (`github/oriah/oriah-web`).
+
+**Past skipped iteration — Iteration 7: ~~Keycloak + Spring Security OAuth2~~** ✅ DONE.
 
 Today the admin endpoints (`/api/v1/admin/**`) are wide open. Real
 production microservices secure them with OAuth2 + JWT validated
@@ -156,7 +185,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: catalog -> inventory via OpenFeign + Resilience4j (Iteration 6b)
+(pending)  feat: Keycloak + OAuth2 Resource Server (Iteration 7)
+1e44490    feat: catalog -> inventory via OpenFeign + Resilience4j (Iteration 6b)
 ca1ad8f    feat: inventory microservice (Iteration 6a)
 cfebf8f    feat: Spring Cloud Gateway (Iteration 5)
 22609c4    feat: catalog + configserver as Eureka clients (Iteration 4b)
