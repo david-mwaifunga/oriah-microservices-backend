@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: inventory
+  config:
+    # Pull additional config from the Config Server; optional so tests
+    # and offline dev still work when the server is down.
+    import: "optional:configserver:http://localhost:8888"
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+server:
+  # Different port from catalog so both can run on the same host during dev.
+  port: 8082
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true

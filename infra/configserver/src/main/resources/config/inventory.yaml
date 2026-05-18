@@ -1,0 +1,15 @@
+# Externalized configuration for the inventory service.
+#
+# Inventory fetches this at startup via spring.config.import. Values
+# here override what inventory ships in its own application.yaml AND
+# the application.yaml in this same folder (more specific wins).
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    com.oriah.inventory: DEBUG

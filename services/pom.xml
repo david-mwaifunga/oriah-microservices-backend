@@ -22,5 +22,6 @@
 
     <modules>
         <module>catalog</module>
+        <module>inventory</module>
     </modules>
 </project>
