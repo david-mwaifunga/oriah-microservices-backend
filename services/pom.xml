@@ -27,5 +27,8 @@
         <module>cart</module>
         <module>payment</module>
         <module>order</module>
+        <module>promotion</module>
+        <module>shipping</module>
+        <module>checkout</module>
     </modules>
 </project>

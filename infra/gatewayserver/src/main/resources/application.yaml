@@ -46,6 +46,22 @@ spring:
               uri: lb://order
               predicates:
                 - Path=/api/v1/admin/orders/**
+            - id: promotion-route
+              uri: lb://promotion
+              predicates:
+                - Path=/api/v1/promotions/**
+            - id: promotion-admin-route
+              uri: lb://promotion
+              predicates:
+                - Path=/api/v1/admin/promotions/**
+            - id: shipping-route
+              uri: lb://shipping
+              predicates:
+                - Path=/api/v1/shipping/**
+            - id: checkout-route
+              uri: lb://checkout
+              predicates:
+                - Path=/api/v1/checkout/**
 
 server:
   # The conventional edge port. Frontend code talks to localhost:8080.

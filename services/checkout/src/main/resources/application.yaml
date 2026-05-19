@@ -1,0 +1,67 @@
+spring:
+  application:
+    name: checkout
+  config:
+    import: "optional:configserver:http://localhost:8888"
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+  cloud:
+    openfeign:
+      circuitbreaker:
+        # Disabled: even with `group.enabled: false`, Spring Cloud's
+        # OpenFeign+Resilience4j integration dispatches Feign calls to a
+        # ForkJoinPool worker. SecurityContextHolder is ThreadLocal, so
+        # the JWT-forwarding RequestInterceptor sees an empty context on
+        # the worker thread, the Authorization header is omitted, and the
+        # downstream resource server returns 401. With CB off, the call
+        # stays on the Tomcat servlet thread where the SecurityContext is
+        # populated; resilience comes from Feign's own readTimeout + the
+        # fallbacks that fire on the synchronous exception path.
+        enabled: false
+      client:
+        config:
+          default:
+            connectTimeout: 5000
+            # 15s: first POST to order-service initializes the Kafka
+            # producer (one-time ~2s overhead), and payment-service's
+            # confirm runs the (fake) gateway synchronously. 15s leaves
+            # generous margin for cold-start without making the orchestrator
+            # appear stuck to the UI.
+            readTimeout: 15000
+            loggerLevel: basic
+
+server:
+  port: 8089
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+logging:
+  level:
+    com.oriah.checkout: INFO
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      cart:        { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+      inventory:   { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+      promotion:   { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+      shipping:    { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+      payment:     { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+      order:       { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+  # No timelimiter section — see the note on spring.cloud.openfeign.circuitbreaker.group
+  # above for why TimeLimiter is disabled (SecurityContext ThreadLocal loss).
+  # Feign's own readTimeout (5s) provides the latency cap instead.

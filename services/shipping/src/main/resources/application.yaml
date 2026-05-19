@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: shipping
+  config:
+    import: "optional:configserver:http://localhost:8888"
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+
+server:
+  port: 8088
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true

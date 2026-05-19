@@ -152,6 +152,24 @@ services:
       retries: 10
     networks: [oriah]
 
+  postgres-promotion:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-promotion
+    environment:
+      POSTGRES_DB: promotion
+      POSTGRES_USER: promotion
+      POSTGRES_PASSWORD: promotion
+    ports:
+      - "5439:5432"
+    volumes:
+      - postgres-promotion-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U promotion -d promotion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: oriah-keycloak
@@ -472,6 +490,86 @@ services:
       start_period: 90s
     networks: [oriah]
 
+  promotion:
+    image: oriah/promotion:dev
+    container_name: oriah-promotion
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: promotion
+      SPRING_DATASOURCE_PASSWORD: promotion
+    ports:
+      - "8087:8087"
+    depends_on:
+      postgres-promotion:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8087"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  shipping:
+    image: oriah/shipping:dev
+    container_name: oriah-shipping
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8088:8088"
+    depends_on:
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8088"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [oriah]
+
+  checkout:
+    image: oriah/checkout:dev
+    container_name: oriah-checkout
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8089:8089"
+    depends_on:
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      cart:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+      order:
+        condition: service_healthy
+      promotion:
+        condition: service_healthy
+      shipping:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8089"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
 volumes:
   postgres-catalog-data:
   postgres-inventory-data:
@@ -479,6 +577,7 @@ volumes:
   postgres-cart-data:
   postgres-payment-data:
   postgres-order-data:
+  postgres-promotion-data:
 
 networks:
   oriah:
