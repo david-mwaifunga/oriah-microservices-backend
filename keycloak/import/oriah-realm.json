@@ -12,6 +12,12 @@
   "roles": {
     "realm": [
       {
+        "name": "USER",
+        "description": "Any authenticated end customer. Required for /api/v1/.../me endpoints (customer profile, cart, orders).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
         "name": "CATALOG_ADMIN",
         "description": "Full write access to /api/v1/admin/products on catalog-service",
         "composite": false,
@@ -20,6 +26,24 @@
       {
         "name": "INVENTORY_ADMIN",
         "description": "Full write access to /api/v1/admin/inventory on inventory-service",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "CUSTOMER_ADMIN",
+        "description": "Support agents: read all customer profiles, edit addresses, etc.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "ORDER_ADMIN",
+        "description": "Order ops: view/fulfill/cancel any order, drive state transitions",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "PAYMENT_ADMIN",
+        "description": "Payment ops: refunds, capture-overrides, gateway reconciliation",
         "composite": false,
         "clientRole": false
       }
@@ -59,13 +83,43 @@
           "temporary": false
         }
       ],
-      "realmRoles": ["CATALOG_ADMIN", "INVENTORY_ADMIN"]
+      "realmRoles": [
+        "USER",
+        "CATALOG_ADMIN",
+        "INVENTORY_ADMIN",
+        "CUSTOMER_ADMIN",
+        "ORDER_ADMIN",
+        "PAYMENT_ADMIN"
+      ]
+    },
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@oriah.local",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Buyer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["USER"]
     },
     {
       "username": "service-account-oriah-admin",
       "enabled": true,
       "serviceAccountClientId": "oriah-admin",
-      "realmRoles": ["CATALOG_ADMIN", "INVENTORY_ADMIN"]
+      "realmRoles": [
+        "USER",
+        "CATALOG_ADMIN",
+        "INVENTORY_ADMIN",
+        "CUSTOMER_ADMIN",
+        "ORDER_ADMIN",
+        "PAYMENT_ADMIN"
+      ]
     }
   ]
 }

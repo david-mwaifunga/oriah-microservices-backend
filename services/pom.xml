@@ -23,5 +23,9 @@
     <modules>
         <module>catalog</module>
         <module>inventory</module>
+        <module>customer</module>
+        <module>cart</module>
+        <module>payment</module>
+        <module>order</module>
     </modules>
 </project>

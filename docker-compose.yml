@@ -80,6 +80,78 @@ services:
       retries: 10
     networks: [oriah]
 
+  postgres-customer:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-customer
+    environment:
+      POSTGRES_DB: customer
+      POSTGRES_USER: customer
+      POSTGRES_PASSWORD: customer
+    ports:
+      - "5435:5432"
+    volumes:
+      - postgres-customer-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customer -d customer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  postgres-cart:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-cart
+    environment:
+      POSTGRES_DB: cart
+      POSTGRES_USER: cart
+      POSTGRES_PASSWORD: cart
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres-cart-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cart -d cart"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  postgres-payment:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-payment
+    environment:
+      POSTGRES_DB: payment
+      POSTGRES_USER: payment
+      POSTGRES_PASSWORD: payment
+    ports:
+      - "5437:5432"
+    volumes:
+      - postgres-payment-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payment -d payment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  postgres-order:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-order
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+    ports:
+      - "5438:5432"
+    volumes:
+      - postgres-order-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: oriah-keycloak
@@ -294,9 +366,119 @@ services:
       start_period: 90s
     networks: [oriah]
 
+  customer:
+    image: oriah/customer:dev
+    container_name: oriah-customer
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: customer
+      SPRING_DATASOURCE_PASSWORD: customer
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres-customer:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8083"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  cart:
+    image: oriah/cart:dev
+    container_name: oriah-cart
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: cart
+      SPRING_DATASOURCE_PASSWORD: cart
+    ports:
+      - "8084:8084"
+    depends_on:
+      postgres-cart:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8084"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  payment:
+    image: oriah/payment:dev
+    container_name: oriah-payment
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: payment
+      SPRING_DATASOURCE_PASSWORD: payment
+    ports:
+      - "8085:8085"
+    depends_on:
+      postgres-payment:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8085"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  order:
+    image: oriah/order:dev
+    container_name: oriah-order
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: orders
+      SPRING_DATASOURCE_PASSWORD: orders
+    ports:
+      - "8086:8086"
+    depends_on:
+      postgres-order:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8086"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
 volumes:
   postgres-catalog-data:
   postgres-inventory-data:
+  postgres-customer-data:
+  postgres-cart-data:
+  postgres-payment-data:
+  postgres-order-data:
 
 networks:
   oriah:

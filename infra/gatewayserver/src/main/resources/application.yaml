@@ -18,9 +18,34 @@ spring:
               uri: lb://catalog
               predicates:
                 - Path=/api/v1/admin/products/**
-            # Future:
-            #   - inventory-route       Path=/api/v1/inventory/**
-            #   - catalog-docs-route    Path=/swagger-ui.html, /v3/api-docs/**
+            - id: inventory-admin-route
+              uri: lb://inventory
+              predicates:
+                - Path=/api/v1/admin/inventory/**
+            - id: customer-route
+              uri: lb://customer
+              predicates:
+                - Path=/api/v1/customers/**
+            - id: customer-admin-route
+              uri: lb://customer
+              predicates:
+                - Path=/api/v1/admin/customers/**
+            - id: cart-route
+              uri: lb://cart
+              predicates:
+                - Path=/api/v1/carts/**
+            - id: payment-route
+              uri: lb://payment
+              predicates:
+                - Path=/api/v1/payments/**
+            - id: order-route
+              uri: lb://order
+              predicates:
+                - Path=/api/v1/orders/**
+            - id: order-admin-route
+              uri: lb://order
+              predicates:
+                - Path=/api/v1/admin/orders/**
 
 server:
   # The conventional edge port. Frontend code talks to localhost:8080.

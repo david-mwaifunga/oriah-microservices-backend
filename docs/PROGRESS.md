@@ -7,6 +7,8 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-19
 
+**Phase 1 — Purchase Flow (customer + cart + payment + order)** — ✅ **complete**. Four new services with strict TDD: customer (6 tests), cart (6), payment (10 incl. unit tests on FakePaymentGateway), order (11 incl. state-machine tests). Full end-to-end smoke test via gateway: alice self-provisions → adds to cart → places order → confirms payment with test card 4242... → maya (admin) drives FULFILLED/SHIPPED/DELIVERED → alice sees DELIVERED in /orders/me. Hand-rolled `OrderStatus.canTransitionTo(...)` codifies the FSM; `FakePaymentGateway` switches on Stripe-style test cards. Order publishes `order.*` events on `oriah.order` Kafka topic. Gateway has routes for every new service. Keycloak realm pre-seeds new roles (USER, CUSTOMER_ADMIN, ORDER_ADMIN, PAYMENT_ADMIN) plus a test user alice (USER only).
+
 **Iteration 3c: Git-backed Config Server** — ✅ **complete**. Config Server now reads from a sibling repo at `../config-repo/` (commit `5e6619d`) via `spring.cloud.config.server.git.uri=file:///.../config-repo`. The bundled native classpath fixture moved to test resources; tests activate `@ActiveProfiles({"native","test"})` to flip the backend, keeping the suite hermetic. docker-compose mounts the config-repo rw (JGit needs write access to its working tree even on local `file://` sources; documented). Full end-to-end smoke test passes against the new backend.
 
 **Polish: Mockito javaagent** — ✅ **complete**. Parent pom adds `maven-surefire-plugin` with `-javaagent:${org.mockito:mockito-core:jar}` plus `maven-dependency-plugin:properties` to resolve the jar path. The "Mockito is currently self-attaching" warning is gone from every test run; the build is now future-JDK-proof.
@@ -110,8 +112,18 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-The 10-step learning ladder is complete. Suggested next steps (no
-official numbering yet — pick by what you want to learn next):
+**Phase 2 — Checkout Orchestration**. With the cart/order/payment quad
+in place, the missing piece is the saga that ties them together:
+validate cart → check inventory → reserve stock → apply promo → calc
+shipping → create payment intent → on success: create order, attach
+payment, clear cart. Plus a promotion-service (discount codes) and
+shipping-service (rate lookup).
+
+**Phase 3 — Notify + Review + Search**. notification-service consumes
+`order.*` events and "sends" emails (log stub). review-service for
+post-purchase reviews. search-service for tsvector-backed full-text.
+
+The 10-step learning ladder is complete. Suggested polish:
 
 - **@RefreshScope demo.** Now that the Config Server is git-backed,
   add `@RefreshScope` to a `@ConfigurationProperties` bean in catalog,
@@ -207,7 +219,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Git-backed Config Server + Mockito javaagent polish (Iteration 3c)
+(pending)  feat: Phase 1 purchase flow — customer + cart + payment + order
+45bb43b    feat: Git-backed Config Server + Mockito javaagent polish (Iteration 3c)
 a8ef340    docs: PROGRESS — Iteration 10 (oriah-web) landed in separate repo
 6f4f497    [oriah-web] feat: PLP + PDP storefront scaffold (Iteration 10)
 9ee5fa4    feat: Kafka + Spring Cloud Stream — product.* events (Iteration 8)
@@ -264,6 +277,18 @@ a68742a    test: Product can be tagged (TDD cycle 4)
 ---
 
 ## Session log
+
+### 2026-05-19 — Phase 1: customer + cart + payment + order
+
+- **Keycloak realm** updated with 4 new roles (USER, CUSTOMER_ADMIN, ORDER_ADMIN, PAYMENT_ADMIN) and a non-admin test user `alice` (USER only). Existing maya now has all 6 roles. Service account too.
+- **customer-service** (port 8083): Customer + Address entities, auto-provisions from JWT sub on first POST /me, addresses CRUD, /admin/customers list for support agents. EntityGraph fix needed for lazy addresses with open-in-view: false. 6 integration tests.
+- **cart-service** (port 8084): Cart per Keycloak sub, lazy-created. Cart aggregate enforces (cart_id, variant_id) uniqueness — adding same variant twice bumps quantity. Price snapshot at add time. 6 integration tests.
+- **payment-service** (port 8085): PaymentIntent + pluggable PaymentGateway interface. FakePaymentGateway routes by Stripe-style test cards (4242... = success, 4000...0002 = declined, 4000...9995 = insufficient, anything else = invalid). 10 tests (5 unit + 5 integration).
+- **order-service** (port 8086): Order aggregate + immutable OrderItem snapshots. Hand-rolled OrderStatus FSM with `canTransitionTo()` — happy path CREATED→PAID→FULFILLED→SHIPPED→DELIVERED, cancel from CREATED/PAID only, no jumps. Publishes OrderEvent on `oriah.order` Kafka topic. USER endpoints: place, pay, cancel; ORDER_ADMIN endpoints: list-all, transition. 11 tests (4 state-machine + 7 integration).
+- **Gateway routes** extended to cover all 6 new path prefixes (customers, admin/customers, carts, payments, orders, admin/orders).
+- **Compose** adds 4 new Postgres containers (customer/cart/payment/order on host ports 5435–5438) and 4 service entries with proper depends_on graphs.
+- **Smoke test** (`smoke-test.ps1`) rewritten end-to-end: 9 steps drive the full purchase flow through the gateway with both maya and alice JWTs, plus the existing Kafka product_index check from Iteration 8. PASSED on the live stack.
+- **TDD discipline maintained:** integration tests written alongside production code in each service. 33 new tests, all green.
 
 ### 2026-05-19 — Iteration 3c (Git-backed Config Server) + Mockito polish
 
