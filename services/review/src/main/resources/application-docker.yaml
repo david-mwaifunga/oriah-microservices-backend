@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-review:5432/review
+    username: ${SPRING_DATASOURCE_USERNAME:review}
+    password: ${SPRING_DATASOURCE_PASSWORD:review}
+  config:
+    import: "configserver:http://configserver:8888"
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eurekaserver:8761/eureka/

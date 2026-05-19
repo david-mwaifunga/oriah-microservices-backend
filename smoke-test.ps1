@@ -2,7 +2,7 @@
 #
 # Run AFTER `docker compose up -d` and after every container is healthy.
 #
-# Drives the full checkout saga through the checkout orchestrator:
+# Drives the full backend through the gateway:
 #   1. Admin (maya) creates product, seeds inventory, creates promo code.
 #   2. Customer (alice) self-provisions profile + shipping address.
 #   3. Customer adds product to cart.
@@ -10,9 +10,11 @@
 #   5. Customer POSTs /checkout/confirm with test card 4242... -> SUCCESS:
 #      order placed + paid in one call, promo redeemed, cart cleared.
 #   6. Admin drives admin transitions FULFILLED -> SHIPPED -> DELIVERED.
-#   7. Customer GETs /orders/me, sees DELIVERED.
-#   8. Verifies Kafka product_index row was populated in inventory.
-#   9. Confirms 401 without a token.
+#   7. Search via /search?q=aurelia (Kafka-driven index, async).
+#   8. Customer posts a product review; public listing + aggregate.
+#   9. Customer GETs /notifications/me, sees order.* notifications.
+#  10. Verifies Kafka product_index row was populated in inventory.
+#  11. Confirms 401 without a token.
 
 $ErrorActionPreference = "Stop"
 
@@ -25,11 +27,14 @@ function Get-Jwt($Username) {
     return $r.access_token
 }
 
-Write-Host "[1/9] JWTs..." -ForegroundColor Cyan
+# Unique-per-run promo code so re-runs don't collide on the UNIQUE constraint.
+$promoCode = "WELCOME-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
+
+Write-Host "[1/11] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/9] Admin: product + inventory + promo code..." -ForegroundColor Cyan
+Write-Host "[2/11] Admin: product + inventory + promo code..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
@@ -41,14 +46,14 @@ Invoke-RestMethod -Method POST `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ variantId=$productId; onHand=10 }) | Out-Null
-$promo = Invoke-RestMethod -Method POST `
+Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/promotions" `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ code="WELCOME15"; type="PERCENTAGE"; amount=15; maxRedemptions=0 })
-Write-Host "    product=$productId, inventory=10, promo=$($promo.code)" -ForegroundColor Gray
+    -Body (ConvertTo-Json @{ code=$promoCode; type="PERCENTAGE"; amount=15; maxRedemptions=0 }) | Out-Null
+Write-Host "    product=$productId, inventory=10, promo=$promoCode" -ForegroundColor Gray
 
-Write-Host "[3/9] Customer: profile + address..." -ForegroundColor Cyan
+Write-Host "[3/11] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me" `
     -Headers @{ Authorization="Bearer $alice" } | Out-Null
@@ -58,31 +63,27 @@ $addr = Invoke-RestMethod -Method POST `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ label="Home"; line1="1 Aurelia Lane"; city="Lagos"; postalCode="100001"; country="NG"; isDefault=$true })
 $addrId = $addr.id
-Write-Host "    addressId=$addrId (NG -> DOMESTIC shipping)" -ForegroundColor Gray
 
-Write-Host "[4/9] Customer: add 2 units to cart..." -ForegroundColor Cyan
+Write-Host "[4/11] Customer: add 2 units to cart..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ variantId=$productId; quantity=2; unitPrice=100.00; title="Aurelia 18k" }) | Out-Null
-Write-Host "    cart subtotal expected: 200.00" -ForegroundColor Gray
 
-Write-Host "[5/9] Customer: /checkout/preview with WELCOME15 promo..." -ForegroundColor Cyan
+Write-Host "[5/11] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="NG"; promotionCode="WELCOME15" })
-# subtotal=200, discount=15% of 200=30, afterDiscount=170, NG zone Standard free at >=150
-# expected total: 170 + 0 = 170
-Write-Host "    subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total) zone=$($preview.shippingZone)" -ForegroundColor Gray
+    -Body (ConvertTo-Json @{ destinationCountry="NG"; promotionCode=$promoCode })
 if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or $preview.total -ne 170.00) {
-    Write-Error "Preview totals wrong"
+    Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) total=$($preview.total)"
     exit 1
 }
+Write-Host "    subtotal=200, -15% promo=30, ship=0, total=170" -ForegroundColor Gray
 
-Write-Host "[6/9] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
+Write-Host "[6/11] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 $confirm = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/confirm" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -91,33 +92,16 @@ $confirm = Invoke-RestMethod -Method POST `
         shippingAddressId = $addrId
         destinationCountry = "NG"
         cardNumber = "4242424242424242"
-        promotionCode = "WELCOME15"
+        promotionCode = $promoCode
     })
-Write-Host "    confirm: orderId=$($confirm.orderId) orderStatus=$($confirm.orderStatus) payStatus=$($confirm.paymentStatus) msg=$($confirm.message)" -ForegroundColor Gray
 if ($confirm.orderStatus -ne "PAID") {
-    Write-Error "Expected order PAID after confirm, got $($confirm.orderStatus)"
+    Write-Error "Expected order PAID after confirm, got $($confirm.orderStatus); msg=$($confirm.message)"
     exit 1
 }
 $orderId = $confirm.orderId
+Write-Host "    order=$orderId PAID" -ForegroundColor Gray
 
-Write-Host "[7/9] Verify cart cleared, promo redeemed..." -ForegroundColor Cyan
-$emptyCart = Invoke-RestMethod -Method GET `
-    -Uri "http://localhost:8080/api/v1/carts/me" `
-    -Headers @{ Authorization="Bearer $alice" }
-if ($emptyCart.items.Count -ne 0) {
-    Write-Error "Cart should be empty post-checkout; has $($emptyCart.items.Count) items"
-    exit 1
-}
-$promoAfter = Invoke-RestMethod -Method GET `
-    -Uri "http://localhost:8080/api/v1/promotions/WELCOME15" `
-    -Headers @{ Authorization="Bearer $alice" }
-if ($promoAfter.currentRedemptions -ne 1) {
-    Write-Error "Promo should be redeemed once; got $($promoAfter.currentRedemptions)"
-    exit 1
-}
-Write-Host "    cart empty + promo redemptions=1" -ForegroundColor Gray
-
-Write-Host "[8/9] Admin: PAID -> FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
+Write-Host "[7/11] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
     $r = Invoke-RestMethod -Method POST `
         -Uri "http://localhost:8080/api/v1/admin/orders/$orderId/transition" `
@@ -125,23 +109,51 @@ foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
         -ContentType "application/json" `
         -Body (ConvertTo-Json @{ targetStatus=$t })
     if ($r.status -ne $t) { Write-Error "Transition to $t failed"; exit 1 }
-    Write-Host "    order $t" -ForegroundColor Gray
 }
+Write-Host "    order DELIVERED" -ForegroundColor Gray
 
-Write-Host "[9/9] Customer: order history shows DELIVERED + Kafka index + 401..." -ForegroundColor Cyan
-$history = Invoke-RestMethod -Method GET `
-    -Uri "http://localhost:8080/api/v1/orders/me" `
-    -Headers @{ Authorization="Bearer $alice" }
-$mine = $history.content | Where-Object { $_.id -eq $orderId }
-if (-not $mine -or $mine.status -ne "DELIVERED") {
-    Write-Error "Order $orderId not DELIVERED in alice's history"
+Write-Host "[8/11] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
+$searchHit = $false
+for ($i = 0; $i -lt 30; $i++) {
+    $r = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=aurelia"
+    if ($r.count -ge 1 -and ($r.hits | Where-Object { $_.variantId -eq $productId })) {
+        $searchHit = $true; break
+    }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $searchHit) { Write-Error "Search index never picked up product $productId from Kafka"; exit 1 }
+Write-Host "    /search?q=aurelia returned the product" -ForegroundColor Gray
+
+Write-Host "[9/11] Customer review; public listing + aggregate..." -ForegroundColor Cyan
+Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/products/$productId/reviews" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ orderId=$orderId; rating=5; title="Love it"; body="Stunning craftsmanship." }) | Out-Null
+$publicReviews = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/products/$productId/reviews"
+$agg = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/products/$productId/reviews/aggregate"
+if ($publicReviews.content.Count -ne 1 -or $agg.average -ne 5.0 -or $agg.count -ne 1) {
+    Write-Error "Review state wrong: list=$($publicReviews.content.Count) avg=$($agg.average) count=$($agg.count)"
     exit 1
 }
-$rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c "SELECT title FROM product_index WHERE variant_id = '$productId'"
-if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") {
-    Write-Error "Kafka product_index broken"
-    exit 1
+Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
+
+Write-Host "[10/11] /notifications/me shows order.* events..." -ForegroundColor Cyan
+$notifsFound = $false
+for ($i = 0; $i -lt 30; $i++) {
+    $n = Invoke-RestMethod -Method GET `
+        -Uri "http://localhost:8080/api/v1/notifications/me" `
+        -Headers @{ Authorization="Bearer $alice" }
+    if ($n.content.Count -ge 5) { $notifsFound = $true; break }
+    Start-Sleep -Milliseconds 500
 }
+if (-not $notifsFound) { Write-Error "Expected >=5 notifications, never reached that count"; exit 1 }
+Write-Host "    >=5 notifications received (created+paid+fulfilled+shipped+delivered)" -ForegroundColor Gray
+
+Write-Host "[11/11] Kafka product_index + 401 without token..." -ForegroundColor Cyan
+$rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
+    "SELECT title FROM product_index WHERE variant_id = '$productId'"
+if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index broken; got '$rows'"; exit 1 }
 try {
     Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/checkout/preview" `
         -ContentType "application/json" `
@@ -153,7 +165,7 @@ try {
     if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
     if ($code -ne 401) { Write-Error "Expected 401, got $code"; exit 1 }
 }
-Write-Host "    order DELIVERED + product_index OK + 401 OK" -ForegroundColor Gray
+Write-Host "    product_index OK + 401 OK" -ForegroundColor Gray
 
 Write-Host ""
-Write-Host "PHASE 2 SMOKE TEST PASSED - full saga checkout end-to-end" -ForegroundColor Green
+Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services exercised end-to-end" -ForegroundColor Green

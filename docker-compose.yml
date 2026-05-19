@@ -170,6 +170,60 @@ services:
       retries: 10
     networks: [oriah]
 
+  postgres-notification:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-notification
+    environment:
+      POSTGRES_DB: notification
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: notification
+    ports:
+      - "5440:5432"
+    volumes:
+      - postgres-notification-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification -d notification"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  postgres-review:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-review
+    environment:
+      POSTGRES_DB: review
+      POSTGRES_USER: review
+      POSTGRES_PASSWORD: review
+    ports:
+      - "5441:5432"
+    volumes:
+      - postgres-review-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U review -d review"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
+  postgres-search:
+    image: postgres:16-alpine
+    container_name: oriah-postgres-search
+    environment:
+      POSTGRES_DB: search
+      POSTGRES_USER: search
+      POSTGRES_PASSWORD: search
+    ports:
+      - "5442:5432"
+    volumes:
+      - postgres-search-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U search -d search"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [oriah]
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: oriah-keycloak
@@ -570,6 +624,88 @@ services:
       start_period: 90s
     networks: [oriah]
 
+  notification:
+    image: oriah/notification:dev
+    container_name: oriah-notification
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: notification
+      SPRING_DATASOURCE_PASSWORD: notification
+    ports:
+      - "8090:8090"
+    depends_on:
+      postgres-notification:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8090"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  review:
+    image: oriah/review:dev
+    container_name: oriah-review
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: review
+      SPRING_DATASOURCE_PASSWORD: review
+    ports:
+      - "8091:8091"
+    depends_on:
+      postgres-review:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8091"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
+  search:
+    image: oriah/search:dev
+    container_name: oriah-search
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_USERNAME: search
+      SPRING_DATASOURCE_PASSWORD: search
+    ports:
+      - "8092:8092"
+    depends_on:
+      postgres-search:
+        condition: service_healthy
+      eurekaserver:
+        condition: service_healthy
+      configserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8092"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+    networks: [oriah]
+
 volumes:
   postgres-catalog-data:
   postgres-inventory-data:
@@ -578,6 +714,9 @@ volumes:
   postgres-payment-data:
   postgres-order-data:
   postgres-promotion-data:
+  postgres-notification-data:
+  postgres-review-data:
+  postgres-search-data:
 
 networks:
   oriah:

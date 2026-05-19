@@ -30,5 +30,8 @@
         <module>promotion</module>
         <module>shipping</module>
         <module>checkout</module>
+        <module>notification</module>
+        <module>review</module>
+        <module>search</module>
     </modules>
 </project>

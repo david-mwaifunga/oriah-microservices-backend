@@ -7,6 +7,8 @@ update this before ending and read it at the start.
 
 ## CURRENT STATE — 2026-05-19
 
+**Phase 3 — Notify + Review + Search (backend complete)** — ✅ **complete**. Three final services round out the backend: **notification** (port 8090) consumes the `oriah.order` Kafka topic and records every state change as a notification_log row + log line (email channel is the log stub; pluggable SES/SendGrid later); **review** (port 8091) holds post-purchase reviews (one per customer-product, public listing + aggregate rating endpoints permitAll); **search** (port 8092) maintains a Postgres tsvector index by consuming `catalog.product` events — `GET /api/v1/search?q=...` uses `websearch_to_tsquery` for user-friendly queries. All four event-driven services (inventory, notification, search, and order's publisher) now use the same one-bean Consumer<Message<byte[]>> pattern, dispatching on the `event-type` header. Gateway route ordering bug surfaced + fixed: SCG is first-match (NOT longest-path-wins), so the `product-reviews-route` got an explicit `order: -10` to beat `/api/v1/products/**` for catalog. **The backend is feature-complete for the storefront**: smoke test exercises 12 services through one purchase, then verifies search, reviews + aggregate, and notification fan-out. 27 containers healthy in compose. 14 new tests this phase (notification 3 + review 6 + search 5).
+
 **Phase 2 — Checkout Orchestration (promotion + shipping + checkout)** — ✅ **complete**. Three new services completing the saga: promotion (FIXED/PERCENTAGE codes with expiry + redemption cap), shipping (flat-rate per zone DOMESTIC/REGIONAL/INTERNATIONAL with free-over-threshold), and checkout (stateless orchestrator with Feign clients to cart/promotion/shipping/payment/order). Smoke test drives the full path through `POST /api/v1/checkout/preview` → `POST /api/v1/checkout/confirm` (one call: places order, creates+confirms payment with test card 4242..., transitions order to PAID, redeems promo, clears cart) → admin transitions FULFILLED/SHIPPED/DELIVERED. Gotcha documented: disabled Feign+Resilience4j circuit breaker because the bulkhead dispatches to a pool thread which loses the SecurityContext ThreadLocal, dropping the JWT-forwarding interceptor's Authorization header. Trade-off: synchronous calls on the Tomcat thread, with `safeCall(...)` wrapping each Feign call for graceful degradation. 17 new tests across promotion + shipping; the checkout orchestrator's correctness is exercised via the live smoke test (its logic is mostly orchestration + branching on Feign results).
 
 **Phase 1 — Purchase Flow (customer + cart + payment + order)** — ✅ **complete**. Four new services with strict TDD: customer (6 tests), cart (6), payment (10 incl. unit tests on FakePaymentGateway), order (11 incl. state-machine tests). Full end-to-end smoke test via gateway: alice self-provisions → adds to cart → places order → confirms payment with test card 4242... → maya (admin) drives FULFILLED/SHIPPED/DELIVERED → alice sees DELIVERED in /orders/me. Hand-rolled `OrderStatus.canTransitionTo(...)` codifies the FSM; `FakePaymentGateway` switches on Stripe-style test cards. Order publishes `order.*` events on `oriah.order` Kafka topic. Gateway has routes for every new service. Keycloak realm pre-seeds new roles (USER, CUSTOMER_ADMIN, ORDER_ADMIN, PAYMENT_ADMIN) plus a test user alice (USER only).
@@ -114,13 +116,12 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Phase 3 — Notify + Review + Search (final services)**.
-notification-service consumes the `oriah.order` Kafka topic and "sends"
-emails (log stub for now; SES/SendGrid pluggable later). review-service
-for post-purchase reviews (one per customer per order, requires order
-in DELIVERED state via Feign lookup to order-service). search-service
-for product full-text search (Postgres tsvector index, can swap to
-OpenSearch later).
+**Backend complete.** Next stop is **the frontend (oriah-web)** —
+expand the React storefront from the PLP/PDP scaffold landed in
+Iteration 10 to cover the full purchase flow, account management,
+and an admin dashboard. The backend OpenAPI specs (springdoc on every
+service) give the client a typed contract for every endpoint the
+smoke test exercises.
 
 The 10-step learning ladder is complete. Suggested polish:
 
@@ -218,7 +219,8 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: Phase 2 — promotion + shipping + checkout orchestrator
+(pending)  feat: Phase 3 — notification + review + search (backend complete)
+6c9327f    feat: Phase 2 — promotion + shipping + checkout orchestrator (saga)
 dc2f743    feat: Phase 1 purchase flow — customer + cart + payment + order
 45bb43b    feat: Git-backed Config Server + Mockito javaagent polish (Iteration 3c)
 a8ef340    docs: PROGRESS — Iteration 10 (oriah-web) landed in separate repo
@@ -277,6 +279,15 @@ a68742a    test: Product can be tagged (TDD cycle 4)
 ---
 
 ## Session log
+
+### 2026-05-19 — Phase 3: notification + review + search (backend complete)
+
+- **notification-service** (port 8090): consumes the `oriah.order` Kafka topic, dispatching by the `event-type` header. Each event is recorded as a `notification_log` row with a templated subject/body (separate Template record per event type). "Delivery" is a log line for now — the row layout is set up so a real channel impl (SES/SendGrid) drops in without schema changes. `GET /api/v1/notifications/me` returns the customer's history. 3 tests via the Spring Cloud Stream test-binder.
+- **review-service** (port 8091): one `reviews` row per (productId, keycloakId) via DB UNIQUE; re-posting from the same customer mutates in place (JPA dirty-checking). Public endpoints (GET listing + `/reviews/aggregate` average) are permitAll so the storefront PLP/PDP can render star ratings without auth. Writes need `ROLE_USER`. 6 integration tests.
+- **search-service** (port 8092): Postgres tsvector index. The `document` column is `GENERATED ALWAYS AS (... STORED)` from title + description + tags with weights A/B/C. Native query uses `websearch_to_tsquery` for user-friendly queries; results ranked by `ts_rank` then `updated_at`. Consumes `catalog.product` topic (same Kafka stream catalog publishes to and inventory already consumes) and upserts/deletes the row accordingly. Anonymous read-allowed. 5 end-to-end tests via test-binder.
+- **Gateway route ordering bug:** `/api/v1/products/*/reviews` initially 404'd because SCG is first-match (not longest-path), and `catalog-public-route` at `/api/v1/products/**` matched first. Fix: explicit `order: -10` on the product-reviews-route. Documented inline.
+- **Compose** adds 3 more Postgres + 3 service entries. **27 containers total** (10 postgres + 10 spring services + 3 infra + kafka + keycloak). Stack startup ~6 minutes cold.
+- **Smoke test extended to 11 steps:** the full customer journey (steps 1–7) PLUS Kafka-driven search hit (8), customer review with public listing + aggregate (9), notifications fan-out from order events (10), and 401-without-token (11). The full happy path through 12 services takes ~25 seconds on a warm stack.
 
 ### 2026-05-19 — Phase 2: promotion + shipping + checkout orchestrator
 

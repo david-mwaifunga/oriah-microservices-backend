@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-notification:5432/notification
+    username: ${SPRING_DATASOURCE_USERNAME:notification}
+    password: ${SPRING_DATASOURCE_PASSWORD:notification}
+  config:
+    import: "configserver:http://configserver:8888"
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
+spring.cloud.stream.kafka.binder.brokers: kafka:9092
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eurekaserver:8761/eureka/

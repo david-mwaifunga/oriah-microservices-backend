@@ -62,6 +62,30 @@ spring:
               uri: lb://checkout
               predicates:
                 - Path=/api/v1/checkout/**
+            - id: notification-route
+              uri: lb://notification
+              predicates:
+                - Path=/api/v1/notifications/**
+            - id: review-route
+              uri: lb://review
+              predicates:
+                - Path=/api/v1/reviews/**
+            # Review-service owns the product reviews path. SCG is
+            # first-match (longest-path-NOT-evaluated), so the more
+            # general catalog-public-route at /api/v1/products/** wins
+            # by default. Give this route a lower `order` (-10 < 0
+            # default) so it's evaluated before catalog. See the
+            # docs/ARCHITECTURE.md note "Gateway route ordering" for
+            # context.
+            - id: product-reviews-route
+              uri: lb://review
+              order: -10
+              predicates:
+                - Path=/api/v1/products/*/reviews,/api/v1/products/*/reviews/**
+            - id: search-route
+              uri: lb://search
+              predicates:
+                - Path=/api/v1/search/**
 
 server:
   # The conventional edge port. Frontend code talks to localhost:8080.
