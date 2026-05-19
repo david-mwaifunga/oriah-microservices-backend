@@ -1,0 +1,14 @@
+# Test-only profile activated by @ActiveProfiles({"native", "test"}) on
+# the test class. The 'native' profile is what activates Spring Cloud
+# Config's native (classpath/filesystem) backend; this file then tells
+# it where to look.
+#
+# Production / dev uses the git backend declared in src/main/resources/
+# application.yaml; this file is the test counterpart.
+
+spring:
+  cloud:
+    config:
+      server:
+        native:
+          search-locations: classpath:/config/

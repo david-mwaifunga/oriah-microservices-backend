@@ -173,11 +173,20 @@ services:
     image: oriah/configserver:dev
     container_name: oriah-configserver
     environment:
-      # 'native' must stay active — it's what activates Spring Cloud Config's
-      # filesystem backend (NativeEnvironmentRepository). Without it the server
-      # falls back to a Git backend and demands `spring.cloud.config.server.git.uri`.
-      # 'docker' adds the docker-network Eureka URL.
-      SPRING_PROFILES_ACTIVE: native,docker
+      SPRING_PROFILES_ACTIVE: docker
+      # Spring Cloud Config's git backend reads from the path mounted
+      # below. Using file:// (not https://) so dev works without GitHub
+      # auth; production would point at an https://... remote.
+      CONFIG_REPO_URI: file:///workspace/config-repo
+      CONFIG_REPO_BRANCH: master
+    volumes:
+      # Read-write mount of the local config-repo. JGit (under Spring
+      # Cloud Config) needs write access to maintain its index/HEAD/
+      # reflog even when the URI is file:// — basedir indirection
+      # doesn't fully solve it for same-host file URIs. Force-pull is
+      # on so the configserver resets divergences; the host can still
+      # edit and commit normally.
+      - ../config-repo:/workspace/config-repo
     ports:
       - "8888:8888"
     healthcheck:

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -15,13 +16,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Smoke tests for the Config Server.
  *
- * <p>Boots the full Spring Boot context with {@code @EnableConfigServer}
- * active and verifies the well-known endpoint
- * {@code /{application}/{profile}} returns the YAML we shipped at
- * {@code classpath:/config/}.
+ * <p>Production runs against a Git backend
+ * ({@code spring.cloud.config.server.git.uri}); tests activate the
+ * {@code test} profile to flip the backend to {@code native} and read
+ * bundled fixtures from {@code src/test/resources/config/} — keeps the
+ * suite hermetic (no temp git repos, no JGit fixtures).
  */
 @SpringBootTest
 @AutoConfigureMockMvc
+@ActiveProfiles({"native", "test"})
 @TestPropertySource(properties = {
         // Disable Eureka in tests so this server doesn't hang trying to
         // register with a Eureka that isn't running.
@@ -33,7 +36,7 @@ class ConfigServerApplicationTests {
     private MockMvc mvc;
 
     @Test
-    @DisplayName("server boots and serves the catalog default profile")
+    @DisplayName("server boots and serves the catalog default profile from the bundled fixture")
     void servesCatalogDefaultProfile() throws Exception {
         // /{application}/{profile} — 'default' is the implicit profile.
         mvc.perform(get("/catalog/default"))

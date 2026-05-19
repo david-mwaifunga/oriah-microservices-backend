@@ -5,7 +5,11 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-05-18
+## CURRENT STATE — 2026-05-19
+
+**Iteration 3c: Git-backed Config Server** — ✅ **complete**. Config Server now reads from a sibling repo at `../config-repo/` (commit `5e6619d`) via `spring.cloud.config.server.git.uri=file:///.../config-repo`. The bundled native classpath fixture moved to test resources; tests activate `@ActiveProfiles({"native","test"})` to flip the backend, keeping the suite hermetic. docker-compose mounts the config-repo rw (JGit needs write access to its working tree even on local `file://` sources; documented). Full end-to-end smoke test passes against the new backend.
+
+**Polish: Mockito javaagent** — ✅ **complete**. Parent pom adds `maven-surefire-plugin` with `-javaagent:${org.mockito:mockito-core:jar}` plus `maven-dependency-plugin:properties` to resolve the jar path. The "Mockito is currently self-attaching" warning is gone from every test run; the build is now future-JDK-proof.
 
 **Iteration 10: React + TS + Vite storefront** — ✅ **complete**. New separate repo at `../oriah-web/`. PLP (`/`) + PDP (`/products/:id`) only — cart/checkout/admin defer to later iterations. Vite 7 dev server proxies `/api/*` to the gateway at :8080, so the browser hits same-origin. Stack: React 19 + TS 5.9 strict + react-router-dom 7 + TanStack Query 5 + Tailwind 3 + Vitest 3 + Testing Library. **14 component/route tests green** covering AvailabilityBadge enum mapping, ProductCard rendering + link semantics, ProductList loading/error/empty/populated states, ProductDetail with availability badge + 404 path. End-to-end verified live: dev server returns 200 on `/`, `/api/v1/products` proxied successfully and returned 3 product records from the running docker stack. Frontend deliberately NOT in docker-compose — Vite hot-reload + npm-only iteration loop wins for dev.
 
@@ -106,21 +110,31 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Iteration 3c: Git-backed Config Server.** Swap the native filesystem
-backend (`spring.profiles.active=native`, classpath:/config/) for a
-real Git repo. Demonstrates the hot config refresh pattern via
-`@RefreshScope` + `POST /actuator/refresh` (or, better, the Spring
-Cloud Bus `/monitor` webhook flow). Requires a separate git repo at
-`oriah/config-repo/` (or a remote, e.g. github.com/oriah/config-repo).
+The 10-step learning ladder is complete. Suggested next steps (no
+official numbering yet — pick by what you want to learn next):
 
-**Polish — Mockito javaagent.** Wire `mockito-core` as a Surefire/Failsafe
-`-javaagent` to silence the "Mockito is currently self-attaching"
-warning on every test run (cosmetic, but future JDK will require it).
+- **@RefreshScope demo.** Now that the Config Server is git-backed,
+  add `@RefreshScope` to a `@ConfigurationProperties` bean in catalog,
+  bind it to a key in `config-repo/catalog.yaml`, then change the
+  YAML + `POST /actuator/refresh` to see it reload at runtime without
+  a service restart. Best small demo of why externalized config is
+  load-bearing.
+- **Pact contract tests** between catalog (producer of the
+  `catalog.product` events) and inventory (consumer) — proves the
+  schema stays compatible without sharing a Java library.
+- **Outbox pattern.** Replace the AFTER_COMMIT bridge with a
+  transactional outbox + relay for true at-least-once delivery (closes
+  the JVM-crash-between-commit-and-Kafka-send hole).
+- **K8s/Helm.** Move from docker-compose to a kind/k3s cluster.
+- **Cart + Checkout screens** on oriah-web — the storefront's missing
+  half.
+- **Admin login flow** on oriah-web — Keycloak OAuth2-PKCE.
 
 **Past skipped iteration — Iteration 7: ~~Keycloak + Spring Security OAuth2~~** ✅ DONE.
 **Past skipped iteration — Iteration 8: ~~Kafka + Spring Cloud Stream~~** ✅ DONE.
 **Past skipped iteration — Iteration 9: ~~Docker Compose for local dev~~** ✅ DONE.
 **Past skipped iteration — Iteration 10: ~~React + TS + Vite storefront~~** ✅ DONE.
+**Past skipped iteration — Iteration 3c: ~~Git-backed Config Server~~** ✅ DONE.
 
 Today the admin endpoints (`/api/v1/admin/**`) are wide open. Real
 production microservices secure them with OAuth2 + JWT validated
@@ -193,7 +207,9 @@ applicable — though pure platform modules may only need `controller/` and `con
 ### Recent commits
 
 ```
-(pending)  feat: oriah-web — PLP + PDP storefront (Iteration 10)    [separate repo: ../oriah-web]
+(pending)  feat: Git-backed Config Server + Mockito javaagent polish (Iteration 3c)
+a8ef340    docs: PROGRESS — Iteration 10 (oriah-web) landed in separate repo
+6f4f497    [oriah-web] feat: PLP + PDP storefront scaffold (Iteration 10)
 9ee5fa4    feat: Kafka + Spring Cloud Stream — product.* events (Iteration 8)
 c8cf203    feat: Docker Compose for local dev (Iteration 9)
 181aaaf    feat: Keycloak + OAuth2 Resource Server (Iteration 7)
@@ -248,6 +264,14 @@ a68742a    test: Product can be tagged (TDD cycle 4)
 ---
 
 ## Session log
+
+### 2026-05-19 — Iteration 3c (Git-backed Config Server) + Mockito polish
+
+- Created `oriah/config-repo/` (separate git repo, commit `5e6619d`) holding `application.yaml` + `catalog.yaml` + `inventory.yaml` plus a `README.md` describing the contract.
+- Swapped `infra/configserver/src/main/resources/application.yaml` from `spring.profiles.active=native` to `spring.cloud.config.server.git.uri=...` with env-overrides for docker. Moved the bundled YAMLs from `src/main/resources/config/` to `src/test/resources/config/` so tests still have a native fixture. Test class activates `@ActiveProfiles({"native","test"})` and a new `application-test.yaml` declares the native search-locations.
+- docker-compose mounts the config-repo rw (initial `:ro` attempt failed: JGit needs write access to its own working tree's `index.lock`/`HEAD` even on local `file://` URIs; basedir alone wasn't enough). Configserver image rebuilt with run-noble-base.
+- **Mockito javaagent polish:** parent pom adds `maven-surefire-plugin` configuration `-javaagent:${org.mockito:mockito-core:jar} -Xshare:off`, plus `maven-dependency-plugin:properties` (default-phase `initialize`) to populate the jar-path property. First attempt used `@{argLine}` for late binding; Surefire didn't substitute it cleanly, so simplified to a literal argLine. Tests now run with no "self-attaching" warning.
+- Smoke test against the live stack passes end-to-end: configserver returns `version: 5e6619d...` (git SHA) for `/catalog/docker`, catalog boots and pulls its config from git, full JWT + POST + Kafka + GET + 401 flow still green.
 
 ### 2026-05-18 — Iteration 10: oriah-web (PLP + PDP)
 

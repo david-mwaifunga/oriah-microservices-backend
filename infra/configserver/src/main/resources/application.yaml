@@ -1,18 +1,27 @@
 spring:
   application:
     name: configserver
-  profiles:
-    # 'native' tells Spring Cloud Config to serve from local files instead of Git.
-    # Swap to 'git' once we add a backing repository in a later cycle.
-    active: native
+  # Default to a Git backend (the production-aligned setup).
+  # CONFIG_REPO_URI env var overrides this for the docker profile where
+  # the repo is mounted into /workspace/config-repo. Tests override via
+  # @TestPropertySource to point at a temp clone of the bundled fixture.
   cloud:
     config:
       server:
-        native:
-          # Classpath-based backend: serves the YAML files we ship in
-          # src/main/resources/config/. Future cycle switches this to
-          # file:./config-repo/ (a local clone) or a remote Git URL.
-          search-locations: classpath:/config/
+        git:
+          uri: ${CONFIG_REPO_URI:file:///c/Users/mwaif/OneDrive/Documents/github/oriah/config-repo}
+          default-label: ${CONFIG_REPO_BRANCH:master}
+          # JGit clones into this writable working dir. Lets us mount
+          # the source repo read-only at $CONFIG_REPO_URI without
+          # JGit trying to write index.lock back to it.
+          basedir: ${CONFIG_REPO_BASEDIR:${java.io.tmpdir}/config-repo-checkout}
+          # 'force-pull' overwrites any local divergence on the cloned
+          # working copy with what's on the remote. Dev-friendly; in
+          # prod we'd usually leave it false and gate updates via PRs.
+          force-pull: true
+          # Skip SSL verification only for self-signed git hosts (no-op
+          # for file:// URLs but doesn't hurt to declare).
+          skip-ssl-validation: true
 
 server:
   # Spring Cloud Config's well-known port. Clients default to here.

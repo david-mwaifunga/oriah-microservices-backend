@@ -9,6 +9,99 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
+## Git-backed Config Server (Iteration 3c)
+
+**Decision:** Replace the native filesystem backend
+(`spring.cloud.config.server.native.search-locations=classpath:/config/`)
+with a Git backend pointed at a separate `oriah/config-repo` repository.
+
+```yaml
+spring.cloud.config.server.git:
+  uri: ${CONFIG_REPO_URI:file:///c/Users/mwaif/.../config-repo}
+  default-label: ${CONFIG_REPO_BRANCH:master}
+  basedir: ${CONFIG_REPO_BASEDIR:${java.io.tmpdir}/config-repo-checkout}
+  force-pull: true
+  skip-ssl-validation: true
+```
+
+### Why move to git
+
+- **Audit trail.** Every config change is now a commit. `git log
+  config-repo/catalog.yaml` is the answer to "when did this property
+  change and why."
+- **Hot-refresh is real.** With git, the Config Server re-clones on
+  `POST /actuator/refresh`. A client with `@RefreshScope` on a
+  `@ConfigurationProperties` bean picks up the new value without a
+  restart. Native classpath can't do that — the JAR is baked.
+- **Branch/label is the rollback button.** Pointing the server at
+  `default-label: previous-good` reverts every client on its next
+  refresh. No deploy needed.
+
+### The two-repo layout
+
+- `oriah-api/` — code repo (this one).
+- `oriah/config-repo/` — sibling git repo. Three YAMLs only:
+  `application.yaml`, `catalog.yaml`, `inventory.yaml`.
+
+The Config Server's URI points at the local clone via `file:///` for
+dev. Production points at `https://github.com/<org>/config-repo` (or
+similar remote).
+
+### Tests stay hermetic via the `native` profile
+
+We didn't want every Config Server test to require a temp git repo
+fixture, so the test class activates `@ActiveProfiles({"native",
+"test"})`. The `native` profile flips Spring Cloud Config back to its
+classpath backend; `application-test.yaml` declares the
+`search-locations: classpath:/config/`, and the fixture YAMLs moved
+from `src/main/resources/config/` to `src/test/resources/config/`.
+
+This means **production uses git, tests use native**. Both are first-
+class Spring Cloud Config backends; activating one or the other via
+profile is the idiom.
+
+### The Docker mount gotcha
+
+JGit's working-tree operations (index.lock, HEAD updates, fetch) need
+write access to the directory it's pointed at, even when the URI is a
+`file://` URL on the same host. We tried mounting `../config-repo` as
+`:ro` and pointing `basedir` at a writable temp dir; JGit still tried
+to write `index.lock` to the source path, not the basedir. The fix:
+mount the source rw, and rely on `force-pull: true` to keep the
+configserver's view of the working tree in sync with whatever the
+developer committed locally.
+
+For prod, this dance doesn't arise — the URI is a real `https://`
+remote and JGit clones from scratch into `basedir`.
+
+---
+
+## Mockito as a Java agent (polish, post-Iteration 8)
+
+**Decision:** Declare `mockito-core` explicitly as a Surefire
+`-javaagent`, instead of letting Mockito self-attach at first use.
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-surefire-plugin</artifactId>
+  <configuration>
+    <argLine>-javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+  </configuration>
+</plugin>
+```
+
+Plus the dependency-plugin's `properties` goal to populate the
+`${org.mockito:mockito-core:jar}` property.
+
+**Why:** without this, every test run prints "Mockito is currently
+self-attaching to enable the inline-mock-maker. This will no longer
+work in future releases of the JDK." A future JDK will turn that
+warning into a hard error; declaring the agent now future-proofs the
+build.
+
+---
+
 ## Kafka + Spring Cloud Stream (Iteration 8)
 
 **Decision:** Catalog publishes domain events (`product.created`,

@@ -127,7 +127,49 @@
                         </annotationProcessorPaths>
                     </configuration>
                 </plugin>
+                <!--
+                    Surefire with Mockito attached as an explicit Java agent.
+                    Without this, Mockito self-attaches at first use and the JDK
+                    prints "Mockito is currently self-attaching to enable the
+                    inline-mock-maker. This will no longer work in future
+                    releases of the JDK." A future JDK will turn that warning
+                    into a hard failure; declaring the agent now future-proofs us.
+
+                    The path to the mockito-core jar is exposed as a Maven
+                    property by maven-dependency-plugin:properties (configured
+                    below). The property name is the GAV of the artifact:
+                    `org.mockito:mockito-core:jar` (no version — Maven resolves
+                    via the BOM-managed version).
+                -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <configuration>
+                        <argLine>-javaagent:${org.mockito:mockito-core:jar} -Xshare:off</argLine>
+                    </configuration>
+                </plugin>
             </plugins>
         </pluginManagement>
+        <!--
+            maven-dependency-plugin:properties resolves every dependency's
+            jar path and stamps it into a Maven property named after the
+            artifact's GA(:T). Bound to 'initialize' (the default phase for
+            this goal) so the property exists by the time surefire's argLine
+            is evaluated.
+        -->
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-test-dependency-paths</id>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
     </build>
 </project>
