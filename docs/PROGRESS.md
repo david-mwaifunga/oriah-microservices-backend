@@ -116,12 +116,80 @@ update this before ending and read it at the start.
 
 ### Next exact action
 
-**Backend complete.** Next stop is **the frontend (oriah-web)** —
-expand the React storefront from the PLP/PDP scaffold landed in
-Iteration 10 to cover the full purchase flow, account management,
-and an admin dashboard. The backend OpenAPI specs (springdoc on every
-service) give the client a typed contract for every endpoint the
-smoke test exercises.
+**Phase 4 — Observability + Production-readiness Polish.**
+
+After Phase 3 we audited the stack for "easy to debug in a 12-service
+mesh" and found clear gaps. Land these BEFORE the frontend expansion
+so every storefront request can be traced end-to-end the moment we
+start exercising the full system from a browser.
+
+**Tier 1 — must-have:**
+
+- **Distributed tracing.** Wire `micrometer-tracing-bridge-otel` +
+  `opentelemetry-exporter-zipkin` into a shared
+  `shared/oriah-observability-starter` Spring Boot starter that every
+  service imports. Add a `zipkin` container (port 9411) to compose.
+  Auto-instruments HTTP server, RestClient, Feign, WebFlux/SCG,
+  Spring Cloud Stream Kafka producer/consumer, JDBC. Log pattern
+  becomes `[%X{traceId:-},%X{spanId:-}]` so every line carries the
+  trace.
+- **Centralized log aggregation.** Add Grafana **Loki** + **Promtail**
+  (or Docker's Loki log driver) to scrape every service's stdout. One
+  query language across all services; filter by service + traceId.
+- **Metrics + dashboards.** Add **Prometheus** scraping
+  `/actuator/prometheus` on every service. **Grafana** with pre-loaded
+  dashboards: JVM, HTTP req-rate/latency histogram per service, Kafka
+  consumer lag, Postgres connection pool.
+- **Global exception handler.** Every service gets a
+  `@RestControllerAdvice` mapping `IllegalArgumentException` → 400,
+  `IllegalStateException` → 409, `EntityNotFoundException` → 404,
+  validation errors → RFC 7807 `application/problem+json`. Today's
+  500s on FSM-illegal transitions become structured errors.
+- **JPA auditing.** `@EnableJpaAuditing` +
+  `@EntityListeners(AuditingEntityListener.class)` +
+  `@CreatedDate`/`@LastModifiedDate`/`@CreatedBy`/`@LastModifiedBy`
+  on every entity. `AuditorAware<String>` pulls the Keycloak `sub`.
+
+**Tier 2 — book-derived gaps (Eazy Bytes microservices syllabus):**
+
+- **Resilience4j polish.** Add explicit `Retry` (3 tries, 500ms
+  backoff) and `RateLimiter` to the checkout orchestrator's Feign
+  clients. Exercises the full Resilience4j toolbox the book covers
+  (CB, Retry, RateLimiter, Bulkhead, TimeLimiter), not just CB.
+- **Spring Cloud Gateway hardening.** `RequestRateLimiter` filter on
+  public storefront routes (RedisRateLimiter — adds a redis
+  container). Custom logging filter (INFO: method+path+status+latency).
+  `TokenRelayGatewayFilterFactory` to demonstrate gateway-as-OAuth2-
+  client + JWT relay (today every service validates the JWT itself).
+- **Spring Cloud Bus.** Connect Config Server + clients via
+  `spring-cloud-bus-kafka` so `POST /actuator/busrefresh` broadcasts a
+  refresh signal to every client at once.
+- **@RefreshScope demo.** Add `@RefreshScope` to one
+  `@ConfigurationProperties` bean in catalog (e.g.,
+  `LOW_STOCK_THRESHOLD` moves out of code into config). Commit a
+  change to `config-repo`, hit `POST /actuator/busrefresh`, watch the
+  threshold change live.
+- **Idempotency keys.** Payment service accepts an `Idempotency-Key`
+  header on `/intents/{id}/confirm`; repeat calls with the same key
+  return the original outcome instead of re-charging.
+- **OpenAPI aggregation at gateway.** Point gateway's springdoc at
+  every registered service via `springdoc.swagger-ui.urls`. One
+  Swagger UI showing all 12 services from
+  `http://localhost:8080/swagger-ui.html`.
+
+**Tier 3 — defer until needed:**
+
+- Secrets via `spring-cloud-starter-vault-config` (HashiCorp Vault).
+- K8s manifests + Helm chart.
+- Eureka basic-auth on the registry.
+- HTTPS termination at the gateway via a self-signed cert.
+- Pact contract tests for the catalog→inventory event schema.
+- Outbox pattern for true at-least-once Kafka delivery.
+
+**TDD throughout.** Each new bean (advice, auditor, filter, etc.)
+lands with a failing test first. Observability is infra-heavy so some
+tests will be "container comes up + endpoint returns" smoke tests
+rather than unit tests; that's fine.
 
 The 10-step learning ladder is complete. Suggested polish:
 

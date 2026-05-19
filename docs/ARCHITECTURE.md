@@ -9,6 +9,59 @@ decisions below operationalize that spec for iteration 1.
 
 ---
 
+## Observability gap audit (post-Phase 3)
+
+After landing 12 services we audited the stack against "could a new
+developer debug a failing storefront request without me?" The current
+state is:
+
+- **Logging**: every service uses Lombok `@Slf4j`. Conventions
+  (INFO on state changes, DEBUG on reads) are followed by discipline,
+  not enforced by tooling. Plain text format — no `traceId`/`spanId`
+  in the line.
+- **Comments**: present on most classes (class-level Javadoc) and on
+  every non-obvious choice (inline comments explain *why*). Not
+  enforced by Checkstyle/Spotless.
+- **Distributed tracing**: **none**. A 500 in `/checkout/confirm`
+  means grepping 7 service logs by timestamp.
+- **Metrics**: `/actuator/prometheus` exposed (via Config Server
+  default) but nothing scrapes it. No dashboards.
+- **Log aggregation**: `docker logs <service>` per container only. No
+  Loki / ELK.
+- **Global exception handling**: missing in every service. Domain
+  exceptions (`IllegalStateException` from FSM, `IllegalArgumentException`
+  from value-object guards) become 500s today; the wire response is
+  Spring Boot's default error JSON, not RFC 7807 Problem Details.
+- **JPA auditing**: only `createdAt` (set manually in entity
+  constructors). No `createdBy`/`updatedBy`/`updatedAt` via Spring
+  Data's `@CreatedDate` / `AuditorAware`.
+
+**The fix** is a focused Phase 4 sub-iteration documented in
+`PROGRESS.md → Next exact action`. The summary:
+
+1. Shared `oriah-observability-starter` Maven module that every
+   service imports. Pulls in Micrometer Tracing + OpenTelemetry
+   exporter + JSON-format logback config. One place to version-bump.
+2. **Zipkin** container in compose (port 9411) for trace
+   visualization. Spans propagate across HTTP (Feign + RestClient),
+   reactive WebFlux (gateway), Kafka producer+consumer (Spring Cloud
+   Stream auto-instrumented), and JDBC (Hibernate auto-instrumented).
+3. **Prometheus** scrapes every service every 15s. **Grafana** reads
+   from Prometheus + Loki and ships pre-loaded dashboards.
+4. **`@RestControllerAdvice`** in every service handling the four
+   domain exception categories → RFC 7807 `application/problem+json`.
+5. **JPA auditing** + `AuditorAware<String>` pulling Keycloak `sub`
+   from `SecurityContextHolder`. Every entity gains
+   `created_by`/`updated_by`/`updated_at` columns + a Flyway V2 per
+   service.
+
+The reason this lands **before** the frontend expansion: the moment a
+browser starts driving the saga, trace correlation becomes the single
+most valuable debugging affordance. Without it, every frontend bug
+becomes archaeology across 12 log streams.
+
+---
+
 ## Git-backed Config Server (Iteration 3c)
 
 **Decision:** Replace the native filesystem backend
