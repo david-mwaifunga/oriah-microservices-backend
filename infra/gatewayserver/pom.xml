@@ -53,6 +53,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!--
+            Cross-cutting observability: tracing + metrics + JSON logs.
+            See shared/oriah-observability-starter. The Gateway, being a
+            WebFlux app, benefits from server-span tracing the most —
+            it's the entrypoint where the traceId is born.
+        -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-observability-starter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Lombok: @Slf4j on the application class for the startup banner. -->
         <dependency>
             <groupId>org.projectlombok</groupId>

@@ -31,6 +31,18 @@
         </dependency>
 
         <!--
+            Cross-cutting observability: Micrometer Tracing bridged to
+            OTel + Zipkin exporter, Prometheus registry, JSON logback
+            with traceId/spanId MDC fields. One dependency, every
+            module traces — see shared/oriah-observability-starter.
+        -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-observability-starter</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!--
             Eureka Client. The Config Server registers with Eureka so domain
             services (catalog, future inventory) can discover its URL via the
             registry rather than hardcoding localhost:8888. Disabled in tests

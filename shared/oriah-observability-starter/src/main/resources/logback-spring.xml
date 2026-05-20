@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Oriah cross-service logback config. Lives in oriah-observability-starter
+    so every Spring Boot module picks up the same JSON layout the moment it
+    declares the dependency.
+
+    Each log event is rendered as a one-line JSON object including:
+      - ISO-8601 UTC timestamp
+      - level / logger name / thread name / message
+      - all MDC entries, notably traceId + spanId injected by Micrometer
+        Tracing's MDC binder, so a Loki query like {service="checkout"} |~
+        "traceId=abc123" lights up the full call path
+      - stack trace (root-cause-first, truncated at 2KB to keep lines parseable)
+      - a fixed "service" field bound to spring.application.name so the
+        Promtail label and Loki query language stay simple
+
+    A logback-spring.xml in a consumer module's own resources would still
+    take precedence (classpath ordering): we don't break anyone's local
+    override, we just give a working default.
+-->
+<configuration>
+
+    <!--
+        spring.application.name isn't known until Spring's environment is
+        bound, so we read it via Spring's LogbackInitializer hook into a
+        Logback context-scoped property.
+    -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="unknown"/>
+
+    <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <timeZone>UTC</timeZone>
+                    <pattern>yyyy-MM-dd'T'HH:mm:ss.SSS'Z'</pattern>
+                </timestamp>
+                <version/>
+                <logLevel/>
+                <loggerName/>
+                <threadName/>
+                <message/>
+                <mdc/>
+                <stackTrace>
+                    <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                        <maxLength>2048</maxLength>
+                        <rootCauseFirst>true</rootCauseFirst>
+                    </throwableConverter>
+                </stackTrace>
+                <pattern>
+                    <pattern>{"service":"${appName:-unknown}"}</pattern>
+                </pattern>
+            </providers>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="JSON_CONSOLE"/>
+    </root>
+
+    <!--
+        Default per-package levels. Service-specific levels still come from
+        the Config Server (e.g., logging.level.com.oriah.catalog: DEBUG).
+    -->
+    <logger name="com.oriah" level="INFO"/>
+    <logger name="org.springframework.cloud.stream" level="INFO"/>
+    <logger name="org.apache.kafka" level="WARN"/>
+</configuration>

@@ -1,7 +1,0 @@
-Placeholder for cross-cutting libraries shared across services:
-  - common-domain/        (DTOs, Kafka event contracts)
-  - common-security/      (OAuth2 Resource Server config, token relay helpers)
-  - common-observability/ (Micrometer + OpenTelemetry instrumentation)
-
-Added as services grow and we need to deduplicate cross-cutting concerns.
-Each library here is a regular jar that services depend on.

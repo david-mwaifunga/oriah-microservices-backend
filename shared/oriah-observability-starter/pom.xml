@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>shared</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>oriah-observability-starter</artifactId>
+    <packaging>jar</packaging>
+
+    <name>oriah-observability-starter</name>
+    <description>
+        Cross-cutting observability stack: distributed tracing (Micrometer Tracing
+        bridged to OpenTelemetry, exported to Zipkin), JSON-format Logback config
+        with traceId/spanId MDC fields for correlation, and metrics exposure via
+        the Actuator + Prometheus registry. Every Spring service and infra module
+        depends on this jar — one version-bump in the parent BOM updates the
+        observability stack across all 15 modules.
+    </description>
+
+    <dependencies>
+        <!--
+            Spring Boot Actuator gives us /actuator/health, /actuator/info, and
+            (via micrometer-registry-prometheus below) /actuator/prometheus —
+            the scrape endpoint Prometheus reads. Declared 'compile' so any
+            module that depends on this starter gets actuator for free.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!--
+            Micrometer Tracing facade + OTel bridge. Spring Boot's auto-config
+            wires a Tracer bean when this is on the classpath and turns on
+            HTTP-server, RestClient, Feign, WebFlux, Spring Cloud Stream, and
+            JDBC instrumentation. The 'bridge-otel' artifact means we speak
+            Micrometer Tracing's API on the call sites and OpenTelemetry's
+            wire format on the way out.
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <!--
+            OTel's Zipkin v2 exporter. With the bridge above, spans flow:
+            instrumented code -> Micrometer Tracing API -> OTel SDK ->
+            Zipkin exporter -> HTTP POST to zipkin:9411/api/v2/spans.
+        -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-zipkin</artifactId>
+        </dependency>
+
+        <!--
+            Prometheus registry. Adds /actuator/prometheus to every service
+            so Prometheus can scrape http.server.requests, jvm.memory.used,
+            etc. without per-service wiring.
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!--
+            Logstash Logback encoder. Renders each log event as a one-line
+            JSON object, including any MDC values (traceId, spanId). Pinned
+            because Spring Boot's BOM doesn't manage this artifact.
+            8.0 is the current GA on Logback 1.5.x (which SB 4.0.6 brings).
+        -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>8.0</version>
+        </dependency>
+
+        <!--
+            Test deps for the autoconfig sanity check.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
