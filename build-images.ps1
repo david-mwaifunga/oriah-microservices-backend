@@ -45,7 +45,10 @@ $modules = @(
     @{ Path = "services/order";       Image = "oriah/order:dev"          },
     @{ Path = "services/promotion";   Image = "oriah/promotion:dev"      },
     @{ Path = "services/shipping";    Image = "oriah/shipping:dev"       },
-    @{ Path = "services/checkout";    Image = "oriah/checkout:dev"       }
+    @{ Path = "services/checkout";    Image = "oriah/checkout:dev"       },
+    @{ Path = "services/notification"; Image = "oriah/notification:dev"  },
+    @{ Path = "services/review";      Image = "oriah/review:dev"         },
+    @{ Path = "services/search";      Image = "oriah/search:dev"         }
 )
 
 foreach ($m in $modules) {
