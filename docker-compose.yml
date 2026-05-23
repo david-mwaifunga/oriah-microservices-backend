@@ -370,6 +370,13 @@ services:
     # production deploy would back it with Elasticsearch or Cassandra.
     image: openzipkin/zipkin:latest
     container_name: oriah-zipkin
+    environment:
+      # In-memory storage with a 100k-span cap. Default Xmx is too big
+      # for Docker Desktop on Windows and triggers OOM under a few smoke
+      # runs; capping both heap and the rolling span buffer keeps the
+      # container alive for the typical "trace one request" workflow.
+      JAVA_OPTS: "-Xms256m -Xmx512m"
+      MEM_MAX_SPANS: "100000"
     ports:
       - "9411:9411"
     healthcheck:

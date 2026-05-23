@@ -5,6 +5,168 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-05-24
+
+**Phase 4 — Observability + Production-readiness Polish (Tier 1)** —
+✅ **5 of 6 Tier-1 bullets landed; T1.6 deferred to Tier 3.** Every
+storefront request is now end-to-end observable.
+
+The five landed:
+
+- **`shared/oriah-observability-starter`** — new Maven jar every
+  Spring service depends on via a one-line POM add. Bundles:
+  Micrometer Tracing → OTel bridge → Zipkin exporter,
+  `feign-micrometer` (so OpenFeign clients propagate the W3C
+  `traceparent` header — without it the saga showed as N
+  disconnected single-service traces in Zipkin), Prometheus
+  registry, Spring Boot 4's split tracing autoconfig
+  (`spring-boot-zipkin` + `spring-boot-micrometer-tracing-
+  opentelemetry`), and a Logback config that emits JSON with
+  `traceId`/`spanId` MDC fields. One commit (4356e5f); 15 modules
+  pick it up.
+- **Zipkin in compose on :9411** — heap-capped + 100k-span buffer
+  to survive smoke-test runs on Docker Desktop's heap defaults.
+  Tracing endpoint config landed in `config-repo/application.yaml`
+  for the 12 config-client services + as env vars on the 3 infra
+  services. Hitting `/api/v1/checkout/confirm` produces a single
+  trace with **85 spans across 7 services** (gatewayserver →
+  checkout → {cart, promotion, shipping, payment, order}). One
+  commit (8db6f33).
+- **Prometheus + Grafana** — `prom/prometheus:latest` scraping
+  every `/actuator/prometheus` every 15s, target list in
+  `monitoring/prometheus.yml` (16 targets: 12 services + 3 infra
+  + self). `grafana/grafana:latest` with auto-provisioned
+  Prometheus + Loki datasources and a starter dashboard ("Oriah
+  Backend Overview": HTTP req-rate + p95 latency + JVM heap +
+  Kafka consumer lag per service). `/actuator/prometheus` added
+  to permitAll across all 12 service `SecurityConfig`s; infra
+  services updated to include `prometheus` in their local
+  `management.endpoints.web.exposure.include`. http://localhost:9090
+  / http://localhost:3000 (admin/admin). One commit
+  (covers SecurityConfig + monitoring/).
+- **Loki + Promtail** — Loki single-binary on :3100 (distroless,
+  no healthcheck possible — Promtail uses `service_started`
+  instead). Promtail discovers every container via the Docker
+  socket (more portable than mounting `/var/lib/docker/containers`
+  on Docker Desktop Windows) and parses our JSON logs into
+  `level`/`traceId`/`spanId` labels. Loki added as a Grafana
+  datasource with a `derivedFields` rule: click a traceId in a
+  Loki line → deep-link to Zipkin. One commit (d7bbaed).
+- **Global `@RestControllerAdvice` with RFC 7807** —
+  `ProblemDetailExceptionHandler` in the starter, auto-loaded.
+  Maps `IllegalArgumentException` → 400, `IllegalStateException` →
+  409 (catches the FSM-illegal-transition path), `EntityNotFoundException`
+  → 404, `MethodArgumentNotValidException` → 400 with field errors,
+  `AccessDeniedException` → 403 (added in passing — without it the
+  generic catch turned 403s from `@PreAuthorize` failures into
+  500s), else → 500 with traceId echoed in the body. 8 TDD tests
+  in the starter exercise every branch. Architectural choice:
+  shared advice rather than 12 per-service copies — the
+  `@AutoConfiguration` hook was always intended for cross-cutting
+  beans like this. One commit (b012669).
+
+T1.6 (JPA auditing via `@MappedSuperclass` + `AuditorAware`) is
+**deferred**. The attempt revealed that putting `@EnableJpaAuditing`
+on the application class breaks `@WebMvcTest` slices (no `JpaMetamodel`
+in the slice context), and the workarounds (a conditional
+`@AutoConfiguration` enabler with `@ConditionalOnBean(EntityManagerFactory)`)
+broke checkout's Feign Encoder wiring once `spring-data-*` deps
+entered the starter's transitive set. Reverted to keep the
+working trace/metrics/logs/advice stack. Re-attempting with a
+narrower per-service `@Configuration` class — instead of a
+classpath-wide autoconfig — is queued for Tier 3 below.
+
+**Tier 2 + Tier 3 are pending** for this phase; the frontend can
+proceed against the now-observable stack and we can return to
+polish.
+
+The compose topology grew from 27 containers (Phase 3) to **33**:
+`+zipkin +prometheus +grafana +loki +promtail` (plus +1 over Phase
+3's count because the `oriah-keycloak` container is sometimes
+slow on Docker Desktop after long uptime and needs a fresh start
+before `smoke-test.ps1` runs cleanly — known issue, not a
+regression). `docker compose down -v && up -d` then `smoke-
+test.ps1` drives 13 steps end-to-end:
+
+```
+[1/13] JWTs...
+[2/13] Admin: product + inventory + promo code...
+[3/13] Customer: profile + address...
+[4/13] Customer: add 2 units to cart...
+[5/13] Customer: /checkout/preview with promo...
+[6/13] Customer: /checkout/confirm (test card 4242...)...
+[7/13] Admin: FULFILLED -> SHIPPED -> DELIVERED...
+[8/13] Search index (Kafka-driven) finds product...
+[9/13] Customer review; public listing + aggregate...
+[10/13] /notifications/me shows order.* events...
+[11/13] Kafka product_index + 401 without token...
+[12/13] Zipkin saga trace spans the chain...     <-- new
+[13/13] Prometheus scrapes every service...      <-- new
+```
+
+The two new steps assert:
+- A trace exists on `serviceName=checkout` whose span list contains
+  at least cart + checkout + order + payment (proves traceparent
+  propagation across Feign calls).
+- Prometheus's `up{}` query returns `1` for every one of the 12
+  domain service instances (proves the scrape config matches the
+  running set and all `SecurityConfig`s allow the metrics endpoint
+  through).
+
+### Why T1.6 was harder than expected (and what to do next)
+
+The brief asked for `@EnableJpaAuditing` + `AuditorAware<String>` +
+`@EntityListeners(AuditingEntityListener.class)` on every entity +
+Flyway V2 per service adding the four audit columns. The pattern
+itself works on a single service; problems compounded when applied
+across all 10:
+
+1. `@EnableJpaAuditing` on each `Application` class makes
+   `@WebMvcTest` slices fail with "JPA metamodel must not be
+   empty" — the WebMvc slice doesn't bootstrap JPA but the
+   auditing config registers a bean that needs it.
+2. Moving the enabler into the shared starter as an
+   `@AutoConfiguration` guarded by `@ConditionalOnBean(EntityManagerFactory.class)`
+   fixed (1) for `@WebMvcTest` but introduced bean-evaluation
+   timing issues — the condition didn't fire reliably in
+   `@DataJpaTest` either.
+3. The starter now needed `spring-data-jpa` + `spring-data-commons`
+   on its compile path. Pulling those into checkout's transitive
+   set broke `spring-cloud-openfeign` 5.0.1's bean wiring: the
+   FeignClientFactoryBean for "cart" couldn't satisfy
+   `feign.codec.Encoder`. Five Feign clients in checkout, all
+   failed to construct, app context never started.
+4. Tightening conditions further worked for some services but
+   the existing hand-rolled `createdAt`/`updatedAt` fields on
+   six entities (customer, cart, payment, promotion, review)
+   conflicted with the `@MappedSuperclass` mapping, requiring
+   per-entity surgery and per-table Flyway-DROP-NOT-NULL.
+
+The cleanest path on the next attempt is **per-service**:
+- A `JpaConfig` class in each entity-bearing service's `config/`
+  package, holding `@EnableJpaAuditing(auditorAwareRef = "auditor")`.
+- The shared starter keeps the `auditor` bean
+  (`KeycloakAuditorAware`) and the `AuditableEntity`
+  `@MappedSuperclass`, but does NOT register `@EnableJpaAuditing`
+  globally. Hint: the bean + base class can be in the starter
+  without dragging `spring-data-jpa` to the starter's compile
+  classpath — declare them under `optional = true` if necessary.
+- Per-service tests: `@DataJpaTest` slices `@Import(JpaConfig.class)`;
+  `@WebMvcTest` slices don't import it and don't see
+  `@EnableJpaAuditing`.
+- Hand-rolled `createdAt` removed from each entity, replaced by
+  `extends AuditableEntity`. Flyway V<n> adds three columns
+  (`updated_at`, `created_by`, `last_modified_by`) and drops
+  `NOT NULL` from `created_at` so `@DataJpaTest` saves that don't
+  trigger the listener still work.
+
+The architectural lesson: starter-as-classpath-injector is great
+for stateless cross-cutting (tracing, logging, exception advice).
+For JPA wiring it's better to keep the activation per-consumer so
+each service controls which test slices see it.
+
+---
+
 ## CURRENT STATE — 2026-05-19
 
 **Phase 3 — Notify + Review + Search (backend complete)** — ✅ **complete**. Three final services round out the backend: **notification** (port 8090) consumes the `oriah.order` Kafka topic and records every state change as a notification_log row + log line (email channel is the log stub; pluggable SES/SendGrid later); **review** (port 8091) holds post-purchase reviews (one per customer-product, public listing + aggregate rating endpoints permitAll); **search** (port 8092) maintains a Postgres tsvector index by consuming `catalog.product` events — `GET /api/v1/search?q=...` uses `websearch_to_tsquery` for user-friendly queries. All four event-driven services (inventory, notification, search, and order's publisher) now use the same one-bean Consumer<Message<byte[]>> pattern, dispatching on the `event-type` header. Gateway route ordering bug surfaced + fixed: SCG is first-match (NOT longest-path-wins), so the `product-reviews-route` got an explicit `order: -10` to beat `/api/v1/products/**` for catalog. **The backend is feature-complete for the storefront**: smoke test exercises 12 services through one purchase, then verifies search, reviews + aggregate, and notification fan-out. 27 containers healthy in compose. 14 new tests this phase (notification 3 + review 6 + search 5).
@@ -115,6 +277,45 @@ update this before ending and read it at the start.
     - `inventory`       (port 8082)
 
 ### Next exact action
+
+**Phase 4 Tier 2 — book-derived gaps** (see
+`docs/PHASE_4_PROMPT.md` for the full bullet list, kept verbatim):
+
+1. **Resilience4j full toolbox on checkout** — add explicit Retry +
+   RateLimiter per Feign client, re-enable CB via synchronous
+   decorator (`Decorators.ofSupplier(...).withCircuitBreaker(cb)`)
+   to avoid the bulkhead-on-pool-thread SecurityContext loss.
+2. **Gateway hardening** — Redis container, RequestRateLimiter on
+   public storefront routes (20 req/sec/IP), custom global logging
+   filter, TokenRelayGatewayFilterFactory demo on one route.
+3. **Spring Cloud Bus + @RefreshScope demo** — move
+   `LOW_STOCK_THRESHOLD` from catalog code into config-repo as
+   `oriah.catalog.low-stock-threshold`, bind to
+   `@ConfigurationProperties @RefreshScope`, wire
+   `spring-cloud-starter-bus-kafka` so `POST /actuator/busrefresh`
+   on the configserver broadcasts.
+4. **Idempotency keys on payment** —
+   `POST /api/v1/payments/intents/{id}/confirm` accepts
+   `Idempotency-Key` header; persist + replay original response.
+5. **OpenAPI aggregation at gateway** — one Swagger UI dropdown
+   across all 12 services.
+
+**Then Phase 4 Tier 3 (deferred from Tier 1):**
+
+- **JPA auditing** — re-attempt per the post-mortem above. The
+  `KeycloakAuditorAware` and `AuditableEntity` scaffolding was
+  removed in the revert; bring them back in the per-service
+  shape this time.
+- HashiCorp Vault for secrets.
+- K8s manifests + Helm chart.
+- Eureka basic-auth.
+- HTTPS termination + self-signed cert at the gateway.
+- Pact contract tests for `catalog.product` events.
+- Outbox pattern for true at-least-once Kafka delivery.
+
+---
+
+### Original Phase 4 plan (superseded by the entries above)
 
 **Phase 4 — Observability + Production-readiness Polish.**
 

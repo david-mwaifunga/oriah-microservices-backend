@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -47,6 +48,7 @@ public class ProblemDetailExceptionHandler {
     private static final URI TYPE_VALIDATION  = URI.create("https://oriah.dev/problems/validation");
     private static final URI TYPE_NOT_FOUND   = URI.create("https://oriah.dev/problems/not-found");
     private static final URI TYPE_CONFLICT    = URI.create("https://oriah.dev/problems/conflict");
+    private static final URI TYPE_FORBIDDEN   = URI.create("https://oriah.dev/problems/forbidden");
     private static final URI TYPE_INTERNAL    = URI.create("https://oriah.dev/problems/internal-server-error");
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -80,6 +82,23 @@ public class ProblemDetailExceptionHandler {
         ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
         pd.setType(TYPE_NOT_FOUND);
         pd.setTitle("Not Found");
+        attachTraceId(pd);
+        return pd;
+    }
+
+    /**
+     * Spring Security's {@link AccessDeniedException} -- thrown by
+     * {@code @PreAuthorize} when a role check fails. Without this
+     * handler the generic {@link Exception} catch below would map it
+     * to 500; explicit 403 lets the client distinguish "you're not
+     * allowed" from "something on the server broke."
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ProblemDetail forbidden(AccessDeniedException ex) {
+        log.debug("403 AccessDeniedException: {}", ex.getMessage());
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, ex.getMessage());
+        pd.setType(TYPE_FORBIDDEN);
+        pd.setTitle("Forbidden");
         attachTraceId(pd);
         return pd;
     }

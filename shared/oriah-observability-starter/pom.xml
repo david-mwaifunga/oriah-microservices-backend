@@ -140,6 +140,18 @@
             <artifactId>jakarta.persistence-api</artifactId>
         </dependency>
 
+        <!--
+            spring-security-core for AccessDeniedException in the
+            problem-details advice. Every service that hits @PreAuthorize
+            already has spring-security on its path via the OAuth2
+            resource-server starter; this declared dep is for the
+            advice class's compile-time symbol.
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-core</artifactId>
+        </dependency>
+
         <!-- Lombok for @Slf4j on the exception handler. Provided so we
              do not re-export it onto consumers (they already have it). -->
         <dependency>
