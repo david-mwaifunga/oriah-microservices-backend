@@ -1,0 +1,17 @@
+# Auto-provisioned dashboard loader. Points Grafana at /var/lib/grafana/
+# dashboards on container-startup so any .json file dropped in
+# monitoring/grafana/dashboards/ shows up in the UI without manual import.
+
+apiVersion: 1
+
+providers:
+  - name: oriah
+    orgId: 1
+    folder: Oriah
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

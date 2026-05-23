@@ -32,7 +32,7 @@ public class SecurityConfig {
                         // Public: anyone can read reviews + aggregate ratings.
                         .requestMatchers(HttpMethod.GET, "/api/v1/products/*/reviews").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/products/*/reviews/aggregate").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus",
                                 "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(o -> o.jwt(j -> j.jwtAuthenticationConverter(jwtAuthenticationConverter())))

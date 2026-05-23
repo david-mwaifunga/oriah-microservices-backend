@@ -263,6 +263,64 @@ services:
       start_period: 60s
     networks: [oriah]
 
+  prometheus:
+    # Pulls /actuator/prometheus from every Spring service every 15s
+    # and stores time series in-memory + on a small volume. Targets
+    # are listed in monitoring/prometheus.yml; add a new service to
+    # the stack by appending one line there. UI on http://localhost:9090.
+    image: prom/prometheus:latest
+    container_name: oriah-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    healthcheck:
+      # Prometheus is built on a stripped Alpine without bash but it
+      # ships wget. /-/healthy is the documented liveness endpoint.
+      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks: [oriah]
+
+  grafana:
+    # Pre-provisioned with the Prometheus datasource and one starter
+    # dashboard (Oriah Backend Overview: HTTP req-rate + p95 latency +
+    # JVM heap + Kafka consumer lag, per service). Open
+    # http://localhost:3000 -- admin/admin on first login, then it
+    # forces a password change.
+    image: grafana/grafana:latest
+    container_name: oriah-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Suppress the first-login forced password change for the local
+      # dev workflow. In prod you definitely want this on.
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --spider --tries=1 http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    networks: [oriah]
+
   zipkin:
     # OpenZipkin with in-memory storage (dev only — stop the container
     # and traces are gone). Port 9411 is both the span-ingest API
@@ -756,6 +814,8 @@ volumes:
   postgres-notification-data:
   postgres-review-data:
   postgres-search-data:
+  prometheus-data:
+  grafana-data:
 
 networks:
   oriah:

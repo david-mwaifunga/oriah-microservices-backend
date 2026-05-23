@@ -1,0 +1,57 @@
+# Prometheus scrape config for the Oriah stack.
+#
+# Every Spring service exposes /actuator/prometheus (via the
+# oriah-observability-starter -> micrometer-registry-prometheus
+# transitive). Prometheus pulls those endpoints every 15s and stores
+# the resulting time series.
+#
+# Three service classes here:
+#   - 12 domain services on ports 8081..8092
+#   - 3 infra services (configserver/eurekaserver/gatewayserver)
+#   - prometheus itself (loopback) for meta-monitoring
+#
+# Host names are docker-compose service names; resolved via the oriah
+# bridge network. We hit the internal container port (NOT the host-
+# mapped port), so this file works regardless of port collisions on
+# the host side.
+#
+# Targets do NOT include zipkin/kafka/keycloak/postgres -- they have
+# their own metrics formats and would need separate exporters.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: oriah-infra
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - 'configserver:8888'
+          - 'eurekaserver:8761'
+          - 'gatewayserver:8080'
+        labels:
+          tier: infra
+
+  - job_name: oriah-services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - 'catalog:8081'
+          - 'inventory:8082'
+          - 'customer:8083'
+          - 'cart:8084'
+          - 'payment:8085'
+          - 'order:8086'
+          - 'promotion:8087'
+          - 'shipping:8088'
+          - 'checkout:8089'
+          - 'notification:8090'
+          - 'review:8091'
+          - 'search:8092'
+        labels:
+          tier: services

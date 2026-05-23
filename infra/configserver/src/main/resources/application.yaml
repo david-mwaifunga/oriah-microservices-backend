@@ -31,7 +31,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,env,configprops
+        # /actuator/prometheus is scraped by Prometheus; configserver
+        # cannot pull config from itself, so the exposure list is set
+        # locally rather than inherited from config-repo/application.yaml.
+        include: health,info,env,configprops,prometheus
   endpoint:
     health:
       probes:

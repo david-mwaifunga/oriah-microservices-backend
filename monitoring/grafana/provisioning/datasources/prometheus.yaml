@@ -1,0 +1,19 @@
+# Auto-provisioned Prometheus datasource for Grafana.
+# Grafana reads everything under /etc/grafana/provisioning/datasources
+# at startup and creates the corresponding datasources without any
+# manual click-through. See https://grafana.com/docs/grafana/latest/administration/provisioning/
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # Internal DNS on the compose network; the host-mapped port (9090)
+    # is incidental -- Grafana talks to Prometheus container-to-container.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST

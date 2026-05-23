@@ -31,7 +31,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(a -> a
                         // Anonymous search — anyone browsing the storefront can use it.
                         .requestMatchers(HttpMethod.GET, "/api/v1/search/**").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                        .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus",
                                 "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(o -> o.jwt(j -> j.jwtAuthenticationConverter(jwtAuthenticationConverter())))

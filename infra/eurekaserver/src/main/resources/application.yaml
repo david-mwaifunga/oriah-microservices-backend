@@ -33,7 +33,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # /actuator/prometheus is scraped by Prometheus; eurekaserver
+        # does not pull from configserver so the exposure list is set
+        # locally rather than inherited from config-repo/application.yaml.
+        include: health,info,prometheus
   endpoint:
     health:
       probes:
