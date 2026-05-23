@@ -1,0 +1,55 @@
+# Promtail config: discover every Docker container via the Docker
+# socket, label each line with the container name (and Compose service
+# name), parse the JSON log payload our services emit, and push the
+# whole thing into Loki at http://loki:3100.
+#
+# Why docker_sd_configs (not a static /var/lib/docker/containers mount):
+# On Docker Desktop / Windows the actual log files live inside the
+# WSL2 VM filesystem and only a host bind-mount of the docker socket
+# is reliable. docker_sd_configs lets Promtail enumerate containers
+# via the Docker API and tail their logs through the daemon -- works
+# the same on Windows, macOS, and Linux.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    # Promtail-level pipeline: tags the stream with the container's
+    # service name (compose label) and the container name, then
+    # extracts our JSON fields into structured labels and metadata.
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+    pipeline_stages:
+      # Most of our containers emit JSON via the oriah-observability-
+      # starter's logback config. Parse it so traceId, spanId, level
+      # become first-class fields queryable from Grafana.
+      - json:
+          expressions:
+            level: level
+            logger: logger_name
+            traceId: traceId
+            spanId: spanId
+            message: message
+      - labels:
+          level:
+      - structured_metadata:
+          traceId:
+          spanId:
+          logger:

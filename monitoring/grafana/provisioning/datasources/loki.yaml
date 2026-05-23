@@ -1,0 +1,25 @@
+# Auto-provisioned Loki datasource for Grafana.
+# Pairs with the Prometheus datasource (prometheus.yaml in this dir).
+# Open Grafana -> Explore -> Loki, query `{service="checkout"}` to see
+# log streams; add `|= "traceId=..."` to pivot from a Zipkin trace.
+
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        # Click a traceId in a Loki log line and it deep-links to the
+        # corresponding trace in Zipkin. The brief calls this out as
+        # the single most valuable debugging affordance for the saga.
+        - datasourceUid: zipkin
+          matcherRegex: '"traceId":"([a-f0-9]{16,32})"'
+          name: traceId
+          url: 'http://localhost:9411/zipkin/traces/${__value.raw}'
+          urlDisplayLabel: 'Trace in Zipkin'
