@@ -263,6 +263,30 @@ services:
       start_period: 60s
     networks: [oriah]
 
+  zipkin:
+    # OpenZipkin with in-memory storage (dev only — stop the container
+    # and traces are gone). Port 9411 is both the span-ingest API
+    # endpoint (where services POST /api/v2/spans) and the trace browser
+    # UI (open http://localhost:9411). Sufficient for the "trace one
+    # request across the saga" debugging this is meant to support; a
+    # production deploy would back it with Elasticsearch or Cassandra.
+    image: openzipkin/zipkin:latest
+    container_name: oriah-zipkin
+    ports:
+      - "9411:9411"
+    healthcheck:
+      # The openzipkin/zipkin image is Alpine/busybox -- no bash, so
+      # the /dev/tcp probe we use for the Spring services doesn't work
+      # here. busybox does ship wget, and Zipkin exposes a /health
+      # endpoint that goes 200 when the in-memory storage is initialised
+      # (i.e., the API is ready to accept spans).
+      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://localhost:9411/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks: [oriah]
+
   kafka:
     # Apache Kafka in KRaft mode (no ZooKeeper). 4.x replaced ZK with a
     # self-managed Raft quorum; one container is the broker AND the
@@ -323,6 +347,12 @@ services:
       # auth; production would point at an https://... remote.
       CONFIG_REPO_URI: file:///workspace/config-repo
       CONFIG_REPO_BRANCH: master
+      # Tracing endpoint set directly here because configserver can't
+      # bootstrap from itself — the 12 service modules inherit these
+      # values via config-repo/application.yaml, but the platform tier
+      # has to be told via env.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
     volumes:
       # Read-write mount of the local config-repo. JGit (under Spring
       # Cloud Config) needs write access to maintain its index/HEAD/
@@ -351,6 +381,9 @@ services:
     container_name: oriah-eurekaserver
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Tracing direct-set: eureka doesn't pull from configserver.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
     ports:
       - "8761:8761"
     healthcheck:
@@ -366,6 +399,12 @@ services:
     container_name: oriah-gatewayserver
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      # Tracing direct-set: gateway doesn't pull from configserver.
+      # The gateway is the trace entrypoint — Micrometer Tracing's
+      # WebFlux instrumentation creates the root span and propagates
+      # traceparent headers to every backend service via the route.
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
+      MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
     ports:
       - "8080:8080"
     depends_on:

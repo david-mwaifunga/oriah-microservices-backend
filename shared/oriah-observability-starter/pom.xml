@@ -37,12 +37,35 @@
         </dependency>
 
         <!--
-            Micrometer Tracing facade + OTel bridge. Spring Boot's auto-config
-            wires a Tracer bean when this is on the classpath and turns on
-            HTTP-server, RestClient, Feign, WebFlux, Spring Cloud Stream, and
-            JDBC instrumentation. The 'bridge-otel' artifact means we speak
-            Micrometer Tracing's API on the call sites and OpenTelemetry's
-            wire format on the way out.
+            Spring Boot 4 split tracing autoconfig out of the actuator-
+            autoconfigure jar into per-tracer modules. For the Micrometer
+            Tracing + OpenTelemetry path, these two jars carry the
+            @AutoConfiguration classes that bind the Tracer bean, the
+            ObservationHandler chain, the propagation factories, and the
+            Zipkin exporter wiring to Spring Boot properties (sampling,
+            endpoint, timeouts). Without these on the classpath the
+            instrumentation never activates; there is no MDC traceId
+            and no span export, regardless of management.tracing.*
+            settings. The OTel/Zipkin path is deprecated and slated for
+            removal in Spring Boot 4.2 in favor of Brave; we stay on it
+            for this phase to match the brief, then migrate later.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-zipkin</artifactId>
+        </dependency>
+
+        <!--
+            Micrometer Tracing facade + OTel bridge. Spring Boot's auto-
+            config wires a Tracer bean when this is on the classpath and
+            turns on HTTP-server, RestClient, Feign, WebFlux, Spring
+            Cloud Stream, and JDBC instrumentation. The 'bridge-otel'
+            artifact means we speak Micrometer Tracing's API on the call
+            sites and OpenTelemetry's wire format on the way out.
         -->
         <dependency>
             <groupId>io.micrometer</groupId>
@@ -57,6 +80,21 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-zipkin</artifactId>
+        </dependency>
+
+        <!--
+            feign-micrometer wires OpenFeign clients into the Micrometer
+            Observation pipeline. Without it, Feign's HTTP calls open new
+            traces instead of propagating the caller's traceparent header
+            downstream; the checkout saga shows up in Zipkin as four
+            disconnected single-service traces instead of one
+            cross-service tree. With it, calls from checkout to cart /
+            promotion / shipping / payment / order all carry the same
+            traceId. Catalog -> inventory (also Feign) benefits too.
+        -->
+        <dependency>
+            <groupId>io.github.openfeign</groupId>
+            <artifactId>feign-micrometer</artifactId>
         </dependency>
 
         <!--
