@@ -120,11 +120,55 @@
         </dependency>
 
         <!--
-            Test deps for the autoconfig sanity check.
+            Spring Web for @RestControllerAdvice + ProblemDetail.
+            jakarta.persistence-api for the EntityNotFoundException
+            handler. Both are 'compile' rather than 'provided' because
+            Spring's bean post-processor reflectively introspects the
+            handler class at startup. If EntityNotFoundException is not
+            on the runtime classpath, the introspection throws
+            NoClassDefFoundError and the whole context fails to start
+            (this broke configserver / eurekaserver / gatewayserver /
+            shipping / checkout the first time around). compile scope guarantees the API classes are
+            transitively present everywhere the starter is.
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>jakarta.persistence</groupId>
+            <artifactId>jakarta.persistence-api</artifactId>
+        </dependency>
+
+        <!-- Lombok for @Slf4j on the exception handler. Provided so we
+             do not re-export it onto consumers (they already have it). -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!--
+            Test deps. starter-test brings JUnit + MockMvc + AssertJ;
+            starter-webmvc-test gives us the servlet test context;
+            starter-validation provides Hibernate Validator so
+            @Valid + @NotBlank actually trigger
+            MethodArgumentNotValidException during the test that
+            exercises the validation-failure branch of the advice.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
