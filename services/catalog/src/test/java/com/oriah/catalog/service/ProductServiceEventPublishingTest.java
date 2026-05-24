@@ -53,7 +53,12 @@ class ProductServiceEventPublishingTest {
         repository = mock(ProductRepository.class);
         inventoryClient = mock(InventoryClient.class);
         eventPublisher = mock(ApplicationEventPublisher.class);
-        service = new ProductService(repository, inventoryClient, eventPublisher);
+        // CatalogProperties needs no mocking -- the default ctor leaves
+        // lowStockThreshold at its initializer value (5), which these
+        // unit tests don't read anyway (they verify event publishing,
+        // not availability calculation).
+        service = new ProductService(repository, inventoryClient, eventPublisher,
+                new com.oriah.catalog.config.CatalogProperties());
     }
 
     @Test

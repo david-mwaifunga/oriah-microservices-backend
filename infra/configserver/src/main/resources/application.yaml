@@ -34,7 +34,10 @@ management:
         # /actuator/prometheus is scraped by Prometheus; configserver
         # cannot pull config from itself, so the exposure list is set
         # locally rather than inherited from config-repo/application.yaml.
-        include: health,info,env,configprops,prometheus
+        # busrefresh is the Spring Cloud Bus broadcast endpoint --
+        # POST against it to fan out a refresh to every bus-enabled
+        # client over the springCloudBus Kafka topic.
+        include: health,info,env,configprops,prometheus,refresh,busrefresh
   endpoint:
     health:
       probes:

@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.oriah.catalog.client.InventoryClient;
 import com.oriah.catalog.client.InventoryDto;
+import com.oriah.catalog.config.CatalogProperties;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.events.ProductCreatedEvent;
 import com.oriah.catalog.events.ProductDeletedEvent;
@@ -47,21 +48,17 @@ public class ProductService {
     private final ProductRepository repository;
     private final InventoryClient inventoryClient;
     private final ApplicationEventPublisher eventPublisher;
-
-    /**
-     * "Low stock" cut-off — fewer than this many available units flips
-     * the badge from IN_STOCK to LOW_STOCK ("Only N left"). Hardcoded
-     * for now; could become a Config-Server-managed property.
-     */
-    private static final int LOW_STOCK_THRESHOLD = 5;
+    private final CatalogProperties props;
 
     public ProductService(
             ProductRepository repository,
             InventoryClient inventoryClient,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            CatalogProperties props) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
         this.eventPublisher = eventPublisher;
+        this.props = props;
     }
 
     /**
@@ -108,7 +105,11 @@ public class ProductService {
         if (inventory.available() <= 0) {
             return Availability.OUT_OF_STOCK;
         }
-        if (inventory.available() < LOW_STOCK_THRESHOLD) {
+        // Threshold lives in config-repo (oriah.catalog.low-stock-threshold)
+        // and is rebound in place on /actuator/refresh (broadcast by
+        // Spring Cloud Bus on /actuator/busrefresh from the configserver),
+        // so this read returns the latest value without a service restart.
+        if (inventory.available() < props.getLowStockThreshold()) {
             return Availability.LOW_STOCK;
         }
         return Availability.IN_STOCK;

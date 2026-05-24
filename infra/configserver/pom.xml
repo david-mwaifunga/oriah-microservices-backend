@@ -53,6 +53,17 @@
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
 
+        <!--
+            Spring Cloud Bus over Kafka. Exposes
+            /actuator/busrefresh which fans out a
+            RefreshRemoteApplicationEvent on the springCloudBus topic
+            so every bus-enabled client refreshes in one shot.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-bus-kafka</artifactId>
+        </dependency>
+
         <!-- Lombok: @Slf4j for the logger field on ConfigServerApplication. -->
         <dependency>
             <groupId>org.projectlombok</groupId>

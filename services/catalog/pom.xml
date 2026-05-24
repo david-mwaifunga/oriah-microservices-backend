@@ -94,6 +94,19 @@
         </dependency>
 
         <!--
+            Spring Cloud Bus over Kafka. POST /actuator/busrefresh on
+            the configserver (or any bus client) publishes a
+            RefreshRemoteApplicationEvent on the springCloudBus topic;
+            every listening client re-binds its
+            @ConfigurationProperties from the new config-repo values
+            in place. No service restart, no per-client curl loop.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-bus-kafka</artifactId>
+        </dependency>
+
+        <!--
             Spring Cloud Eureka Client. Auto-registers catalog with the Eureka
             server on startup using spring.application.name (= "catalog") so
             other services (gateway, future inventory) can look it up by name
