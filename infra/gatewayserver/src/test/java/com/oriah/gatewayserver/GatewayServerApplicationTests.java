@@ -34,7 +34,15 @@ import static org.assertj.core.api.Assertions.assertThat;
         // For this test we need to read the actual route definitions, so
         // unmask values just for this test boot. NEVER set this in
         // production application.yaml.
-        "management.endpoint.env.show-values=ALWAYS"
+        "management.endpoint.env.show-values=ALWAYS",
+        // RedisRateLimiter requires a live Redis; the test boot does not
+        // run one. Disable the Redis health indicator so /actuator/health
+        // does not drop to DOWN (503) on the absent connection, and
+        // disable Redis repositories auto-config to keep the test slice
+        // lean. The rate-limiter beans still wire (the test does not
+        // actually exercise the rate-limited routes).
+        "management.health.redis.enabled=false",
+        "spring.data.redis.repositories.enabled=false"
 })
 class GatewayServerApplicationTests {
 

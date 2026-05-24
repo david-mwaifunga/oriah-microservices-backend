@@ -1,6 +1,13 @@
 spring:
   application:
     name: gatewayserver
+  # Reactive Redis client used by RedisRateLimiter on the public
+  # routes (see filters below). Overridden in application-docker.yaml
+  # to point at the redis service on the docker network.
+  data:
+    redis:
+      host: localhost
+      port: 6379
   cloud:
     gateway:
       server:
@@ -9,11 +16,31 @@ spring:
           # 'lb://<service-name>' is the magic incantation: Spring Cloud
           # Gateway resolves <service-name> against Eureka at request time
           # and load-balances across whatever instances are registered.
+          # Default filters apply to every route below (in addition to
+          # any per-route filters). Kept empty -- the RateLimiter we
+          # want is per-route (only public anonymous endpoints), not
+          # global.
+          default-filters: []
           routes:
             - id: catalog-public-route
               uri: lb://catalog
               predicates:
                 - Path=/api/v1/products/**
+              filters:
+                # Redis-backed token bucket: 20 tokens per second per
+                # client IP, burst up to 40. Anonymous storefront
+                # endpoint, exposed without auth, so worth the
+                # protection from a runaway client. Verified to
+                # produce 429 Too Many Requests under a tight 2/3 burst
+                # config during development before settling on these
+                # production-ish numbers.
+                # ipKeyResolver is a @Bean in com.oriah.gatewayserver
+                # .config.RateLimitConfig.
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@ipKeyResolver}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
             - id: catalog-admin-route
               uri: lb://catalog
               predicates:
@@ -86,6 +113,14 @@ spring:
               uri: lb://search
               predicates:
                 - Path=/api/v1/search/**
+              filters:
+                # Same 20/sec/IP cap as the catalog public route.
+                # Search is the other anonymous storefront endpoint.
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@ipKeyResolver}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
 
 server:
   # The conventional edge port. Frontend code talks to localhost:8080.

@@ -361,6 +361,22 @@ services:
         condition: service_started
     networks: [oriah]
 
+  redis:
+    # Backing store for Spring Cloud Gateway's RedisRateLimiter on the
+    # public storefront routes (/api/v1/products/**, /api/v1/search/**).
+    # No persistence config -- rate-limit state is intentionally
+    # ephemeral; on restart the bucket resets, which is fine for dev.
+    image: redis:7-alpine
+    container_name: oriah-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [oriah]
+
   zipkin:
     # OpenZipkin with in-memory storage (dev only — stop the container
     # and traces are gone). Port 9411 is both the span-ingest API
@@ -514,6 +530,8 @@ services:
       - "8080:8080"
     depends_on:
       eurekaserver:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8080"]

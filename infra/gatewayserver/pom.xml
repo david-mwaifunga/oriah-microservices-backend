@@ -65,6 +65,19 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+            Reactive Redis client (Lettuce). Backing store for
+            Spring Cloud Gateway's RedisRateLimiter. The rate-limiter
+            uses a Lua script atomically against Redis so the limit
+            is shared across multiple gateway instances. Single-
+            instance dev does not strictly need this (an in-memory
+            limiter would do) but matches the prod shape from day one.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
         <!-- Lombok: @Slf4j on the application class for the startup banner. -->
         <dependency>
             <groupId>org.projectlombok</groupId>
