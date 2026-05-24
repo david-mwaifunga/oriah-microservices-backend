@@ -1,6 +1,5 @@
 package com.oriah.review.model;
 
-import java.time.Instant;
 import java.util.UUID;
 
 import jakarta.persistence.Column;
@@ -8,9 +7,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 @Entity
 @Table(name = "reviews")
-public class Review {
+public class Review extends AuditableEntity {
 
     @Id
     @Column(nullable = false)
@@ -37,9 +38,6 @@ public class Review {
     @Column(name = "helpful_count", nullable = false)
     private Integer helpfulCount;
 
-    @Column(name = "created_at", nullable = false)
-    private Instant createdAt;
-
     protected Review() {}
 
     public Review(UUID productId, String keycloakId, UUID orderId,
@@ -55,7 +53,6 @@ public class Review {
         this.title = title;
         this.body = body;
         this.helpfulCount = 0;
-        this.createdAt = Instant.now();
     }
 
     public UUID id() { return id; }
@@ -66,7 +63,6 @@ public class Review {
     public String title() { return title; }
     public String body() { return body; }
     public Integer helpfulCount() { return helpfulCount; }
-    public Instant createdAt() { return createdAt; }
 
     public void markHelpful() { this.helpfulCount++; }
 

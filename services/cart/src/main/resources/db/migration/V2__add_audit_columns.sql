@@ -1,0 +1,19 @@
+-- Phase 4.1.6 -- audit + soft-delete columns. carts already had
+-- created_at + updated_at NOT NULL from V1; drop the NOT NULLs so
+-- AuditableEntity's nullable mappings validate.
+
+ALTER TABLE carts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE carts ALTER COLUMN created_at DROP NOT NULL;
+ALTER TABLE carts ALTER COLUMN created_at DROP DEFAULT;
+ALTER TABLE carts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+ALTER TABLE carts ALTER COLUMN updated_at DROP NOT NULL;
+ALTER TABLE carts ADD COLUMN IF NOT EXISTS created_by VARCHAR(64);
+ALTER TABLE carts ADD COLUMN IF NOT EXISTS updated_by VARCHAR(64);
+ALTER TABLE carts ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+ALTER TABLE cart_items ALTER COLUMN created_at DROP DEFAULT;
+ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS created_by VARCHAR(64);
+ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS updated_by VARCHAR(64);
+ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE;

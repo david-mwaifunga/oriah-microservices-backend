@@ -23,5 +23,6 @@
 
     <modules>
         <module>oriah-observability-starter</module>
+        <module>oriah-jpa-base</module>
     </modules>
 </project>

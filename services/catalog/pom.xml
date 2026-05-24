@@ -42,6 +42,20 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+            Shared JPA base: AuditableEntity (@MappedSuperclass with
+            audit columns + @SoftDelete) + KeycloakAuditorAware.
+            Activated by config/JpaConfig. Only entity-bearing
+            services declare this; non-JPA services (configserver,
+            eurekaserver, gatewayserver, shipping, checkout) do not,
+            keeping their classpaths free of spring-data-*.
+        -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-jpa-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Persistence -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

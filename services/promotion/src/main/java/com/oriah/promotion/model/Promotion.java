@@ -12,9 +12,11 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 @Entity
 @Table(name = "promotions")
-public class Promotion {
+public class Promotion extends AuditableEntity {
 
     @Id
     @Column(nullable = false)
@@ -48,9 +50,6 @@ public class Promotion {
     @Column(nullable = false)
     private boolean enabled;
 
-    @Column(name = "created_at", nullable = false)
-    private Instant createdAt;
-
     protected Promotion() {}
 
     public Promotion(String code, PromotionType type, BigDecimal amount, String description,
@@ -71,7 +70,6 @@ public class Promotion {
         this.maxRedemptions = maxRedemptions;
         this.currentRedemptions = 0;
         this.enabled = true;
-        this.createdAt = Instant.now();
     }
 
     public UUID id() { return id; }
@@ -84,7 +82,6 @@ public class Promotion {
     public Integer maxRedemptions() { return maxRedemptions; }
     public Integer currentRedemptions() { return currentRedemptions; }
     public boolean isEnabled() { return enabled; }
-    public Instant createdAt() { return createdAt; }
 
     /**
      * Checks all the runtime guards: enabled, in date range, redemption

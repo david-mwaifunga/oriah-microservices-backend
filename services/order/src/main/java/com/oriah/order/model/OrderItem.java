@@ -11,9 +11,11 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 @Entity
 @Table(name = "order_items")
-public class OrderItem {
+public class OrderItem extends AuditableEntity {
 
     @Id
     @Column(nullable = false)

@@ -1,6 +1,5 @@
 package com.oriah.customer.model;
 
-import java.time.Instant;
 import java.util.UUID;
 
 import jakarta.persistence.Column;
@@ -11,6 +10,8 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 /**
  * Postal address belonging to a {@link Customer}. The {@code isDefault}
  * flag marks the address pre-selected at checkout; the Customer aggregate
@@ -20,7 +21,7 @@ import jakarta.persistence.Table;
  */
 @Entity
 @Table(name = "addresses")
-public class Address {
+public class Address extends AuditableEntity {
 
     @Id
     @Column(nullable = false)
@@ -54,9 +55,6 @@ public class Address {
     @Column(name = "is_default", nullable = false)
     private boolean isDefault;
 
-    @Column(name = "created_at", nullable = false)
-    private Instant createdAt;
-
     protected Address() {}
 
     Address(Customer customer, String label, String line1, String line2, String city,
@@ -71,7 +69,6 @@ public class Address {
         this.postalCode = postalCode;
         this.country = country;
         this.isDefault = isDefault;
-        this.createdAt = Instant.now();
     }
 
     public UUID id() { return id; }
@@ -83,7 +80,6 @@ public class Address {
     public String postalCode() { return postalCode; }
     public String country() { return country; }
     public boolean isDefault() { return isDefault; }
-    public Instant createdAt() { return createdAt; }
 
     void setDefault(boolean isDefault) {
         this.isDefault = isDefault;

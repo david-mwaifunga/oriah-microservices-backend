@@ -8,9 +8,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 @Entity
 @Table(name = "notification_log")
-public class NotificationLog {
+public class NotificationLog extends AuditableEntity {
 
     @Id
     @Column(nullable = false)

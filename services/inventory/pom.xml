@@ -42,6 +42,13 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Shared JPA base: AuditableEntity + KeycloakAuditorAware. -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-jpa-base</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Persistence -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

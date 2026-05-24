@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>shared</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>oriah-jpa-base</artifactId>
+    <packaging>jar</packaging>
+
+    <name>oriah-jpa-base</name>
+    <description>
+        Shared JPA building blocks for the 10 entity-bearing services:
+        AuditableEntity (a @MappedSuperclass that gives every entity
+        created_at / created_by / updated_at / updated_by audit columns
+        plus an is_deleted soft-delete column, all auto-populated by
+        Spring Data Auditing + Hibernate's @SoftDelete), and
+        KeycloakAuditorAware (resolves "who changed this row" from the
+        JWT in the SecurityContext, or "system" for Kafka-consumer
+        threads where there is no SecurityContext).
+
+        Each entity-bearing service declares this dependency AND a
+        per-service JpaConfig @Configuration that flips on
+        @EnableJpaAuditing(auditorAwareRef = "auditor") and registers
+        the auditor bean. Putting the activation per-service (rather
+        than via @AutoConfiguration in this jar) keeps it out of
+        @WebMvcTest slices, which would otherwise fail with "JPA
+        metamodel must not be empty."
+
+        Services WITHOUT JPA entities (configserver / eurekaserver /
+        gatewayserver / shipping / checkout) do NOT declare a
+        dependency on this jar, so their classpaths do not get
+        spring-data-* transitively. That isolation matters: an earlier
+        attempt put these deps in oriah-observability-starter (which
+        every module depends on) and broke spring-cloud-openfeign 5.x's
+        Encoder wiring on checkout. See docs/PROGRESS.md "Why T1.6
+        was harder than expected" for the post-mortem.
+    </description>
+
+    <dependencies>
+        <!--
+            JPA + Spring Data annotations + AuditingEntityListener.
+            All declared 'compile' because consumers will already have
+            them via spring-boot-starter-data-jpa; this matches versions
+            cleanly via the Spring Boot BOM and avoids the surprise of
+            Maven 'provided' scope not flowing transitively.
+        -->
+        <dependency>
+            <groupId>jakarta.persistence</groupId>
+            <artifactId>jakarta.persistence-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.data</groupId>
+            <artifactId>spring-data-commons</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.data</groupId>
+            <artifactId>spring-data-jpa</artifactId>
+        </dependency>
+
+        <!--
+            For KeycloakAuditorAware's Jwt instanceof check.
+            spring-security-core for the SecurityContextHolder.
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-jose</artifactId>
+        </dependency>
+
+        <!-- Test deps -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-resource-server</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,7 +1,6 @@
 package com.oriah.cart.model;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -15,6 +14,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 /**
  * Shopping cart owned by a Keycloak user (the JWT {@code sub}). Lazy-
  * created on first add-to-cart and persisted across sessions.
@@ -25,7 +26,7 @@ import jakarta.persistence.Table;
  */
 @Entity
 @Table(name = "carts")
-public class Cart {
+public class Cart extends AuditableEntity {
 
     @Id
     @Column(nullable = false)
@@ -33,12 +34,6 @@ public class Cart {
 
     @Column(name = "keycloak_id", nullable = false, unique = true)
     private String keycloakId;
-
-    @Column(name = "created_at", nullable = false)
-    private Instant createdAt;
-
-    @Column(name = "updated_at", nullable = false)
-    private Instant updatedAt;
 
     @OneToMany(mappedBy = "cart", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<CartItem> items = new ArrayList<>();
@@ -48,14 +43,10 @@ public class Cart {
     public Cart(String keycloakId) {
         this.id = UUID.randomUUID();
         this.keycloakId = keycloakId;
-        this.createdAt = Instant.now();
-        this.updatedAt = createdAt;
     }
 
     public UUID id() { return id; }
     public String keycloakId() { return keycloakId; }
-    public Instant createdAt() { return createdAt; }
-    public Instant updatedAt() { return updatedAt; }
     public List<CartItem> items() { return Collections.unmodifiableList(items); }
 
     /**
@@ -69,33 +60,30 @@ public class Cart {
         Optional<CartItem> existing = items.stream()
                 .filter(i -> i.variantId().equals(variantId))
                 .findFirst();
-        CartItem item = existing
+        // Note: AuditableEntity's @LastModifiedDate updated_at is refreshed
+        // automatically by AuditingEntityListener on the next save() / flush().
+        return existing
                 .map(i -> { i.bump(quantity); return i; })
                 .orElseGet(() -> {
                     CartItem fresh = new CartItem(this, variantId, quantity, unitPrice, title);
                     items.add(fresh);
                     return fresh;
                 });
-        this.updatedAt = Instant.now();
-        return item;
     }
 
     public Optional<CartItem> updateQuantity(UUID variantId, int newQuantity) {
         if (newQuantity <= 0) throw new IllegalArgumentException("quantity must be > 0");
         Optional<CartItem> item = items.stream().filter(i -> i.variantId().equals(variantId)).findFirst();
-        item.ifPresent(i -> { i.setQuantity(newQuantity); this.updatedAt = Instant.now(); });
+        item.ifPresent(i -> i.setQuantity(newQuantity));
         return item;
     }
 
     public boolean removeVariant(UUID variantId) {
-        boolean removed = items.removeIf(i -> i.variantId().equals(variantId));
-        if (removed) this.updatedAt = Instant.now();
-        return removed;
+        return items.removeIf(i -> i.variantId().equals(variantId));
     }
 
     public void clear() {
         items.clear();
-        this.updatedAt = Instant.now();
     }
 
     /** Subtotal — sum of (qty * unitPrice) across all line items. */

@@ -1,6 +1,5 @@
 package com.oriah.customer.model;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -14,6 +13,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 /**
  * One row per Keycloak user. Identified by {@link #keycloakId} (the
  * {@code sub} claim of the JWT). Auto-provisioned the first time the
@@ -25,7 +26,7 @@ import jakarta.persistence.Table;
  */
 @Entity
 @Table(name = "customers")
-public class Customer {
+public class Customer extends AuditableEntity {
 
     @Id
     @Column(nullable = false)
@@ -43,9 +44,6 @@ public class Customer {
     @Column(name = "last_name", nullable = false)
     private String lastName;
 
-    @Column(name = "created_at", nullable = false)
-    private Instant createdAt;
-
     @OneToMany(mappedBy = "customer", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Address> addresses = new ArrayList<>();
 
@@ -57,7 +55,6 @@ public class Customer {
         this.email = requireNonBlank(email, "email");
         this.firstName = requireNonBlank(firstName, "firstName");
         this.lastName = requireNonBlank(lastName, "lastName");
-        this.createdAt = Instant.now();
     }
 
     public UUID id() { return id; }
@@ -65,7 +62,6 @@ public class Customer {
     public String email() { return email; }
     public String firstName() { return firstName; }
     public String lastName() { return lastName; }
-    public Instant createdAt() { return createdAt; }
     public List<Address> addresses() { return Collections.unmodifiableList(addresses); }
 
     public void updateProfile(String email, String firstName, String lastName) {

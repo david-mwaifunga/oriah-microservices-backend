@@ -1,6 +1,5 @@
 package com.oriah.inventory.model;
 
-import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -8,6 +7,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+
+import com.oriah.jpa.AuditableEntity;
 
 /**
  * Inventory's locally-cached awareness of which products catalog knows
@@ -25,7 +26,7 @@ import jakarta.persistence.Table;
  */
 @Entity
 @Table(name = "product_index")
-public class ProductRef {
+public class ProductRef extends AuditableEntity {
 
     @Id
     @Column(name = "variant_id", nullable = false)
@@ -33,9 +34,6 @@ public class ProductRef {
 
     @Column(name = "title", nullable = false)
     private String title;
-
-    @Column(name = "updated_at", nullable = false)
-    private Instant updatedAt;
 
     /** JPA-only no-args constructor. Do not call from application code. */
     protected ProductRef() {}
@@ -46,7 +44,6 @@ public class ProductRef {
             throw new IllegalArgumentException("title must not be blank");
         }
         this.title = title;
-        this.updatedAt = Instant.now();
     }
 
     public UUID variantId() {
@@ -57,20 +54,16 @@ public class ProductRef {
         return title;
     }
 
-    public Instant updatedAt() {
-        return updatedAt;
-    }
-
     /**
      * Updates the cached title to reflect a {@code product.updated} event.
-     * Bumps {@code updatedAt} so an operator can see when the row was last
-     * touched by an event vs. when it was first inserted.
+     * The {@link com.oriah.jpa.AuditableEntity#updatedAt() updatedAt}
+     * field on the superclass is refreshed by the AuditingEntityListener
+     * on the next flush.
      */
     public void updateTitle(String newTitle) {
         if (newTitle == null || newTitle.isBlank()) {
             throw new IllegalArgumentException("title must not be blank");
         }
         this.title = newTitle;
-        this.updatedAt = Instant.now();
     }
 }

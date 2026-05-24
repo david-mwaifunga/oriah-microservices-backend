@@ -11,9 +11,11 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import com.oriah.jpa.AuditableEntity;
+
 @Entity
 @Table(name = "payment_intents")
-public class PaymentIntent {
+public class PaymentIntent extends AuditableEntity {
 
     @Id
     @Column(nullable = false)
@@ -38,9 +40,6 @@ public class PaymentIntent {
     @Column(name = "failure_reason")
     private String failureReason;
 
-    @Column(name = "created_at", nullable = false)
-    private Instant createdAt;
-
     @Column(name = "confirmed_at")
     private Instant confirmedAt;
 
@@ -56,7 +55,6 @@ public class PaymentIntent {
         this.amount = amount;
         this.currency = currency == null || currency.isBlank() ? "USD" : currency;
         this.status = PaymentStatus.PENDING;
-        this.createdAt = Instant.now();
     }
 
     public UUID id() { return id; }
@@ -66,7 +64,6 @@ public class PaymentIntent {
     public String currency() { return currency; }
     public PaymentStatus status() { return status; }
     public String failureReason() { return failureReason; }
-    public Instant createdAt() { return createdAt; }
     public Instant confirmedAt() { return confirmedAt; }
 
     public void markSucceeded() {
