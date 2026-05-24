@@ -15,6 +15,7 @@ import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.ConfirmResponse;
 import com.oriah.checkout.dto.PreviewRequest;
 import com.oriah.checkout.dto.PreviewResponse;
+import com.oriah.checkout.resilience.ResilientFeignCaller;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -48,18 +49,26 @@ public class CheckoutService {
     private final ShippingClient shipping;
     private final PaymentClient payment;
     private final OrderClient order;
+    private final ResilientFeignCaller resilient;
 
     public CheckoutService(CartClient cart, PromotionClient promotion, ShippingClient shipping,
-                           PaymentClient payment, OrderClient order) {
+                           PaymentClient payment, OrderClient order,
+                           ResilientFeignCaller resilient) {
         this.cart = cart;
         this.promotion = promotion;
         this.shipping = shipping;
         this.payment = payment;
         this.order = order;
+        this.resilient = resilient;
     }
 
     public PreviewResponse preview(PreviewRequest req) {
-        var myCart = safeCall(cart::getMyCart, "cart.getMyCart");
+        // Names below map 1:1 to resilience4j.{circuitbreaker,retry,
+        // ratelimiter}.instances.<name> in application.yaml.
+        // One R4J instance per Feign client (not per method) so that
+        // when cart-service is unhealthy, ALL cart.* calls trip the
+        // same circuit rather than each method tripping independently.
+        var myCart = safeCall(cart::getMyCart, "cart");
         if (myCart == null || myCart.items() == null || myCart.items().isEmpty()) {
             return new PreviewResponse(
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
@@ -72,7 +81,7 @@ public class CheckoutService {
         String applied = null;
         if (req.promotionCode() != null && !req.promotionCode().isBlank()) {
             var apply = safeCall(() -> promotion.apply(req.promotionCode(),
-                    new PromotionClient.ApplyRequest(subtotal)), "promotion.apply");
+                    new PromotionClient.ApplyRequest(subtotal)), "promotion");
             if (apply != null) {
                 discount = apply.discount();
                 applied = apply.code();
@@ -81,7 +90,7 @@ public class CheckoutService {
 
         BigDecimal afterDiscount = subtotal.subtract(discount);
         var rates = safeCall(() -> shipping.rates(
-                new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping.rates");
+                new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping");
         List<PreviewResponse.ShippingOptionDto> options = new ArrayList<>();
         BigDecimal cheapest = BigDecimal.ZERO;
         String zone = null;
@@ -102,21 +111,19 @@ public class CheckoutService {
     }
 
     /**
-     * Run a Feign call and swallow any FeignException / runtime error,
-     * returning null. Replaces the per-client fallback beans (which we
-     * disabled along with the circuit breaker — see application.yaml).
+     * Run a Feign call decorated with the full Resilience4j toolbox
+     * (RateLimiter -> CircuitBreaker -> Retry) and return null on
+     * failure. The decoration runs synchronously on the Tomcat thread
+     * so the SecurityContext propagates to {@link
+     * com.oriah.checkout.config.FeignTokenForwarder} -- see
+     * {@link ResilientFeignCaller} for the rationale.
      */
     private <T> T safeCall(java.util.function.Supplier<T> call, String name) {
-        try {
-            return call.get();
-        } catch (Exception e) {
-            log.warn("{} failed: {}", name, e.getMessage());
-            return null;
-        }
+        return resilient.call(name, call, null);
     }
 
     public ConfirmResponse confirm(ConfirmRequest req) {
-        var myCart = safeCall(cart::getMyCart, "cart.getMyCart");
+        var myCart = safeCall(cart::getMyCart, "cart");
         if (myCart == null || myCart.items() == null || myCart.items().isEmpty()) {
             return new ConfirmResponse(null, null, null, null, BigDecimal.ZERO, "USD", "cart is empty");
         }
@@ -127,7 +134,7 @@ public class CheckoutService {
         String appliedPromo = null;
         if (req.promotionCode() != null && !req.promotionCode().isBlank()) {
             var apply = safeCall(() -> promotion.apply(req.promotionCode(),
-                    new PromotionClient.ApplyRequest(subtotal)), "promotion.apply");
+                    new PromotionClient.ApplyRequest(subtotal)), "promotion");
             if (apply != null) {
                 discount = apply.discount();
                 appliedPromo = apply.code();
@@ -141,7 +148,7 @@ public class CheckoutService {
         // 2) Shipping (cheapest)
         BigDecimal shippingCost = BigDecimal.ZERO;
         var rates = safeCall(() -> shipping.rates(
-                new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping.rates");
+                new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping");
         if (rates != null && rates.options() != null && !rates.options().isEmpty()) {
             shippingCost = rates.options().stream()
                     .map(ShippingClient.ShippingOption::cost)
@@ -155,7 +162,7 @@ public class CheckoutService {
                 .map(i -> new OrderClient.LineItem(i.variantId(), i.title(), i.quantity(), i.unitPrice()))
                 .toList();
         var placed = safeCall(() -> order.place(
-                new OrderClient.PlaceOrderRequest(req.shippingAddressId(), "USD", items)), "order.place");
+                new OrderClient.PlaceOrderRequest(req.shippingAddressId(), "USD", items)), "order");
         if (placed == null) {
             return new ConfirmResponse(null, null, null, null, total, "USD", "order service unavailable");
         }
@@ -163,12 +170,12 @@ public class CheckoutService {
 
         // 4) Payment
         var intent = safeCall(() -> payment.createIntent(
-                new PaymentClient.CreateIntentRequest(placed.id(), total, "USD")), "payment.createIntent");
+                new PaymentClient.CreateIntentRequest(placed.id(), total, "USD")), "payment");
         if (intent == null) {
             return new ConfirmResponse(placed.id(), placed.status(), null, null, total, "USD", "payment service unavailable");
         }
         var confirmed = safeCall(() -> payment.confirm(intent.id(),
-                new PaymentClient.ConfirmRequest(req.cardNumber())), "payment.confirm");
+                new PaymentClient.ConfirmRequest(req.cardNumber())), "payment");
         if (confirmed == null || !"SUCCEEDED".equals(confirmed.status())) {
             // Best-effort: leave the order in CREATED so the user can retry; cart untouched.
             return new ConfirmResponse(placed.id(), placed.status(), intent.id(),
@@ -180,7 +187,7 @@ public class CheckoutService {
 
         // 5) Pay -> attach intent + transition order to PAID
         var paid = safeCall(() -> order.pay(placed.id(),
-                new OrderClient.AttachPaymentRequest(intent.id())), "order.pay");
+                new OrderClient.AttachPaymentRequest(intent.id())), "order");
         if (paid == null) {
             return new ConfirmResponse(placed.id(), placed.status(), intent.id(),
                     confirmed.status(), total, "USD", "order/pay failed (payment captured)");
@@ -189,9 +196,9 @@ public class CheckoutService {
         // 6) Redeem promo + clear cart (post-success bookkeeping)
         final String promoToRedeem = appliedPromo;
         if (promoToRedeem != null) {
-            safeCall(() -> { promotion.redeem(promoToRedeem); return null; }, "promotion.redeem");
+            safeCall(() -> { promotion.redeem(promoToRedeem); return null; }, "promotion");
         }
-        safeCall(() -> { cart.clearMyCart(); return null; }, "cart.clearMyCart");
+        safeCall(() -> { cart.clearMyCart(); return null; }, "cart");
 
         return new ConfirmResponse(paid.id(), paid.status(), intent.id(),
                 confirmed.status(), total, "USD", "order placed and paid");

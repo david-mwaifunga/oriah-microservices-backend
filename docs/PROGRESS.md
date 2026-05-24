@@ -12,6 +12,32 @@ update this before ending and read it at the start.
 end-to-end observable AND every entity write is audited with the
 Keycloak `sub` (or "system" on Kafka-consumer threads).
 
+### Frontend stack decision (locked in 2026-05-24)
+
+When the frontend phase resumes, `oriah-web/` (currently React 19 +
+TS + Vite + TanStack Query + Tailwind 3) gets **replaced in place**
+with:
+
+- **Next.js** (latest stable, App Router) on TypeScript
+- **Redux Toolkit (RTK)** for state slices, with **RTK Query** for
+  data fetching against the gateway at `:8080`
+- **Zod** for request/response schemas + form validation (the
+  contract between RTK Query endpoints and React components stays
+  type-safe end-to-end)
+- **Tailwind CSS** (kept from the existing setup)
+
+Decision rationale: David is more familiar with this stack; the
+RTK Query story for cache + auth + invalidation is stronger than
+TanStack Query for a multi-service backend like this; Next.js
+gives us SSR/RSC for SEO on the storefront (PLP/PDP/category
+pages) without a separate framework. Existing Vite app is
+disposable -- the PLP + PDP code there is 14 small components, all
+re-implementable in a day on the new stack.
+
+That phase is NOT part of Tier 1 or Tier 2; it comes after
+Phase 4 closes. Recorded here so the next session does not start a
+new Vite component instead.
+
 The five landed:
 
 - **`shared/oriah-observability-starter`** — new Maven jar every
