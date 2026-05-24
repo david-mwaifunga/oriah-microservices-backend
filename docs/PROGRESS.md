@@ -5,11 +5,12 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-05-24
+## CURRENT STATE — 2026-05-24 (revised)
 
 **Phase 4 — Observability + Production-readiness Polish (Tier 1)** —
-✅ **5 of 6 Tier-1 bullets landed; T1.6 deferred to Tier 3.** Every
-storefront request is now end-to-end observable.
+✅ **All 6 Tier-1 bullets landed.** Every storefront request is
+end-to-end observable AND every entity write is audited with the
+Keycloak `sub` (or "system" on Kafka-consumer threads).
 
 The five landed:
 
@@ -65,16 +66,50 @@ The five landed:
   `@AutoConfiguration` hook was always intended for cross-cutting
   beans like this. One commit (b012669).
 
-T1.6 (JPA auditing via `@MappedSuperclass` + `AuditorAware`) is
-**deferred**. The attempt revealed that putting `@EnableJpaAuditing`
-on the application class breaks `@WebMvcTest` slices (no `JpaMetamodel`
-in the slice context), and the workarounds (a conditional
-`@AutoConfiguration` enabler with `@ConditionalOnBean(EntityManagerFactory)`)
-broke checkout's Feign Encoder wiring once `spring-data-*` deps
-entered the starter's transitive set. Reverted to keep the
-working trace/metrics/logs/advice stack. Re-attempting with a
-narrower per-service `@Configuration` class — instead of a
-classpath-wide autoconfig — is queued for Tier 3 below.
+T1.6 (JPA auditing + soft-delete via shared `AuditableEntity` +
+per-service `JpaConfig`) — **landed on the second attempt**
+(commit 459ccd1). New module `shared/oriah-jpa-base` holds the
+`@MappedSuperclass AuditableEntity` and the `KeycloakAuditorAware`
+bean class; only the 10 entity-bearing services depend on it.
+Each service has its own `config/JpaConfig.java` with
+`@EnableJpaAuditing(auditorAwareRef = "auditor")` and the
+`AuditorAware` bean — keeping the activation per-consumer means
+`@WebMvcTest` slices filter it out automatically (no JPA bootstrap
+in the slice context) and the spring-data-* classpath additions
+stay off the non-JPA services (configserver / eurekaserver /
+gatewayserver / shipping / checkout), so spring-cloud-openfeign 5's
+Encoder wiring on checkout keeps working.
+
+Every JPA-managed write now sets five cross-cutting columns
+automatically:
+
+  - `created_at` / `updated_at`        @CreatedDate / @LastModifiedDate
+  - `created_by` / `updated_by`        Keycloak `sub` from the JWT,
+                                       falling back to "system" on
+                                       Kafka-consumer threads
+  - `is_deleted`                       BOOLEAN default false; flipped
+                                       by `entity.markDeleted()` +
+                                       save. `repository.delete(x)`
+                                       still hard-deletes -- this
+                                       semantic is preserved so the
+                                       `@BeforeEach repository.deleteAll()`
+                                       cleanup pattern keeps working
+                                       (Hibernate's `@SoftDelete`
+                                       would otherwise turn that
+                                       into a no-op update and
+                                       collide with unique
+                                       constraints on subsequent
+                                       inserts).
+
+Verified on a fresh stack:
+
+  postgres-catalog.products (POST as maya):
+    created_by = da405b2b-99b5-47ad-94b8-e489917521a7  (maya's sub)
+    updated_by = same, is_deleted = f
+
+  postgres-inventory.product_index (Kafka consumer):
+    created_by = system  (no SecurityContext on the consumer thread)
+    is_deleted = f
 
 **Tier 2 + Tier 3 are pending** for this phase; the frontend can
 proceed against the now-observable stack and we can return to
@@ -300,12 +335,8 @@ each service controls which test slices see it.
 5. **OpenAPI aggregation at gateway** — one Swagger UI dropdown
    across all 12 services.
 
-**Then Phase 4 Tier 3 (deferred from Tier 1):**
+**Then Phase 4 Tier 3:**
 
-- **JPA auditing** — re-attempt per the post-mortem above. The
-  `KeycloakAuditorAware` and `AuditableEntity` scaffolding was
-  removed in the revert; bring them back in the per-service
-  shape this time.
 - HashiCorp Vault for secrets.
 - K8s manifests + Helm chart.
 - Eureka basic-auth.
