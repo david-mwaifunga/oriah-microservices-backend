@@ -69,15 +69,26 @@ Backend (in oriah-api/, this repo):
   keycloak/import/oriah-realm.json (PKCE S256, redirect URIs
   for localhost:4000 + 3000, the existing oriah-admin stays
   confidential)
-* JAVA_TOOL_OPTIONS=-XX:MaxDirectMemorySize=128m on the
-  gatewayserver compose entry (was 10MB -> Netty OOM mid-response
-  on small-body proxies like /products/{id}; symptom was 200 +
-  0 bytes + dropped connection). Root cause: the buildpack
-  memory calculator under-allocated direct memory for the
-  reactive Netty workload. **Spawn task open**: "Properly tune
-  gateway buildpack memory" -- the right fix is at build time
-  via BPL_JVM_HEAD_ROOM, not an env override; this env knob is a
-  workaround.
+* Gateway direct-memory fix landed in two commits:
+  - abe5890 -- compose-env workaround (JAVA_TOOL_OPTIONS=-XX:Max-
+    DirectMemorySize=128m) -- unblocked Phase 5 Tier 2 PDP work
+    while the proper fix was investigated.
+  - 3d989a0 -- proper fix: BPE_APPEND_JAVA_TOOL_OPTIONS in
+    infra/gatewayserver/pom.xml so the override is baked into the
+    Buildpack image at build time. Compose env workaround removed.
+    Root cause: Paketo's memory calculator hardcodes MaxDirectMemory-
+    Size=10M; container memory / BPL_JVM_HEAD_ROOM / BPL_JVM_THREAD_
+    COUNT reshuffle other allocations but leave direct at 10M
+    (verified empirically by booting the pristine image). The
+    earlier-spawned "Fix gateway 0-body on /reviews/aggregate" task
+    is **subsumed** by this -- same root cause; the chip can be
+    dismissed.
+* smoke-test.ps1 grows step 14: 10x probe of /api/v1/products/{id}
+  and /reviews/aggregate via Invoke-WebRequest, asserting body
+  bytes > 0 on each. The existing steps used Invoke-RestMethod
+  which silently maps empty bodies to $null -- the regression class
+  that bit Phase 5 (200 OK + 0 bytes) was therefore invisible to
+  the pre-Phase-5 smoke. 14/14 green end-to-end.
 
 ### Phase 5 deliverables NOT yet done (next session pickup)
 
