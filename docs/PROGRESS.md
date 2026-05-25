@@ -5,12 +5,65 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-05-24 (revised)
+## CURRENT STATE — 2026-05-25
 
-**Phase 4 — Observability + Production-readiness Polish (Tier 1)** —
-✅ **All 6 Tier-1 bullets landed.** Every storefront request is
-end-to-end observable AND every entity write is audited with the
-Keycloak `sub` (or "system" on Kafka-consumer threads).
+**Phase 4 — Observability + Production-readiness Polish** —
+✅ **Tier 1 (6/6) + Tier 2 (5/5) complete.** Only Tier 3 (Vault,
+K8s, Eureka basic-auth, HTTPS, Pact, Outbox) remains -- all
+explicitly deferred per the original brief.
+
+### Tier 2 -- book-derived gaps (landed 2026-05-24..25)
+
+* **T2.1 -- Resilience4j full toolbox on checkout** (bf6413f).
+  Synchronous `Decorators.ofSupplier(...).withRateLimiter(rl)
+  .withCircuitBreaker(cb).withRetry(retry).decorate().get()` in a
+  new `ResilientFeignCaller` bean. Runs on the Tomcat thread, so
+  the SecurityContext ThreadLocal stays populated and the JWT
+  propagates downstream (the original disable-CB-because-of-
+  threadpool-loss workaround is now gone). 5 unit tests cover
+  retry budgeting + fallback + same-thread invariant.
+
+* **T2.2 -- Gateway hardening: redis rate-limiter + access log**
+  (21cc71a). New `redis:7-alpine` container backs a
+  `RequestRateLimiter` filter on the anonymous storefront routes
+  (/api/v1/products/**, /api/v1/search/**) at 20 tokens/sec/IP
+  with a 40-token burst. New `AccessLogFilter` (a `GlobalFilter`
+  ordered LOWEST_PRECEDENCE) emits "<method> <path> -> <status>
+  in <latency>ms" per request, with the Micrometer-injected
+  traceId/spanId MDC fields -- the gateway's Loki stream is now
+  the single chronological audit trail of every request. Verified
+  to produce 429 under a tight 2/3 burst config during
+  development.
+
+* **T2.3 -- Spring Cloud Bus over Kafka + @RefreshScope demo**
+  (f30b18b). `LOW_STOCK_THRESHOLD` (was a private static final
+  in ProductService) moved to `oriah.catalog.low-stock-threshold`
+  in config-repo, bound by a new `CatalogProperties` mutable
+  class. spring-cloud-starter-bus-kafka on catalog + configserver
+  exposes /actuator/busrefresh on the configserver; a POST fans
+  out a `RefreshRemoteApplicationEvent` on the springCloudBus
+  Kafka topic, every client rebinds in place. Demo verified
+  end-to-end: same product + inventory, flip the threshold 5 ->
+  50 -> 5, the availability response flips IN_STOCK -> LOW_STOCK
+  -> IN_STOCK with no catalog restart.
+
+* **T2.4 -- Idempotency keys on payment confirm** (<pending hash>
+  -- new commit). `POST /api/v1/payments/intents/{id}/confirm`
+  now accepts an optional `Idempotency-Key` header; a repeat
+  call with the same key replays the original response verbatim
+  and skips the gateway charge (matches Stripe's contract). New
+  `idempotency_keys` table (Flyway V3) stores `(key, intent_id,
+  response_json)`. Two TDD tests in PaymentIntegrationTest cover
+  the cache hit and the cache miss across different keys.
+
+* **T2.5 -- OpenAPI aggregation at gateway** (3c14d10). The
+  reactive springdoc UI now serves a single
+  http://localhost:8080/swagger-ui.html with a dropdown of all
+  12 service specs. The 12 specs are reached via Path-prefix
+  routes (/v3/api-docs/<svc>) that rewrite via SetPath onto the
+  upstream's own /v3/api-docs.
+
+### Tier 1 -- the observability foundation (recap)
 
 ### Frontend stack decision (locked in 2026-05-24)
 
@@ -339,29 +392,32 @@ each service controls which test slices see it.
 
 ### Next exact action
 
-**Phase 4 Tier 2 — book-derived gaps** (see
-`docs/PHASE_4_PROMPT.md` for the full bullet list, kept verbatim):
+**Phase 5 -- frontend rebuild.** With the backend now observable,
+audited, rate-limited, idempotent, and discoverable via one
+Swagger UI, the deferred frontend work is unblocked. Per the
+locked-in stack decision (see "Frontend stack decision" above):
 
-1. **Resilience4j full toolbox on checkout** — add explicit Retry +
-   RateLimiter per Feign client, re-enable CB via synchronous
-   decorator (`Decorators.ofSupplier(...).withCircuitBreaker(cb)`)
-   to avoid the bulkhead-on-pool-thread SecurityContext loss.
-2. **Gateway hardening** — Redis container, RequestRateLimiter on
-   public storefront routes (20 req/sec/IP), custom global logging
-   filter, TokenRelayGatewayFilterFactory demo on one route.
-3. **Spring Cloud Bus + @RefreshScope demo** — move
-   `LOW_STOCK_THRESHOLD` from catalog code into config-repo as
-   `oriah.catalog.low-stock-threshold`, bind to
-   `@ConfigurationProperties @RefreshScope`, wire
-   `spring-cloud-starter-bus-kafka` so `POST /actuator/busrefresh`
-   on the configserver broadcasts.
-4. **Idempotency keys on payment** —
-   `POST /api/v1/payments/intents/{id}/confirm` accepts
-   `Idempotency-Key` header; persist + replay original response.
-5. **OpenAPI aggregation at gateway** — one Swagger UI dropdown
-   across all 12 services.
+1. **Tear down the existing `oriah-web/` Vite + React 19 + TanStack
+   Query scaffold.** Keep the wireframes and the API DTOs as
+   reference; everything else is disposable.
+2. **Scaffold Next.js (App Router) + TypeScript in its place.**
+   Same folder, replaced in-place.
+3. **Add Redux Toolkit + RTK Query**, with the gateway at
+   `http://localhost:8080` as the base URL. One RTK Query slice
+   per backend domain (catalog, cart, checkout, ...).
+4. **Wire Zod schemas** for every RTK Query endpoint's response
+   shape; reuse the same schemas for form validation in the UI.
+5. **Tailwind CSS** for styling (same as before).
+6. **PLP + PDP first** -- ports the Vite app's existing two
+   routes to the new stack. Then cart + checkout + admin.
+7. **Auth: Keycloak via NextAuth.js** (or `next-auth` v5 / the
+   official `next-auth/providers/keycloak`). PKCE flow against
+   the existing `oriah-admin` confidential client (or a new
+   `oriah-web` public client -- decide at the start of the
+   session).
 
-**Then Phase 4 Tier 3:**
+**Phase 4 Tier 3 -- explicitly deferred** (do NOT pick up until
+the frontend phase finds a real need):
 
 - HashiCorp Vault for secrets.
 - K8s manifests + Helm chart.
@@ -369,6 +425,9 @@ each service controls which test slices see it.
 - HTTPS termination + self-signed cert at the gateway.
 - Pact contract tests for `catalog.product` events.
 - Outbox pattern for true at-least-once Kafka delivery.
+- TokenRelayGatewayFilterFactory demo at the gateway (started in
+  T2.2; needs a separate Keycloak confidential client + browser-
+  driven OAuth2 flow that the headless smoke can't exercise).
 
 ---
 
