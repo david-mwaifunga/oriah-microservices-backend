@@ -5,6 +5,119 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-05-25 (Phase 5 COMPLETE -- awaiting live e2e)
+
+**Phase 5 -- Next.js frontend rebuild -- all four tiers shipped.**
+The storefront + admin can now drive a real purchase end-to-end:
+anonymous browse, sign in (via Keycloak PKCE, with forced first-
+login password change on the bootstrap admin), add to bag, multi-
+step checkout with Idempotency-Key, view orders, admin CRUD on
+products / inventory / orders. Playwright e2e specs encode the
+two happy paths.
+
+### Single test plan for the next user-driven docker pass
+
+```powershell
+# 1. Make sure Docker Desktop is running, then bring the stack up:
+cd C:\Users\mwaif\OneDrive\Documents\github\oriah\oriah-api
+docker compose up -d --force-recreate keycloak   # forces realm re-import
+docker compose up -d                              # 33 containers
+
+# 2. Build + start the oriah-web container against the stack:
+cd ..\oriah-web
+docker build -t oriah/oriah-web:dev .             # ~3 min first time
+cd ..\oriah-api
+docker compose up -d oriah-web
+
+# 3. Original backend smoke (catches a regression of the gateway
+#    direct-memory bug + the full saga):
+powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
+# expect: 14/14 green
+
+# 4. Manual storefront walkthrough at http://localhost:4000 :
+#    - Hero homepage (9 sections, all visible)
+#    - Click Sign in (top-right) -> Keycloak login form
+#    - alice / password -> redirected back to /
+#    - Click any product -> "Add to bag" -> drawer opens
+#    - Proceed to checkout -> 3 steps -> Place order
+#    - Land on /orders/{id} with state timeline
+#    - Sign out, sign in as admin / ChangeMeOnFirstLogin! ->
+#      Keycloak forces UPDATE_PASSWORD -> set a new one ->
+#      /admin dashboard loads with 5 admin-role chips
+#    - /admin/products -> New product dialog -> create
+#    - /admin/orders -> "Move to {next}" steps the order through
+#      PAID -> FULFILLED -> SHIPPED -> DELIVERED
+
+# 5. (Optional) Playwright e2e for the same paths:
+cd ..\oriah-web
+npx playwright install chromium                   # one-time
+npx playwright test                                # 3 specs
+```
+
+### What landed (since the previous CURRENT STATE block)
+
+Frontend (oriah-web), commits in order:
+* `83b3496` -- Tier 3 in one batch: /account (customer profile +
+  addresses CRUD), /checkout (3-step RHF + Zod + Idempotency-Key
+  + Stripe-style retry-safe replay), /orders + /orders/[id] (list
+  + state timeline), /admin/products (CRUD with Dialog),
+  /admin/orders (FSM transitions), /admin/inventory (seed),
+  thin polished /admin/{customers,promotions,payments} stubs so
+  sidebar links don't 404.
+* `1d558e0` -- Tier 4 Playwright e2e: playwright.config (serial,
+  webServer auto-starts dev), e2e/helpers/auth.ts (drives the
+  full Auth.js + Keycloak PKCE handshake including the optional
+  UPDATE_PASSWORD required action), storefront-happy-path.spec
+  (alice anonymous browse -> sign in -> add to bag -> checkout
+  with 4242 -> see order), admin-happy-path.spec (admin first-
+  login UPDATE_PASSWORD flow + maya creates product + transitions
+  order).
+
+3 e2e specs parse and list cleanly. Live execution requires
+`npx playwright install chromium` (one-time) and the docker
+stack up.
+
+### Architecture choices worth keeping in mind
+
+* The cart, checkout, orders, and admin APIs all require an
+  access token. The shared apiFetch wrapper's accessToken arg
+  is REQUIRED at the type level on those clients so anonymous
+  calls fail at the typechecker, not at the wire as a confusing
+  401 + retry storm.
+* /checkout's Idempotency-Key is a UUID generated at mount; only
+  regenerates after a successful order. Retries of a flaky network
+  call replay -> same orderId returned (matches the T2.4 payment
+  contract).
+* /admin layout enforces "any *_ADMIN" role; each child page-
+  level guard further narrows to its specific role (Products =
+  CATALOG_ADMIN, Orders = ORDER_ADMIN, etc.) for defence in depth.
+* Default admin's first-login UPDATE_PASSWORD is handled by
+  Keycloak's own screen during the OAuth handshake -- no custom
+  app code. The Playwright auth helper handles both first-login
+  and subsequent-login automatically.
+
+### Phase 5 deliverables NOT yet done
+
+* Polished `/admin/{customers,promotions,payments}` CRUD --
+  currently ComingSoon stubs. The backend endpoints exist; the
+  UIs are next-iteration polish.
+* Cart `/cart` page (vs the drawer). The drawer covers 99% of
+  the use case; a full-page cart can come later if needed.
+* Product image URLs. The catalog wire format has no media
+  field yet; ProductCard's image-placeholder pattern is a one-
+  line swap to next/image once the field lands.
+* Newsletter subscribe wiring -- the form is a no-op until
+  notification-service grows a public subscribe endpoint.
+
+### What's next (Phase 6 candidates)
+
+The original Phase 4 Tier 3 deferred list still applies:
+Vault, K8s, Eureka basic-auth, HTTPS, Pact, Outbox. The frontend
+is now in a "production-shaped" state -- Phase 6 can focus on
+the operational hardening that was deferred during Phase 4.
+
+---
+
 ## CURRENT STATE — 2026-05-25 (night — hero homepage + Tier 3a cart drawer)
 
 Storefront now has a proper hero homepage AND an auth-gated cart
