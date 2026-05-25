@@ -5,6 +5,117 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-05-25 (late evening — production-shell pass)
+
+**Phase 5 production-shell pass landed.** Storefront + admin now
+look + behave like a real boutique e-commerce app: editorial
+brand header, sign-in flow against Keycloak (PKCE public client),
+role-guarded admin shell, friendly 403, image-forward PLP cards,
+two-column PDP. The default-admin first-login UX is handled by
+Keycloak's UPDATE_PASSWORD required action (set on the new
+bootstrap admin user); our app just kicks signIn("keycloak") and
+Keycloak shows its own change-password screen mid-handshake.
+
+### What landed (this pass)
+
+Backend (oriah-api):
+* keycloak/import/oriah-realm.json -- new `admin` bootstrap user
+  with all 5 *_ADMIN roles + USER, credentials temporary=true,
+  requiredActions=["UPDATE_PASSWORD"]. Documented default:
+  admin / ChangeMeOnFirstLogin!. maya/alice unchanged so
+  smoke-test.ps1 (14/14) keeps passing on the existing flows.
+
+Frontend (oriah-web):
+* 7 new shadcn primitives (Avatar, DropdownMenu, Sheet,
+  Separator, NavigationMenu, Badge, Tooltip)
+* src/components/shell/ -- production storefront chrome:
+  Header (server, reads auth() so signed-in state is in SSR HTML;
+  sticky with backdrop blur, ink announcement strip, brand
+  wordmark, desktop nav, cart button, sign-in OR user-menu
+  control), Footer (4-column with brand contact + Shop/Account/
+  Atelier), UserMenu (client; avatar dropdown with role-aware
+  "Admin dashboard" link + sign-out server action), SignInButton,
+  CartButton (placeholder count=0 for Tier 3), MobileNav (Sheet
+  drawer for sub-md), actions.ts (signIn/signOut server actions)
+* src/app/signin/page.tsx -- branded wrapper around the Auth.js
+  + Keycloak handoff; Server Action triggers signIn("keycloak");
+  dev-only hint card with default admin credentials (tree-shaken
+  in prod via NODE_ENV gate); error banner with prettyError()
+  mapping for OAuthSignin/Callback/AccessDenied/Verification
+* src/app/admin/layout.tsx -- role-guarded shell. Anonymous ->
+  /signin?callbackUrl=%2Fadmin; signed-in non-admin ->
+  /not-authorized (deliberately OUTSIDE the /admin tree so its
+  own layout doesn't loop-redirect)
+* src/components/admin/{AdminSidebar, AdminTopBar}.tsx -- left
+  sidebar with role-filtered nav (Dashboard, Products [CATALOG_
+  ADMIN], Inventory [INVENTORY_ADMIN], Orders [ORDER_ADMIN],
+  Customers [CUSTOMER_ADMIN], Promotions [CATALOG_ADMIN],
+  Payments [PAYMENT_ADMIN]) + top bar with "Back to storefront"
+  + the storefront UserMenu reused (consistent sign-out UX)
+* src/app/admin/page.tsx -- dashboard with "Good day, {firstName}"
+  + role chips + 6 stat cards (all "--" + "Tier 3" pill until
+  /api/v1/admin/* fan-out lands) + recent-activity placeholder
+  pointing at Grafana :3000
+* src/app/not-authorized/page.tsx -- friendly 403 with twin CTAs
+  (Back to shop / My orders)
+* src/components/product/ProductCard.tsx -- image-forward
+  editorial card: aspect-square placeholder with brand-tone
+  gradient + initial in display type, hover scales 4% over
+  500ms, title shifts to gold; first-tag overlay chip (top-left,
+  semi-transparent stone-50 + backdrop blur). One-line swap to
+  next/image when catalog ships media URLs. ProductCard.test.tsx
+  updated for the intentional duplicate-tag render (overlay +
+  chip row); 13/13 still green.
+* src/app/layout.tsx -- title.template ("%s | Oriah Jewelry"),
+  full-bleed main (each page owns its container), Header/Footer
+  mount
+* src/app/products/[id]/page.tsx -- two-column premium PDP:
+  image gallery left (large hero placeholder + 4-square thumbs),
+  sticky info panel right (availability + first-tag eyebrow,
+  display title, SKU, description, tag pills, prominent "Add to
+  bag" CTA disabled with Tier-3 note, 4-field detail dl)
+* src/app/products/page.tsx -- editorial PLP header (gold eyebrow
+  "The Collection" + display "All pieces" + brand subtitle)
+
+Smoke (dev :4000, all anonymous):
+* /                                              -> 307 -> /products
+* /products                                      -> 200 90KB
+* /products/{id}                                 -> 200 98KB
+* /signin                                        -> 200 65KB
+* /not-authorized                                -> 200 60KB
+* /admin                                         -> 307 -> /signin?callbackUrl=%2Fadmin
+* /api/v1/products?size=2                        -> 200 329B (gateway rewrite)
+* /api/v1/products/{id}                          -> 200 157B
+* /api/v1/products/{id}/reviews/aggregate        -> 200 25B
+* /api/auth/providers                            -> 200 188B
+* npm test                                       -> 13/13
+* npm run typecheck                              -> clean
+
+Note on docker image: oriah-web compose container is stopped (so
+local `npm run dev` could claim :4000 during this pass). Rebuild
++ restart to bring the production-shell into the container stack:
+  cd oriah-api
+  docker compose stop oriah-web   # if running
+  cd ../oriah-web && docker build -t oriah/oriah-web:dev .
+  cd ../oriah-api
+  docker compose up -d oriah-web
+
+### Phase 5 deliverables NOT yet done (next session pickup)
+
+* Tier 3 -- cart (auth-gated, optimistic mutations), checkout
+  (multi-step form, Idempotency-Key on confirm), order history,
+  admin CRUD pages (Products / Inventory / Orders / Customers
+  / Promotions wiring up the existing admin routes shown in the
+  sidebar)
+* Tier 4 -- Playwright e2e (storefront-happy-path.spec.ts +
+  admin-happy-path.spec.ts: alice purchase flow + admin maya/
+  default-admin first-login flow), CI thoughts
+* Polish nit: route-group separation (storefront)/ + (admin)/ so
+  /admin/* doesn't double-wrap with the storefront Header+Footer
+  -- minor visual nit, documented in admin/layout.tsx docstring
+
+---
+
 ## CURRENT STATE — 2026-05-25 (evening)
 
 **Phase 5 — Next.js frontend rebuild** — ✅ Tier 1 (scaffold +
