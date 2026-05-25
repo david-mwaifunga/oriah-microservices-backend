@@ -90,6 +90,30 @@
   ],
   "users": [
     {
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@oriah.local",
+      "emailVerified": true,
+      "firstName": "Oriah",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "ChangeMeOnFirstLogin!",
+          "temporary": true
+        }
+      ],
+      "requiredActions": ["UPDATE_PASSWORD"],
+      "realmRoles": [
+        "USER",
+        "CATALOG_ADMIN",
+        "INVENTORY_ADMIN",
+        "CUSTOMER_ADMIN",
+        "ORDER_ADMIN",
+        "PAYMENT_ADMIN"
+      ]
+    },
+    {
       "username": "maya",
       "enabled": true,
       "email": "maya@oriah.local",
