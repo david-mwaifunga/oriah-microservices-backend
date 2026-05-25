@@ -5,6 +5,88 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-05-25 (night — hero homepage + Tier 3a cart drawer)
+
+Storefront now has a proper hero homepage AND an auth-gated cart
+drawer with optimistic mutations. Routes are split into
+`(storefront)` / `(admin)` route groups so the admin shell no
+longer double-wraps with the storefront chrome.
+
+### What landed (this pass)
+
+Frontend (oriah-web), commits in order:
+* `dc72869` -- Route-group refactor. src/app/{page,products,
+  signin,not-authorized} -> src/app/(storefront)/*; src/app/admin
+  -> src/app/(admin)/admin/. Root layout now HTML + Providers +
+  Toaster only (no chrome). New src/app/(storefront)/layout.tsx
+  owns Header + Footer. Admin layout simplified (no longer
+  fighting the storefront header above it).
+* `ca71684` -- Hero homepage. 6 sections: full-bleed Hero (ink
+  panel + layered gradient placeholder for the eventual
+  photograph + display headline + twin CTAs), Trust band
+  (Handcrafted / Solid 18k / Recycled), Featured (live 4-up RSC
+  fetch from catalog, graceful empty fallback), Brand story
+  (editorial split with founder quote), Collections (3 tag-
+  filtered PLP cards), Newsletter (placeholder form).
+* `c7a42ec` -- Enriched hero to 9 sections: adds Press strip
+  ("As featured in" Vogue / Wallpaper* / Monocle / The Cut /
+  Elle Decor in serif text-only "logos"), Made-to-order
+  (numbered 3-step commission process + outline CTA), and
+  Testimonials (3 customer voices with star ratings).
+* `01c1611` -- Cart drawer. Full Tier 3a delivery:
+  - src/components/cart/CartDrawer.tsx (Sheet from the right,
+    4 render modes: anonymous / loading / empty / items)
+  - CartLineItem.tsx (thumbnail + qty stepper + remove)
+  - AddToBagButton.tsx (PDP CTA; anonymous -> /signin with
+    callbackUrl; signed-in -> addAsync + openDrawer + toast)
+  - useCartMutations.ts (optimistic add / updateQty / remove
+    via TanStack onMutate/onError/onSettled; subtotal
+    recomputed locally during the optimistic patch)
+  - CartButton in header rewritten as client component:
+    opens drawer + reads cart cache for live count badge
+  - src/lib/api/{cart.ts, schemas/cart.ts} typed clients for
+    /api/v1/carts/me{,/items{,/:variantId}} -- accessToken is a
+    REQUIRED arg (not optional) so anonymous cart calls fail at
+    the type level
+  - src/lib/store/cart-drawer.ts -- Zustand store for drawer
+    open/closed (cart data lives in TanStack, only UI state here)
+  - SessionProvider mounted at src/app/providers.tsx with
+    server-seeded session (auth() in root layout passes the
+    initial state) so useSession() returns the right shape on
+    first paint, no flicker
+
+Smoke (dev :4000, anonymous):
+* GET /                      -> 200 162KB (9 hero sections + cart
+                                drawer mounted; all section
+                                markers present in HTML)
+* GET /products              -> 200 (PLP unchanged)
+* GET /signin                -> 200 (unchanged)
+* GET /not-authorized        -> 200 (unchanged)
+* GET /admin                 -> 307 -> /signin?callbackUrl=%2Fadmin
+                                (admin guard still works)
+* npm run typecheck          -> clean
+* npm test                   -> 13/13
+
+Live cart-mutation verification (PDP "Add to bag" -> drawer ->
+qty stepper -> remove) waits on the docker stack restart -- the
+anonymous + empty rendering paths verified without a backend.
+
+### Phase 5 deliverables NOT yet done (next session pickup)
+
+* Tier 3b -- Checkout: multi-step form (RHF + Zod), preview +
+  confirm with `Idempotency-Key` header (UUID per submission),
+  test card 4242, redirect to order success
+* Tier 3c -- Order history: /orders auth-gated page listing the
+  customer's orders with state badges, drill into details
+* Tier 3d -- Admin CRUD: wire the existing /admin sidebar links
+  (Products / Inventory / Orders / Customers / Promotions /
+  Payments) against the /api/v1/admin/* endpoints
+* Tier 4 -- Playwright e2e (storefront-happy-path + admin-happy-
+  path including the default-admin first-login + UPDATE_PASSWORD
+  flow)
+
+---
+
 ## CURRENT STATE — 2026-05-25 (late evening — production-shell pass)
 
 **Phase 5 production-shell pass landed.** Storefront + admin now
