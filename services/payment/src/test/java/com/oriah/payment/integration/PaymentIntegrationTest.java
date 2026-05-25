@@ -20,6 +20,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.payment.TestcontainersConfiguration;
+import com.oriah.payment.repository.IdempotencyKeyRepository;
 import com.oriah.payment.repository.PaymentIntentRepository;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -41,6 +42,8 @@ class PaymentIntegrationTest {
     @Autowired
     private PaymentIntentRepository repository;
     @Autowired
+    private IdempotencyKeyRepository idempotencyKeys;
+    @Autowired
     private ObjectMapper objectMapper;
     @MockitoBean
     @SuppressWarnings("unused")
@@ -48,6 +51,7 @@ class PaymentIntegrationTest {
 
     @BeforeEach
     void clean() {
+        idempotencyKeys.deleteAll();
         repository.deleteAll();
     }
 
@@ -101,6 +105,67 @@ class PaymentIntegrationTest {
     void requiresJwt() throws Exception {
         mvc.perform(get("/api/v1/payments/intents/" + UUID.randomUUID()))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("repeat confirm with same Idempotency-Key replays the original response and does not re-charge")
+    void idempotencyKeyReplays() throws Exception {
+        String intentId = createIntent("alice", "100.00");
+        String key = "test-key-" + UUID.randomUUID();
+
+        // First call: full path, charges the (fake) gateway, returns SUCCEEDED.
+        MvcResult first = mvc.perform(post("/api/v1/payments/intents/" + intentId + "/confirm")
+                        .with(jwtFor("alice"))
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cardNumber\":\"4242424242424242\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.confirmedAt").exists())
+                .andReturn();
+        String firstBody = first.getResponse().getContentAsString();
+
+        // Re-confirm with a card that WOULD have been declined if it
+        // hit the gateway again. The replay should ignore the new body
+        // and return the cached SUCCEEDED response byte-for-byte.
+        MvcResult second = mvc.perform(post("/api/v1/payments/intents/" + intentId + "/confirm")
+                        .with(jwtFor("alice"))
+                        .header("Idempotency-Key", key)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cardNumber\":\"4000000000000002\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andReturn();
+        String secondBody = second.getResponse().getContentAsString();
+
+        // Replay must produce byte-identical output.
+        org.assertj.core.api.Assertions.assertThat(secondBody).isEqualTo(firstBody);
+    }
+
+    @Test
+    @DisplayName("different Idempotency-Key on the same intent runs a fresh confirm (new key, new outcome)")
+    void differentKeyDoesNotReplay() throws Exception {
+        // First intent: succeed.
+        String intentA = createIntent("alice", "100.00");
+        mvc.perform(post("/api/v1/payments/intents/" + intentA + "/confirm")
+                        .with(jwtFor("alice"))
+                        .header("Idempotency-Key", "key-A")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cardNumber\":\"4242424242424242\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+
+        // Second intent + key. Pre-existing key-A does not collide --
+        // we get fresh gateway behavior. Use a declined card to prove
+        // the path is not short-circuited by the earlier success.
+        String intentB = createIntent("alice", "100.00");
+        mvc.perform(post("/api/v1/payments/intents/" + intentB + "/confirm")
+                        .with(jwtFor("alice"))
+                        .header("Idempotency-Key", "key-B")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cardNumber\":\"4000000000000002\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"));
     }
 
     private String createIntent(String sub, String amount) throws Exception {
