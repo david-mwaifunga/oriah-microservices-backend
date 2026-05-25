@@ -65,31 +65,68 @@ explicitly deferred per the original brief.
 
 ### Tier 1 -- the observability foundation (recap)
 
-### Frontend stack decision (locked in 2026-05-24)
+### Frontend stack decision (locked in 2026-05-25)
 
 When the frontend phase resumes, `oriah-web/` (currently React 19 +
 TS + Vite + TanStack Query + Tailwind 3) gets **replaced in place**
 with:
 
-- **Next.js** (latest stable, App Router) on TypeScript
-- **Redux Toolkit (RTK)** for state slices, with **RTK Query** for
-  data fetching against the gateway at `:8080`
-- **Zod** for request/response schemas + form validation (the
-  contract between RTK Query endpoints and React components stays
-  type-safe end-to-end)
-- **Tailwind CSS** (kept from the existing setup)
+**Core:**
+- **Next.js 15** (App Router) on TypeScript strict
+- **TanStack Query v5** for client-side data fetching + cache
+  (kept from the Vite setup; David is familiar; lighter than
+  Redux Toolkit for a green-field project with no existing slices)
+- **Zod** for response validation + form schemas (same schemas
+  feed both API parsing and React Hook Form)
+- **Tailwind CSS** (kept from existing setup)
 
-Decision rationale: David is more familiar with this stack; the
-RTK Query story for cache + auth + invalidation is stronger than
-TanStack Query for a multi-service backend like this; Next.js
-gives us SSR/RSC for SEO on the storefront (PLP/PDP/category
-pages) without a separate framework. Existing Vite app is
-disposable -- the PLP + PDP code there is 14 small components, all
-re-implementable in a day on the new stack.
+**Recommended additions:**
+- **shadcn/ui** for accessible Tailwind-native primitives (own
+  the source; no library lock-in)
+- **React Hook Form** + Zod resolver for forms
+- **Auth.js v5** (next-auth) with the Keycloak provider, PKCE
+  flow against a new `oriah-web` **public** Keycloak client
+  (added to the realm JSON; the existing `oriah-admin` stays
+  confidential for server-side use)
+- **openapi-typescript** to generate types from the gateway's
+  aggregated `/v3/api-docs/{svc}` -- run as a `prebuild` step so
+  the gateway must be up at build time (acceptable; matches the
+  rest of the dev loop)
+- **Zustand** for tiny client-only state (cart drawer open,
+  theme, etc.) -- ~1KB, avoids reaching for Redux just for a
+  boolean
+- **Vitest** + Testing Library for unit/component, **Playwright**
+  for e2e against the live gateway -- matches oriah-api's TDD
+  discipline
+
+**Topology decisions:**
+- `oriah-web` runs **inside docker** on the `oriah` network so
+  RSC server-side fetches hit `http://gatewayserver:8080`
+  directly; browser-side fetches go through Next.js rewrites
+  (same-origin). New compose entry alongside the 33 existing
+  containers.
+- Dev port **4000** on the host (Grafana already has 3000; Vite
+  was 5173; pick a clear lane).
+
+**App Router layout:**
+- `app/products/page.tsx` (PLP) + `app/products/[id]/page.tsx`
+  (PDP) -> **React Server Components**, prefetched on the
+  server, hydrated into a TanStack `HydrationBoundary` for
+  client takeover. SEO + crawlable storefront without paying
+  for interactivity on the cold render.
+- `app/cart`, `app/checkout`, `app/orders`, `app/admin/*` -> client
+  components, full TanStack Query.
+
+Decision rationale on Redux vs TanStack: David is more familiar
+with TanStack from the Vite app and Redux would add boilerplate
+(slices, reducers, store config) that pays for itself only when
+non-server state gets complex. The cart + auth status are the
+only truly cross-cutting client states; Zustand covers them.
 
 That phase is NOT part of Tier 1 or Tier 2; it comes after
 Phase 4 closes. Recorded here so the next session does not start a
-new Vite component instead.
+new Vite component instead. Full prompt for the new session lives
+at `docs/PHASE_5_PROMPT.md`.
 
 The five landed:
 
