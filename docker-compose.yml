@@ -874,6 +874,82 @@ services:
       start_period: 90s
     networks: [oriah]
 
+  # ─────────────────────────── frontend tier ───────────────────────────
+
+  oriah-web:
+    # Next.js 15 storefront + admin. See ../oriah-web/CLAUDE.md for
+    # the stack. Built from ../oriah-web/Dockerfile (multi-stage,
+    # standalone output, ~150MB final). Build with:
+    #   docker compose build oriah-web
+    image: oriah/oriah-web:dev
+    build:
+      context: ../oriah-web
+      dockerfile: Dockerfile
+    container_name: oriah-web
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      NEXT_TELEMETRY_DISABLED: "1"
+
+      # Auth.js secret. Override in production via an env-file / docker
+      # secret; the default here is a placeholder so the container
+      # boots in dev without manual setup.
+      AUTH_SECRET: ${ORIAH_WEB_AUTH_SECRET:-dev-secret-replace-me-with-32-bytes-of-random}
+      # Auth.js v5 trusts X-Forwarded-Host when this is true; required
+      # behind the docker port mapping (container sees PORT=3000 but
+      # the browser hits localhost:4000).
+      AUTH_TRUST_HOST: "true"
+      NEXTAUTH_URL: http://localhost:4000
+
+      # Keycloak's iss claim is `http://localhost:7080/...` (set via
+      # KC_HOSTNAME on the keycloak service) -- both the host browser
+      # and this container must agree on that URL so iss validation
+      # passes. extra_hosts: localhost:host-gateway below lets the
+      # container resolve `localhost:7080` to the docker host's
+      # exposed Keycloak port. The Spring services dodge this by
+      # splitting issuer-uri (validation) from jwk-set-uri (fetch);
+      # Auth.js doesn't expose that split cleanly, so we route both
+      # through the host. Trade-off: one extra hop (container ->
+      # host -> keycloak) for the OIDC discovery + token exchange,
+      # which only happens at login.
+      KEYCLOAK_ISSUER: http://localhost:7080/realms/oriah
+      KEYCLOAK_CLIENT_ID: oriah-web
+
+      # RSC + Server Actions fetch the gateway via internal Docker
+      # DNS -- no host roundtrip. Browser-side /api/* requests come
+      # in through Next.js rewrites (next.config.js) and use the
+      # same URL on the server end.
+      INTERNAL_API_BASE_URL: http://gatewayserver:8080
+      NEXT_PUBLIC_API_BASE_URL: /api
+    ports:
+      # Host 4000 -> container 3000. Avoids the Grafana :3000 host
+      # port (which is what made the brief pick 4000 in the first
+      # place).
+      - "4000:3000"
+    extra_hosts:
+      # Lets the container resolve `localhost` to the docker host so
+      # KEYCLOAK_ISSUER=http://localhost:7080/... works in here.
+      # `host-gateway` is the magic value Docker resolves to the host
+      # bridge IP at container start.
+      - "localhost:host-gateway"
+    depends_on:
+      gatewayserver:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      # /api/auth/session is the smallest always-200 endpoint Auth.js
+      # exposes; if it 200s, the Node server + Auth.js routes are up.
+      # 127.0.0.1 (not `localhost`) because extra_hosts above remaps
+      # `localhost` to the docker host -- see the comment there.
+      test: ["CMD", "wget", "-q", "--tries=1", "--spider", "http://127.0.0.1:3000/api/auth/session"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [oriah]
+
 volumes:
   postgres-catalog-data:
   postgres-inventory-data:
