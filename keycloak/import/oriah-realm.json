@@ -66,6 +66,26 @@
       "attributes": {
         "access.token.lifespan": "1800"
       }
+    },
+    {
+      "clientId": "oriah-web",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "http://localhost:4000/api/auth/callback/keycloak",
+        "http://localhost:3000/api/auth/callback/keycloak"
+      ],
+      "webOrigins": ["http://localhost:4000", "http://localhost:3000"],
+      "attributes": {
+        "access.token.lifespan": "1800",
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:4000/*##http://localhost:3000/*"
+      }
     }
   ],
   "users": [
