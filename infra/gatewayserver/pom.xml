@@ -78,6 +78,22 @@
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
 
+        <!--
+            Reactive Springdoc + Swagger UI. Aggregates every service's
+            /v3/api-docs into a single dropdown at
+            http://localhost:8080/swagger-ui.html. The 12 service
+            specs themselves are reached via Path-prefix routes
+            declared in application.yaml that rewrite
+            /v3/api-docs/{svc} -> /v3/api-docs on the upstream.
+            Reactive (webflux) variant because the gateway is Netty,
+            not Tomcat.
+        -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webflux-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
         <!-- Lombok: @Slf4j on the application class for the startup banner. -->
         <dependency>
             <groupId>org.projectlombok</groupId>

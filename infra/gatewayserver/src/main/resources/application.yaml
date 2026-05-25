@@ -122,6 +122,87 @@ spring:
                     redis-rate-limiter.replenishRate: 20
                     redis-rate-limiter.burstCapacity: 40
 
+            # ----- OpenAPI docs aggregation -----
+            # One route per service, rewriting /v3/api-docs/<svc> on the
+            # gateway to /v3/api-docs on the upstream. Springdoc's
+            # swagger-ui at the gateway (springdoc.swagger-ui.urls
+            # below) shows a dropdown -- pick a service and it fetches
+            # that path through the gateway, which proxies to the
+            # service's own /v3/api-docs.
+            - id: catalog-docs
+              uri: lb://catalog
+              predicates: [Path=/v3/api-docs/catalog]
+              filters: [SetPath=/v3/api-docs]
+            - id: inventory-docs
+              uri: lb://inventory
+              predicates: [Path=/v3/api-docs/inventory]
+              filters: [SetPath=/v3/api-docs]
+            - id: customer-docs
+              uri: lb://customer
+              predicates: [Path=/v3/api-docs/customer]
+              filters: [SetPath=/v3/api-docs]
+            - id: cart-docs
+              uri: lb://cart
+              predicates: [Path=/v3/api-docs/cart]
+              filters: [SetPath=/v3/api-docs]
+            - id: payment-docs
+              uri: lb://payment
+              predicates: [Path=/v3/api-docs/payment]
+              filters: [SetPath=/v3/api-docs]
+            - id: order-docs
+              uri: lb://order
+              predicates: [Path=/v3/api-docs/order]
+              filters: [SetPath=/v3/api-docs]
+            - id: promotion-docs
+              uri: lb://promotion
+              predicates: [Path=/v3/api-docs/promotion]
+              filters: [SetPath=/v3/api-docs]
+            - id: shipping-docs
+              uri: lb://shipping
+              predicates: [Path=/v3/api-docs/shipping]
+              filters: [SetPath=/v3/api-docs]
+            - id: checkout-docs
+              uri: lb://checkout
+              predicates: [Path=/v3/api-docs/checkout]
+              filters: [SetPath=/v3/api-docs]
+            - id: notification-docs
+              uri: lb://notification
+              predicates: [Path=/v3/api-docs/notification]
+              filters: [SetPath=/v3/api-docs]
+            - id: review-docs
+              uri: lb://review
+              predicates: [Path=/v3/api-docs/review]
+              filters: [SetPath=/v3/api-docs]
+            - id: search-docs
+              uri: lb://search
+              predicates: [Path=/v3/api-docs/search]
+              filters: [SetPath=/v3/api-docs]
+
+# Aggregated Swagger UI. Loads at http://localhost:8080/swagger-ui.html
+# with a top-right dropdown listing every service spec by name; click
+# one and the panel below renders its endpoints.
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    urls:
+      - { name: catalog,      url: /v3/api-docs/catalog }
+      - { name: inventory,    url: /v3/api-docs/inventory }
+      - { name: customer,     url: /v3/api-docs/customer }
+      - { name: cart,         url: /v3/api-docs/cart }
+      - { name: payment,      url: /v3/api-docs/payment }
+      - { name: order,        url: /v3/api-docs/order }
+      - { name: promotion,    url: /v3/api-docs/promotion }
+      - { name: shipping,     url: /v3/api-docs/shipping }
+      - { name: checkout,     url: /v3/api-docs/checkout }
+      - { name: notification, url: /v3/api-docs/notification }
+      - { name: review,       url: /v3/api-docs/review }
+      - { name: search,       url: /v3/api-docs/search }
+  # api-docs stays enabled (default) -- the swagger-ui's
+  # /v3/api-docs/swagger-config endpoint that drives the dropdown is
+  # served by springdoc only when api-docs is enabled. The gateway
+  # has no controllers of its own so its /v3/api-docs spec is empty;
+  # harmless.
+
 server:
   # The conventional edge port. Frontend code talks to localhost:8080.
   port: 8080
