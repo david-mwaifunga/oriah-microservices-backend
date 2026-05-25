@@ -5,7 +5,91 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-05-25
+## CURRENT STATE — 2026-05-25 (evening)
+
+**Phase 5 — Next.js frontend rebuild** — ✅ Tier 1 (scaffold +
+smoke, 12/12) + Tier 2 (storefront PLP/PDP, 3/3) complete in
+`../oriah-web/`. The Vite + React 19 scaffold has been replaced
+in place with Next.js 15 (App Router) + TS strict + TanStack
+Query v5 + shadcn/ui + Auth.js v5 (Keycloak PKCE public client)
++ Zustand + openapi-typescript codegen + Vitest. Container builds
+and runs in compose as the 34th container on the `oriah` network.
+
+**Next exact action**: Tier 3 -- the auth-gated interactive flows
+(cart, checkout with `Idempotency-Key`, order history, admin
+CRUD). See `docs/PHASE_5_PROMPT.md` bullets 16-19 for the brief,
+and `../oriah-web/CLAUDE.md` for the stack. Tier 4 (Playwright
+e2e + polish) follows.
+
+### Phase 5 deliverables that landed (this session)
+
+Frontend (in oriah-web/, separate git repo):
+* CLAUDE.md + README.md rewritten for the new stack (doc-loading
+  flow stays accurate for the next session)
+* Vite scaffold torn down; legacy package-lock.json preserved as
+  legacy-vite-package-lock.json
+* Hand-written Next.js 15 scaffold (package.json, tsconfig,
+  next.config.js, src/app/layout.tsx + page.tsx) -- avoids the
+  create-next-app interactive prompt
+* Full deps install: TanStack Query + devtools, Zod, RHF +
+  resolvers, next-auth@beta, Zustand; vitest + RTL +
+  @vitejs/plugin-react + jsdom + @playwright/test;
+  openapi-typescript
+* shadcn/ui (New York / Slate) initialized; 8 primitives added
+  (Button, Input, Card, Dialog, Form, Skeleton, Sonner, Label)
+* TanStack Query provider in src/app/providers.tsx; mounted in
+  root layout with the Sonner Toaster
+* Auth.js v5 with Keycloak provider (PKCE-only public client) at
+  src/lib/auth/index.ts + the [...nextauth] route handler;
+  realm_access.roles decoded from the access_token onto
+  session.user.roles
+* Typed fetch wrapper at src/lib/api/client.ts: traceparent
+  generation (W3C Trace Context, joins backend Zipkin tree),
+  per-call Zod schema validation, RFC 7807 problem+json -> ApiError
+  mapping with traceId surfacing; serverApiFetch wrapper pulls
+  the access token from the Auth.js session
+* scripts/codegen.mjs -- openapi-typescript codegen wired as
+  `prebuild`; pulls 12 service specs from the gateway aggregation
+* Multi-stage Dockerfile (standalone output, ~150MB runtime
+  image, non-root user, wget healthcheck) + oriah-web service in
+  ../oriah-api/docker-compose.yml on port 4000:3000
+* next.config.js /api/v1/* rewrites to the gateway (browser
+  same-origin); images.remotePatterns left empty until catalog
+  ships media URLs
+* PLP at /products (RSC prefetch + HydrationBoundary + tag filter
+  + URL-bound pagination); PDP at /products/[id] (RSC + parallel
+  reviews + aggregate prefetch, notFound() on catalog 404, graceful
+  compute-from-sample fallback when the server aggregate is null)
+* Vitest config + 13 tests (AvailabilityBadge enum map x 4,
+  ProductCard render/link x 4, computeAggregate logic x 5) all
+  green; PDP 404 + RSC behavior deferred to Tier 4 Playwright
+
+Backend (in oriah-api/, this repo):
+* New `oriah-web` PUBLIC Keycloak client in
+  keycloak/import/oriah-realm.json (PKCE S256, redirect URIs
+  for localhost:4000 + 3000, the existing oriah-admin stays
+  confidential)
+* JAVA_TOOL_OPTIONS=-XX:MaxDirectMemorySize=128m on the
+  gatewayserver compose entry (was 10MB -> Netty OOM mid-response
+  on small-body proxies like /products/{id}; symptom was 200 +
+  0 bytes + dropped connection). Root cause: the buildpack
+  memory calculator under-allocated direct memory for the
+  reactive Netty workload. **Spawn task open**: "Properly tune
+  gateway buildpack memory" -- the right fix is at build time
+  via BPL_JVM_HEAD_ROOM, not an env override; this env knob is a
+  workaround.
+
+### Phase 5 deliverables NOT yet done (next session pickup)
+
+* Tier 3 -- cart (auth-gated, optimistic mutations), checkout
+  (multi-step form, Idempotency-Key on confirm), order history,
+  admin CRUD (CATALOG_ADMIN / INVENTORY_ADMIN role-gated)
+* Tier 4 -- Playwright e2e (storefront-happy-path.spec.ts +
+  admin-happy-path.spec.ts), CI thoughts
+
+---
+
+## CURRENT STATE — 2026-05-25 (Phase 4 close)
 
 **Phase 4 — Observability + Production-readiness Polish** —
 ✅ **Tier 1 (6/6) + Tier 2 (5/5) complete.** Only Tier 3 (Vault,
