@@ -125,6 +125,49 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!--
+                        Bake an extra JVM flag into the Buildpack-generated image
+                        so it carries the gateway's required direct-memory ceiling
+                        regardless of where it is deployed (compose, k8s, plain
+                        docker run).
+
+                        Why this knob, here, on this module only:
+                        - Paketo's memory calculator hardcodes
+                          MaxDirectMemorySize=10M, regardless of container
+                          memory size, BPL_JVM_HEAD_ROOM, or BPL_JVM_THREAD_COUNT
+                          (verified by booting the image standalone with
+                          `docker run` and reading the calculator's output
+                          line). 10M is fine for a typical Spring MVC service, but
+                          for the gateway's reactive Netty + Lettuce + Reactor
+                          pipeline it gets exhausted within seconds of a steady
+                          load -> "Cannot reserve N bytes of direct buffer
+                          memory" -> ProblemDetailExceptionHandler fires after
+                          ServerHttpResponse has already committed -> crashes
+                          itself on ReadOnlyHttpHeaders.set -> client sees
+                          200 OK + 0 body + dropped connection. The MVC services
+                          do not allocate direct buffers in the request path,
+                          so they do not need this and stay on the default.
+
+                        BPE_APPEND_JAVA_TOOL_OPTIONS + BPE_DELIM_JAVA_TOOL_OPTIONS
+                        is the Cloud Native Buildpack standard for adding to an
+                        existing env variable rather than overriding it. The
+                        calculator's other args (Xmx, MaxMetaspaceSize, etc.)
+                        still come through unchanged, and the calculator notices
+                        MaxDirectMemorySize is already set and skips its own
+                        default. xml:space="preserve" keeps the delimiter as a
+                        literal space (XML would normalize otherwise).
+
+                        128m is generous for dev; a future tune (heavier load
+                        testing + NMT readout) might pull this down or up.
+                    -->
+                    <image>
+                        <env>
+                            <BPE_APPEND_JAVA_TOOL_OPTIONS xml:space="preserve">-XX:MaxDirectMemorySize=128m</BPE_APPEND_JAVA_TOOL_OPTIONS>
+                            <BPE_DELIM_JAVA_TOOL_OPTIONS xml:space="preserve"> </BPE_DELIM_JAVA_TOOL_OPTIONS>
+                        </env>
+                    </image>
+                </configuration>
             </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

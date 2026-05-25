@@ -532,17 +532,12 @@ services:
       # traceparent headers to every backend service via the route.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
-      # Bump Netty's direct buffer ceiling. The buildpack's memory
-      # calculator was leaving us with 10MB of MaxDirectMemorySize,
-      # which the gateway burns through on a steady stream of single-
-      # resource proxies (/api/v1/products/{id}, /reviews/aggregate)
-      # -> Netty throws OOM mid-response -> ProblemDetailExceptionHandler
-      # fires too late (response committed) -> client sees 200 + 0
-      # bytes + dropped connection. Full root-cause analysis in the
-      # "fix gateway direct-memory OOM" spawn task / PROGRESS.md.
-      # 128m is generous for dev; revisit when the buildpack memory
-      # split is properly tuned.
-      JAVA_TOOL_OPTIONS: "-XX:MaxDirectMemorySize=128m"
+      # NB: -XX:MaxDirectMemorySize=128m is baked into the image at
+      # build time via BPE_APPEND_JAVA_TOOL_OPTIONS in
+      # infra/gatewayserver/pom.xml -- see the comment there for the
+      # full root cause (Paketo calculator hardcodes 10M direct,
+      # which is too small for the reactive Netty pipeline). No env
+      # override needed here anymore.
     ports:
       - "8080:8080"
     depends_on:
