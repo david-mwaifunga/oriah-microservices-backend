@@ -34,14 +34,7 @@
     }
   ],
   "defaultRole": {
-    "name": "default-roles-oriah",
-    "description": "Composite role auto-assigned to every new user (incl. self-registered and Google-federated). Includes Keycloak's built-in offline_access + uma_authorization plus our USER role so a fresh sign-up can immediately use the customer surface (cart, checkout, /orders). Admin roles are still gated by manual assignment.",
-    "composite": true,
-    "composites": {
-      "realm": ["offline_access", "uma_authorization", "USER"]
-    },
-    "clientRole": false,
-    "containerId": "oriah"
+    "name": "default-roles-oriah"
   },
   "roles": {
     "realm": [
@@ -50,6 +43,19 @@
         "description": "Any authenticated end customer. Required for /api/v1/.../me endpoints (customer profile, cart, orders).",
         "composite": false,
         "clientRole": false
+      },
+      {
+        "name": "default-roles-oriah",
+        "description": "Auto-assigned to every new user (self-registered + Google-federated). Includes USER so a fresh sign-up can use the customer surface immediately.",
+        "composite": true,
+        "composites": {
+          "realm": ["offline_access", "uma_authorization", "USER"],
+          "client": {
+            "account": ["view-profile", "manage-account"]
+          }
+        },
+        "clientRole": false,
+        "containerId": "oriah"
       },
       {
         "name": "CATALOG_ADMIN",
