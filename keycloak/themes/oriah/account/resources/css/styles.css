@@ -1,0 +1,25 @@
+/*
+ * Oriah account console theme. Minimal -- inherits keycloak.v2's
+ * structure, just nudges the brand colours so the navbar + page
+ * background match the login theme.
+ */
+
+:root {
+  --oriah-ink: #1f1b16;
+  --oriah-gold: #b08a4f;
+  --oriah-stone: #fafaf9;
+}
+
+html,
+body {
+  background: var(--oriah-stone) !important;
+  color: var(--oriah-ink) !important;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif !important;
+}
+
+a {
+  color: var(--oriah-ink);
+}
+a:hover {
+  color: var(--oriah-gold);
+}

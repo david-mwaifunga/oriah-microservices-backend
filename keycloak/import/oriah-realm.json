@@ -2,13 +2,47 @@
   "realm": "oriah",
   "enabled": true,
   "sslRequired": "external",
-  "registrationAllowed": false,
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "rememberMe": true,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
-  "resetPasswordAllowed": false,
+  "resetPasswordAllowed": true,
   "editUsernameAllowed": false,
   "bruteForceProtected": true,
   "accessTokenLifespan": 1800,
+  "loginTheme": "oriah",
+  "accountTheme": "oriah",
+  "emailTheme": "oriah",
+  "identityProviders": [
+    {
+      "alias": "google",
+      "displayName": "Google",
+      "providerId": "google",
+      "enabled": false,
+      "updateProfileFirstLoginMode": "on",
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${ORIAH_GOOGLE_CLIENT_ID:placeholder-google-client-id}",
+        "clientSecret": "${ORIAH_GOOGLE_CLIENT_SECRET:placeholder-google-client-secret}",
+        "syncMode": "IMPORT",
+        "useJwksUrl": "true"
+      }
+    }
+  ],
+  "defaultRole": {
+    "name": "default-roles-oriah",
+    "description": "Composite role auto-assigned to every new user (incl. self-registered and Google-federated). Includes Keycloak's built-in offline_access + uma_authorization plus our USER role so a fresh sign-up can immediately use the customer surface (cart, checkout, /orders). Admin roles are still gated by manual assignment.",
+    "composite": true,
+    "composites": {
+      "realm": ["offline_access", "uma_authorization", "USER"]
+    },
+    "clientRole": false,
+    "containerId": "oriah"
+  },
   "roles": {
     "realm": [
       {

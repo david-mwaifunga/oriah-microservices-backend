@@ -247,6 +247,11 @@ services:
     volumes:
       # Read-only mount of the realm export.
       - ./keycloak/import:/opt/keycloak/data/import:ro
+      # Custom "oriah" theme (login/account/email) -- referenced by
+      # the realm via loginTheme=oriah / accountTheme=oriah /
+      # emailTheme=oriah. Mounted read-only so accidental changes
+      # inside the container don't survive a restart.
+      - ./keycloak/themes/oriah:/opt/keycloak/themes/oriah:ro
     healthcheck:
       # Keycloak 26 UBI ships bash but not curl/wget. We use bash to open
       # a raw TCP socket, send a one-line HTTP request to /realms/master,

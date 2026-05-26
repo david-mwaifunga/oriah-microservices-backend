@@ -1,0 +1,287 @@
+/*
+ * Oriah login theme CSS. Layered over keycloak.v2's stylesheet via
+ * parent=keycloak.v2 in theme.properties. Targets the Patternfly 5
+ * class names that keycloak.v2 uses for the login card, form fields,
+ * and primary CTA.
+ *
+ * Colours mirror the storefront's Tailwind palette:
+ *   --oriah-ink:    #1f1b16  (headings, body text, primary button bg)
+ *   --oriah-gold:   #b08a4f  (accents, focused borders, links on hover)
+ *   --oriah-stone:  #fafaf9  (page bg)
+ *   --oriah-stone2: #f5f5f4  (card bg)
+ *
+ * If keycloak.v2 changes its class names between Keycloak versions
+ * the worst case is the page falls back to keycloak.v2's defaults --
+ * functional, just not on-brand.
+ */
+
+:root {
+  --oriah-ink: #1f1b16;
+  --oriah-gold: #b08a4f;
+  --oriah-stone: #fafaf9;
+  --oriah-stone-2: #f5f5f4;
+  --oriah-stone-3: #e7e5e4;
+  --oriah-stone-4: #57534e;
+  --oriah-display: "Cormorant Garamond", "Playfair Display", Georgia, serif;
+  --oriah-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+/* ---------- page chrome ---------- */
+
+html,
+body,
+.login-pf,
+.login-pf body,
+body.login-pf {
+  background: var(--oriah-stone) !important;
+  font-family: var(--oriah-body) !important;
+  color: var(--oriah-ink) !important;
+}
+
+/* keycloak.v2 wraps the form in a .pf-c-login element. Override its
+   layout so the card sits cleanly centered on a soft brand panel. */
+.pf-c-login,
+.pf-v5-c-login {
+  background: var(--oriah-stone);
+  min-height: 100vh;
+}
+
+.pf-c-login__container,
+.pf-v5-c-login__container {
+  max-width: 28rem;
+  margin: 0 auto;
+}
+
+/* ---------- brand header (replaces keycloak.v2's product header) ---------- */
+
+.pf-c-login__header,
+.pf-v5-c-login__header {
+  text-align: center;
+  padding: 2rem 1rem 1.5rem;
+}
+
+.pf-c-login__header img,
+.pf-v5-c-login__header img,
+#kc-header-wrapper {
+  display: none !important;
+}
+
+.pf-c-login__header::before,
+.pf-v5-c-login__header::before {
+  content: "ORIAH";
+  display: block;
+  font-family: var(--oriah-display);
+  font-size: 2.25rem;
+  letter-spacing: 0.32em;
+  color: var(--oriah-ink);
+  margin-bottom: 0.25rem;
+}
+
+.pf-c-login__header::after,
+.pf-v5-c-login__header::after {
+  content: "Atelier jewelry";
+  display: block;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--oriah-gold);
+}
+
+/* ---------- login card ---------- */
+
+.card-pf,
+.pf-c-login__main,
+.pf-v5-c-login__main {
+  background: #ffffff;
+  border: 1px solid var(--oriah-stone-3);
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px rgba(28, 25, 23, 0.04);
+  padding: 2rem;
+}
+
+.pf-c-login__main-header h1,
+.pf-v5-c-login__main-header h1,
+#kc-page-title,
+.pf-c-title {
+  font-family: var(--oriah-display) !important;
+  font-size: 1.875rem !important;
+  font-weight: 500 !important;
+  color: var(--oriah-ink) !important;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- form fields ---------- */
+
+.pf-c-form-control,
+.pf-v5-c-form-control,
+input.pf-c-form-control,
+input.pf-v5-c-form-control {
+  border: 1px solid var(--oriah-stone-3) !important;
+  border-radius: 0.375rem !important;
+  padding: 0.625rem 0.75rem !important;
+  font-size: 0.875rem !important;
+  color: var(--oriah-ink) !important;
+  background: #fff !important;
+}
+
+.pf-c-form-control:focus,
+.pf-v5-c-form-control:focus,
+input.pf-c-form-control:focus,
+input.pf-v5-c-form-control:focus {
+  border-color: var(--oriah-gold) !important;
+  box-shadow: 0 0 0 3px rgba(176, 138, 79, 0.18) !important;
+  outline: none !important;
+}
+
+label,
+.pf-c-form__label,
+.pf-v5-c-form__label {
+  font-size: 0.6875rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase !important;
+  color: var(--oriah-stone-4) !important;
+}
+
+/* ---------- primary button (Sign in / Register) ---------- */
+
+.pf-c-button.pf-m-primary,
+.pf-v5-c-button.pf-m-primary,
+input.pf-c-button.pf-m-primary,
+input.pf-v5-c-button.pf-m-primary,
+#kc-login,
+input#kc-login {
+  background: var(--oriah-ink) !important;
+  color: #fafaf9 !important;
+  border: none !important;
+  border-radius: 0.375rem !important;
+  padding: 0.75rem 1.5rem !important;
+  font-size: 0.75rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.2em !important;
+  text-transform: uppercase !important;
+  width: 100% !important;
+  transition: background-color 0.15s ease;
+}
+
+.pf-c-button.pf-m-primary:hover,
+.pf-v5-c-button.pf-m-primary:hover,
+input.pf-c-button.pf-m-primary:hover,
+input.pf-v5-c-button.pf-m-primary:hover,
+#kc-login:hover,
+input#kc-login:hover {
+  background: var(--oriah-gold) !important;
+}
+
+/* ---------- secondary buttons + links ---------- */
+
+.pf-c-button.pf-m-secondary,
+.pf-v5-c-button.pf-m-secondary,
+.pf-c-button.pf-m-tertiary,
+.pf-v5-c-button.pf-m-tertiary {
+  background: transparent !important;
+  color: var(--oriah-ink) !important;
+  border: 1px solid var(--oriah-stone-3) !important;
+}
+
+a {
+  color: var(--oriah-ink) !important;
+  text-decoration: none !important;
+  border-bottom: 1px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+a:hover {
+  color: var(--oriah-gold) !important;
+  border-bottom-color: var(--oriah-gold);
+}
+
+/* ---------- federated identity providers (Google etc.) ---------- */
+
+#kc-social-providers,
+.kc-social-section {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--oriah-stone-3);
+}
+
+#kc-social-providers h2,
+.kc-social-section h2 {
+  font-size: 0.6875rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.18em !important;
+  text-transform: uppercase !important;
+  color: var(--oriah-stone-4) !important;
+  text-align: center;
+  margin-bottom: 0.75rem;
+}
+
+a.zocial,
+li.kc-social-provider a {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  padding: 0.625rem 1rem !important;
+  border: 1px solid var(--oriah-stone-3) !important;
+  border-radius: 0.375rem !important;
+  background: #fff !important;
+  color: var(--oriah-ink) !important;
+  font-size: 0.8125rem !important;
+  font-weight: 500 !important;
+  border-bottom: 1px solid var(--oriah-stone-3) !important;
+}
+
+a.zocial:hover,
+li.kc-social-provider a:hover {
+  border-color: var(--oriah-gold) !important;
+  background: var(--oriah-stone-2) !important;
+}
+
+/* ---------- alerts ---------- */
+
+.alert,
+.pf-c-alert,
+.pf-v5-c-alert {
+  border-radius: 0.375rem !important;
+  font-size: 0.8125rem !important;
+}
+
+.alert-error,
+.pf-m-danger {
+  background: #fef2f2 !important;
+  border-left: 3px solid #b91c1c !important;
+  color: #7f1d1d !important;
+}
+
+.alert-warning,
+.pf-m-warning {
+  background: #fefce8 !important;
+  border-left: 3px solid var(--oriah-gold) !important;
+  color: var(--oriah-ink) !important;
+}
+
+/* ---------- info bar (register / forgot links) ---------- */
+
+#kc-info,
+.pf-c-login__main-footer-band,
+.pf-v5-c-login__main-footer-band {
+  margin-top: 1.25rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--oriah-stone-4);
+}
+
+/* ---------- footer / "secured by" branding ---------- */
+
+#kc-attempted-username,
+#kc-username {
+  text-align: center;
+}
+
+/* Hide Keycloak's "Powered by Keycloak" footer if present. */
+.kc-feedback-text,
+.login-pf-page-footer {
+  display: none !important;
+}
