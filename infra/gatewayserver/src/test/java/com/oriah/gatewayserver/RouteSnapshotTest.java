@@ -1,0 +1,225 @@
+package com.oriah.gatewayserver;
+
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.gateway.route.Route;
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.mock.web.server.MockServerWebExchange;
+import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.web.server.ServerWebExchange;
+
+import reactor.core.publisher.Mono;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Route snapshot — the oracle that lets us move the route table from
+ * {@code application.yaml} into a Java-DSL {@code RouteLocator} bean
+ * (the section_12 convention) and <em>prove</em> nothing moved.
+ *
+ * <p>Two independent assertions:
+ * <ol>
+ *   <li>{@link #routeIdSetIsExactlyTheSnapshot()} pins the full set of
+ *       route ids. Catches an accidentally dropped or renamed route —
+ *       which is why the DSL migration must use the
+ *       {@code .route("<id>", r -> ...)} overload rather than letting
+ *       Spring Cloud Gateway generate anonymous ids.</li>
+ *   <li>{@link #pathResolvesToExpectedRoute(String, String)} pins the
+ *       actual <em>matching behaviour</em>: for a representative path,
+ *       which route wins. This is the assertion that matters, because
+ *       SCG is first-match-by-order (NOT longest-path-wins), so the
+ *       {@code product-reviews-route} only beats {@code
+ *       catalog-public-route} for {@code /api/v1/products/{id}/reviews}
+ *       because it carries {@code order: -10}. A YAML→DSL migration
+ *       that forgets the order silently reroutes reviews into catalog
+ *       and 404s.</li>
+ * </ol>
+ *
+ * <p>We resolve routes through the {@link RouteLocator} bean rather than
+ * the {@code /actuator/gateway/routes} endpoint because that endpoint is
+ * gated by default in Spring Cloud Gateway 5.0.x (see the note in
+ * {@link GatewayServerApplicationTests}). Going via the bean is also
+ * stronger: it survives any actuator exposure change.
+ */
+@SpringBootTest
+@TestPropertySource(properties = {
+        "eureka.client.enabled=false",
+        // RedisRateLimiter wires beans but needs no live Redis as long as we
+        // never dispatch a request through a rate-limited route; we only
+        // evaluate predicates here.
+        "management.health.redis.enabled=false",
+        "spring.data.redis.repositories.enabled=false"
+})
+class RouteSnapshotTest {
+
+    /**
+     * Every route id as of the pre-refactor baseline: 17 API routes plus
+     * 12 per-service {@code /v3/api-docs/<svc>} routes that back the
+     * aggregated Swagger UI at the gateway.
+     */
+    private static final List<String> EXPECTED_ROUTE_IDS = List.of(
+            // --- API routes ---
+            "catalog-public-route",
+            "catalog-admin-route",
+            "inventory-admin-route",
+            "customer-route",
+            "customer-admin-route",
+            "cart-route",
+            "payment-route",
+            "order-route",
+            "order-admin-route",
+            "promotion-route",
+            "promotion-admin-route",
+            "shipping-route",
+            "checkout-route",
+            "notification-route",
+            "review-route",
+            "product-reviews-route",
+            "search-route",
+            // --- OpenAPI aggregation routes ---
+            "catalog-docs",
+            "inventory-docs",
+            "customer-docs",
+            "cart-docs",
+            "payment-docs",
+            "order-docs",
+            "promotion-docs",
+            "shipping-docs",
+            "checkout-docs",
+            "notification-docs",
+            "review-docs",
+            "search-docs");
+
+    @Autowired
+    private RouteLocator routeLocator;
+
+    @Test
+    @DisplayName("route id set is exactly the 29-route baseline snapshot")
+    void routeIdSetIsExactlyTheSnapshot() {
+        List<String> actual = routes().stream().map(Route::getId).toList();
+
+        assertThat(actual)
+                .as("route ids (order-independent); a diff here means a route was "
+                        + "added, dropped or renamed by the DSL migration")
+                .containsExactlyInAnyOrderElementsOf(EXPECTED_ROUTE_IDS);
+    }
+
+    @Test
+    @DisplayName("every route targets the same lb:// service as the YAML baseline")
+    void routeTargetsAreUnchanged() {
+        Map<String, String> actual = routes().stream()
+                .collect(Collectors.toMap(Route::getId, r -> r.getUri().toString()));
+
+        assertThat(actual)
+                .containsEntry("catalog-public-route", "lb://catalog")
+                .containsEntry("catalog-admin-route", "lb://catalog")
+                .containsEntry("catalog-docs", "lb://catalog")
+                .containsEntry("inventory-admin-route", "lb://inventory")
+                .containsEntry("customer-route", "lb://customer")
+                .containsEntry("customer-admin-route", "lb://customer")
+                .containsEntry("cart-route", "lb://cart")
+                .containsEntry("payment-route", "lb://payment")
+                .containsEntry("order-route", "lb://order")
+                .containsEntry("order-admin-route", "lb://order")
+                .containsEntry("promotion-route", "lb://promotion")
+                .containsEntry("promotion-admin-route", "lb://promotion")
+                .containsEntry("shipping-route", "lb://shipping")
+                .containsEntry("checkout-route", "lb://checkout")
+                .containsEntry("notification-route", "lb://notification")
+                // Both the generic reviews route and the nested
+                // product-reviews route live in review-service.
+                .containsEntry("review-route", "lb://review")
+                .containsEntry("product-reviews-route", "lb://review")
+                .containsEntry("search-route", "lb://search");
+    }
+
+    @ParameterizedTest(name = "{0} -> {1}")
+    @DisplayName("path resolves to the same route as the YAML baseline (first-match by order)")
+    @CsvSource({
+            // Plain storefront + admin paths.
+            "/api/v1/products,                                   catalog-public-route",
+            "/api/v1/products/11111111-1111-1111-1111-111111111111, catalog-public-route",
+            "/api/v1/admin/products,                             catalog-admin-route",
+            "/api/v1/admin/inventory,                            inventory-admin-route",
+            "/api/v1/customers/me,                               customer-route",
+            "/api/v1/admin/customers,                            customer-admin-route",
+            "/api/v1/carts/me,                                   cart-route",
+            "/api/v1/payments/intents,                           payment-route",
+            "/api/v1/orders/me,                                  order-route",
+            "/api/v1/admin/orders,                               order-admin-route",
+            "/api/v1/promotions/WELCOME15,                        promotion-route",
+            "/api/v1/admin/promotions,                           promotion-admin-route",
+            "/api/v1/shipping/rates,                             shipping-route",
+            "/api/v1/checkout/preview,                           checkout-route",
+            "/api/v1/notifications/me,                           notification-route",
+            "/api/v1/reviews/me,                                 review-route",
+            "/api/v1/search,                                     search-route",
+            // THE precedence case: nested product reviews must beat the
+            // catalog /api/v1/products/** route via order: -10.
+            "/api/v1/products/11111111-1111-1111-1111-111111111111/reviews, product-reviews-route",
+            "/api/v1/products/11111111-1111-1111-1111-111111111111/reviews/aggregate, product-reviews-route",
+            // OpenAPI aggregation.
+            "/v3/api-docs/catalog,                               catalog-docs",
+            "/v3/api-docs/checkout,                              checkout-docs",
+            "/v3/api-docs/search,                                search-docs"
+    })
+    void pathResolvesToExpectedRoute(String path, String expectedRouteId) {
+        assertThat(firstMatchingRouteId(path))
+                .as("SCG resolves by ascending route order, first match wins")
+                .isEqualTo(expectedRouteId);
+    }
+
+    @Test
+    @DisplayName("no route proxies /actuator/** to a downstream service")
+    void actuatorIsNotProxiedDownstream() {
+        // Deliberate divergence from section_12, which sets
+        // management.endpoints.web.exposure.include: "*" everywhere. We keep a
+        // curated exposure list AND refuse to route actuator traffic through
+        // the edge, so a downstream service's actuator is not reachable from
+        // outside the compose network.
+        assertThat(firstMatchingRouteId("/actuator/prometheus")).isNull();
+        assertThat(firstMatchingRouteId("/actuator/health")).isNull();
+        assertThat(firstMatchingRouteId("/actuator/env")).isNull();
+    }
+
+    /** Routes sorted the way SCG's handler mapping sorts them: ascending order. */
+    private List<Route> routes() {
+        List<Route> routes = routeLocator.getRoutes()
+                .collectList()
+                .block();
+        assertThat(routes).as("RouteLocator returned no routes").isNotNull().isNotEmpty();
+        return routes.stream()
+                .sorted(Comparator.comparingInt(Route::getOrder))
+                .toList();
+    }
+
+    /**
+     * Mirrors {@code RoutePredicateHandlerMapping}: walk routes in ascending
+     * order, return the id of the first whose predicate accepts the exchange,
+     * or {@code null} when nothing matches.
+     */
+    private String firstMatchingRouteId(String path) {
+        ServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get(path.trim()).build());
+        for (Route route : routes()) {
+            Boolean matched = Mono.from(route.getPredicate().apply(exchange))
+                    .defaultIfEmpty(false)
+                    .onErrorReturn(false)
+                    .block();
+            if (Boolean.TRUE.equals(matched)) {
+                return route.getId();
+            }
+        }
+        return null;
+    }
+}

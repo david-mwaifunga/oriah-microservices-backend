@@ -34,3 +34,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Codex cross-review scratch (not tracked)
+.codex-tmp/
