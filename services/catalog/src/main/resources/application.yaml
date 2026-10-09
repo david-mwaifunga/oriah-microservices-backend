@@ -110,22 +110,47 @@ eureka:
     # (avoids "Could not resolve hostname 'maya-laptop.local'" surprises).
     prefer-ip-address: true
 
-# Resilience4j circuit breaker config for the inventory call.
-# Reasonable production-ish defaults.
+# Resilience4j for the catalog -> inventory call.
+#
+# Shared values come from config-repo/application.yaml
+# (resilience4j.circuitbreaker.configs.default); only the instance name and the
+# one genuine difference are here.
+#
+# NOTE on timelimiter, which is the interesting part. It dispatches the call to
+# another thread, and that is exactly what broke JWT propagation in checkout
+# (SecurityContextHolder is a ThreadLocal; on a pool worker it is empty, the
+# Authorization header is dropped, and the downstream 401s). It is safe HERE
+# only because this one call is unauthenticated: catalog forwards no token, and
+# inventory permits GET /api/v1/inventory/** without one.
+#
+# That invariant is load-bearing and was previously undocumented. If inventory's
+# read ever requires a token, or catalog ever gains a RequestInterceptor that
+# forwards one, this timelimiter and
+# spring.cloud.openfeign.circuitbreaker.enabled: true must both go -- otherwise
+# every product page silently loses its availability badge, degrading to the
+# fallback rather than failing visibly. FeignCircuitBreakerSafetyTest guards it.
 resilience4j:
   circuitbreaker:
-    instances:
-      inventory:
-        # After 10 calls, if more than half failed, open the circuit.
+    # configs.default held locally, not in config-repo: a base-config reference
+    # is a hard link, and this service imports config with
+    # `optional:configserver`, so resolving it remotely would prevent startup
+    # whenever the Config Server is down. Proven by
+    # checkout's ResilienceConfigResolutionTest.
+    configs:
+      default:
         sliding-window-size: 10
         failure-rate-threshold: 50
-        # 30s in OPEN state before allowing a trial call.
         wait-duration-in-open-state: 30s
-        # In HALF_OPEN, send 3 trial calls; promote to CLOSED if they pass.
+    instances:
+      inventory:
+        base-config: default
+        # Three trial calls in HALF_OPEN rather than the default: availability
+        # enrichment is called on every product view, so a single unlucky probe
+        # should not reopen the circuit for everyone.
         permitted-number-of-calls-in-half-open-state: 3
   timelimiter:
     instances:
       inventory:
-        # If inventory takes longer than 2 seconds, treat it as a failure
-        # and short-circuit to the fallback.
+        # Availability enrichment is decoration on a product page; if inventory
+        # cannot answer in 2s the page is better off rendering without it.
         timeout-duration: 2s

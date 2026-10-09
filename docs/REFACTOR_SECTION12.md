@@ -20,7 +20,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
-| 4 | Resilience4j parity (retry + ratelimiter on checkout) | ⬜ |
+| 4 | Resilience4j parity (retry + ratelimiter on checkout) | 🟡 **mostly pre-existing**; 4a corrected, 4c strengthened |
 | 5 | Service-layer conventions × 12 services | ⬜ |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
 
@@ -426,9 +426,47 @@ refresh, not a breaker fault — the same delay `smoke-test.ps1`'s pre-flight ga
 
 | # | Item | Status |
 |---|---|---|
-| 4a | `resilience4j.{circuitbreaker,retry,ratelimiter}.configs.default` in `config-repo/application.yaml` | ⬜ |
-| 4b | `@Retry` + `@RateLimiter` + `fallbackMethod` on checkout's downstream calls | ⬜ |
-| 4c | Test: Authorization header still propagates under `@Retry` (Feign-CB thread-hop that dropped JWTs stays disabled) | ⬜ |
+| 4a | `configs.default` — **in each service's own YAML, NOT config-repo** (plan correction, see note) | ✅ catalog + checkout |
+| 4b | Retry + rate limiter + fallback on checkout's downstream calls | ✅ **already existed**, via a programmatic `Decorators` chain |
+| 4c | Test: the SecurityContext survives retries, so the JWT still propagates | ✅ strengthened from "same thread" to the actual consequence |
+
+**Tier 4 was largely already done — and better than the plan specified.** Checkout already had
+circuit-breaker, retry and rate-limiter instances for all six Feign clients, with
+`retry-exceptions`/`ignore-exceptions` already excluding 4xx, composed through a programmatic
+`Decorators` chain invoked **synchronously** precisely so `SecurityContextHolder` stays populated.
+The plan's 4b ("add `@Retry`/`@RateLimiter` annotations") was therefore moot; converting to
+annotations would have been churn, and would have invited someone to add `@TimeLimiter` later —
+which is the exact thing that must not happen.
+
+**4a was wrong, and a test proved it.** The plan said centralize
+`resilience4j.*.configs.default` in `config-repo`. Doing so made checkout fail to start:
+
+```
+io.github.resilience4j.core.ConfigurationNotFoundException:
+    Configuration with name 'default' does not exist
+```
+
+Services import config with `optional:configserver` — *optional*, so they are designed to boot
+when the Config Server is down. A `base-config` reference is a **hard link**, not an additive
+setting like the actuator/tracing blocks config-repo legitimately carries, so centralizing it
+converted an optional dependency into a required one. A change made in the name of resilience that
+reduced it. `configs.default` now lives in each service's own YAML — which is also where the
+course puts it — and `ResilienceConfigResolutionTest` boots with
+`spring.cloud.config.enabled=false` to pin the behaviour, asserting the sliding window is 10 (ours)
+rather than 100 (the library default) so a silent degradation would be caught too.
+
+**A latent trap found in catalog.** catalog runs `openfeign.circuitbreaker.enabled: true` plus a
+`timelimiter` — both of which move the call to a pool thread — while checkout disables exactly
+those because the thread hop empties `SecurityContextHolder` and drops the JWT. catalog is safe
+**only because its one downstream call is unauthenticated**: it forwards no token, and inventory
+permits `GET /api/v1/inventory/**` anonymously. That invariant was load-bearing and undocumented.
+If inventory's read ever required a token, or catalog gained a token-forwarding interceptor, every
+product page would silently lose its stock badge via the fallback — no 401 anywhere in the logs.
+`FeignCircuitBreakerSafetyTest` now asserts both halves (no `RequestInterceptor` in catalog; the
+Feign client targets no `/admin/` path) and its failure message says what to do instead. Written
+context-free, so it runs in 0.9s rather than 90 — a guard that slow is a guard people switch off.
+
+---
 
 ---
 

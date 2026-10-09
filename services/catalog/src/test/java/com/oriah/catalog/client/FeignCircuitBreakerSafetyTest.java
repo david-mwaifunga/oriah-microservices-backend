@@ -1,0 +1,124 @@
+package com.oriah.catalog.client;
+
+import java.lang.reflect.Method;
+import java.util.Arrays;
+import java.util.Set;
+
+import feign.RequestInterceptor;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.core.type.filter.AssignableTypeFilter;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Guards the invariant that makes catalog's thread-hopping Feign resilience
+ * safe — an invariant that was load-bearing and, until this test, undocumented.
+ *
+ * <h2>The asymmetry</h2>
+ *
+ * <p>catalog sets {@code spring.cloud.openfeign.circuitbreaker.enabled: true}
+ * and configures a Resilience4j {@code timelimiter}. checkout sets the same
+ * flag to {@code false} and refuses {@code timelimiter} and {@code bulkhead}
+ * outright. Both are correct, for a reason invisible in either file alone.
+ *
+ * <p>Spring Cloud's OpenFeign + Resilience4j integration dispatches each call
+ * to a pool worker, and {@code timelimiter} does the same. checkout reads the
+ * Authorization header off {@code SecurityContextHolder}, a {@link ThreadLocal}:
+ * on a pool worker it is empty, the header is silently omitted, and every
+ * downstream returns 401. That is the deepest bug this codebase has had. It
+ * presented as {@code /checkout/preview} returning all zeros, and was found
+ * only from a Feign {@code loggerLevel: full} dump showing
+ * {@code ---> GET http://cart/api/v1/carts/me} with no Authorization header, on
+ * thread {@code pool-2-thread-1} instead of {@code nio-8089-exec-N}.
+ *
+ * <p>catalog is immune only because its single downstream call needs no token:
+ * it forwards none, and inventory permits {@code GET /api/v1/inventory/**}
+ * anonymously.
+ *
+ * <h2>What this test is for</h2>
+ *
+ * <p>If catalog ever gains a {@link RequestInterceptor} that forwards a JWT, or
+ * inventory's read becomes authenticated, the thread hop starts dropping the
+ * token. The failure would be silent and specifically nasty: availability
+ * enrichment degrades to the fallback, so every product page renders without a
+ * stock badge rather than erroring, and nothing in the logs says 401.
+ *
+ * <p>If you are reading this because the test went red after adding a
+ * token-forwarding interceptor: set
+ * {@code spring.cloud.openfeign.circuitbreaker.enabled: false}, remove the
+ * {@code timelimiter}, and wrap the call the way
+ * {@code com.oriah.checkout.resilience.ResilientFeignCaller} does — composing
+ * the decorators by hand and invoking them on the calling thread.
+ *
+ * <p>Deliberately context-free. Booting catalog's context would drag in JPA and
+ * a database for assertions that are answerable by classpath scanning and
+ * reflection, and a guard that takes 90 seconds is a guard people switch off.
+ */
+class FeignCircuitBreakerSafetyTest {
+
+    private static final String CATALOG_BASE_PACKAGE = "com.oriah.catalog";
+
+    @Test
+    @DisplayName("catalog declares no Feign RequestInterceptor, so there is no token to drop")
+    void noTokenForwardingInterceptorExists() {
+        ClassPathScanningCandidateComponentProvider scanner =
+                new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new AssignableTypeFilter(RequestInterceptor.class));
+
+        Set<BeanDefinition> interceptors = scanner.findCandidateComponents(CATALOG_BASE_PACKAGE);
+
+        assertThat(interceptors.stream().map(BeanDefinition::getBeanClassName).toList())
+                .as("catalog runs with spring.cloud.openfeign.circuitbreaker.enabled=true and a "
+                        + "resilience4j timelimiter, both of which move the call to a pool thread. "
+                        + "A RequestInterceptor reading SecurityContextHolder finds it EMPTY "
+                        + "there and omits the Authorization header silently -- product pages "
+                        + "lose their stock badge via the fallback, with no 401 anywhere in the "
+                        + "logs. If you are adding one: disable the Feign circuit breaker, drop "
+                        + "the timelimiter, and decorate on the calling thread the way "
+                        + "checkout's ResilientFeignCaller does.")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("the only Feign client targets inventory's anonymous read path")
+    void feignClientCallsOnlyThePublicInventoryPath() {
+        // The other half of the invariant. inventory permits
+        // GET /api/v1/inventory/** with no token; /api/v1/admin/inventory/**
+        // requires INVENTORY_ADMIN. Calling an admin path from here would need
+        // a JWT, and so would hit the thread-hop problem.
+        FeignClient annotation = InventoryClient.class.getAnnotation(FeignClient.class);
+
+        assertThat(annotation).as("InventoryClient must stay a @FeignClient").isNotNull();
+        assertThat(annotation.name()).isEqualTo("inventory");
+
+        for (Method method : InventoryClient.class.getDeclaredMethods()) {
+            String mappings = Arrays.stream(method.getAnnotations())
+                    .map(Object::toString)
+                    .reduce("", String::concat);
+
+            assertThat(mappings)
+                    .as("%s must call inventory's PUBLIC read path. An /admin/ path requires "
+                            + "INVENTORY_ADMIN, which means forwarding a JWT, which is unsafe "
+                            + "while the Feign circuit breaker and timelimiter are enabled here",
+                            method.getName())
+                    .doesNotContain("/admin/");
+        }
+    }
+
+    @Test
+    @DisplayName("a fallback is declared, so a tripped breaker degrades rather than failing the page")
+    void fallbackIsDeclared() {
+        // Availability enrichment is decoration on a product page. With no
+        // fallback a tripped breaker propagates and fails the whole product
+        // read, turning a missing stock badge into a broken page.
+        FeignClient annotation = InventoryClient.class.getAnnotation(FeignClient.class);
+
+        assertThat(annotation.fallback())
+                .as("InventoryClient must name a fallback bean")
+                .isEqualTo(InventoryClientFallback.class);
+    }
+}

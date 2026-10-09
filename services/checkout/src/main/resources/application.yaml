@@ -73,46 +73,83 @@ logging:
 # should trip the SAME circuit. Different methods don't have
 # meaningfully different failure profiles for our domains.
 resilience4j:
+  # configs.default is the course convention, and it is held LOCALLY rather than
+  # in config-repo. Not a style choice: ResilienceConfigResolutionTest proves a
+  # `base-config: default` resolved from config-repo fails startup with
+  #
+  #   ConfigurationNotFoundException: Configuration with name 'default' does not exist
+  #
+  # whenever the Config Server is down, because this service imports config with
+  # `optional:configserver`. A base-config reference is a HARD LINK, not an
+  # additive setting like the actuator and tracing blocks config-repo does carry,
+  # so it has to resolve from the service's own file. Centralizing it converted
+  # an optional dependency into a required one.
+  #
+  # NOT declared here, deliberately: timelimiter and bulkhead. Both dispatch the
+  # call to another thread (CompletableFuture / ForkJoinPool), and
+  # FeignTokenForwarder reads the Authorization header off SecurityContextHolder,
+  # which is a ThreadLocal -- on a pool worker it is empty, the header is
+  # dropped, and every downstream returns 401. That is the deepest bug this
+  # codebase has had; see ResilientFeignCaller's javadoc. Latency is bounded by
+  # Feign's readTimeout instead, concurrency by the Tomcat thread pool.
+  #
+  # One instance per Feign client, not per method: when a downstream is
+  # unhealthy every call from this orchestrator to it should trip the SAME
+  # circuit. Different methods on one client do not have meaningfully different
+  # failure profiles for our domains.
   circuitbreaker:
+    configs:
+      default:
+        # Over a window of 10 calls, open once more than half have failed: a
+        # merely flaky downstream stays in use, a dead one is cut off quickly.
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
     instances:
-      cart:      { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
-      inventory: { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
-      promotion: { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
-      shipping:  { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
-      payment:   { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
-      order:     { sliding-window-size: 10, failure-rate-threshold: 50, wait-duration-in-open-state: 30s }
+      cart:      { base-config: default }
+      inventory: { base-config: default }
+      promotion: { base-config: default }
+      shipping:  { base-config: default }
+      payment:   { base-config: default }
+      order:     { base-config: default }
   retry:
-    instances:
-      # 3 attempts total (1 initial + 2 retries), 500ms fixed wait
-      # between attempts. Retry only on transport-layer faults
-      # (IOException) and downstream 5xx (FeignException.FeignServerException);
-      # do NOT retry on 4xx (FeignClientException) since a bad request
-      # body or auth failure will not get better on retry.
-      cart:      &retryCommon
+    configs:
+      default:
+        # 3 attempts total: 1 initial + 2 retries, 500ms apart.
         max-attempts: 3
         wait-duration: 500ms
+        # Retry ONLY transport faults and downstream 5xx.
         retry-exceptions:
           - java.io.IOException
           - feign.FeignException$FeignServerException
+        # Never retry a 4xx: a bad request body or a failed auth check will not
+        # improve on the second attempt, and retrying turns one client mistake
+        # into three requests with backoff. The same property is enforced at the
+        # gateway, where it matters even more because the edge sees
+        # unauthenticated traffic.
         ignore-exceptions:
           - feign.FeignException$FeignClientException
-      inventory: *retryCommon
-      promotion: *retryCommon
-      shipping:  *retryCommon
-      payment:   *retryCommon
-      order:     *retryCommon
-  ratelimiter:
     instances:
-      # 50 calls per second per client, 100ms wait if the bucket is
-      # empty before failing the call. Protects each downstream from
-      # a runaway loop in this orchestrator (or a thundering-herd
-      # retry storm) while leaving plenty of room for normal traffic.
-      cart:      &ratelimiterCommon
+      cart:      { base-config: default }
+      inventory: { base-config: default }
+      promotion: { base-config: default }
+      shipping:  { base-config: default }
+      payment:   { base-config: default }
+      order:     { base-config: default }
+  ratelimiter:
+    configs:
+      default:
+        # 50 calls/sec per instance, waiting up to 100ms for a permit before
+        # failing. Protects each downstream from a runaway loop or a
+        # thundering-herd retry storm in this orchestrator, with ample room for
+        # normal traffic.
         limit-for-period: 50
         limit-refresh-period: 1s
         timeout-duration: 100ms
-      inventory: *ratelimiterCommon
-      promotion: *ratelimiterCommon
-      shipping:  *ratelimiterCommon
-      payment:   *ratelimiterCommon
-      order:     *ratelimiterCommon
+    instances:
+      cart:      { base-config: default }
+      inventory: { base-config: default }
+      promotion: { base-config: default }
+      shipping:  { base-config: default }
+      payment:   { base-config: default }
+      order:     { base-config: default }
