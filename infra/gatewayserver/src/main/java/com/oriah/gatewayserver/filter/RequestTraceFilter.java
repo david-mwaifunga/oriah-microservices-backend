@@ -34,8 +34,20 @@ import reactor.core.publisher.Mono;
 @Component
 public class RequestTraceFilter implements GlobalFilter, Ordered {
 
-    /** Early, but after {@link ResponseTimeFilter} has started its clock. */
-    public static final int ORDER = 1;
+    /**
+     * Early, and expressed relative to {@code HIGHEST_PRECEDENCE} rather than
+     * as a small absolute number.
+     *
+     * <p>This was {@code 1}, which collided with the route filters. Gateway
+     * assigns a DSL route's filters orders starting at 1, so a route carrying
+     * {@code circuitBreaker(...)} had a filter at the same order as this one,
+     * and the tie could resolve either way. When the breaker won, an
+     * unreachable downstream forwarded to the fallback BEFORE the correlation
+     * id had been established -- so the response carried no id at all, exactly
+     * when a user is most likely to be reporting the failure.
+     * {@code ResilienceTest.fallbackCarriesCorrelationId} is what caught it.
+     */
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 200;
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {

@@ -35,7 +35,11 @@ import reactor.core.publisher.Mono;
 @Component
 public class ResponseTraceFilter implements GlobalFilter, Ordered {
 
-    /** After {@link RequestTraceFilter#ORDER}, so the id is always established. */
+    /**
+     * After {@link RequestTraceFilter#ORDER}, so the id is always established,
+     * and still ahead of the route filters (which Gateway orders from 1) so a
+     * circuit-breaker forward cannot outrun it.
+     */
     public static final int ORDER = RequestTraceFilter.ORDER + 1;
 
     @Override

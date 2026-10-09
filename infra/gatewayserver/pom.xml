@@ -77,6 +77,28 @@
         </dependency>
 
         <!--
+            Resilience4j, for the circuitBreaker and retry route filters.
+
+            It MUST be the "reactor" flavour. GatewayFilterSpec.circuitBreaker()
+            resolves SpringCloudCircuitBreakerFilterFactory from the context,
+            and the auto-configuration that supplies it is conditional on
+            ReactiveResilience4JCircuitBreakerFactory being present. The plain
+            spring-cloud-starter-circuitbreaker-resilience4j does not satisfy
+            that condition.
+
+            Getting it wrong is not a compile error and not a degraded route:
+            circuitBreaker() compiles either way, then throws
+            NoSuchBeanDefinitionException DURING RouteLocator bean creation,
+            which fails context startup and takes the whole gateway down. So
+            the dependency comes first and the filter second, never the
+            reverse.
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-circuitbreaker-reactor-resilience4j</artifactId>
+        </dependency>
+
+        <!--
             Actuator: exposes /actuator/gateway/routes (the configured route
             table) and /actuator/health for orchestration probes.
         -->

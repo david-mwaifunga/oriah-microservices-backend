@@ -12,6 +12,8 @@ import org.springframework.cloud.gateway.route.Route;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.oriah.gatewayserver.controller.FallbackController;
+
 /**
  * The gateway route table, in code.
  *
@@ -103,6 +105,7 @@ public class GatewayRoutesConfig {
         routes = routes.route("product-reviews-route", r -> r
                 .order(-10)
                 .path("/api/v1/products/*/reviews", "/api/v1/products/*/reviews/**")
+                .filters(f -> resilientStorefront(f, "product-reviews"))
                 .uri("lb://review"));
 
         // ------------------------- storefront -------------------------
@@ -110,16 +113,18 @@ public class GatewayRoutesConfig {
         // revoking a token it never had.
         routes = routes.route("catalog-public-route", r -> r
                 .path("/api/v1/products/**")
-                .filters(f -> f.requestRateLimiter(c -> c
-                        .setRateLimiter(redisRateLimiter)
-                        .setKeyResolver(ipKeyResolver)))
+                .filters(f -> resilientStorefront(f, "catalog")
+                        .requestRateLimiter(c -> c
+                                .setRateLimiter(redisRateLimiter)
+                                .setKeyResolver(ipKeyResolver)))
                 .uri("lb://catalog"));
 
         routes = routes.route("search-route", r -> r
                 .path("/api/v1/search/**")
-                .filters(f -> f.requestRateLimiter(c -> c
-                        .setRateLimiter(redisRateLimiter)
-                        .setKeyResolver(ipKeyResolver)))
+                .filters(f -> resilientStorefront(f, "search")
+                        .requestRateLimiter(c -> c
+                                .setRateLimiter(redisRateLimiter)
+                                .setKeyResolver(ipKeyResolver)))
                 .uri("lb://search"));
 
         // ------------------------ authenticated ------------------------
@@ -157,6 +162,38 @@ public class GatewayRoutesConfig {
         }
 
         return routes.build();
+    }
+
+    /**
+     * Circuit breaker plus retry, applied to the anonymous storefront GET
+     * routes and only to those.
+     *
+     * <p>Scoped deliberately rather than applied globally. These three paths
+     * are what an anonymous visitor hits first, they are all idempotent reads,
+     * and a degraded answer beats a hang. The authenticated routes get neither:
+     * a breaker on {@code /api/v1/checkout/**} would convert a payment failure
+     * into a cheerful "try again shortly" while the caller has no way to know
+     * whether the charge went through, and retry on a write can place two
+     * orders.
+     *
+     * <p>The course's coverage is uneven in a way its own material calls a
+     * teaching artefact: of its three routes, one has a breaker, a different
+     * one has retry, and a third has the rate limiter — so only one route can
+     * ever reach the fallback, and failures on the other two surface raw. Here
+     * the three storefront routes get the same treatment, and the reasoning for
+     * excluding the rest is written down.
+     *
+     * <p>Each breaker gets its own name, so one failing service opens only its
+     * own breaker. A shared name would make a catalog outage also cut off
+     * search.
+     */
+    private static org.springframework.cloud.gateway.route.builder.GatewayFilterSpec resilientStorefront(
+            org.springframework.cloud.gateway.route.builder.GatewayFilterSpec filters, String breakerName) {
+        return filters
+                .circuitBreaker(c -> c
+                        .setName(breakerName + "-cb")
+                        .setFallbackUri("forward:" + FallbackController.FALLBACK_PATH))
+                .retry(ResilienceConfig::storefrontRetry);
     }
 
     /**
