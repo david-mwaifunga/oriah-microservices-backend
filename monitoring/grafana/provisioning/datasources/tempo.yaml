@@ -1,0 +1,66 @@
+# Auto-provisioned Tempo datasource for Grafana.
+#
+# Replaces Zipkin as the trace backend. Note that the previous setup pointed
+# Loki's derived field at `datasourceUid: zipkin` while NO Zipkin datasource was
+# ever provisioned (only loki.yaml and prometheus.yaml exist in this directory),
+# so that trace link resolved to nothing. The `uid: tempo` below is explicit
+# precisely so loki.yaml can reference it by a stable, known value instead of a
+# Grafana-generated one.
+
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    # Internal compose DNS; Grafana talks to Tempo container-to-container, so
+    # the host-mapped port is incidental.
+    url: http://tempo:3200
+    isDefault: false
+    editable: false
+    jsonData:
+      # --- trace -> logs -------------------------------------------------
+      # From a span, jump to the log lines of that same request. Matching on
+      # the trace id rather than a time window is what makes this precise.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        # Narrow by service so the query does not scan every stream. The span's
+        # service.name resource attribute comes from spring.application.name,
+        # and Alloy labels each stream with the compose service name -- the two
+        # agree because the compose service and the Spring application share a
+        # name for all 15 modules.
+        tags:
+          - key: 'service.name'
+            value: 'service'
+        filterByTraceID: true
+        filterBySpanID: false
+
+      # --- trace -> metrics ----------------------------------------------
+      tracesToMetrics:
+        datasourceUid: PBFA97CFB590B2093
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        tags:
+          - key: 'service.name'
+            value: 'application'
+        queries:
+          - name: 'Request rate'
+            query: 'sum(rate(http_server_requests_seconds_count{$$__tags}[5m]))'
+          - name: 'p95 latency'
+            query: 'histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{$$__tags}[5m])) by (le))'
+
+      # Renders the service graph / node graph view for a trace, which is the
+      # quickest way to see the checkout saga's fan-out (checkout -> cart,
+      # promotion, shipping, payment, order) as a picture rather than a span
+      # list.
+      nodeGraph:
+        enabled: true
+
+      # Tempo's TraceQL search needs to know which Loki datasource backs the
+      # "logs for this span" affordance above; search itself is served by
+      # Tempo's own API.
+      search:
+        hide: false

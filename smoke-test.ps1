@@ -27,6 +27,17 @@
 #      memory calculator was leaving Netty with only 10MB of direct
 #      memory). Existing checks above use Invoke-RestMethod which
 #      tolerates empty bodies silently as $null.
+#  15. Kubernetes-style probes: /actuator/health/readiness and
+#      /actuator/health/liveness report UP on all 12 services. These are
+#      health GROUPS, not endpoint ids -- they appear only when
+#      management.endpoint.health.probes.enabled is on, which is why this
+#      is asserted over HTTP rather than trusted from the YAML. Compose
+#      healthchecks deliberately stay on bash's /dev/tcp builtin: the
+#      Paketo run image ships no curl or wget, so the container cannot
+#      probe HTTP itself.
+#  16. /actuator/info carries app identity + build provenance (name,
+#      version, artifact, build time) on all 12 services, so a running
+#      container can be traced back to the commit that produced it.
 
 $ErrorActionPreference = "Stop"
 
@@ -42,11 +53,11 @@ function Get-Jwt($Username) {
 # Unique-per-run promo code so re-runs don't collide on the UNIQUE constraint.
 $promoCode = "WELCOME-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
-Write-Host "[1/14] JWTs..." -ForegroundColor Cyan
+Write-Host "[1/16] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/14] Admin: product + inventory + promo code..." -ForegroundColor Cyan
+Write-Host "[2/16] Admin: product + inventory + promo code..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
@@ -65,7 +76,7 @@ Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ code=$promoCode; type="PERCENTAGE"; amount=15; maxRedemptions=0 }) | Out-Null
 Write-Host "    product=$productId, inventory=10, promo=$promoCode" -ForegroundColor Gray
 
-Write-Host "[3/14] Customer: profile + address..." -ForegroundColor Cyan
+Write-Host "[3/16] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me" `
     -Headers @{ Authorization="Bearer $alice" } | Out-Null
@@ -76,14 +87,14 @@ $addr = Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ label="Home"; line1="1 Aurelia Lane"; city="Lagos"; postalCode="100001"; country="NG"; isDefault=$true })
 $addrId = $addr.id
 
-Write-Host "[4/14] Customer: add 2 units to cart..." -ForegroundColor Cyan
+Write-Host "[4/16] Customer: add 2 units to cart..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ variantId=$productId; quantity=2; unitPrice=100.00; title="Aurelia 18k" }) | Out-Null
 
-Write-Host "[5/14] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
+Write-Host "[5/16] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -95,7 +106,7 @@ if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or $preview.to
 }
 Write-Host "    subtotal=200, -15% promo=30, ship=0, total=170" -ForegroundColor Gray
 
-Write-Host "[6/14] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
+Write-Host "[6/16] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 $confirm = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/confirm" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -113,7 +124,7 @@ if ($confirm.orderStatus -ne "PAID") {
 $orderId = $confirm.orderId
 Write-Host "    order=$orderId PAID" -ForegroundColor Gray
 
-Write-Host "[7/14] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
+Write-Host "[7/16] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
     $r = Invoke-RestMethod -Method POST `
         -Uri "http://localhost:8080/api/v1/admin/orders/$orderId/transition" `
@@ -124,7 +135,7 @@ foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
 }
 Write-Host "    order DELIVERED" -ForegroundColor Gray
 
-Write-Host "[8/14] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
+Write-Host "[8/16] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
 $searchHit = $false
 for ($i = 0; $i -lt 30; $i++) {
     $r = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=aurelia"
@@ -136,7 +147,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $searchHit) { Write-Error "Search index never picked up product $productId from Kafka"; exit 1 }
 Write-Host "    /search?q=aurelia returned the product" -ForegroundColor Gray
 
-Write-Host "[9/14] Customer review; public listing + aggregate..." -ForegroundColor Cyan
+Write-Host "[9/16] Customer review; public listing + aggregate..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/products/$productId/reviews" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -150,7 +161,7 @@ if ($publicReviews.content.Count -ne 1 -or $agg.average -ne 5.0 -or $agg.count -
 }
 Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
 
-Write-Host "[10/14] /notifications/me shows order.* events..." -ForegroundColor Cyan
+Write-Host "[10/16] /notifications/me shows order.* events..." -ForegroundColor Cyan
 $notifsFound = $false
 for ($i = 0; $i -lt 30; $i++) {
     $n = Invoke-RestMethod -Method GET `
@@ -162,7 +173,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $notifsFound) { Write-Error "Expected >=5 notifications, never reached that count"; exit 1 }
 Write-Host "    >=5 notifications received (created+paid+fulfilled+shipped+delivered)" -ForegroundColor Gray
 
-Write-Host "[11/14] Kafka product_index + 401 without token..." -ForegroundColor Cyan
+Write-Host "[11/16] Kafka product_index + 401 without token..." -ForegroundColor Cyan
 $rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
     "SELECT title FROM product_index WHERE variant_id = '$productId'"
 if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index broken; got '$rows'"; exit 1 }
@@ -179,7 +190,7 @@ try {
 }
 Write-Host "    product_index OK + 401 OK" -ForegroundColor Gray
 
-Write-Host "[12/14] Zipkin saga trace spans the chain..." -ForegroundColor Cyan
+Write-Host "[12/16] Zipkin saga trace spans the chain..." -ForegroundColor Cyan
 $saga = $null
 for ($i = 0; $i -lt 30; $i++) {
     $traces = Invoke-RestMethod -Method GET `
@@ -202,7 +213,7 @@ if (-not $saga) {
 }
 Write-Host "    traceId=$($saga[0].traceId) spans=$($saga.Count) services=$($sagaServices -join ',')" -ForegroundColor Gray
 
-Write-Host "[13/14] Prometheus scrapes every service..." -ForegroundColor Cyan
+Write-Host "[13/16] Prometheus scrapes every service..." -ForegroundColor Cyan
 $up = Invoke-RestMethod -Method GET -Uri "http://localhost:9090/api/v1/query?query=up"
 $expected = @("catalog:8081","inventory:8082","customer:8083","cart:8084","payment:8085",
               "order:8086","promotion:8087","shipping:8088","checkout:8089",
@@ -220,7 +231,7 @@ if ($downServices.Count -gt 0) {
 }
 Write-Host "    all 12 services up=1 in Prometheus" -ForegroundColor Gray
 
-Write-Host "[14/14] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
+Write-Host "[14/16] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
 # Invoke-WebRequest (not Invoke-RestMethod) so we can read the raw
 # byte length -- IRM auto-deserializes and would map a 0-byte body
 # silently to $null, hiding exactly the regression we want to catch.
@@ -246,6 +257,100 @@ foreach ($url in $probes) {
     }
 }
 Write-Host "    20 proxied responses, all carrying > 0 bytes" -ForegroundColor Gray
+
+# Host port for each service, used for the direct-to-service actuator probes
+# below. We deliberately do NOT go through the gateway here: the gateway routes
+# no /actuator/** downstream (asserted in RouteSnapshotTest), because exposing
+# 12 services' actuators at the edge would be a real security regression.
+$servicePorts = [ordered]@{
+    catalog = 8081; inventory = 8082; customer = 8083; cart = 8084
+    payment = 8085; order = 8086; promotion = 8087; shipping = 8088
+    checkout = 8089; notification = 8090; review = 8091; search = 8092
+}
+
+# Retries only CONNECTION-level failures, never a bad status. A single 10s
+# attempt produced a false failure on customer/readiness while twelve JVMs were
+# still competing for IO on a cold Docker Desktop start; the service was fine
+# seconds later. The assertion itself is unchanged -- status must be UP, and an
+# HTTP error status is reported immediately without retrying, because a 404 or
+# 503 is an answer, not a timeout.
+function Test-Probe($Uri) {
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $r = Invoke-RestMethod -Method GET -Uri $Uri -TimeoutSec 20
+            return @{ Ok = ($r.status -eq "UP"); Detail = "status '$($r.status)'" }
+        }
+        catch {
+            $code = $_.Exception.Response.StatusCode.value__
+            if ($code) {
+                # Got a real HTTP response: a 404 means the probe group does not
+                # exist (probes.enabled off), a 503 means DOWN. Either is a
+                # verdict, so do not retry it.
+                return @{ Ok = $false; Detail = "HTTP $code" }
+            }
+            if ($attempt -eq 3) {
+                return @{ Ok = $false; Detail = "unreachable after 3 attempts" }
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+Write-Host "[15/16] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
+$probeFailures = @()
+foreach ($svc in $servicePorts.Keys) {
+    foreach ($group in @("readiness", "liveness")) {
+        $uri = "http://localhost:$($servicePorts[$svc])/actuator/health/$group"
+        $result = Test-Probe $uri
+        if (-not $result.Ok) {
+            $probeFailures += "${svc}/${group}: $($result.Detail)"
+        }
+    }
+}
+if ($probeFailures.Count -gt 0) {
+    Write-Host "    probe failures:" -ForegroundColor Red
+    $probeFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "readiness/liveness probes missing or not UP on $($probeFailures.Count) endpoint(s)"
+    exit 1
+}
+Write-Host "    24/24 probe endpoints UP (12 services x readiness+liveness)" -ForegroundColor Gray
+
+Write-Host "[16/16] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
+$infoFailures = @()
+foreach ($svc in $servicePorts.Keys) {
+    $uri = "http://localhost:$($servicePorts[$svc])/actuator/info"
+    try {
+        $info = Invoke-RestMethod -Method GET -Uri $uri -TimeoutSec 10
+    }
+    catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        $infoFailures += "$svc /actuator/info unreachable$(if ($code) { " (HTTP $code)" })"
+        continue
+    }
+
+    # app.* comes from config-repo (info.app.name/description/version).
+    if (-not $info.app)      { $infoFailures += "${svc}: info.app missing (info.env.enabled not set?)" }
+    elseif (-not $info.app.name) { $infoFailures += "${svc}: info.app.name missing" }
+
+    # build.* comes from META-INF/build-info.properties, generated by the
+    # spring-boot-maven-plugin build-info goal. Without that goal the whole
+    # build block is absent and a running container cannot be tied to a build.
+    if (-not $info.build) {
+        $infoFailures += "${svc}: info.build missing (spring-boot-maven-plugin build-info goal not wired?)"
+    }
+    else {
+        if (-not $info.build.version)  { $infoFailures += "${svc}: info.build.version missing" }
+        if (-not $info.build.artifact) { $infoFailures += "${svc}: info.build.artifact missing" }
+        if (-not $info.build.time)     { $infoFailures += "${svc}: info.build.time missing" }
+    }
+}
+if ($infoFailures.Count -gt 0) {
+    Write-Host "    info failures:" -ForegroundColor Red
+    $infoFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "/actuator/info incomplete on $($infoFailures.Count) check(s)"
+    exit 1
+}
+Write-Host "    all 12 services report app.name + build.{version,artifact,time}" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green

@@ -17,7 +17,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 |---|---|---|
 | 0 | Freeze the contract (baselines + characterization tests) | 🟡 in progress |
 | **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
-| 1 | Compose modularization + actuator probes + build-info | ⬜ |
+| 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ⬜ |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ⬜ |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ⬜ |
@@ -35,7 +35,7 @@ they shouldn't.
 |---|---|---|
 | 0a | Repos clean + record SHAs (oriah-api, config-repo, oriah-web) + image digests → `.codex-tmp/baseline/MANIFEST.txt`; `docker compose version` ≥ 2.20 | 🟡 SHAs + compose v5.1.4 recorded; image digests pending rebuild |
 | 0b | `docker compose config` render → baseline (equivalence oracle for Tier 1) | ✅ 1141 lines → `.codex-tmp/baseline/compose.rendered.yaml` |
-| 0c | Capture OpenAPI spec of all 12 services → `.codex-tmp/baseline/openapi/` (diff oracle for Tier 5) | ⬜ blocked on stack up |
+| 0c | Capture OpenAPI spec of all 12 services → `.codex-tmp/baseline/openapi/` (diff oracle for Tier 5) | ✅ 12/12 captured — **43 paths / 51 operations**, canonicalized |
 | 0d | **Service-local** golden error tests — must stay byte-identical forever | 🟡 shared-advice contract pinned (`FrameworkErrorContractTest` 6/6, `ProblemDetailExceptionHandlerTest` 7/7); per-service domain exceptions pending |
 | 0e | **Gateway-through** golden errors — may gain variants in Tier 3 (re-baselined deliberately) | ⬜ |
 | 0f | Gateway route-snapshot test (**29** routes, ids + `lb://` targets + path→route resolution, incl. reviews-over-products precedence) | ✅ `RouteSnapshotTest` 25/25 green |
@@ -162,12 +162,27 @@ stops consuming the servlet advice at all.
 
 | # | Item | Status |
 |---|---|---|
-| 1a | `docker-compose/common-config.yml` — `network-deploy-service` → `microservice-base-config` → `microservice-configserver-config` → `microservice-eureka-config` | ⬜ |
-| 1b | `docker-compose/default/docker-compose.yml` using `extends:`; root `docker-compose.yml` becomes a thin `include:` so existing commands keep working | ⬜ |
-| 1c | Acceptance: `docker compose config` semantically equal to the 0b baseline (`scripts/compose-equivalence.ps1`) | ⬜ |
-| 1d | `config-repo/application.yaml`: probes + `info.app.*` + `metrics.tags.application` + `build.version` (curated actuator exposure — **not** the course's expose-all) | ⬜ |
-| 1e | Shared `/build-info` endpoint in the starter (pinned operationId) + TDD slice test | ⬜ |
-| 1f | HTTP readiness/liveness asserted in `smoke-test.ps1` (compose healthchecks stay `/dev/tcp` — the Buildpacks run image has no curl) | ⬜ |
+| 1a | `docker-compose/common-config.yml` — chain + `microservice-keycloak-config` + `postgres-base-config` | ✅ |
+| 1b | `docker-compose/default/docker-compose.yml` using `extends:`; root becomes a thin `include:` | ✅ 34 services; `up -d <names>` still resolves |
+| 1c | Acceptance: `docker compose config` semantically equal to the 0b baseline (`scripts/compose-equivalence.ps1`) | ✅ **PASS**, 34/34 identical |
+| 1d | `config-repo/application.yaml`: probes + `info.app.*` + `metrics.tags.application` (curated actuator exposure — **not** the course's expose-all) | ✅ committed `7625536` in config-repo |
+| 1e | ~~Shared `/build-info` endpoint~~ → **`build-info` maven goal + `/actuator/info`** (plan correction, see note) | ✅ wired in parent pom |
+| 1f | HTTP readiness/liveness + `/actuator/info` asserted in `smoke-test.ps1` (compose healthchecks stay `/dev/tcp` — the Buildpacks run image has no curl) | ✅ steps 15 + 16 added; 16-step suite |
+
+---
+
+**1d/1e plan correction.** The plan called for a shared `/build-info` REST endpoint. Dropped: it
+invents an endpoint the course does not have, duplicates `/actuator/info`, and would add an OpenAPI
+surface needing a pinned `operationId` plus a client regen. The course convention is `info.app.*`
+with `management.info.env.enabled`, surfaced at `/actuator/info`, with provenance from the
+`spring-boot-maven-plugin` `build-info` goal. Same outcome, no new contract.
+
+**1d measurement correction.** A YAML grep suggested probes existed in only 4 of 12 services.
+Probing the live stack disproved it: **all 12 answer 200 on both `/actuator/health/readiness` and
+`/actuator/health/liveness`** — Boot 4 serves those groups without the flag. The flag is still
+pinned in config-repo so the deployment contract does not rest on a framework default, and step 15
+exists as a regression guard rather than a fix. The genuine gap was `/actuator/info`, which
+returned an empty `{}` on all 12.
 
 ---
 
@@ -176,16 +191,27 @@ stops consuming the servlet advice at all.
 | # | Item | Status |
 |---|---|---|
 | 2a | Starter test asserting the active `SpanExporter` bean set (prove-or-fallback gate for dual export) | ⬜ |
-| 2b | `tempo` container + `monitoring/tempo/tempo.yml` (OTLP 4317 grpc / 4318 http, HTTP API 3200) | ⬜ |
-| 2c | `spring-boot-starter-opentelemetry` + `management.opentelemetry.tracing.export.otlp.endpoint` | ⬜ |
-| 2d | `alloy` container + `monitoring/alloy/config.alloy` (docker discovery → Loki, `shipper="alloy"` label) | ⬜ |
-| 2e | Grafana: Tempo datasource + Loki `derivedFields` → trace jump, `matcherRegex: "\"traceId\":\"([0-9a-f]{32})\""` per the 0g measurement | ⬜ |
-| 2f | `monitoring/prometheus.yml` regenerated for all 15 targets | ⬜ |
+| 2b | `tempo` container + `monitoring/tempo/tempo.yml` (OTLP 4317 grpc / 4318 http, HTTP API 3200) | 🟡 config written; compose service pending |
+| 2c | `spring-boot-starter-opentelemetry` + `management.opentelemetry.tracing.export.otlp.endpoint` | ⬜ artifact confirmed present in the Boot 4.0.6 BOM |
+| 2d | `alloy` container + `monitoring/alloy/config.alloy` (docker discovery → Loki, `shipper="alloy"` label) | 🟡 config written; compose service pending |
+| 2e | Grafana: Tempo datasource + Loki `derivedFields` → trace jump | 🟡 `tempo.yaml` written; UIDs pinned; `derivedFields` switch pending |
+| 2f | `monitoring/prometheus.yml` covers all 15 targets | ✅ **already correct** — 3 infra + 12 services, no change needed |
 | 2g | Smoke: Tempo trace assertion + Alloy-shipped-logs assertion (shipper-qualified during overlap) | ⬜ |
 | 2h | **Separate commit:** remove Zipkin + Promtail (containers, configs, deps, properties, smoke steps) | ⬜ |
 
 Monolithic Loki retained — the course's read/write/backend + minio + nginx topology exists only to
 demo horizontal scaling and would add 4 containers to an already-33-container stack.
+
+**Two further observability defects found while authoring Tier 2 configs:**
+
+1. **The Loki → trace deep link was already dead.** `loki.yaml`'s `derivedFields` pointed at
+   `datasourceUid: zipkin`, but no Zipkin datasource was ever provisioned — only `loki.yaml` and
+   `prometheus.yaml` exist in that directory. Its `matcherRegex` was already the correct JSON-field
+   form, matching the 0g measurement, so only the target was wrong.
+2. **`oriah-overview.json` hardcodes `uid: PBFA97CFB590B2093`** for its Prometheus panels, but
+   `prometheus.yaml` provisioned no explicit `uid`, so Grafana generated a random one and those
+   panel references resolved only by falling back to `isDefault: true`. All three datasources now
+   pin explicit UIDs, so the dashboard is correct by construction rather than by fallback.
 
 ---
 

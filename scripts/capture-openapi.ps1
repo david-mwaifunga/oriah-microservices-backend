@@ -52,11 +52,30 @@ if (-not (Test-Path $OutDir)) {
 
 # Canonicalizer. Sorting keys makes the Tier 5 "additions only" diff readable;
 # without it, a rerun against an unchanged service still produces a large diff.
+#
+# Reads and writes FILES rather than stdin/stdout on purpose. PowerShell 5.1
+# pipes to a native command using the console output encoding and prepends a
+# UTF-8 BOM, which makes json.loads fail with "Unexpected UTF-8 BOM"; `>` and
+# Set-Content -Encoding utf8 add one on the way out too. utf-8-sig on read
+# tolerates a BOM if one appears anyway, and the write side emits none, so the
+# captured specs stay clean for diffing.
 $canonicalizer = @'
 import json, sys
-raw = sys.stdin.read()
-spec = json.loads(raw)
-sys.stdout.write(json.dumps(spec, sort_keys=True, indent=2, ensure_ascii=False))
+
+in_path, out_path = sys.argv[1], sys.argv[2]
+
+with open(in_path, encoding="utf-8-sig") as fh:
+    spec = json.load(fh)
+
+LF = chr(10)
+
+with open(out_path, "w", encoding="utf-8", newline=LF) as fh:
+    json.dump(spec, fh, sort_keys=True, indent=2, ensure_ascii=False)
+    fh.write(LF)
+
+paths = spec.get("paths") or {}
+operations = sum(len(v) for v in paths.values() if isinstance(v, dict))
+print(f"{len(paths)} paths, {operations} operations")
 '@
 $canonPath = Join-Path $env:TEMP "oriah-canon-openapi.py"
 Set-Content -Path $canonPath -Value $canonicalizer -Encoding utf8
@@ -74,16 +93,23 @@ foreach ($svc in $services) {
         }
 
         $outFile = Join-Path $OutDir "$svc.json"
-        $response.Content | python $canonPath | Set-Content -Path $outFile -Encoding utf8
+        $rawFile = Join-Path $env:TEMP "oriah-openapi-raw-$svc.json"
 
-        # Report operation count: the single most useful number for spotting an
-        # accidentally dropped endpoint at a glance.
-        $spec = Get-Content $outFile -Raw | ConvertFrom-Json
-        $opCount = 0
-        foreach ($path in $spec.paths.PSObject.Properties) {
-            $opCount += @($path.Value.PSObject.Properties).Count
+        # WriteAllText with a BOM-less UTF8Encoding: Set-Content -Encoding utf8
+        # emits a BOM on PowerShell 5.1.
+        [System.IO.File]::WriteAllText(
+            $rawFile, $response.Content, (New-Object System.Text.UTF8Encoding $false))
+
+        # The canonicalizer reports "<n> paths, <n> operations" -- the single
+        # most useful number for spotting an accidentally dropped endpoint.
+        $summary = python $canonPath $rawFile $outFile
+        if ($LASTEXITCODE -ne 0) {
+            $failed += "$svc (canonicalization failed)"
+            continue
         }
-        Write-Output ("  {0,-14} {1,3} operations -> {2}" -f $svc, $opCount, $outFile)
+        Remove-Item $rawFile -ErrorAction SilentlyContinue
+
+        Write-Output ("  {0,-14} {1}" -f $svc, $summary)
         $captured++
     }
     catch {

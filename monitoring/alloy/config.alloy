@@ -1,0 +1,136 @@
+// Grafana Alloy — log shipping, replacing Promtail.
+//
+// Promtail reached end-of-life (Grafana stopped feature development in favour
+// of Alloy, with LTS support ending Mar 2026), so this is the modernization the
+// brief asked for in place of the course's Promtail setup. The job is identical:
+// discover every container through the Docker socket, label each line with its
+// compose service, parse the one-line JSON our services emit, and push to Loki.
+//
+// Written in Alloy's own configuration language (not YAML): components are
+// declared and wired by referencing each other's exports, so the pipeline below
+// reads bottom-up as discovery -> relabel -> source -> process -> write.
+//
+// IMPORTANT during the Promtail/Alloy overlap: every stream Alloy ships carries
+// shipper="alloy", and Promtail's config carries shipper="promtail". Both run
+// side by side for one commit so the Loki assertion in smoke-test.ps1 never
+// goes dark while the shipper is swapped. Without that label every log line
+// exists twice in Loki, which would silently double every log-rate panel and
+// produce two derived trace links per line. All overlap-period queries must be
+// shipper-qualified.
+
+// ---------------------------------------------------------------------------
+// Discovery: enumerate containers via the Docker API.
+//
+// Deliberately NOT a bind-mount of /var/lib/docker/containers: on Docker
+// Desktop those files live inside the WSL2 VM and are not reliably reachable
+// from a container. Going through the socket behaves the same on Windows,
+// macOS and Linux.
+// ---------------------------------------------------------------------------
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+// ---------------------------------------------------------------------------
+// Relabel: turn Docker's __meta_* labels into the stream labels we query by.
+// Kept identical to the Promtail relabel_configs so existing Grafana queries
+// and dashboards keep working after the swap.
+// ---------------------------------------------------------------------------
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Docker reports names with a leading slash ("/oriah-catalog").
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // The compose service name is the label worth querying by: it survives
+  // container recreation, whereas the container name does not when scaled.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "project"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Source: tail the discovered containers' stdout/stderr.
+// ---------------------------------------------------------------------------
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.oriah.receiver]
+
+  // Distinguishes Alloy's streams from Promtail's during the overlap.
+  labels = {
+    shipper = "alloy",
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Process: parse the JSON that oriah-observability-starter's logback config
+// emits, so level/traceId/spanId become queryable rather than buried in text.
+//
+// The MDC key names here are measured, not assumed: MdcTraceCorrelationKeyTest
+// in the starter pins them as camelCase traceId/spanId, and logback's bare
+// <mdc/> provider copies MDC keys into the JSON verbatim. Get these wrong and
+// the fields silently stay empty -- no error, just a dead trace link.
+// ---------------------------------------------------------------------------
+loki.process "oriah" {
+  forward_to = [loki.write.default.receiver]
+
+  // Non-Oriah containers (postgres, kafka, keycloak, grafana) log plain text.
+  // A failed JSON parse is not fatal: the line still ships, just without the
+  // extracted fields.
+  stage.json {
+    expressions = {
+      level   = "level",
+      logger  = "logger_name",
+      traceId = "traceId",
+      spanId  = "spanId",
+      message = "message",
+    }
+  }
+
+  // level is a LABEL (low cardinality, worth indexing).
+  stage.labels {
+    values = {
+      level = "level",
+    }
+  }
+
+  // traceId/spanId are STRUCTURED METADATA, not labels. They are effectively
+  // unique per request, and a label per trace id would explode Loki's index
+  // into one stream per request -- the classic way to make Loki unusable.
+  stage.structured_metadata {
+    values = {
+      traceId = "traceId",
+      spanId  = "spanId",
+      logger  = "logger",
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Write: push to Loki.
+// ---------------------------------------------------------------------------
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// Alloy's own UI on :12345 (http://localhost:12345/graph) renders the live
+// component graph with per-component health, which is the fastest way to see
+// whether discovery is finding containers and whether writes to Loki are
+// succeeding.
+logging {
+  level  = "warn"
+  format = "logfmt"
+}

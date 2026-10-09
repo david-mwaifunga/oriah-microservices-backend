@@ -1,0 +1,63 @@
+# Grafana Tempo — trace storage, replacing Zipkin.
+#
+# Why the swap: Zipkin was fine for "show me one trace", but Tempo is what the
+# rest of this stack is built to talk to. It ingests OTLP natively (our spans
+# already travel as OTLP through Micrometer Tracing's OpenTelemetry bridge, and
+# were only being translated to Zipkin's v2 wire format on the way out), and it
+# shares Grafana's data-source plumbing with Loki and Prometheus so a log line
+# can deep-link straight to the trace that produced it.
+#
+# Storage is local filesystem on a docker volume: single-binary, no object
+# store, no separate index. A production deploy would point `backend` at S3/GCS
+# and run the components separately, which is exactly the swap the course's
+# Loki microservices topology demonstrates — deliberately not replicated here
+# (see the divergence table in docs/REFACTOR_SECTION12.md).
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+# Allows Grafana to stream search results as they arrive rather than waiting
+# for the whole query. Without it the Explore view feels broken on cold blocks.
+stream_over_http_enabled: true
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        # 4317 grpc is what the Spring services use
+        # (management.opentelemetry.tracing.export.otlp.endpoint). 4318 http is
+        # kept open because it is the easier one to hand-test with curl when a
+        # service appears to be producing no spans.
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # Flush quickly. The default (5m) is sized for production throughput and in
+  # local dev means a trace you just produced is not searchable yet -- which
+  # reads as "tracing is broken" during a smoke test rather than "not flushed".
+  max_block_duration: 5m
+  complete_block_timeout: 1m
+
+compactor:
+  compaction:
+    # 1h retention is plenty for local debugging and keeps the volume small.
+    # Zipkin's in-memory store capped at 100k spans and lost everything on
+    # restart; this at least survives a container bounce.
+    block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+    pool:
+      max_workers: 20
+      queue_depth: 1000
+
+usage_report:
+  reporting_enabled: false

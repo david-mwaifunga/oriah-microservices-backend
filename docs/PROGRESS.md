@@ -5,6 +5,82 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-10-09 (section_12 convention refactor: Tiers 0, 0.5, 1 landed)
+
+Refactoring `oriah-api` to the conventions of the Eazy Bytes `section_12` course
+repo, so the course material maps onto this codebase. **Live checklist with
+per-item status: `docs/REFACTOR_SECTION12.md`** — read that for what is done and
+what remains. Plan was reviewed adversarially by Codex (gpt-5.5) over 3 rounds
+to `VERDICT: APPROVE`.
+
+Seven tiers: 0 freeze the contract, 0.5 error-contract fix, 1 compose + actuator,
+2 Tempo/Alloy, 3 gateway code-first DSL, 4 Resilience4j, 5 service conventions
+×12, 6 audit-entity rename.
+
+### Four defects the Tier 0 audit turned up
+
+None of these were on the plan; all were found by writing characterization tests
+and by insisting on a clean-slate start.
+
+1. **Every framework error rendered 500.** `ProblemDetailExceptionHandler`
+   declared `@ExceptionHandler(Exception.class)` without extending
+   `ResponseEntityExceptionHandler`, and `ExceptionHandlerExceptionResolver`
+   runs before `DefaultHandlerExceptionResolver` — so the catch-all claimed
+   Spring MVC's own exceptions. Wrong method, wrong content type, malformed
+   JSON, missing param, param type mismatch and unsatisfiable Accept all came
+   back 500. Worse than a misleading status: a 4xx reported as 5xx is
+   retry-eligible, so Tier 3's gateway `retry` filter and Tier 4's `@Retry`
+   would have re-sent permanently-invalid requests. Fixed in Tier 0.5 with nine
+   explicit handlers (+ `Allow` on 405, `Accept` on 415).
+2. **The stack could not be started from scratch.** `docker compose down -v`
+   exposed `Unable to find composite realm role: uma_authorization` — the realm
+   file had never actually been imported as written, because every prior session
+   reused an imported Docker volume. Guarded by `scripts/validate-realm.ps1`,
+   which is static so it catches a broken realm even while a stack runs happily
+   on a stale volume.
+3. **Field validation errors silently dropped in the UI.** Backend emits
+   `fieldErrors: [{field,message}]`; `oriah-web`'s schema declared
+   `errors: Record<string,string>`. `.catchall(z.unknown())` hid the mismatch.
+4. **`/actuator/info` was an empty `{}` on all 12 services** — no way to tie a
+   running container back to its build, with 15 images all tagged `:dev`.
+
+### Gotchas worth remembering
+
+- **`ResponseEntityExceptionHandler` is in spring-webmvc.** Putting it in the
+  shared starter would add `DispatcherServlet` to all 15 modules including the
+  reactive gatewayserver, and `WebApplicationType.deduceFromClasspath()` treats
+  webflux + webmvc as SERVLET — the gateway would boot a servlet container and
+  route nothing while reporting a clean start. `GatewayServerWebApplicationTypeTest`
+  now enforces this.
+- **MDC trace keys are `traceId` / `spanId`, camelCase** (measured, not assumed).
+  Our logback emits one-line JSON with a bare `<mdc/>`, so MDC keys *are* the
+  JSON field names — Grafana's `derivedFields` regex must match
+  `"traceId":"<32hex>"`, not the course's `\[.+,(.+),.+\]` console pattern.
+- **The gateway has 29 routes, not 16**: 17 API + 12 `/v3/api-docs/<svc>`.
+  OpenAPI aggregation at the edge already exists.
+- **SCG resolves first-match-by-order, not longest-path.** `product-reviews-route`
+  only beats `catalog-public-route` because of `order: -10`.
+- **config-repo changes must be committed** to take effect — the Config Server
+  reads committed git state, so an uncommitted edit is invisible.
+- **The realm JSON cannot carry comments.** `RoleRepresentation` rejects unknown
+  fields, so a `"_comment"` key fails the whole import.
+- **`repackage` never runs in this build** (jars are ~41KB thin jars);
+  `spring-boot:build-image` does its own layering from `target/classes`.
+
+### Verification bar now in place
+
+- `scripts/compose-equivalence.ps1` — proves a compose refactor renders the same
+  34-service stack as the recorded baseline (self-tested against an untouched
+  tree first, because a gate that cannot fail proves nothing).
+- `scripts/capture-openapi.ps1` — canonicalized specs; Tier 0 baseline is
+  **43 paths / 51 operations** across 12 services. Tier 5 must diff
+  additions-only against it.
+- `scripts/validate-realm.ps1` — static Keycloak realm validation.
+- `smoke-test.ps1` is now **16 steps** (was 14): added readiness/liveness across
+  all 12 services and `/actuator/info` app + build provenance.
+
+---
+
 ## CURRENT STATE — 2026-05-25 (Phase 5 COMPLETE -- awaiting live e2e)
 
 **Phase 5 -- Next.js frontend rebuild -- all four tiers shipped.**

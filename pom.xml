@@ -103,6 +103,34 @@
                             </exclude>
                         </excludes>
                     </configuration>
+                    <executions>
+                        <execution>
+                            <!--
+                                Generates META-INF/build-info.properties, which
+                                Actuator's BuildInfoContributor surfaces as the
+                                build.* block of /actuator/info:
+                                build.artifact, build.name, build.group,
+                                build.version and build.time.
+
+                                Without this the whole build block is absent and
+                                /actuator/info on a running container cannot tell
+                                you which build produced it. With 15 images all
+                                tagged :dev, that is the difference between
+                                debugging a known artifact and guessing. Asserted
+                                by smoke-test.ps1 step 16.
+
+                                Not inherited from spring-boot-starter-parent
+                                because this project imports BOMs instead of
+                                parenting from it, so the execution is declared
+                                here and picked up by every module that uses the
+                                plugin.
+                            -->
+                            <id>build-info</id>
+                            <goals>
+                                <goal>build-info</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
