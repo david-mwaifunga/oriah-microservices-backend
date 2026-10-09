@@ -8,175 +8,23 @@ spring:
     redis:
       host: localhost
       port: 6379
-  cloud:
-    gateway:
-      server:
-        webflux:
-          # Each route is one (id, uri, predicates, [filters]) tuple.
-          # 'lb://<service-name>' is the magic incantation: Spring Cloud
-          # Gateway resolves <service-name> against Eureka at request time
-          # and load-balances across whatever instances are registered.
-          # Default filters apply to every route below (in addition to
-          # any per-route filters). Kept empty -- the RateLimiter we
-          # want is per-route (only public anonymous endpoints), not
-          # global.
-          default-filters: []
-          routes:
-            - id: catalog-public-route
-              uri: lb://catalog
-              predicates:
-                - Path=/api/v1/products/**
-              filters:
-                # Redis-backed token bucket: 20 tokens per second per
-                # client IP, burst up to 40. Anonymous storefront
-                # endpoint, exposed without auth, so worth the
-                # protection from a runaway client. Verified to
-                # produce 429 Too Many Requests under a tight 2/3 burst
-                # config during development before settling on these
-                # production-ish numbers.
-                # ipKeyResolver is a @Bean in com.oriah.gatewayserver
-                # .config.RateLimitConfig.
-                - name: RequestRateLimiter
-                  args:
-                    key-resolver: "#{@ipKeyResolver}"
-                    redis-rate-limiter.replenishRate: 20
-                    redis-rate-limiter.burstCapacity: 40
-            - id: catalog-admin-route
-              uri: lb://catalog
-              predicates:
-                - Path=/api/v1/admin/products/**
-            - id: inventory-admin-route
-              uri: lb://inventory
-              predicates:
-                - Path=/api/v1/admin/inventory/**
-            - id: customer-route
-              uri: lb://customer
-              predicates:
-                - Path=/api/v1/customers/**
-            - id: customer-admin-route
-              uri: lb://customer
-              predicates:
-                - Path=/api/v1/admin/customers/**
-            - id: cart-route
-              uri: lb://cart
-              predicates:
-                - Path=/api/v1/carts/**
-            - id: payment-route
-              uri: lb://payment
-              predicates:
-                - Path=/api/v1/payments/**
-            - id: order-route
-              uri: lb://order
-              predicates:
-                - Path=/api/v1/orders/**
-            - id: order-admin-route
-              uri: lb://order
-              predicates:
-                - Path=/api/v1/admin/orders/**
-            - id: promotion-route
-              uri: lb://promotion
-              predicates:
-                - Path=/api/v1/promotions/**
-            - id: promotion-admin-route
-              uri: lb://promotion
-              predicates:
-                - Path=/api/v1/admin/promotions/**
-            - id: shipping-route
-              uri: lb://shipping
-              predicates:
-                - Path=/api/v1/shipping/**
-            - id: checkout-route
-              uri: lb://checkout
-              predicates:
-                - Path=/api/v1/checkout/**
-            - id: notification-route
-              uri: lb://notification
-              predicates:
-                - Path=/api/v1/notifications/**
-            - id: review-route
-              uri: lb://review
-              predicates:
-                - Path=/api/v1/reviews/**
-            # Review-service owns the product reviews path. SCG is
-            # first-match (longest-path-NOT-evaluated), so the more
-            # general catalog-public-route at /api/v1/products/** wins
-            # by default. Give this route a lower `order` (-10 < 0
-            # default) so it's evaluated before catalog. See the
-            # docs/ARCHITECTURE.md note "Gateway route ordering" for
-            # context.
-            - id: product-reviews-route
-              uri: lb://review
-              order: -10
-              predicates:
-                - Path=/api/v1/products/*/reviews,/api/v1/products/*/reviews/**
-            - id: search-route
-              uri: lb://search
-              predicates:
-                - Path=/api/v1/search/**
-              filters:
-                # Same 20/sec/IP cap as the catalog public route.
-                # Search is the other anonymous storefront endpoint.
-                - name: RequestRateLimiter
-                  args:
-                    key-resolver: "#{@ipKeyResolver}"
-                    redis-rate-limiter.replenishRate: 20
-                    redis-rate-limiter.burstCapacity: 40
-
-            # ----- OpenAPI docs aggregation -----
-            # One route per service, rewriting /v3/api-docs/<svc> on the
-            # gateway to /v3/api-docs on the upstream. Springdoc's
-            # swagger-ui at the gateway (springdoc.swagger-ui.urls
-            # below) shows a dropdown -- pick a service and it fetches
-            # that path through the gateway, which proxies to the
-            # service's own /v3/api-docs.
-            - id: catalog-docs
-              uri: lb://catalog
-              predicates: [Path=/v3/api-docs/catalog]
-              filters: [SetPath=/v3/api-docs]
-            - id: inventory-docs
-              uri: lb://inventory
-              predicates: [Path=/v3/api-docs/inventory]
-              filters: [SetPath=/v3/api-docs]
-            - id: customer-docs
-              uri: lb://customer
-              predicates: [Path=/v3/api-docs/customer]
-              filters: [SetPath=/v3/api-docs]
-            - id: cart-docs
-              uri: lb://cart
-              predicates: [Path=/v3/api-docs/cart]
-              filters: [SetPath=/v3/api-docs]
-            - id: payment-docs
-              uri: lb://payment
-              predicates: [Path=/v3/api-docs/payment]
-              filters: [SetPath=/v3/api-docs]
-            - id: order-docs
-              uri: lb://order
-              predicates: [Path=/v3/api-docs/order]
-              filters: [SetPath=/v3/api-docs]
-            - id: promotion-docs
-              uri: lb://promotion
-              predicates: [Path=/v3/api-docs/promotion]
-              filters: [SetPath=/v3/api-docs]
-            - id: shipping-docs
-              uri: lb://shipping
-              predicates: [Path=/v3/api-docs/shipping]
-              filters: [SetPath=/v3/api-docs]
-            - id: checkout-docs
-              uri: lb://checkout
-              predicates: [Path=/v3/api-docs/checkout]
-              filters: [SetPath=/v3/api-docs]
-            - id: notification-docs
-              uri: lb://notification
-              predicates: [Path=/v3/api-docs/notification]
-              filters: [SetPath=/v3/api-docs]
-            - id: review-docs
-              uri: lb://review
-              predicates: [Path=/v3/api-docs/review]
-              filters: [SetPath=/v3/api-docs]
-            - id: search-docs
-              uri: lb://search
-              predicates: [Path=/v3/api-docs/search]
-              filters: [SetPath=/v3/api-docs]
+  # The route table now lives in Java, as a RouteLocator bean:
+  #   config/GatewayRoutesConfig.java
+  #
+  # Nothing gateway-related is configured here any more, deliberately. A
+  # RouteLocator bean does NOT replace a YAML route block -- Gateway's
+  # auto-configuration composes a CachingRouteLocator over a
+  # CompositeRouteLocator of every RouteLocator bean PLUS the YAML-backed one,
+  # so the two UNION. Re-adding routes here while that bean exists silently
+  # doubles the table to 58 routes. RouteSnapshotTest pins the id set at 29 and
+  # would fail, which is the only reason that trap is survivable.
+  #
+  # One further trap if anyone pastes a route block back in from the course
+  # material: the property prefix moved. GatewayProperties.PREFIX is
+  # "spring.cloud.gateway.server.webflux" in Gateway 5.0.x, not
+  # "spring.cloud.gateway" as in 4.1.x. The old form binds to NOTHING, raises
+  # no error, and the gateway simply starts with an empty route table -- every
+  # request 404s.
 
 # Aggregated Swagger UI. Loads at http://localhost:8080/swagger-ui.html
 # with a top-right dropdown listing every service spec by name; click
@@ -218,11 +66,36 @@ management:
   endpoints:
     web:
       exposure:
-        # '*' exposes every actuator endpoint — the gateway endpoint id
-        # was renamed in Spring Cloud Gateway 5.0.x and the new id is
-        # discovered by hitting /actuator. Lock down to a narrower set
-        # in production via a profile-specific override.
-        include: '*'
+        # Curated, NOT '*'.
+        #
+        # This used to be '*', with a comment explaining that the gateway
+        # actuator endpoint id "was renamed in Spring Cloud Gateway 5.0.x and
+        # the new id is discovered by hitting /actuator". That diagnosis was
+        # wrong on both counts, and the expedient outlived it:
+        #
+        #   * The id was NOT renamed. It is still `gateway`
+        #     (GatewayControllerEndpoint). What changed is the GATING:
+        #     4.1.x used @RestControllerEndpoint(enableByDefault = false),
+        #     5.0.x uses @RestControllerEndpoint(defaultAccess = Access.NONE).
+        #   * Exposure and ACCESS are separate gates in Boot 4, so '*' never
+        #     made /actuator/gateway/routes reachable anyway. It needs
+        #     `management.endpoint.gateway.access: read-only` as well.
+        #
+        # Meanwhile '*' did do something: it published env, beans, configprops,
+        # mappings, threaddump, conditions, loggers and scheduledtasks — on
+        # port 8080, which is the PUBLIC EDGE. Values are masked by default so
+        # no credentials leaked, but the full bean graph, every route mapping
+        # and a thread dump were readable by anyone who could reach the
+        # frontend. smoke-test.ps1 step 18 asserts they are gone.
+        #
+        # `gateway` is deliberately NOT in this list: the route table names
+        # every internal service and path prefix, which is topology the edge
+        # need not advertise. To inspect it while debugging, start the gateway
+        # with:
+        #   --management.endpoints.web.exposure.include=health,info,metrics,prometheus,gateway
+        #   --management.endpoint.gateway.access=read-only
+        # which is exactly what GatewayServerApplicationTests does.
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:
