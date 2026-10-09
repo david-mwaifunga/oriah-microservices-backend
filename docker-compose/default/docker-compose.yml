@@ -26,7 +26,7 @@
 #
 #   ┌─────────── data tier (no deps) ───────────┐
 #   │  postgres-* ×10   keycloak   kafka         │
-#   │  redis   loki   prometheus   zipkin        │
+#   │  redis   loki   prometheus   tempo   alloy  │
 #   └─────────────────────────────────────────────┘
 #                  │                │
 #                  ▼                ▼
@@ -85,7 +85,10 @@
 #   8888 → configserver:8888
 #   9090 → prometheus:9090
 #   9092 → kafka:9092
-#   9411 → zipkin:9411
+#   3200 → tempo:3200                 # trace query API
+#   4317 → tempo:4317                 # OTLP grpc
+#   4318 → tempo:4318                 # OTLP http (what the services use)
+#  12345 → alloy:12345                # Alloy component-graph UI
 
 services:
 
@@ -381,31 +384,9 @@ services:
       - "3100:3100"
     # No healthcheck: the grafana/loki image is fully distroless --
     # no shell, no wget, no ls -- so docker has nothing to exec to
-    # probe /ready. Promtail uses service_started instead of
+    # probe /ready. Alloy depends on service_started instead of
     # service_healthy; on first start it retries pushing for a few
     # seconds while Loki's ingester ring warms up, which is fine.
-
-  promtail:
-    # Promtail -- the log shipper. Discovers containers via the Docker
-    # socket and streams their stdout into Loki, parsing the JSON
-    # payload our services emit so traceId / spanId / level become
-    # structured fields and labels (queryable from Grafana Explore).
-    extends:
-      file: ../common-config.yml
-      service: network-deploy-service
-    image: grafana/promtail:latest
-    container_name: oriah-promtail
-    command: ["-config.file=/etc/promtail/promtail-config.yaml"]
-    volumes:
-      - ../../monitoring/promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
-      # Docker socket: docker_sd_configs needs API access to list
-      # containers + tail their logs. Read-only enough that container
-      # cannot use it to control the daemon.
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - promtail-data:/var/lib/promtail
-    depends_on:
-      loki:
-        condition: service_started
 
   redis:
     # Backing store for Spring Cloud Gateway's RedisRateLimiter on the
@@ -424,39 +405,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-
-  zipkin:
-    # OpenZipkin with in-memory storage (dev only — stop the container
-    # and traces are gone). Port 9411 is both the span-ingest API
-    # endpoint (where services POST /api/v2/spans) and the trace browser
-    # UI (open http://localhost:9411). Sufficient for the "trace one
-    # request across the saga" debugging this is meant to support; a
-    # production deploy would back it with Elasticsearch or Cassandra.
-    extends:
-      file: ../common-config.yml
-      service: network-deploy-service
-    image: openzipkin/zipkin:latest
-    container_name: oriah-zipkin
-    environment:
-      # In-memory storage with a 100k-span cap. Default Xmx is too big
-      # for Docker Desktop on Windows and triggers OOM under a few smoke
-      # runs; capping both heap and the rolling span buffer keeps the
-      # container alive for the typical "trace one request" workflow.
-      JAVA_OPTS: "-Xms256m -Xmx512m"
-      MEM_MAX_SPANS: "100000"
-    ports:
-      - "9411:9411"
-    healthcheck:
-      # The openzipkin/zipkin image is Alpine/busybox -- no bash, so
-      # the /dev/tcp probe we use for the Spring services doesn't work
-      # here. busybox does ship wget, and Zipkin exposes a /health
-      # endpoint that goes 200 when the in-memory storage is initialised
-      # (i.e., the API is ready to accept spans).
-      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://localhost:9411/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 15
-      start_period: 30s
 
   kafka:
     # Apache Kafka in KRaft mode (no ZooKeeper). 4.x replaced ZK with a
@@ -514,9 +462,12 @@ services:
     # bridge produces OTel spans that were only being translated into Zipkin's
     # v2 wire format on the way out.
     #
-    # Runs alongside zipkin for one commit. SpanExporterCoexistenceTest proves
-    # both exporters are wired simultaneously, so the smoke test's end-to-end
-    # trace assertion is never without a backend during the swap.
+    # The swap from Zipkin was staged, not cut over: OTLP export was added
+    # while Zipkin still ran, SpanExporterCoexistenceTest confirmed both
+    # exporters were wired at once, and the smoke test proved the same traceId
+    # reached Tempo across all seven saga services before Zipkin was removed.
+    # So the end-to-end trace assertion never went dark, not even for one
+    # commit.
     extends:
       file: ../common-config.yml
       service: network-deploy-service
@@ -552,10 +503,13 @@ services:
     # stopped feature development in favour of Alloy). This is the
     # modernization the brief asked for in place of the course's Promtail.
     #
-    # Both run during the overlap. Alloy labels its streams shipper="alloy" and
-    # promtail-config.yaml labels its own shipper="promtail", so Loki queries
-    # can tell them apart; without that every line would exist twice and every
-    # log-rate panel would silently double.
+    # Both shippers ran during the overlap, each labelling its streams
+    # (shipper="alloy" / shipper="promtail") so Loki queries could tell them
+    # apart -- without that every line would have existed twice and every
+    # log-rate panel would have silently doubled. Promtail is gone now, but the
+    # label stays: it is what proved Alloy was really working, the smoke test
+    # still asserts on it, and it keeps the query honest if a second shipper is
+    # ever added again.
     extends:
       file: ../common-config.yml
       service: network-deploy-service
@@ -606,7 +560,6 @@ services:
       # values via config-repo/application.yaml, but the platform tier
       # has to be told via env.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
-      MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
       # OTLP to Tempo. Set here as well as in config-repo because the platform
       # tier cannot bootstrap its own configuration from the Config Server.
       # Port 4318 (http), not 4317 (grpc): the transport property defaults to
@@ -646,7 +599,6 @@ services:
     environment:
       # Tracing direct-set: eureka doesn't pull from configserver.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
-      MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
       # OTLP to Tempo. Set here as well as in config-repo because the platform
       # tier cannot bootstrap its own configuration from the Config Server.
       # Port 4318 (http), not 4317 (grpc): the transport property defaults to
@@ -675,7 +627,6 @@ services:
       # WebFlux instrumentation creates the root span and propagates
       # traceparent headers to every backend service via the route.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
-      MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
       # OTLP to Tempo. Set here as well as in config-repo because the platform
       # tier cannot bootstrap its own configuration from the Config Server.
       # Port 4318 (http), not 4317 (grpc): the transport property defaults to
@@ -1029,7 +980,6 @@ volumes:
   prometheus-data:
   grafana-data:
   loki-data:
-  promtail-data:
   tempo-data:
   alloy-data:
 

@@ -10,13 +10,17 @@
 // declared and wired by referencing each other's exports, so the pipeline below
 // reads bottom-up as discovery -> relabel -> source -> process -> write.
 //
-// IMPORTANT during the Promtail/Alloy overlap: every stream Alloy ships carries
-// shipper="alloy", and Promtail's config carries shipper="promtail". Both run
-// side by side for one commit so the Loki assertion in smoke-test.ps1 never
-// goes dark while the shipper is swapped. Without that label every log line
-// exists twice in Loki, which would silently double every log-rate panel and
-// produce two derived trace links per line. All overlap-period queries must be
-// shipper-qualified.
+// Every stream Alloy ships carries shipper="alloy". That label existed to make
+// the Promtail/Alloy overlap safe: both ran side by side for one commit so the
+// Loki assertion in smoke-test.ps1 never went dark while the shipper was
+// swapped, and without the label every line would have existed twice in Loki,
+// silently doubling every log-rate panel and producing two derived trace links
+// per line.
+//
+// Promtail is gone now, but the label stays. It is what proved Alloy was
+// really shipping (rather than an unqualified query passing on Promtail's
+// lines), smoke-test.ps1 still asserts on it, and it keeps the query honest if
+// a second shipper is ever introduced again.
 
 // ---------------------------------------------------------------------------
 // Discovery: enumerate containers via the Docker API.

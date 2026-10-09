@@ -33,9 +33,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * on the classpath, and prints the bean names so the answer is visible in the
  * build output.
  *
- * <p>If both are present, the staged swap proceeds as planned. If only one is,
- * the swap becomes a single atomic commit that adds the Tempo assertion and
- * removes the Zipkin one together.
+ * <p>The answer was BOTH, so the staged swap went ahead: OTLP was added while
+ * Zipkin still ran, the smoke test proved the same traceId reached Tempo across
+ * all seven saga services, and only then was Zipkin removed.
+ *
+ * <p>The test outlives that decision, because its central assertion is the one
+ * that matters permanently: <strong>at least one SpanExporter must be
+ * wired</strong>. It immediately caught the Zipkin removal accidentally taking
+ * {@code spring-boot-starter-opentelemetry} with it (the two dependencies were
+ * adjacent in the pom), reporting {@code SpanExporter beans: []}. Because the
+ * image build is gated on the tests, that failure arrived before any of the 15
+ * images were built; otherwise every service would have shipped producing spans
+ * into nothing, with no error anywhere to say so.
  */
 @SpringBootTest(
         classes = SpanExporterCoexistenceTest.ProbeApp.class,
@@ -43,10 +52,9 @@ import static org.assertj.core.api.Assertions.assertThat;
                 "spring.application.name=exporter-probe",
                 "spring.main.banner-mode=off",
                 "management.tracing.sampling.probability=1.0",
-                // Both exporters pointed at closed ports: we are inspecting the
-                // bean graph, not shipping spans, and this keeps their
-                // background senders from retrying against the real stack.
-                "management.tracing.export.zipkin.endpoint=http://127.0.0.1:1/api/v2/spans",
+                // Pointed at a closed port: we are inspecting the bean graph, not
+                // shipping spans, and this keeps the background sender from
+                // retrying against the real stack.
                 "management.opentelemetry.tracing.export.otlp.endpoint=http://127.0.0.1:1/v1/traces"
         })
 class SpanExporterCoexistenceTest {
@@ -84,8 +92,8 @@ class SpanExporterCoexistenceTest {
 
         System.out.printf("### otlp=%s zipkin=%s -> %s%n", hasOtlp, hasZipkin,
                 hasOtlp && hasZipkin
-                        ? "COEXIST: staged swap is safe (add Tempo, prove it, remove Zipkin separately)"
-                        : "SINGLE: swap must be one atomic commit");
+                        ? "BOTH wired (the state during the staged swap)"
+                        : "single backend wired (the state after the swap)");
 
         // OTLP must be present either way — it is the exporter Tempo needs, and
         // this dependency was added specifically to provide it. Zipkin's

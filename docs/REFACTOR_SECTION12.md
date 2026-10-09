@@ -18,7 +18,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 0 | Freeze the contract (baselines + characterization tests) | 🟡 in progress |
 | **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
 | 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
-| 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | 🟡 parallel-run **verified 18/18**; 2h removal pending |
+| 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ⬜ |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ⬜ |
 | 5 | Service-layer conventions × 12 services | ⬜ |
@@ -197,7 +197,7 @@ returned an empty `{}` on all 12.
 | 2e | Grafana: Tempo datasource + Loki `derivedFields` → trace jump | ✅ internal link by pinned uid; all 3 datasources provision cleanly |
 | 2f | `monitoring/prometheus.yml` covers all 15 targets | ✅ **already correct** — 3 infra + 12 services, no change needed |
 | 2g | Smoke: Tempo trace assertion + Alloy-shipped-logs assertion (shipper-qualified during overlap) | ✅ **18/18** — Tempo has the same traceId, 20 lines `shipper=alloy` |
-| 2h | **Separate commit:** remove Zipkin + Promtail (containers, configs, deps, properties, smoke steps) | ⬜ |
+| 2h | **Separate commit:** remove Zipkin + Promtail (containers, configs, deps, properties, smoke steps) | ✅ 34 containers, 31/31 healthy, smoke 17/17 |
 
 Monolithic Loki retained — the course's read/write/backend + minio + nginx topology exists only to
 demo horizontal scaling and would add 4 containers to an already-33-container stack.
@@ -253,6 +253,30 @@ demo horizontal scaling and would add 4 containers to an already-33-container st
    but 503 counts). Separately, that failed run left 2 units in the cart, so the next run's totals
    came out doubled (`subtotal=400`) — one real failure masquerading as a pricing bug on every
    subsequent run. Step 4 now clears the cart first and asserts its contents.
+
+---
+
+**Tier 2h: the removal, and what caught my mistake.**
+
+Removing `spring-boot-zipkin` accidentally took `spring-boot-starter-opentelemetry` with it — the
+two dependencies were adjacent in the pom and my edit replaced the whole block.
+`SpanExporterCoexistenceTest` failed instantly with `SpanExporter beans: []`. Because the image
+build is gated on tests passing, that arrived **before any of the 15 images were built**; otherwise
+all 12 services would have shipped producing spans into nothing, with no error anywhere to say so.
+A second lesson from the same edit: the follow-up `.replace()` meant to fix that dependency's
+comment silently matched nothing, because I had omitted the `assert` I used on every other
+replacement.
+
+The smoke test's trace step was also rewritten rather than merely repointed. It used to scrape the
+backend for "the most recent trace that looks like a saga"; it now **generates** the trace id,
+sends it as a W3C `traceparent` on the confirm call, and asserts Tempo holds that exact id across
+cart + checkout + order + payment. Deterministic, and it additionally proves context extraction at
+the edge.
+
+Two smaller fixes the removal run surfaced: `DELETE /api/v1/carts/me` 404s when no cart exists
+(first run, or after any successful confirm — "already empty" is the desired end state, so the
+clear now tolerates 404), and Tempo 3.0's `/api/v2/traces/<id>` answers `200` with `{"trace":{}}`
+rather than 404 for an absent trace.
 
 ---
 

@@ -38,40 +38,40 @@
 
         <!--
             Spring Boot 4 split tracing autoconfig out of the actuator-
-            autoconfigure jar into per-tracer modules. For the Micrometer
-            Tracing + OpenTelemetry path, these two jars carry the
+            autoconfigure jar into per-tracer modules. This one carries the
             @AutoConfiguration classes that bind the Tracer bean, the
-            ObservationHandler chain, the propagation factories, and the
-            Zipkin exporter wiring to Spring Boot properties (sampling,
-            endpoint, timeouts). Without these on the classpath the
-            instrumentation never activates; there is no MDC traceId
-            and no span export, regardless of management.tracing.*
-            settings. The OTel/Zipkin path is deprecated and slated for
-            removal in Spring Boot 4.2 in favor of Brave; we stay on it
-            for this phase to match the brief, then migrate later.
+            ObservationHandler chain, the propagation factories and the OTLP
+            exporter wiring to Spring Boot properties (sampling, endpoint,
+            timeouts). Without it the instrumentation never activates: there is
+            no MDC traceId and no span export, regardless of what
+            management.tracing.* says.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-zipkin</artifactId>
-        </dependency>
 
         <!--
-            OTLP trace export, for Grafana Tempo. Tempo ingests OTLP natively,
-            and our spans are already OpenTelemetry spans under the hood
-            (micrometer-tracing-bridge-otel below) that were only being
-            translated into Zipkin's v2 wire format on the way out. Exporting
-            OTLP removes that translation step.
+            OTLP trace export, for Grafana Tempo. This is what supplies
+            opentelemetry-exporter-otlp and therefore the OtlpHttpSpanExporter
+            bean; spring-boot-micrometer-tracing-opentelemetry above carries the
+            auto-configuration but NOT the exporter itself. Without this
+            dependency there is no SpanExporter bean at all, and spans are
+            produced and silently discarded.
 
-            Added ALONGSIDE spring-boot-zipkin rather than replacing it, so the
-            end-to-end trace assertion in smoke-test.ps1 never goes dark during
-            the swap: Tempo is proven to receive spans before Zipkin is removed,
-            in a separate commit. SpanExporterCoexistenceTest is the gate that
-            establishes whether both exporters can actually be active at once;
-            if they cannot, the swap becomes a single atomic commit instead.
+            That is not hypothetical: removing spring-boot-zipkin in the Tempo
+            cutover accidentally took this dependency with it, and
+            SpanExporterCoexistenceTest caught it immediately with
+            "SpanExporter beans: []", before any image was built because the
+            build is gated on the tests passing. Hence the assertion in that
+            test that the exporter set is non-empty, which is the one thing
+            that must hold no matter which backend is in use.
+
+            It replaced spring-boot-zipkin. The swap was staged, not cut over:
+            OTLP was added alongside Zipkin, the coexistence test confirmed both
+            exporters were wired simultaneously, and smoke-test.ps1 proved the
+            same traceId reached Tempo across all seven saga services before
+            Zipkin was removed.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -89,16 +89,6 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-tracing-bridge-otel</artifactId>
-        </dependency>
-
-        <!--
-            OTel's Zipkin v2 exporter. With the bridge above, spans flow:
-            instrumented code -> Micrometer Tracing API -> OTel SDK ->
-            Zipkin exporter -> HTTP POST to zipkin:9411/api/v2/spans.
-        -->
-        <dependency>
-            <groupId>io.opentelemetry</groupId>
-            <artifactId>opentelemetry-exporter-zipkin</artifactId>
         </dependency>
 
         <!--
