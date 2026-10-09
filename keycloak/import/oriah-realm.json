@@ -45,6 +45,20 @@
         "clientRole": false
       },
       {
+        "name": "offline_access",
+        "description": "${role_offline-access}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "oriah"
+      },
+      {
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "oriah"
+      },
+      {
         "name": "default-roles-oriah",
         "description": "Auto-assigned to every new user (self-registered + Google-federated). Includes USER so a fresh sign-up can use the customer surface immediately.",
         "composite": true,

@@ -40,7 +40,8 @@ they shouldn't.
 | 0e | **Gateway-through** golden errors — may gain variants in Tier 3 (re-baselined deliberately) | ⬜ |
 | 0f | Gateway route-snapshot test (**29** routes, ids + `lb://` targets + path→route resolution, incl. reviews-over-products precedence) | ✅ `RouteSnapshotTest` 25/25 green |
 | 0g | MDC-key probe test (is it `traceId` or `trace_id` on Boot 4?) | ✅ **camelCase `traceId`/`spanId`** — 2/2 green |
-| 0h | Baseline green run: `mvnw clean install` + `smoke-test.ps1` 14/14 + oriah-web `tsc` + tests | 🟡 `clean install -DskipTests` SUCCESS (1:24); images rebuilding |
+| 0h | Baseline green run: `mvnw clean install` + `smoke-test.ps1` 14/14 + oriah-web `tsc` + tests | 🟡 install SUCCESS, 15/15 images built, 9 third-party images pulled; **blocked on a realm-import bug, now fixed** — see below |
+| 0i | `scripts/validate-realm.ps1` — static Keycloak realm guard | ✅ fails on the broken file, passes on the fix |
 
 **0f finding — the route table is 29 routes, not 16.** 17 API routes plus **12 `/v3/api-docs/<svc>`
 routes** (`Path=/v3/api-docs/<svc>` + `SetPath=/v3/api-docs`) that back the aggregated Swagger UI.
@@ -92,6 +93,30 @@ exception types**: only `IllegalArgumentException` (×18) and `IllegalStateExcep
 `ResponseEntity.notFound().build()` at 25 controller sites, which returns an **empty body**. So
 Tier 5's `exception/` package is a genuine gap-closer, not cosmetics, and per-service domain
 goldens only need 400 + 409 cases.
+
+**0h finding — the stack could not be started from scratch.** `docker compose down -v` plus
+`up -d` (the deterministic baseline Codex's review required) exposed a blocker that a restart
+against an existing volume never shows: Keycloak refused to boot with
+
+```
+ERROR: Unable to find composite realm role: uma_authorization
+```
+
+Commit `3783f06` made `default-roles-oriah` a composite referencing the realm roles
+`offline_access` and `uma_authorization`. Keycloak auto-creates those for a new realm — but an
+import that supplies `roles.realm` explicitly **replaces** the built-in defaults, so they never
+existed, and the composite could not resolve. The session that introduced it had Keycloak already
+imported in a volume, so the realm file had never actually been imported as written.
+
+Fixed by declaring both built-ins in `roles.realm`, as a genuine Keycloak export does. A second
+attempt then failed on `Unrecognized field "_comment"` — `RoleRepresentation` rejects unknown
+properties, so the realm file cannot carry explanatory comments at all.
+
+Guarded by `scripts/validate-realm.ps1`, which is **static**: it needs no Keycloak, so it catches
+the problem even while a stack runs happily on a stale volume — the precise condition that hid it.
+Verified to fail on a reconstruction of the broken file with the same message Keycloak gives, and
+to pass on the fix. It also checks `defaultRole`, user role assignments, composite client-role
+targets, and unknown fields.
 
 **0d scoping win.** Because the advice is shared and auto-configured, one starter-level test pins
 the contract for all 12 services. Per-service goldens therefore only need to cover each service's
