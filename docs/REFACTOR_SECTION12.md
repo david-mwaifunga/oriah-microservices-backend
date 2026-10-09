@@ -21,7 +21,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
-| 5 | Service-layer conventions × 12 services | ⬜ |
+| 5 | Service-layer conventions × 12 services | 🟡 5-pre0 gate done (19/19, live PASS); inventory in flight |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
 
 ---
@@ -489,10 +489,66 @@ Shared prerequisites:
 
 | # | Item | Status |
 |---|---|---|
-| 5-pre1 | `OriahExceptionHandlerSupport` — **abstract, unannotated**, extends `ResponseEntityExceptionHandler`, owns RFC 7807 rendering; old standalone global advice de-registered in the same commit | ⬜ |
+| 5-pre0 | **The acceptance gate itself** — `scripts/openapi_diff.py` + `scripts/openapi-diff.ps1`, classifying every spec difference as breaking or additive | ✅ **19/19 self-test**; live run **43→43 paths / 51→51 operations, PASS** |
+| 5-pre1 | `OriahExceptionHandlerSupport` — **abstract, unannotated**; owns RFC 7807 rendering; old standalone global advice de-registered in the same commit. **Cannot** extend `ResponseEntityExceptionHandler` — see Tier 0.5 | ⬜ |
 | 5-pre2 | `ResponseDto` / `ErrorResponseDto` as documented schema types (additive — used by new endpoints only) | ⬜ |
 | 5-pre3 | Guard test per service: exactly one `@ControllerAdvice` bean in context | ⬜ |
 | 5-post | Regenerate `oriah-web` clients; OpenAPI diff vs 0c must show **additions only** | ⬜ |
+
+**5-pre0 — the gate, built before any service work, and proven to fail.**
+`scripts/openapi-diff.ps1` captures the live specs and classifies every difference.
+Breaking: a removed path, operation, response status, parameter, schema or schema property;
+a changed response/request/property schema; a parameter or property becoming required; a
+removed enum value; a renamed `operationId`. Additive: new paths, operations, statuses,
+schemas, optional properties and parameters, and all of `tags` / `summary` / `description`.
+
+`-SelfTest` mutates the real baseline ten ways and asserts each is caught, then applies eight
+additive mutations it must allow — including the two that decide whether Tier 5 is even
+possible: **`@Operation(operationId=…)` pinned to the id springdoc already generates must be a
+no-op**, and **narrowing `*/*` to `application/json` must not count as a break**. 19/19.
+Written this way because this project has already shipped a gate that could not fail (the Tempo
+check that read `{"trace":{}}` as success), and a gate nobody has watched fail gets believed.
+
+Run against the live stack it reports **43 → 43 paths, 51 → 51 operations, PASS: additions
+only** — which incidentally proves Tiers 0–4 changed nothing in the published contract.
+
+---
+
+**5-pre0 finding — the generated TypeScript clients are a dead artifact, so the plan's stated
+reason for this gate is wrong about the mechanism.** The plan (and Tier 0c) justified the
+additions-only bar with "`oriah-web` consumes OpenAPI-generated TS clients, so a renamed
+`operationId` silently renames a client method and breaks the build at a site far from the
+change." Measured, that is not how `oriah-web` is wired:
+
+| Claimed | Actual |
+|---|---|
+| Generated clients are consumed | `src/lib/api/generated/` is **gitignored** (`.gitignore:34`) and **nothing in `src/` or `e2e/` imports from it** — zero matches for `from "…generated` |
+| A renamed `operationId` breaks the build | `operationId` couples to **nothing**; the build never reads the generated modules |
+| `@Tag` is risky | `openapi-typescript` emits `paths` / `operations` / `components` only — **tags do not appear in its output at all**, so `@Tag` is free |
+
+The real client surface is **hand-written**: `src/lib/api/<svc>.ts` fetch wrappers with
+**hardcoded path strings**, validating responses against **hand-written Zod schemas** in
+`src/lib/api/schemas/<svc>.ts` whose own header comments say they "mirror" the generated output.
+So the genuine coupling is:
+
+1. **path strings** — a changed path breaks at **runtime**, not at build time, with no compile error anywhere;
+2. **response field names and types** — `Zod.parse` throws, surfacing as `ApiError`.
+
+Consequences for Tier 5, all of which make it *easier* rather than harder: `@Tag` and
+`@Operation(summary/description)` are entirely free; pinning `operationId` to its existing
+generated value is a no-op (asserted in the self-test); and the checks that actually matter are
+the ones on paths and schema properties. The gate still holds `operationId` — it is the stable
+identity of an operation across a rewrite, and therefore the cheapest signal that a handler got
+renamed or re-bound — but the finding is recorded here so nobody re-derives a false sense of
+safety from "the TypeScript compiler will catch it." **It will not.**
+
+Two smaller things the same read turned up: the `codegen.mjs` → `src/lib/api/generated/`
+pipeline is pure dead weight today (it runs on every `prebuild`, writes 12 modules, and nothing
+consumes them — a drift detector would be the useful version of it), and the stale comment in
+`src/lib/api/reviews.ts` claiming `/reviews/aggregate` "returns HTTP 200 with 0 bytes through
+the gateway right now" is no longer true — it now returns `{"average":null,"count":0}`. The
+PDP's compute-from-sample fallback is still needed, but for the `average: null` case (no reviews
+yet), not for an empty body.
 
 ---
 
