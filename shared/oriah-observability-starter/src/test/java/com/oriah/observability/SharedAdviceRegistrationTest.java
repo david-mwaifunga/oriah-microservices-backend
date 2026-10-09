@@ -10,6 +10,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -89,23 +90,67 @@ class SharedAdviceRegistrationTest {
     }
 
     @Test
-    @DisplayName("it backs off for an advice that does NOT extend the shared base class either")
-    void defaultAdviceBacksOffForAnUnrelatedAdvice() {
-        // Distinguishes two candidate conditions. Keying the back-off on the
-        // shared SUPERTYPE would miss this bean and register a second advice;
-        // keying it on the @ControllerAdvice ANNOTATION catches it. The
-        // annotation is the right semantics -- "this context already has an
-        // advice" -- and a service is free to write one that does not extend
-        // ours (or to add one for @ModelAttribute binding and nothing else).
+    @DisplayName("an UNRELATED advice must NOT cause the shared default to back off")
+    void defaultAdviceSurvivesAnUnrelatedAdvice() {
+        // This assertion is the INVERSE of the one first written here, and the
+        // reversal is a correction of the requirement, not a weakening of the
+        // test. The original read "it backs off for any advice", on the
+        // reasoning that `@ConditionalOnMissingBean(annotation =
+        // ControllerAdvice.class)` expresses "this context already has an
+        // advice". Measurement killed it:
         //
-        // That second case is the sharp edge worth knowing about: an advice
-        // added for an unrelated purpose silently takes over error rendering,
-        // because this starter then contributes nothing. Hence 5-pre3's
-        // per-service guard test asserts the advice bean is the EXPECTED one,
-        // not merely that there is exactly one.
+        //   springdoc-openapi-starter-common ships
+        //   SpringDocConfiguration$OpenApiResourceAdvice, a nested class
+        //   annotated @RestControllerAdvice with its own @ExceptionHandler.
+        //   Verified by javap against the 3.0.2 jar actually on this
+        //   classpath. @RestControllerAdvice is meta-annotated @Component, so
+        //   as a member class of an @Configuration it registers as a bean.
+        //
+        // springdoc is on all 12 services and the gateway. Under the
+        // annotation-keyed condition that bean satisfies "an advice exists",
+        // so the shared error contract would never register ANYWHERE -- and
+        // because both are contributed by auto-configuration, whether the
+        // condition saw it at all depended on auto-config ordering. A
+        // silently-absent error advice, nondeterministically.
+        //
+        // So the condition keys on the shared SUPERTYPE instead: an advice
+        // that cannot render our problem bodies is not a substitute for one
+        // that can. The real invariant is not "exactly one @ControllerAdvice"
+        // -- that is already false in every service and cannot be made true --
+        // but "exactly one advice carrying the Oriah error contract".
         contextRunner.withUserConfiguration(UnrelatedAdvice.class).run(ctx -> {
-            assertThat(ctx.getBeanNamesForAnnotation(ControllerAdvice.class)).hasSize(1);
-            assertThat(ctx).doesNotHaveBean(ProblemDetailExceptionHandler.class);
+            assertThat(ctx)
+                    .as("an advice that does not extend OriahExceptionHandlerSupport "
+                            + "handles none of the 14 shared exception types, so backing "
+                            + "off for it would drop the error contract entirely")
+                    .hasSingleBean(ProblemDetailExceptionHandler.class);
+            assertThat(ctx.getBeanNamesForAnnotation(ControllerAdvice.class))
+                    .as("two advices coexist here, which is fine: only ONE of them "
+                            + "claims Exception.class")
+                    .hasSize(2);
+        });
+    }
+
+    @Test
+    @DisplayName("a springdoc-shaped nested advice does not displace the error contract")
+    void springdocsOwnAdviceDoesNotDisplaceTheErrorContract() {
+        // The concrete case behind the test above, kept separate so that if it
+        // ever fires the failure names springdoc rather than leaving someone
+        // to rediscover why an "unrelated advice" matters.
+        //
+        // SpringDocNestedAdviceConfiguration reproduces springdoc's exact
+        // shape: a @RestControllerAdvice declared as a MEMBER CLASS of an
+        // @Configuration, rather than a top-level component. That shape is
+        // what made the original condition fail in real contexts while
+        // passing in a runner seeded with explicit user configurations.
+        contextRunner.withUserConfiguration(SpringDocNestedAdviceConfiguration.class).run(ctx -> {
+            assertThat(ctx)
+                    .as("the shared advice must still register alongside springdoc's")
+                    .hasSingleBean(ProblemDetailExceptionHandler.class);
+            assertThat(ctx.getBeanNamesForType(OriahExceptionHandlerSupport.class))
+                    .as("exactly one advice carries the Oriah error contract -- this, "
+                            + "not the @ControllerAdvice count, is the invariant")
+                    .hasSize(1);
         });
     }
 
@@ -217,6 +262,27 @@ class SharedAdviceRegistrationTest {
         @ExceptionHandler(IllegalStateException.class)
         public ProblemDetail somethingElse(IllegalStateException ex) {
             return ProblemDetail.forStatus(HttpStatus.CONFLICT);
+        }
+    }
+
+    /**
+     * Reproduces springdoc's exact shape: {@code @RestControllerAdvice} on a
+     * <strong>member class</strong> of an {@code @Configuration}, which is how
+     * {@code SpringDocConfiguration$OpenApiResourceAdvice} reaches the context.
+     * Spring registers member classes that are candidate components, and
+     * {@code @RestControllerAdvice} is meta-annotated {@code @Component}.
+     */
+    @Configuration
+    static class SpringDocNestedAdviceConfiguration {
+
+        @RestControllerAdvice
+        static class OpenApiResourceAdvice {
+
+            @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
+            public ProblemDetail handle(
+                    org.springframework.web.bind.MissingServletRequestParameterException ex) {
+                return ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+            }
         }
     }
 

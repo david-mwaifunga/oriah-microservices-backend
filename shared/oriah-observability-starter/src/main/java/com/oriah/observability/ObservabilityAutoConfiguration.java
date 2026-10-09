@@ -4,7 +4,6 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.web.bind.annotation.ControllerAdvice;
 
 /**
  * Cross-cutting auto-configuration for the Oriah observability stack.
@@ -46,29 +45,41 @@ public class ObservabilityAutoConfiguration {
      * down to bean-name ordering. Error semantics would depend on class
      * naming.
      *
-     * <p>Keyed on the {@code @ControllerAdvice} <strong>annotation</strong>
-     * rather than on the {@link OriahExceptionHandlerSupport} supertype. Both
-     * would catch the Tier 5 services, but the annotation also catches an
-     * advice that does not extend ours — which is the right reading of the
-     * condition ("this context already has an advice") and is measured, not
-     * assumed: {@code getBeanNamesForAnnotation} resolves
-     * {@code @RestControllerAdvice} through its {@code @ControllerAdvice}
-     * meta-annotation. {@code SharedAdviceRegistrationTest} covers both
-     * shapes.
+     * <p>Keyed on the {@link OriahExceptionHandlerSupport} <strong>supertype,
+     * not</strong> on the {@code @ControllerAdvice} annotation. The annotation
+     * was the first attempt, on the reading "this context already has an
+     * advice". It was wrong, and measurably so:
+     *
+     * <p>{@code springdoc-openapi-starter-common} ships
+     * {@code SpringDocConfiguration$OpenApiResourceAdvice} — a member class
+     * annotated {@code @RestControllerAdvice} with its own
+     * {@code @ExceptionHandler} (verified with {@code javap} against the 3.0.2
+     * jar on this classpath). {@code @RestControllerAdvice} is meta-annotated
+     * {@code @Component}, so as a member class of an {@code @Configuration} it
+     * registers as a bean, and springdoc is on all 12 services and the
+     * gateway. Under the annotation-keyed condition that bean satisfied "an
+     * advice exists", so the shared error contract would have registered
+     * <strong>nowhere</strong> — and since both are contributed by
+     * auto-configuration, whether the condition even saw it depended on
+     * auto-config ordering. A silently-absent error advice, nondeterministically.
+     *
+     * <p>An advice that cannot render our problem bodies is not a substitute
+     * for one that can, so the supertype is the honest key. The real invariant
+     * is therefore <em>not</em> "exactly one {@code @ControllerAdvice}" — that
+     * is already false in every service and cannot be made true — but
+     * <strong>"exactly one advice carrying the Oriah error contract, and it is
+     * the expected one"</strong>. That is what the per-service guard tests
+     * assert.
      *
      * <p>{@code @ConditionalOnMissingBean} is only reliable inside
      * auto-configuration, which this is: component-scanned bean definitions
      * are registered before auto-configurations are processed, so a service's
-     * own advice is already visible when this condition evaluates.
-     *
-     * <p>One sharp edge, recorded rather than guarded here: a module that adds
-     * an advice for some unrelated purpose silently takes over error
-     * rendering, because this starter then contributes nothing. That is why
-     * the per-service guard test asserts the advice bean is the
-     * <em>expected</em> one, not merely that there is exactly one.
+     * own advice is already visible when this condition evaluates. Keying on a
+     * type this starter owns also removes the ordering question entirely —
+     * nothing else on the classpath can extend it.
      */
     @Bean
-    @ConditionalOnMissingBean(annotation = ControllerAdvice.class)
+    @ConditionalOnMissingBean(OriahExceptionHandlerSupport.class)
     public ProblemDetailExceptionHandler problemDetailExceptionHandler() {
         return new ProblemDetailExceptionHandler();
     }
