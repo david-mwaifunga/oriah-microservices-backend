@@ -20,7 +20,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
-| 4 | Resilience4j parity (retry + ratelimiter on checkout) | 🟡 **mostly pre-existing**; 4a corrected, 4c strengthened |
+| 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
 | 5 | Service-layer conventions × 12 services | ⬜ |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
 
@@ -426,9 +426,10 @@ refresh, not a breaker fault — the same delay `smoke-test.ps1`'s pre-flight ga
 
 | # | Item | Status |
 |---|---|---|
-| 4a | `configs.default` — **in each service's own YAML, NOT config-repo** (plan correction, see note) | ✅ catalog + checkout |
+| 4a | `configs.default` — **in each service's own YAML, NOT config-repo** (plan correction, see note) | ✅ catalog + checkout; live smoke 18/18 |
 | 4b | Retry + rate limiter + fallback on checkout's downstream calls | ✅ **already existed**, via a programmatic `Decorators` chain |
 | 4c | Test: the SecurityContext survives retries, so the JWT still propagates | ✅ strengthened from "same thread" to the actual consequence |
+| 4d | **New:** `FeignCircuitBreakerSafetyTest` — guards the undocumented invariant making catalog's thread hop safe | ✅ 3 tests, context-free (0.9s) |
 
 **Tier 4 was largely already done — and better than the plan specified.** Checkout already had
 circuit-breaker, retry and rate-limiter instances for all six Feign clients, with
