@@ -282,6 +282,33 @@ rather than 404 for an absent trace.
 
 ---
 
+**Correction to a Tier 1 claim, found while scouting Tier 3.** Tier 1 recorded "curated actuator
+exposure — **not** the course's expose-all" as a deliberate divergence, and `RouteSnapshotTest`
+asserts no `/actuator/**` route is proxied downstream. Both are true for the 12 services, which
+inherit the curated list from `config-repo`. **The gateway is the exception**: its own
+`application.yaml` sets `management.endpoints.web.exposure.include: '*'`, and the gateway's actuator
+is served on **port 8080 — the public edge**. Verified unauthenticated against the running stack:
+
+| Endpoint on `:8080` | Status |
+|---|---|
+| `/actuator/env` | **200** |
+| `/actuator/configprops` | **200** |
+| `/actuator/beans` | **200** |
+| `/actuator/mappings` | **200** |
+| `/actuator/threaddump` | **200** |
+
+Not a credential leak — Boot masks values (`******`) unless `show-values=ALWAYS`, and they are
+masked here. But property names, the whole bean graph, every route mapping and a thread dump are
+readable by anyone who reaches the edge. The YAML comment explains how it got there: `'*'` was an
+expedient for discovering a renamed SCG 5.0.x endpoint id, and it stayed. Folded into **3f**, which
+is adding gateway security regardless.
+
+| # | Item | Status |
+|---|---|---|
+| 3h | Narrow the gateway's own actuator exposure + require auth for all but `health`/`info` | ⬜ |
+
+---
+
 ## Tier 3 — Gateway code-first
 
 | # | Item | Status |

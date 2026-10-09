@@ -17,19 +17,28 @@
 #   failed parsing config: field ingester not found in type app.Config
 #                          field compactor not found in type app.Config
 #
-# Their settings moved into a new live-store / backend-scheduler architecture
-# (visible in `tempo -help` as `-live-store.complete-block-timeout` and
-# `-backend-worker.compaction.block-retention`). This file therefore carries
-# only the sections verified to parse on 3.0.0, and the two tuning blocks that
-# used to live here were dropped DELIBERATELY, not forgotten:
+# Their settings moved into a new live-store / backend-scheduler architecture,
+# and the flush tuning has been RESTORED below under `live_store` (both keys
+# verified to parse against 3.0.0 by booting the image with this file).
 #
-#   * ingester.max_block_duration / complete_block_timeout — flush tuning, so a
-#     just-written trace is searchable sooner. Not actually needed: Tempo
-#     searches the live head block as well as completed blocks, so a trace
-#     produced seconds ago is findable. smoke-test.ps1 asserts exactly that, so
-#     if this assumption is ever wrong the smoke test says so.
-#   * compactor.block_retention — retention. The default is generous for a
-#     local-dev volume; a smaller window would only save disk.
+# That restoration was not optional, and the story is worth keeping. The first
+# pass dropped the tuning with the note "not actually needed: Tempo searches the
+# live head block, so a trace produced seconds ago is findable -- and
+# smoke-test.ps1 asserts exactly that, so if this assumption is ever wrong the
+# smoke test says so." The smoke test then said so: step 12 found nothing for 40
+# seconds and the same trace appeared later. Tempo's own metrics explained it --
+#
+#   tempo_live_store_blocks_cut_total{reason="max_block_duration"}
+#
+# a trace becomes queryable once its block is CUT and COMPLETED, so visibility
+# latency is max_block_duration + complete_block_timeout, which on the defaults
+# is the ~40-60s that was observed. Hence 10s + 15s here: a trace written during
+# a smoke run is searchable within the run.
+#
+# Still deliberately omitted:
+#   * compactor.block_retention — retention, now under backend-scheduler /
+#     backend-worker. The default is generous for a local-dev volume; a smaller
+#     window would only save disk.
 #
 # This is also why the version is pinned rather than floating. `:latest` is what
 # produced this surprise, and the same day Grafana's own `:latest` hard-failed
@@ -61,6 +70,15 @@ distributor:
         # you would want if the transport were ever switched.
         grpc:
           endpoint: 0.0.0.0:4317
+
+# Visibility tuning: see the header. A trace is queryable only after its block
+# is cut and completed, so these two values together bound how long a
+# just-written trace stays invisible. The defaults are production-shaped and far
+# too patient for a smoke test that produces a trace and immediately asserts on
+# it.
+live_store:
+  max_block_duration: 10s
+  complete_block_timeout: 15s
 
 storage:
   trace:

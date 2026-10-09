@@ -46,6 +46,14 @@
 #      remains asserted after Promtail's removal: it is what proved Alloy was
 #      really working while both shippers ran, and it keeps the query honest
 #      if a second shipper is ever added again.
+#  18. The gateway's OWN actuator is not an information-disclosure surface on
+#      the public edge port. The 12 services inherit a curated exposure list
+#      from config-repo, but the gateway sets include: '*' in its own
+#      application.yaml AND serves actuator on 8080 -- the port the browser
+#      talks to. env / beans / configprops / mappings / threaddump were all
+#      200 unauthenticated. Values are masked by default so this is not a
+#      credential leak, but the bean graph, every route mapping and a thread
+#      dump are readable by anyone who can reach the edge.
 
 # A pre-flight block ahead of step 1 waits for the gateway to resolve every
 # service through Eureka; see the comment there for why container health is not
@@ -124,11 +132,11 @@ Write-Host "    all 12 services resolvable through the gateway" -ForegroundColor
 # Unique-per-run promo code so re-runs don't collide on the UNIQUE constraint.
 $promoCode = "WELCOME-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
-Write-Host "[1/17] JWTs..." -ForegroundColor Cyan
+Write-Host "[1/18] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/17] Admin: product + inventory + promo code..." -ForegroundColor Cyan
+Write-Host "[2/18] Admin: product + inventory + promo code..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
@@ -147,7 +155,7 @@ Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ code=$promoCode; type="PERCENTAGE"; amount=15; maxRedemptions=0 }) | Out-Null
 Write-Host "    product=$productId, inventory=10, promo=$promoCode" -ForegroundColor Gray
 
-Write-Host "[3/17] Customer: profile + address..." -ForegroundColor Cyan
+Write-Host "[3/18] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me" `
     -Headers @{ Authorization="Bearer $alice" } | Out-Null
@@ -158,7 +166,7 @@ $addr = Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ label="Home"; line1="1 Aurelia Lane"; city="Lagos"; postalCode="100001"; country="NG"; isDefault=$true })
 $addrId = $addr.id
 
-Write-Host "[4/17] Customer: add 2 units to cart..." -ForegroundColor Cyan
+Write-Host "[4/18] Customer: add 2 units to cart..." -ForegroundColor Cyan
 # Clear first, so the run is idempotent. Step 6 (/checkout/confirm) empties the
 # cart on success, but a run that dies anywhere between step 4 and step 6 leaves
 # items behind -- and because each run creates a NEW product, the next run's
@@ -196,7 +204,7 @@ if (@($cart.items).Count -ne 1 -or $cartUnits -ne 2) {
     exit 1
 }
 
-Write-Host "[5/17] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
+Write-Host "[5/18] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -208,7 +216,7 @@ if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or $preview.to
 }
 Write-Host "    subtotal=200, -15% promo=30, ship=0, total=170" -ForegroundColor Gray
 
-Write-Host "[6/17] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
+Write-Host "[6/18] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up
 # front instead of being recovered afterwards by scraping the backend for
 # "the most recent trace that looks like a saga". Deterministic, and it also
@@ -236,7 +244,7 @@ if ($confirm.orderStatus -ne "PAID") {
 $orderId = $confirm.orderId
 Write-Host "    order=$orderId PAID" -ForegroundColor Gray
 
-Write-Host "[7/17] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
+Write-Host "[7/18] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
     $r = Invoke-RestMethod -Method POST `
         -Uri "http://localhost:8080/api/v1/admin/orders/$orderId/transition" `
@@ -247,7 +255,7 @@ foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
 }
 Write-Host "    order DELIVERED" -ForegroundColor Gray
 
-Write-Host "[8/17] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
+Write-Host "[8/18] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
 $searchHit = $false
 for ($i = 0; $i -lt 30; $i++) {
     $r = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=aurelia"
@@ -259,7 +267,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $searchHit) { Write-Error "Search index never picked up product $productId from Kafka"; exit 1 }
 Write-Host "    /search?q=aurelia returned the product" -ForegroundColor Gray
 
-Write-Host "[9/17] Customer review; public listing + aggregate..." -ForegroundColor Cyan
+Write-Host "[9/18] Customer review; public listing + aggregate..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/products/$productId/reviews" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -273,7 +281,7 @@ if ($publicReviews.content.Count -ne 1 -or $agg.average -ne 5.0 -or $agg.count -
 }
 Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
 
-Write-Host "[10/17] /notifications/me shows order.* events..." -ForegroundColor Cyan
+Write-Host "[10/18] /notifications/me shows order.* events..." -ForegroundColor Cyan
 $notifsFound = $false
 for ($i = 0; $i -lt 30; $i++) {
     $n = Invoke-RestMethod -Method GET `
@@ -285,7 +293,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $notifsFound) { Write-Error "Expected >=5 notifications, never reached that count"; exit 1 }
 Write-Host "    >=5 notifications received (created+paid+fulfilled+shipped+delivered)" -ForegroundColor Gray
 
-Write-Host "[11/17] Kafka product_index + 401 without token..." -ForegroundColor Cyan
+Write-Host "[11/18] Kafka product_index + 401 without token..." -ForegroundColor Cyan
 $rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
     "SELECT title FROM product_index WHERE variant_id = '$productId'"
 if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index broken; got '$rows'"; exit 1 }
@@ -302,61 +310,85 @@ try {
 }
 Write-Host "    product_index OK + 401 OK" -ForegroundColor Gray
 
-Write-Host "[12/17] Tempo has the saga trace spanning the chain..." -ForegroundColor Cyan
-# Tempo serves recent traces from its live head block, but the write path is
-# asynchronous, so poll rather than assuming instant visibility.
+Write-Host "[12/18] Tempo has the saga trace spanning the chain..." -ForegroundColor Cyan
+# Poll until the trace is COMPLETE, not merely present.
 #
-# NOTE: /api/v2/traces/<id> answers 200 with {"trace":{}} for a trace Tempo
-# does NOT have -- an empty object, not a 404. Truthiness of the response
-# proves nothing, so the spans have to be counted. An earlier version of this
-# check passed on exactly that empty body.
-$tempoSpanSets = $null
-foreach ($attempt in 1..20) {
+# Two separate traps here, both hit for real:
+#
+# 1. /api/v2/traces/<id> answers 200 with {"trace":{}} for a trace Tempo does
+#    NOT have -- an empty object, not a 404. Truthiness of the response proves
+#    nothing, so spans have to be counted. A first version passed on that empty
+#    body.
+# 2. A trace ASSEMBLES over time. Twelve services each batch their spans before
+#    exporting over OTLP, so the saga's spans land in Tempo across several
+#    seconds. A version of this check that broke out of the loop on the first
+#    non-empty response, and only then asserted all four saga services, failed
+#    intermittently: at ~10s the trace legitimately held just cart + checkout,
+#    the loop exited, and the completeness assertion fired while the remaining
+#    spans were still in flight. The required-service check therefore has to BE
+#    the loop condition, not a step after it.
+#
+# Window: 120s. Measured end-to-end visibility for a trivial 2-service trace is
+# ~4s (export batch + live_store max_block_duration 10s + complete_block_timeout
+# 15s, see monitoring/tempo/tempo.yml); a 7-service saga whose spans are batched
+# independently by each service needs materially longer. The window is generous
+# on purpose -- it is not masking a broken pipeline, because a failure here now
+# means the trace never completed at all, not that we were impatient.
+$REQUIRED_SAGA_SERVICES = @("checkout", "cart", "order", "payment")
+$sagaServices = @()
+$sagaSpanCount = 0
+$sagaComplete = $false
+
+foreach ($attempt in 1..60) {
     try {
         $r = Invoke-RestMethod -Method GET -TimeoutSec 10 `
             -Uri "http://localhost:3200/api/v2/traces/$sagaTraceId"
         $sets = if ($r.trace.resourceSpans) { $r.trace.resourceSpans } else { $r.trace.batches }
-        if (@($sets).Count -gt 0) { $tempoSpanSets = $sets; break }
+
+        $svcs = @()
+        $spans = 0
+        foreach ($b in @($sets)) {
+            if (-not $b) { continue }
+            foreach ($attr in $b.resource.attributes) {
+                if ($attr.key -eq "service.name") {
+                    $v = if ($attr.value.stringValue) { $attr.value.stringValue } else { $attr.value.Value }
+                    if ($v -and $svcs -notcontains $v) { $svcs += $v }
+                }
+            }
+            foreach ($ss in $b.scopeSpans) { $spans += @($ss.spans).Count }
+        }
+        $sagaServices = $svcs
+        $sagaSpanCount = $spans
+
+        $missing = @($REQUIRED_SAGA_SERVICES | Where-Object { $svcs -notcontains $_ })
+        if ($missing.Count -eq 0) { $sagaComplete = $true; break }
     }
     catch {
         # Transport/status errors while Tempo warms up.
     }
     Start-Sleep -Seconds 2
 }
-if (-not $tempoSpanSets) {
-    Write-Error ("Tempo has no spans for trace $sagaTraceId after 40s. The checkout call carried " +
-                 "traceparent $sagaTraceparent, so either context extraction failed at the edge " +
-                 "or OTLP export is not reaching Tempo. Check that " +
-                 "management.opentelemetry.tracing.export.otlp.endpoint is " +
-                 "http://tempo:4318/v1/traces (4318 http, NOT 4317 grpc -- the transport " +
-                 "property defaults to http, and a grpc endpoint fails silently).")
-    exit 1
-}
 
-# Count distinct services, so this asserts a real cross-service trace rather
-# than one orphan span that happened to carry the id.
-$sagaServices = @()
-$sagaSpanCount = 0
-foreach ($b in $tempoSpanSets) {
-    foreach ($attr in $b.resource.attributes) {
-        if ($attr.key -eq "service.name") {
-            $v = if ($attr.value.stringValue) { $attr.value.stringValue } else { $attr.value.Value }
-            if ($v -and $sagaServices -notcontains $v) { $sagaServices += $v }
-        }
+if (-not $sagaComplete) {
+    $missing = @($REQUIRED_SAGA_SERVICES | Where-Object { $sagaServices -notcontains $_ })
+    if ($sagaSpanCount -eq 0) {
+        Write-Error ("Tempo has NO spans for trace $sagaTraceId after 120s. The checkout call carried " +
+                     "traceparent $sagaTraceparent, so either context extraction failed at the edge or OTLP " +
+                     "export is not reaching Tempo. Check that " +
+                     "management.opentelemetry.tracing.export.otlp.endpoint is " +
+                     "http://tempo:4318/v1/traces (4318 http, NOT 4317 grpc -- the transport property " +
+                     "defaults to http, and a grpc endpoint fails silently).")
     }
-    foreach ($ss in $b.scopeSpans) { $sagaSpanCount += @($ss.spans).Count }
-}
-foreach ($required in @("checkout", "cart", "order", "payment")) {
-    if ($sagaServices -notcontains $required) {
-        Write-Error ("Tempo trace $sagaTraceId is missing '$required'; saw " +
-                     "$($sagaServices -join ','). The trace arrived but context is not " +
-                     "propagating across the whole saga.")
-        exit 1
+    else {
+        Write-Error ("Tempo trace $sagaTraceId never completed: after 120s it holds $sagaSpanCount span(s) " +
+                     "from [$($sagaServices -join ',')] but is missing [$($missing -join ',')]. The trace " +
+                     "arrived, so export works -- context is not propagating across the whole saga.")
     }
+    exit 1
 }
 Write-Host "    traceId=$sagaTraceId spans=$sagaSpanCount services=$($sagaServices -join ',')" -ForegroundColor Gray
 
-Write-Host "[13/17] Prometheus scrapes every service..." -ForegroundColor Cyan
+Write-Host "[13/18] Prometheus scrapes every service..." -ForegroundColor Cyan
 $up = Invoke-RestMethod -Method GET -Uri "http://localhost:9090/api/v1/query?query=up"
 $expected = @("catalog:8081","inventory:8082","customer:8083","cart:8084","payment:8085",
               "order:8086","promotion:8087","shipping:8088","checkout:8089",
@@ -374,7 +406,7 @@ if ($downServices.Count -gt 0) {
 }
 Write-Host "    all 12 services up=1 in Prometheus" -ForegroundColor Gray
 
-Write-Host "[14/17] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
+Write-Host "[14/18] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
 # Invoke-WebRequest (not Invoke-RestMethod) so we can read the raw
 # byte length -- IRM auto-deserializes and would map a 0-byte body
 # silently to $null, hiding exactly the regression we want to catch.
@@ -439,7 +471,7 @@ function Test-Probe($Uri) {
     }
 }
 
-Write-Host "[15/17] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
+Write-Host "[15/18] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
 $probeFailures = @()
 foreach ($svc in $servicePorts.Keys) {
     foreach ($group in @("readiness", "liveness")) {
@@ -458,7 +490,7 @@ if ($probeFailures.Count -gt 0) {
 }
 Write-Host "    24/24 probe endpoints UP (12 services x readiness+liveness)" -ForegroundColor Gray
 
-Write-Host "[16/17] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
+Write-Host "[16/18] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
 $infoFailures = @()
 foreach ($svc in $servicePorts.Keys) {
     $uri = "http://localhost:$($servicePorts[$svc])/actuator/info"
@@ -495,7 +527,7 @@ if ($infoFailures.Count -gt 0) {
 }
 Write-Host "    all 12 services report app.name + build.{version,artifact,time}" -ForegroundColor Gray
 
-Write-Host "[17/17] Loki has lines shipped by Alloy (shipper-qualified)..." -ForegroundColor Cyan
+Write-Host "[17/18] Loki has lines shipped by Alloy (shipper-qualified)..." -ForegroundColor Cyan
 $alloyLines = 0
 foreach ($attempt in 1..15) {
     try {
@@ -522,6 +554,42 @@ if ($alloyLines -le 0) {
     exit 1
 }
 Write-Host "    $alloyLines log lines in Loki carrying shipper=alloy" -ForegroundColor Gray
+
+Write-Host "[18/18] Gateway's own actuator is not exposed on the public edge..." -ForegroundColor Cyan
+# health and info are intentionally open: compose/orchestrators probe them, and
+# they carry nothing sensitive. Everything else must be unreachable
+# unauthenticated from 8080 -- 401/403 (secured) or 404 (not exposed) all pass;
+# a 200 is the failure.
+$edgeLeaks = @()
+foreach ($ep in @("env", "beans", "configprops", "mappings", "threaddump", "conditions", "loggers", "scheduledtasks")) {
+    $code = 0
+    try {
+        $r = Invoke-WebRequest -Method GET -Uri "http://localhost:8080/actuator/$ep" `
+            -UseBasicParsing -TimeoutSec 10
+        $code = $r.StatusCode
+    }
+    catch {
+        $code = $_.Exception.Response.StatusCode.value__
+    }
+    if ($code -eq 200) { $edgeLeaks += "/actuator/$ep returned 200" }
+}
+foreach ($ep in @("health", "info")) {
+    try {
+        $r = Invoke-WebRequest -Method GET -Uri "http://localhost:8080/actuator/$ep" `
+            -UseBasicParsing -TimeoutSec 10
+        if ($r.StatusCode -ne 200) { $edgeLeaks += "/actuator/$ep should stay open for probes, got $($r.StatusCode)" }
+    }
+    catch {
+        $edgeLeaks += "/actuator/$ep should stay open for probes, got $($_.Exception.Response.StatusCode.value__)"
+    }
+}
+if ($edgeLeaks.Count -gt 0) {
+    Write-Host "    edge actuator problems:" -ForegroundColor Red
+    $edgeLeaks | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "gateway actuator exposure on the public edge port is wrong on $($edgeLeaks.Count) endpoint(s)"
+    exit 1
+}
+Write-Host "    8 sensitive endpoints unreachable; health + info still open for probes" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green
