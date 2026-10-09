@@ -45,6 +45,38 @@
         </dependency>
 
         <!--
+            OAuth2 resource server, so the gateway validates JWTs at the edge
+            instead of forwarding unauthenticated traffic to twelve services and
+            letting each one reject it.
+
+            The module had NO security dependency at all before this: its
+            classpath carried spring-security-core only (a transitive of the
+            observability starter, for AccessDeniedException), with no
+            spring-security-config, -web, -oauth2-resource-server or
+            -oauth2-jose. That is why the gateway's own actuator was reachable
+            unauthenticated on the public edge port: nothing was enforcing
+            anything.
+
+            Same artifact id the 12 services use. Boot 4.0.6's own pom marks it
+            "deprecated in favor of spring-boot-starter-security-oauth2-resource-server",
+            but that replacement is not published at 4.0.6 (only 4.1.1), so
+            switching now would mean pinning a Boot version ahead of the one the
+            BOM manages. Worth revisiting on the next Boot bump, for all 13
+            modules at once.
+
+            Reactive, NOT servlet: this brings spring-security-config and
+            spring-security-web, neither of which drags in spring-webmvc.
+            GatewayServerWebApplicationTypeTest exists to catch exactly that
+            mistake, and would turn red if a future change pulled in a servlet
+            flavour, because webflux + webmvc on one classpath makes Boot deduce
+            SERVLET and silently start an app that routes nothing.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+
+        <!--
             Actuator: exposes /actuator/gateway/routes (the configured route
             table) and /actuator/health for orchestration probes.
         -->
@@ -111,6 +143,18 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            SecurityMockServerConfigurers.mockJwt(), so the security rules can
+            be driven with a synthetic token and no Keycloak. Same approach the
+            12 services use, in its reactive form (mutateWith on WebTestClient
+            rather than MockMvc's with(jwt())).
+        -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

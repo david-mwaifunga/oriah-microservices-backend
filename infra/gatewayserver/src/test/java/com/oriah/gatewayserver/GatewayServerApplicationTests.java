@@ -55,6 +55,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = {
         "eureka.client.enabled=false",
+        // issuer-uri in application.yaml triggers eager OIDC discovery against
+        // Keycloak at context startup. Overriding with a jwk-set-uri makes the
+        // decoder lazy, so this test needs no live Keycloak -- the same
+        // override the 12 services' tests use.
+        "spring.security.oauth2.resourceserver.jwt.jwk-set-uri=http://localhost:1/certs",
         // The gateway actuator endpoint is deliberately NOT exposed in
         // application.yaml: its route table names every internal service and
         // path prefix, and the gateway's actuator is served on the public edge

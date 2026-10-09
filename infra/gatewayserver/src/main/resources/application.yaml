@@ -8,6 +8,23 @@ spring:
     redis:
       host: localhost
       port: 6379
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Same Keycloak realm the 12 services validate against. The gateway
+          # now rejects unauthenticated traffic at the edge INSTEAD OF
+          # forwarding it to twelve applications and letting each reject it --
+          # the services keep their own resource servers, because they are
+          # directly reachable on the compose network and gateway-only auth
+          # would be a downgrade.
+          #
+          # issuer-uri triggers OIDC discovery EAGERLY at startup
+          # (<issuer>/.well-known/openid-configuration), so a @SpringBootTest
+          # without Keycloak running fails to create the context. Every test in
+          # this module therefore overrides it with a jwk-set-uri, which is
+          # lazy -- the same pattern the services use.
+          issuer-uri: http://localhost:7080/realms/oriah
   # The route table now lives in Java, as a RouteLocator bean:
   #   config/GatewayRoutesConfig.java
   #

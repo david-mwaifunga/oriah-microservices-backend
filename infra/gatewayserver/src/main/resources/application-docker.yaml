@@ -7,6 +7,21 @@ spring:
       host: redis
       port: 6379
 
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # iss claim of every token Keycloak issues, because the container
+          # runs with KC_HOSTNAME=http://localhost:7080. Host-side curl and
+          # in-container services both see this same iss.
+          issuer-uri: http://localhost:7080/realms/oriah
+          # But the KEY FETCH has to go over the docker network: inside this
+          # container `localhost:7080` is the gateway itself, not Keycloak.
+          # Splitting validation (issuer-uri) from key retrieval (jwk-set-uri)
+          # is what lets one Keycloak serve both audiences. Identical to the
+          # split the 12 services use.
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
 eureka:
   client:
     service-url:
