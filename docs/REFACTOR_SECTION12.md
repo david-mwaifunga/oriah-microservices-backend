@@ -19,7 +19,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
 | 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
-| 3 | Gateway code-first (DSL routes, filters, fallback, auth) | 🟡 6/8 done — gateway tests **29 → 86**, live smoke **18/18**; 3c/3d remain |
+| 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ⬜ |
 | 5 | Service-layer conventions × 12 services | ⬜ |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
@@ -315,8 +315,8 @@ is adding gateway security regardless.
 |---|---|---|
 | 3a | All **29** routes → `RouteLocator` bean with explicit `.route("<id>", ...)` ids | ✅ `RouteSnapshotTest` 25/25 unchanged; YAML 238 → 86 lines |
 | 3b | `X-Response-Time` via a per-request filter | ✅ `ResponseTimeFilter`; emits a duration, proven per-request via a slow chain |
-| 3c | `circuitBreaker` filter + `FallbackController` `/contactSupport` (JSON body, `permitAll`) + CB/TimeLimiter `Customizer` | ⬜ |
-| 3d | `retry` on audited-idempotent GETs only; Redis `RequestRateLimiter` preserved | ⬜ |
+| 3c | `circuitBreaker` filter + `FallbackController` `/contactSupport` (problem+json, `permitAll`) + CB/TimeLimiter `Customizer` | ✅ 17 tests; scoped to the 3 storefront GET routes |
+| 3d | `retry` on audited-idempotent GETs only; Redis `RequestRateLimiter` preserved | ✅ GET-only + SERVER_ERROR-only, asserted against the real `RetryConfig` |
 | 3e | `FilterUtility` + `RequestTraceFilter` + `ResponseTraceFilter` (`oriah-correlation-id`, MDC-bound) | ✅ 9 tests; id in exchange attributes, MDC bound only around the one log line |
 | 3f | Gateway WebFlux `SecurityConfig` + `KeycloakRoleConverter` — additive, mirrors the per-service rules | ✅ 40 + 7 tests; rules derived from a 12-service sweep |
 | 3g | Delete dead `routes:` YAML | ✅ removed in the same commit as the DSL (they would otherwise UNION to 58 routes) |
@@ -367,6 +367,56 @@ oriah-correlation-id: my-own-id-12345                   <- an inbound id is REUS
 The full purchase saga completing through a now-secured gateway is what proves the authorization
 rules actually mirror the 12 services; step 18 going green closes the edge-actuator finding that
 was committed as a deliberate red bar.
+
+---
+
+**Tier 3c/3d findings.**
+
+7. **An ordering bug in my own filters, caught by asserting on the real path.**
+   `RequestTraceFilter` sat at order `1` — but Gateway assigns a DSL route's filters orders
+   starting at `1` too, so on a route carrying `circuitBreaker(...)` the tie could resolve either
+   way. When the breaker won, an unreachable downstream forwarded to the fallback **before the
+   correlation id existed**, so the response carried none — precisely the response a user
+   screenshots for support. The global filters now sit at `HIGHEST_PRECEDENCE + 100/200/300`,
+   below the route-filter range entirely.
+8. **`GlobalFilter`s run only for requests that MATCH A ROUTE.** A direct `GET /contactSupport` is
+   served by the gateway's own controller and never passes through `RequestTraceFilter`, so it has
+   no id to echo. Reached via the breaker it does, because the original request was routed and
+   `forward:` stays within the same exchange. Now two tests, one for each path.
+9. **The course's two deadline problems, not reproduced.** Its TimeLimiter and
+   `httpclient.response-timeout` are both 10s — equal deadlines race, and they produce *different*
+   outcomes (TimeLimiter trips the breaker and reaches the fallback; the response timeout surfaces a
+   raw gateway error), so one request fails two different ways on consecutive attempts. And 3 retries
+   against that same ceiling with no overall deadline lets a slow downstream consume ~4x the budget.
+   Ours: 4s TimeLimiter as the sole authority (a test asserts no response-timeout property exists),
+   3 attempts, capped backoff, worst case ~12.15s with the arithmetic written out.
+
+---
+
+**Tier 3c/3d live verification** — the full breaker lifecycle, exercised by stopping catalog:
+
+```
+catalog up            GET /api/v1/products -> 200
+docker compose stop catalog
+catalog down          HTTP/1.1 503 Service Unavailable
+                      X-Response-Time: 4006ms
+                      oriah-correlation-id: live-fallback-check
+                      {"type":"https://oriah.dev/problems/service-unavailable",
+                       "correlationId":"live-fallback-check", ...}
+                      GET /api/v1/checkout/preview -> 401   (no breaker: fails honestly)
+docker compose start catalog
+recovery              registered in Eureka: 1 instance UP
+                      RECOVERED after ~10s -> 200
+```
+
+Three things that number confirms. **`X-Response-Time: 4006ms`** matches `CALL_TIMEOUT = 4s`
+exactly, so the TimeLimiter is the sole active deadline — the course's equal-deadline race would
+have surfaced as a different, raw failure instead. The **correlation id reached the fallback body**,
+which is what the filter-ordering fix was for. And recovery in **~10s** matches
+`waitDurationInOpenState`, i.e. the breaker went half-open, probed successfully and closed.
+
+The 503s immediately after catalog came back were Eureka re-registration plus load-balancer cache
+refresh, not a breaker fault — the same delay `smoke-test.ps1`'s pre-flight gate exists to absorb.
 
 ---
 
