@@ -490,10 +490,70 @@ Shared prerequisites:
 | # | Item | Status |
 |---|---|---|
 | 5-pre0 | **The acceptance gate itself** — `scripts/openapi_diff.py` + `scripts/openapi-diff.ps1`, classifying every spec difference as breaking or additive | ✅ **19/19 self-test**; live run **43→43 paths / 51→51 operations, PASS** |
-| 5-pre1 | `OriahExceptionHandlerSupport` — **abstract, unannotated**; owns RFC 7807 rendering; old standalone global advice de-registered in the same commit. **Cannot** extend `ResponseEntityExceptionHandler` — see Tier 0.5 | ⬜ |
+| 5-pre1 | `OriahExceptionHandlerSupport` — **abstract, unannotated**; owns RFC 7807 rendering; shared advice de-registered conditionally in the same commit. **Cannot** extend `ResponseEntityExceptionHandler` — see Tier 0.5 | ✅ starter **29/29** (was 23); 2 red → green |
 | 5-pre2 | `ResponseDto` / `ErrorResponseDto` as documented schema types (additive — used by new endpoints only) | ⬜ |
-| 5-pre3 | Guard test per service: exactly one `@ControllerAdvice` bean in context | ⬜ |
+| 5-pre3 | Guard test per service: exactly one `@ControllerAdvice` bean, **and it is the expected one** | ⬜ |
 | 5-post | Regenerate `oriah-web` clients; OpenAPI diff vs 0c must show **additions only** | ⬜ |
+
+**5-pre1 — what the red bar settled, as opposed to what I'd have guessed.** The split is
+`OriahExceptionHandlerSupport` (abstract, unannotated, all 14 handlers) + a one-line
+`@RestControllerAdvice ProblemDetailExceptionHandler extends` it, registered by the auto-config
+behind `@ConditionalOnMissingBean(annotation = ControllerAdvice.class)`. Done in two steps so the
+evidence is real: the extraction first, with the **23 existing starter tests unchanged and still
+green** as proof it changed no behaviour; then `SharedAdviceRegistrationTest` (6 tests) went **red
+with exactly 2 failures, both `Expected size: 1 but was: 2`**, and the conditional made it green.
+
+Three API facts were genuinely uncertain and are now measured rather than reasoned about:
+
+1. **Inherited `@ExceptionHandler` methods ARE discovered on a subclass advice.** The handlers live
+   on a class that carries no annotation and is never a bean. Had Spring only scanned methods
+   *declared* on the advice class, all 12 per-service handlers would have silently lost every
+   inherited handler — framework errors falling through to `DefaultHandlerExceptionResolver` (bare
+   status, empty body, no traceId) and domain exceptions rendering as Boot's default error page.
+   Pinned by asserting a 405 **with its `Allow` header** arrives through a subclass advice.
+2. **A subclass handler for a specific type beats the inherited `Exception.class` catch-all** (418,
+   not 500). This is the same resolution order that caused the Tier 0.5 defect, so it was worth
+   proving rather than assuming — it is what makes the per-service pattern reusable 12 times.
+3. **`getBeanNamesForAnnotation(ControllerAdvice.class)` resolves `@RestControllerAdvice` through
+   its meta-annotation.** The red bar's own failure message listed the user advice under that
+   query, which is why the condition is keyed on the *annotation* rather than on the shared
+   supertype — the annotation also catches an advice that does not extend ours.
+
+Sharp edge recorded rather than guarded: a module that adds a `@ControllerAdvice` for an unrelated
+purpose (say `@ModelAttribute` binding) silently takes over error rendering, because the starter
+then contributes nothing. That is why **5-pre3 asserts the advice bean is the *expected* one**, not
+merely that there is exactly one. Also note `OriahExceptionHandlerSupport` is now the SLF4J logger
+name on error lines (was `ProblemDetailExceptionHandler`); nothing in `logback-spring.xml` or any
+Grafana/Loki query referenced the old name, so no config needed changing.
+
+---
+
+**5-pre1 finding (#12) — the published OpenAPI contract documents only the happy path, and is
+wrong about it on 11 endpoints.** Audited across all 12 baseline specs:
+
+| Measurement | Result |
+|---|---|
+| Response statuses documented across all **51** operations | **`200` only** — not one 400, 401, 403, 404, 409 or 500 anywhere |
+| `ProblemDetail` published as a component schema | **no** — the error contract Tier 0.5 fixed is entirely undocumented |
+| Handlers that actually return **201 or 204** | **11** — and the spec documents **200** for every one |
+| `operationId` collisions *across* services | `get` ×5, `create` ×4, `list` ×4, `confirm` ×3, `mine` ×3 |
+| springdoc auto-disambiguated ids | **1** — `get_1` on `order`'s `GET /api/v1/admin/orders/{id}` |
+
+So Tier 5's annotation item is the highest-value part of the tier rather than the cosmetic part:
+adding the real success statuses and the error statuses with a `ProblemDetail` ref is **purely
+additive** and turns a spec that claims every call succeeds into one that describes the system.
+
+Two judgment calls this surfaces, neither silently taken:
+
+* **The false `200` on those 11 endpoints.** Adding `201`/`204` is additive and gate-clean;
+  *removing* the `200` is truthful but trips the gate. It harms nothing to leave: `oriah-web`'s
+  `apiFetch` branches on `res.ok` and special-cases `204`, never on `200`. So the additive
+  version lands, and the spec will say "200 or 201" where only 201 happens. Flagged as a
+  candidate deliberate exception rather than resolved by me.
+* **`get_1`.** An auto-numbered id is a live hazard: add or remove a sibling handler and `get_1`
+  can silently attach to a different operation. Renaming it to something meaningful is safe in
+  reality (operationIds couple to nothing — see 5-pre0) but trips the gate. Pinning it to the
+  literal string `get_1` is gate-clean and removes the hazard while keeping the ugliness visible.
 
 **5-pre0 — the gate, built before any service work, and proven to fail.**
 `scripts/openapi-diff.ps1` captures the live specs and classifies every difference.
