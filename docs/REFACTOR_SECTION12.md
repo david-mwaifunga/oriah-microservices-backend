@@ -19,7 +19,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
 | 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
-| 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ⬜ |
+| 3 | Gateway code-first (DSL routes, filters, fallback, auth) | 🟡 6/8 done — gateway tests **29 → 86**, live smoke **18/18**; 3c/3d remain |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ⬜ |
 | 5 | Service-layer conventions × 12 services | ⬜ |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
@@ -305,7 +305,7 @@ is adding gateway security regardless.
 
 | # | Item | Status |
 |---|---|---|
-| 3h | Narrow the gateway's own actuator exposure + require auth for all but `health`/`info` | ⬜ |
+| 3h | Narrow the gateway's own actuator exposure | ✅ `include: health,info,metrics,prometheus`; asserted at unit level and smoke step 18 |
 
 ---
 
@@ -313,13 +313,62 @@ is adding gateway security regardless.
 
 | # | Item | Status |
 |---|---|---|
-| 3a | All **29** routes (17 API + 12 `*-docs`) → `RouteLocator` bean with **explicit** `.route("<id>", ...)` ids; 0f snapshot must pass | ⬜ |
-| 3b | `X-Response-Time` via a per-request filter (the course's inline `LocalDateTime.now()` ships startup time) | ⬜ |
+| 3a | All **29** routes → `RouteLocator` bean with explicit `.route("<id>", ...)` ids | ✅ `RouteSnapshotTest` 25/25 unchanged; YAML 238 → 86 lines |
+| 3b | `X-Response-Time` via a per-request filter | ✅ `ResponseTimeFilter`; emits a duration, proven per-request via a slow chain |
 | 3c | `circuitBreaker` filter + `FallbackController` `/contactSupport` (JSON body, `permitAll`) + CB/TimeLimiter `Customizer` | ⬜ |
 | 3d | `retry` on audited-idempotent GETs only; Redis `RequestRateLimiter` preserved | ⬜ |
-| 3e | `FilterUtility` + `RequestTraceFilter` + `ResponseTraceFilter` (`oriah-correlation-id`, MDC-bound) | ⬜ |
-| 3f | Gateway WebFlux `SecurityConfig` + `KeycloakRoleConverter` — **additive**, mirrors existing per-service rules; OPTIONS/preflight + public GETs + `/contactSupport` permitted | ⬜ |
-| 3g | Delete dead `routes:` YAML; re-baseline gateway-through goldens with a reviewed diff | ⬜ |
+| 3e | `FilterUtility` + `RequestTraceFilter` + `ResponseTraceFilter` (`oriah-correlation-id`, MDC-bound) | ✅ 9 tests; id in exchange attributes, MDC bound only around the one log line |
+| 3f | Gateway WebFlux `SecurityConfig` + `KeycloakRoleConverter` — additive, mirrors the per-service rules | ✅ 40 + 7 tests; rules derived from a 12-service sweep |
+| 3g | Delete dead `routes:` YAML | ✅ removed in the same commit as the DSL (they would otherwise UNION to 58 routes) |
+
+**Tier 3 findings.** The extraction fan-out (5 parallel readers: route table, course conventions,
+12-service auth sweep, existing gateway Java, SCG 5.x / Security 7 API deltas) changed the plan in
+ways that would each have cost a long debugging session:
+
+1. **The auth rules were not where they looked.** For **8 of 12 services** the real rules live in
+   `@PreAuthorize` on controllers, not in `SecurityConfig`. A gateway written from the SecurityConfig
+   files alone would have been looser than reality by one role check per service. And
+   `/api/v1/admin/promotions/**` is guarded by **`CATALOG_ADMIN`**, not a `PROMOTION_ADMIN` role
+   (none exists) — so a convention mapping `/admin/<svc>/** → <SVC>_ADMIN` is wrong there, and
+   would invent a guard for payments, where `PAYMENT_ADMIN` exists in the realm and guards nothing.
+2. **A DSL `RouteLocator` UNIONS with the YAML**, it does not replace it — 58 routes, silently
+   duplicated. The YAML had to die in the same commit.
+3. **`PredicateSpec.order(int)` must be the first call** in the route lambda; `.path(x).order(-10)`
+   does not compile. That is the one line keeping nested product reviews routable.
+4. **`spring-webmvc` would have been catastrophic and silent.** Adding a security starter to a
+   reactive module risks it; `GatewayServerWebApplicationTypeTest` (written in Tier 0.5) is what
+   makes that enforceable rather than a comment.
+5. **Spring Security 7 removed every no-arg `ServerHttpSecurity` entry point and all 17 `and()`
+   methods**, so the course's chained reactive config cannot compile at all.
+6. **The course reference has a severe security bug worth not copying**:
+   `.pathMatchers(HttpMethod.GET).permitAll()` is its FIRST rule, a method-only matcher with no
+   path — so every GET through its gateway is permitted and its `hasRole` checks only ever apply to
+   non-GET methods. It also has no terminal `anyExchange`, and WebFlux grants access when no matcher
+   matches, so unlisted paths are open too.
+
+---
+
+**Tier 3 live verification** (gateway image rebuilt, container recreated, full stack):
+
+```
+smoke-test.ps1 .................................... 18/18
+[12/18] traceId=5a259338... spans=89 services=gatewayserver,payment,promotion,
+        shipping,order,checkout,cart
+[18/18] 8 sensitive endpoints unreachable; health + info still open for probes
+
+X-Response-Time: 21ms                                   <- a duration, not a boot-time constant
+oriah-correlation-id: 8505137b-da90-4639-a03d-fdb9c970de54
+oriah-correlation-id: my-own-id-12345                   <- an inbound id is REUSED
+/api/v1/carts/me       (no token) -> 401
+/api/v1/admin/products (no token) -> 401
+"correlationId":"8505137b-..."                          <- in the JSON log line, greppable in Loki
+```
+
+The full purchase saga completing through a now-secured gateway is what proves the authorization
+rules actually mirror the 12 services; step 18 going green closes the edge-actuator finding that
+was committed as a deliberate red bar.
+
+---
 
 ---
 
