@@ -8,13 +8,24 @@ import jakarta.persistence.EntityNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 
 import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * Cross-service exception handler. Maps the common domain exceptions
@@ -26,16 +37,25 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  *
  * <p>Status mapping:
  * <ul>
- *   <li>{@link IllegalArgumentException}             -> 400 BAD_REQUEST
- *   <li>{@link MethodArgumentNotValidException}      -> 400 BAD_REQUEST (with field errors)
- *   <li>{@link EntityNotFoundException}              -> 404 NOT_FOUND
- *   <li>{@link IllegalStateException}                -> 409 CONFLICT  (FSM-illegal transitions, etc.)
- *   <li>everything else                              -> 500 INTERNAL_SERVER_ERROR
+ *   <li>{@link IllegalArgumentException}             -&gt; 400 BAD_REQUEST
+ *   <li>{@link MethodArgumentNotValidException}      -&gt; 400 BAD_REQUEST (with field errors)
+ *   <li>{@link EntityNotFoundException}              -&gt; 404 NOT_FOUND
+ *   <li>{@link IllegalStateException}                -&gt; 409 CONFLICT  (FSM-illegal transitions, etc.)
+ *   <li>{@link AccessDeniedException}                -&gt; 403 FORBIDDEN
+ *   <li>{@link HttpRequestMethodNotSupportedException} -&gt; 405 (with {@code Allow})
+ *   <li>{@link HttpMediaTypeNotSupportedException}   -&gt; 415 (with {@code Accept})
+ *   <li>{@link HttpMediaTypeNotAcceptableException}  -&gt; 406
+ *   <li>{@link HttpMessageNotReadableException}      -&gt; 400 (malformed body)
+ *   <li>{@link MissingServletRequestParameterException} -&gt; 400
+ *   <li>{@link MissingRequestHeaderException}        -&gt; 400
+ *   <li>{@link MethodArgumentTypeMismatchException}  -&gt; 400
+ *   <li>{@link ServletRequestBindingException}       -&gt; 400 (remaining binding failures)
+ *   <li>everything else                              -&gt; 500 INTERNAL_SERVER_ERROR
  * </ul>
  *
  * <p>Every body carries a {@code traceId} property pulled from the
- * Micrometer-managed SLF4J MDC, so a client receiving a 500 can paste
- * the traceId into Zipkin and see the failing call path immediately.
+ * Micrometer-managed SLF4J MDC, so a client receiving an error can paste
+ * the traceId into the trace UI and see the failing call path immediately.
  *
  * <p>5xx is logged at ERROR; 4xx at DEBUG (the caller already knows
  * they sent something invalid -- no need to spam ops dashboards).
@@ -50,15 +70,14 @@ public class ProblemDetailExceptionHandler {
     private static final URI TYPE_CONFLICT    = URI.create("https://oriah.dev/problems/conflict");
     private static final URI TYPE_FORBIDDEN   = URI.create("https://oriah.dev/problems/forbidden");
     private static final URI TYPE_INTERNAL    = URI.create("https://oriah.dev/problems/internal-server-error");
+    private static final URI TYPE_METHOD      = URI.create("https://oriah.dev/problems/method-not-allowed");
+    private static final URI TYPE_MEDIA_TYPE  = URI.create("https://oriah.dev/problems/unsupported-media-type");
+    private static final URI TYPE_NOT_ACCEPT  = URI.create("https://oriah.dev/problems/not-acceptable");
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ProblemDetail badArgument(IllegalArgumentException ex) {
         log.debug("400 IllegalArgumentException: {}", ex.getMessage());
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
-        pd.setType(TYPE_BAD_REQUEST);
-        pd.setTitle("Bad Request");
-        attachTraceId(pd);
-        return pd;
+        return problem(HttpStatus.BAD_REQUEST, TYPE_BAD_REQUEST, "Bad Request", ex.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -68,22 +87,16 @@ public class ProblemDetailExceptionHandler {
         for (FieldError fe : ex.getBindingResult().getFieldErrors()) {
             fieldErrors.add(new FieldErrorView(fe.getField(), fe.getDefaultMessage()));
         }
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, "Request validation failed");
-        pd.setType(TYPE_VALIDATION);
-        pd.setTitle("Validation Failed");
+        ProblemDetail pd = problem(HttpStatus.BAD_REQUEST, TYPE_VALIDATION, "Validation Failed",
+                "Request validation failed");
         pd.setProperty("fieldErrors", fieldErrors);
-        attachTraceId(pd);
         return pd;
     }
 
     @ExceptionHandler(EntityNotFoundException.class)
     public ProblemDetail notFound(EntityNotFoundException ex) {
         log.debug("404 EntityNotFoundException: {}", ex.getMessage());
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
-        pd.setType(TYPE_NOT_FOUND);
-        pd.setTitle("Not Found");
-        attachTraceId(pd);
-        return pd;
+        return problem(HttpStatus.NOT_FOUND, TYPE_NOT_FOUND, "Not Found", ex.getMessage());
     }
 
     /**
@@ -96,31 +109,162 @@ public class ProblemDetailExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ProblemDetail forbidden(AccessDeniedException ex) {
         log.debug("403 AccessDeniedException: {}", ex.getMessage());
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, ex.getMessage());
-        pd.setType(TYPE_FORBIDDEN);
-        pd.setTitle("Forbidden");
-        attachTraceId(pd);
-        return pd;
+        return problem(HttpStatus.FORBIDDEN, TYPE_FORBIDDEN, "Forbidden", ex.getMessage());
     }
 
     @ExceptionHandler(IllegalStateException.class)
     public ProblemDetail conflict(IllegalStateException ex) {
         log.debug("409 IllegalStateException: {}", ex.getMessage());
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
-        pd.setType(TYPE_CONFLICT);
-        pd.setTitle("Conflict");
-        attachTraceId(pd);
+        return problem(HttpStatus.CONFLICT, TYPE_CONFLICT, "Conflict", ex.getMessage());
+    }
+
+    // ------------------------------------------------------------------
+    // Spring MVC's own exceptions.
+    //
+    // These must be declared explicitly. The @ExceptionHandler(Exception.class)
+    // catch-all below lives in the same advice, and
+    // ExceptionHandlerExceptionResolver is consulted *before*
+    // DefaultHandlerExceptionResolver -- so without these methods the
+    // catch-all claims every framework exception and renders it as 500,
+    // flattening 405/415/406/400. FrameworkErrorContractTest was written
+    // against exactly that defect and pins the corrected mapping.
+    //
+    // Deliberately NOT solved by extending ResponseEntityExceptionHandler:
+    // that class lives in spring-webmvc, and adding spring-webmvc to this
+    // shared starter would put DispatcherServlet on the classpath of the
+    // *reactive* gatewayserver. Spring Boot's
+    // WebApplicationType.deduceFromClasspath() treats webflux + webmvc as
+    // SERVLET, which would silently break the gateway. Every exception type
+    // below ships in spring-web, which the starter already depends on.
+    // ------------------------------------------------------------------
+
+    /**
+     * 405. Returns {@link ResponseEntity} rather than a bare
+     * {@link ProblemDetail} so the response can carry {@code Allow}, which
+     * RFC 9110 says a 405 SHOULD include -- it is the only way a client
+     * learns which verb to use instead.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> methodNotAllowed(HttpRequestMethodNotSupportedException ex) {
+        log.debug("405 method not allowed: {} (supported: {})", ex.getMethod(), ex.getSupportedHttpMethods());
+        ProblemDetail pd = problem(HttpStatus.METHOD_NOT_ALLOWED, TYPE_METHOD, "Method Not Allowed",
+                "HTTP method %s is not supported by this endpoint".formatted(ex.getMethod()));
+
+        HttpHeaders headers = new HttpHeaders();
+        if (ex.getSupportedHttpMethods() != null) {
+            headers.setAllow(ex.getSupportedHttpMethods());
+        }
+        return new ResponseEntity<>(pd, headers, HttpStatus.METHOD_NOT_ALLOWED);
+    }
+
+    /**
+     * 415. Carries {@code Accept} listing what the endpoint can consume,
+     * for the same discoverability reason as {@code Allow} on a 405.
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> unsupportedMediaType(HttpMediaTypeNotSupportedException ex) {
+        log.debug("415 unsupported media type: {}", ex.getContentType());
+        ProblemDetail pd = problem(HttpStatus.UNSUPPORTED_MEDIA_TYPE, TYPE_MEDIA_TYPE, "Unsupported Media Type",
+                ex.getContentType() == null
+                        ? "A supported Content-Type must be set on the request"
+                        : "Content-Type %s is not supported by this endpoint".formatted(ex.getContentType()));
+
+        HttpHeaders headers = new HttpHeaders();
+        List<MediaType> supported = ex.getSupportedMediaTypes();
+        if (!supported.isEmpty()) {
+            headers.setAccept(supported);
+        }
+        return new ResponseEntity<>(pd, headers, HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /** 406 -- nothing this endpoint can produce satisfies the Accept header. */
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+    public ProblemDetail notAcceptable(HttpMediaTypeNotAcceptableException ex) {
+        log.debug("406 not acceptable; endpoint produces {}", ex.getSupportedMediaTypes());
+        return problem(HttpStatus.NOT_ACCEPTABLE, TYPE_NOT_ACCEPT, "Not Acceptable",
+                "No supported representation satisfies the Accept header");
+    }
+
+    /**
+     * 400 -- the body could not be parsed (malformed JSON, wrong type for a
+     * field, empty body where one is required).
+     *
+     * <p>The detail is deliberately generic: Jackson's own message names its
+     * parser classes and echoes a slice of the offending payload, which is
+     * noise for the client and a small information leak in a response body.
+     * The full exception is still available at DEBUG.
+     */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ProblemDetail malformedBody(HttpMessageNotReadableException ex) {
+        log.debug("400 unreadable request body", ex);
+        return problem(HttpStatus.BAD_REQUEST, TYPE_BAD_REQUEST, "Bad Request",
+                "Request body is missing or is not valid JSON");
+    }
+
+    /** 400 -- a required query parameter was absent. Names the parameter. */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ProblemDetail missingParameter(MissingServletRequestParameterException ex) {
+        log.debug("400 missing request parameter: {}", ex.getParameterName());
+        ProblemDetail pd = problem(HttpStatus.BAD_REQUEST, TYPE_VALIDATION, "Validation Failed",
+                "Required parameter '%s' is missing".formatted(ex.getParameterName()));
+        pd.setProperty("fieldErrors",
+                List.of(new FieldErrorView(ex.getParameterName(), "must be provided")));
         return pd;
+    }
+
+    /** 400 -- a required header was absent. */
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ProblemDetail missingHeader(MissingRequestHeaderException ex) {
+        log.debug("400 missing request header: {}", ex.getHeaderName());
+        return problem(HttpStatus.BAD_REQUEST, TYPE_VALIDATION, "Validation Failed",
+                "Required header '%s' is missing".formatted(ex.getHeaderName()));
+    }
+
+    /**
+     * 400 -- a parameter was present but could not be converted (e.g.
+     * {@code ?size=abc} for an {@code int}). Reported as a field error so the
+     * frontend can attach it to the offending input.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ProblemDetail parameterTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        String required = ex.getRequiredType() == null ? "the expected type" : ex.getRequiredType().getSimpleName();
+        log.debug("400 parameter type mismatch: {} could not be converted to {}", ex.getName(), required);
+        ProblemDetail pd = problem(HttpStatus.BAD_REQUEST, TYPE_VALIDATION, "Validation Failed",
+                "Parameter '%s' must be a valid %s".formatted(ex.getName(), required));
+        pd.setProperty("fieldErrors",
+                List.of(new FieldErrorView(ex.getName(), "must be a valid " + required)));
+        return pd;
+    }
+
+    /**
+     * 400 -- remaining request-binding failures. This is the superclass of
+     * several of the handlers above; Spring resolves the most specific
+     * match, so those still win for their own types and this one only
+     * catches what they don't.
+     */
+    @ExceptionHandler(ServletRequestBindingException.class)
+    public ProblemDetail requestBindingFailed(ServletRequestBindingException ex) {
+        log.debug("400 request binding failure: {}", ex.getMessage());
+        return problem(HttpStatus.BAD_REQUEST, TYPE_BAD_REQUEST, "Bad Request",
+                "The request could not be bound to this endpoint");
     }
 
     @ExceptionHandler(Exception.class)
     public ProblemDetail unhandled(Exception ex) {
         log.error("500 unhandled exception", ex);
-        ProblemDetail pd = ProblemDetail.forStatusAndDetail(
-                HttpStatus.INTERNAL_SERVER_ERROR,
+        return problem(HttpStatus.INTERNAL_SERVER_ERROR, TYPE_INTERNAL, "Internal Server Error",
                 "An unexpected error occurred. Use the traceId to correlate with logs and traces.");
-        pd.setType(TYPE_INTERNAL);
-        pd.setTitle("Internal Server Error");
+    }
+
+    /**
+     * Builds a fully-populated RFC 7807 body. Centralized so every status
+     * this advice produces carries the same four things: our problem
+     * {@code type} vocabulary, a human title, a detail, and the traceId.
+     */
+    private static ProblemDetail problem(HttpStatus status, URI type, String title, String detail) {
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(status, detail);
+        pd.setType(type);
+        pd.setTitle(title);
         attachTraceId(pd);
         return pd;
     }

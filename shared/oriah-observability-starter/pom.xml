@@ -141,6 +141,37 @@
         </dependency>
 
         <!--
+            jakarta.servlet-api is needed to COMPILE the framework-exception
+            handlers in ProblemDetailExceptionHandler: spring-web's
+            HttpRequestMethodNotSupportedException,
+            HttpMediaTypeNotSupportedException,
+            MissingServletRequestParameterException and
+            ServletRequestBindingException all extend
+            jakarta.servlet.ServletException.
+
+            Why 'compile' and not 'provided': Spring introspects every
+            @ExceptionHandler method signature at context startup, so the
+            exception types must be loadable at runtime in EVERY module that
+            picks up this advice, including gatewayserver, which is reactive
+            and has no servlet stack of its own. 'provided' would reproduce the
+            NoClassDefFoundError that broke five modules when spring-web was
+            scoped that way.
+
+            Why this does NOT flip gatewayserver to a servlet app:
+            WebApplicationType.deduceFromClasspath() returns REACTIVE when
+            DispatcherHandler is present and
+            org.springframework.web.servlet.DispatcherServlet is absent. We add
+            only the servlet API, never spring-webmvc, so DispatcherServlet
+            stays absent. That reasoning is pinned by
+            GatewayServerWebApplicationTypeTest, which fails loudly if anything
+            ever drags spring-webmvc onto the gateway.
+        -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+        </dependency>
+
+        <!--
             spring-security-core for AccessDeniedException in the
             problem-details advice. Every service that hits @PreAuthorize
             already has spring-security on its path via the OAuth2

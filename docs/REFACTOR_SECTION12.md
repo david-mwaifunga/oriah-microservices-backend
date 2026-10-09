@@ -16,7 +16,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | Tier | What | Status |
 |---|---|---|
 | 0 | Freeze the contract (baselines + characterization tests) | 🟡 in progress |
-| **0.5** | **Error-contract fix — framework exceptions currently all render 500** (found in 0d; promoted ahead of Tier 4) | ⬜ |
+| **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
 | 1 | Compose modularization + actuator probes + build-info | ⬜ |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ⬜ |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ⬜ |
@@ -106,17 +106,30 @@ statuses (red), then make the handler claim them properly (green).
 
 | # | Item | Status |
 |---|---|---|
-| 0.5a | Flip the 6 expectations in `FrameworkErrorContractTest` → red | ⬜ |
-| 0.5b | `ProblemDetailExceptionHandler extends ResponseEntityExceptionHandler`; keep RFC 7807 bodies + `traceId`; narrow the `Exception` catch-all so it no longer outranks framework handlers | ⬜ |
-| 0.5c | Re-assert `ProblemDetailExceptionHandlerTest` (7/7) — domain mappings must not move | ⬜ |
-| 0.5d | 4xx logged at DEBUG/WARN, not ERROR-with-stack-trace | ⬜ |
+| 0.5a | Flip the 6 expectations in `FrameworkErrorContractTest` → red | ✅ red confirmed: 6 failures, all `expected: 4xx but was: 500` |
+| 0.5b | Claim the framework exceptions explicitly (**not** via `ResponseEntityExceptionHandler` — see note) | ✅ 9 handlers added; starter 20/20 green |
+| 0.5c | Re-assert `ProblemDetailExceptionHandlerTest` (7/7) — domain mappings must not move | ✅ 7/7, unmoved |
+| 0.5d | 4xx logged at DEBUG, 5xx at ERROR | ✅ every new handler logs at DEBUG |
+| 0.5i | Guard test: gateway must stay reactive after the `jakarta.servlet-api` addition | ✅ `GatewayServerWebApplicationTypeTest`; gateway 27/27 green |
 | 0.5e | Check `oriah-web` for dependence on the 500s | ✅ **safe** — `problemFromResponse` is status-agnostic (parses any problem+json, else synthesizes from `res.status`); nothing branches on 500 |
-| 0.5g | **`fieldErrors` vs `errors` wire mismatch** — backend emits `fieldErrors: [{field,message}]`, `oriah-web`'s `ProblemDetailSchema` expects `errors: Record<string,string>`. `.catchall()` hides it, so validation errors are silently dropped in the UI | ⬜ |
+| 0.5g | **`fieldErrors` vs `errors` wire mismatch** fixed — typed `fieldErrors` + `fieldErrorMap()` helper for react-hook-form `setError` | ✅ `oriah-web` 19/19, `tsc --noEmit` clean |
 | 0.5h | **404s have no body** — 25 controller sites use `ResponseEntity.notFound().build()`, so 404 returns empty, no `detail`/`traceId`. Fixed by Tier 5's `ResourceNotFoundException` + per-service advice | ⬜ |
 | 0.5f | Live re-capture of 0d/0e goldens through the running stack | ⬜ |
 
-This lands as the base class that Tier 5-pre1 later makes abstract; doing the status fix here and
-the abstract/per-service split there keeps each commit to one idea.
+**Why not `extends ResponseEntityExceptionHandler`** (the course convention, and what the plan
+originally said): that class lives in **spring-webmvc**. Adding spring-webmvc to the shared starter
+would put `DispatcherServlet` on the classpath of all 15 modules — including the **reactive**
+gatewayserver — and `WebApplicationType.deduceFromClasspath()` treats webflux + webmvc as SERVLET.
+The gateway would boot a servlet container, never wire the Spring Cloud Gateway filter chain, and
+route nothing while still reporting a successful start. Instead the nine exception types are claimed
+explicitly; all of them ship in **spring-web**, which the starter already had. Only
+`jakarta.servlet-api` was added (those types extend `ServletException`), which is safe because it
+carries no `DispatcherServlet` — and `GatewayServerWebApplicationTypeTest` now enforces that
+distinction permanently instead of leaving it as a comment.
+
+This lands as the base class that Tier 5-pre1 later makes abstract. Tier 5 will also need the
+servlet/reactive split resolved properly — most likely a servlet-only shared module so the gateway
+stops consuming the servlet advice at all.
 
 ---
 

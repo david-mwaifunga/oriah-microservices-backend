@@ -1,0 +1,110 @@
+# Shared service fragments for the Oriah stack.
+#
+# This is the `extends` chain from the course reference
+# (microservices/section_12/docker-compose/default/common-config.yml),
+# adapted to Oriah's topology. None of the services defined here are ever
+# started: compose reads a fragment, copies it into the service that names it
+# under `extends`, and discards the rest. That is why `microservice-
+# configserver-config` can depend on a `configserver` that does not exist in
+# this file -- the dependency is resolved in the merged project, not here.
+#
+# The chain, each layer adding exactly one thing:
+#
+#   network-deploy-service              the oriah network
+#     └─ microservice-base-config       docker profile + healthcheck cadence
+#          └─ microservice-configserver-config   waits for configserver
+#               └─ microservice-eureka-config    waits for eurekaserver
+#                    └─ microservice-keycloak-config   waits for keycloak
+#
+# A service picks the layer matching how much of the platform it needs:
+# configserver and eurekaserver bootstrap nothing, so they take
+# `microservice-base-config`; gatewayserver needs service discovery but not
+# the Config Server, so it declares its own eureka dependency; the 12 domain
+# services take `microservice-keycloak-config` and add only what is theirs
+# (their own Postgres, and Kafka where they produce or consume).
+#
+# IMPORTANT -- what belongs here and what does not. Only values that are
+# *literally identical* across consumers live in a fragment. The healthcheck
+# is the instructive case: `interval`/`timeout`/`retries` are shared, but the
+# `test` stays with each service because it names that service's port. It is
+# tempting to parameterize it as
+# `exec 3<>/dev/tcp/localhost/$$SERVER_PORT`, which does work -- bash expands
+# it inside the container -- but it changes the rendered command string, and
+# Tier 1 of this refactor is required to be a pure restructuring that
+# `scripts/compose-equivalence.ps1` can prove byte-identical against the
+# pre-refactor baseline. Behaviour-preserving is not good enough; identical
+# is the bar. Parameterizing it would be a separate, deliberate change.
+
+services:
+
+  # Every container in the stack joins the same user-defined bridge network,
+  # which is what makes service names resolvable as DNS hostnames
+  # (`jdbc:postgresql://postgres-catalog:5432/catalog`, `http://kafka:9092`).
+  network-deploy-service:
+    networks:
+      - oriah
+
+  # Common to all 15 Spring Boot modules.
+  #
+  # SPRING_PROFILES_ACTIVE=docker selects application-docker.yaml in each
+  # module, which is where the in-container hostnames live (as opposed to the
+  # localhost defaults used when running a module straight from Maven).
+  #
+  # The healthcheck cadence is shared; the probe itself is not (see the note
+  # at the top of this file). `retries: 30` at `interval: 10s` gives a service
+  # five minutes past its start_period before compose marks it unhealthy,
+  # which matters on a cold Docker Desktop start where ten Postgres
+  # containers, Keycloak and Kafka are all competing for IO.
+  microservice-base-config:
+    extends:
+      service: network-deploy-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # For modules that fetch their configuration from the Config Server.
+  # Waiting for `service_healthy` rather than `service_started` is load-
+  # bearing: a service whose config import is marked required fails fast on
+  # startup if the Config Server is merely running but not yet serving.
+  microservice-configserver-config:
+    extends:
+      service: microservice-base-config
+    depends_on:
+      configserver:
+        condition: service_healthy
+
+  # For modules that register with Eureka.
+  microservice-eureka-config:
+    extends:
+      service: microservice-configserver-config
+    depends_on:
+      eurekaserver:
+        condition: service_healthy
+
+  # For modules that validate JWTs as OAuth2 resource servers. Keycloak's
+  # healthcheck does not merely check that the port is bound -- it asks for
+  # /realms/master and looks for a 200, which only happens once realm import
+  # has finished. Without that, a service can come up, miss the JWK set, and
+  # reject every token until restarted.
+  microservice-keycloak-config:
+    extends:
+      service: microservice-eureka-config
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  # Common to the 10 per-service Postgres instances (schema-per-service: each
+  # service owns its own database and no service reads another's tables).
+  # Database name, user, password, host port and volume stay per-instance, as
+  # does the pg_isready probe that names them.
+  postgres-base-config:
+    extends:
+      service: network-deploy-service
+    image: postgres:16-alpine
+    healthcheck:
+      interval: 5s
+      timeout: 5s
+      retries: 10

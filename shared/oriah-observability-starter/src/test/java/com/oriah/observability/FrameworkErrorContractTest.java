@@ -20,27 +20,24 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
- * CHARACTERIZATION test — records what the current error contract actually
- * does for the exceptions Spring MVC raises <em>itself</em>, as opposed to
- * the domain exceptions covered by {@link ProblemDetailExceptionHandlerTest}.
+ * The error contract for exceptions Spring MVC raises <em>itself</em>, as
+ * opposed to the domain exceptions covered by
+ * {@link ProblemDetailExceptionHandlerTest}.
  *
- * <p>This is a Tier-0 tripwire for the section_12 refactor, not a statement
- * that the current behaviour is desirable. The refactor replaces the
- * standalone {@link ProblemDetailExceptionHandler} with an abstract
- * {@code OriahExceptionHandlerSupport extends ResponseEntityExceptionHandler}
- * plus one concrete {@code @ControllerAdvice} per service. Extending
- * {@code ResponseEntityExceptionHandler} brings in framework-level
- * {@code @ExceptionHandler} methods for exactly the exceptions exercised
- * below, so the mapping <em>will</em> move. This test makes that movement
- * visible as a reviewed diff instead of a silent contract change.
- *
- * <p>The suspected current defect: this advice declares
- * {@code @ExceptionHandler(Exception.class)} without extending
- * {@code ResponseEntityExceptionHandler}.
+ * <p>This began life as a Tier-0 characterization test and found a real
+ * defect: all six cases below rendered as <strong>500</strong>. The advice
+ * declared {@code @ExceptionHandler(Exception.class)} without extending
+ * {@code ResponseEntityExceptionHandler}, and
  * {@code ExceptionHandlerExceptionResolver} is consulted before
- * {@code DefaultHandlerExceptionResolver}, so the catch-all claims
- * {@code HttpRequestMethodNotSupportedException} and friends and renders
- * them as 500 — losing 405/415/406/400 semantics.
+ * {@code DefaultHandlerExceptionResolver} — so the catch-all claimed
+ * {@code HttpRequestMethodNotSupportedException} and friends and flattened
+ * 405/415/406/400 into 500.
+ *
+ * <p>Why that mattered beyond a misleading status line: a 4xx reported as
+ * 5xx is <em>retry-eligible</em>. The gateway's {@code retry} filter and
+ * checkout's {@code @Retry} would both re-send a permanently-invalid
+ * request, and every client typo logged an ERROR with a stack trace. Hence
+ * the fix landed in Tier 0.5, ahead of the resilience tiers.
  *
  * <p>{@code standaloneSetup} installs the same three
  * {@code HandlerExceptionResolver}s in the same order as a real dispatcher,
@@ -56,7 +53,7 @@ class FrameworkErrorContractTest {
     @Test
     @DisplayName("405: wrong HTTP method on an existing path")
     void methodNotAllowed() throws Exception {
-        assertStatusAndReport(post("/contract/get-only"), "405 method-not-allowed", 500);
+        assertStatusAndReport(post("/contract/get-only"), "405 method-not-allowed", 405);
     }
 
     @Test
@@ -64,7 +61,7 @@ class FrameworkErrorContractTest {
     void unsupportedMediaType() throws Exception {
         assertStatusAndReport(
                 post("/contract/json-only").contentType(MediaType.TEXT_PLAIN).content("nope"),
-                "415 unsupported-media-type", 500);
+                "415 unsupported-media-type", 415);
     }
 
     @Test
@@ -72,7 +69,7 @@ class FrameworkErrorContractTest {
     void notAcceptable() throws Exception {
         assertStatusAndReport(
                 get("/contract/text-only").accept(MediaType.APPLICATION_JSON),
-                "406 not-acceptable", 500);
+                "406 not-acceptable", 406);
     }
 
     @Test
@@ -80,19 +77,83 @@ class FrameworkErrorContractTest {
     void malformedJson() throws Exception {
         assertStatusAndReport(
                 post("/contract/json-only").contentType(MediaType.APPLICATION_JSON).content("{ not json"),
-                "400 malformed-json", 500);
+                "400 malformed-json", 400);
     }
 
     @Test
     @DisplayName("400: missing required query parameter")
     void missingRequiredParam() throws Exception {
-        assertStatusAndReport(get("/contract/needs-param"), "400 missing-param", 500);
+        assertStatusAndReport(get("/contract/needs-param"), "400 missing-param", 400);
     }
 
     @Test
     @DisplayName("400: query parameter of the wrong type")
     void parameterTypeMismatch() throws Exception {
-        assertStatusAndReport(get("/contract/needs-int?size=abc"), "400 type-mismatch", 500);
+        assertStatusAndReport(get("/contract/needs-int?size=abc"), "400 type-mismatch", 400);
+    }
+
+    @Test
+    @DisplayName("405 advertises the methods that are allowed")
+    void methodNotAllowedAdvertisesAllow() throws Exception {
+        // RFC 9110: a 405 SHOULD carry Allow. Without it a client cannot
+        // discover the correct verb, and the generated TS clients have no way
+        // to surface anything better than "something went wrong".
+        MvcResult result = mockMvc.perform(post("/contract/get-only")).andReturn();
+
+        assertThat(result.getResponse().getHeader("Allow"))
+                .as("Allow header on 405")
+                .isNotNull()
+                .contains("GET");
+    }
+
+    @Test
+    @DisplayName("415 advertises the media types that are supported")
+    void unsupportedMediaTypeAdvertisesAccept() throws Exception {
+        MvcResult result = mockMvc.perform(post("/contract/json-only")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("nope"))
+                .andReturn();
+
+        assertThat(result.getResponse().getHeader("Accept"))
+                .as("Accept header on 415")
+                .isNotNull()
+                .contains(MediaType.APPLICATION_JSON_VALUE);
+    }
+
+    @Test
+    @DisplayName("malformed JSON does not leak parser internals to the client")
+    void malformedJsonDoesNotLeakParserDetail() throws Exception {
+        MvcResult result = mockMvc.perform(post("/contract/json-only")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{ not json"))
+                .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+
+        // Jackson's raw message names the parser class and echoes the payload.
+        // That is both noise and a small information leak, so the detail is
+        // deliberately generic.
+        assertThat(body)
+                .as("400 body for malformed JSON: %s", body)
+                .doesNotContain("com.fasterxml")
+                .doesNotContain("JsonParseException")
+                .contains("\"status\":400");
+    }
+
+    @Test
+    @DisplayName("framework errors carry the traceId, same as domain errors")
+    void frameworkErrorsCarryTraceId() throws Exception {
+        org.slf4j.MDC.put("traceId", "abcdef00112233445566778899aabbcc");
+        try {
+            MvcResult result = mockMvc.perform(post("/contract/get-only")).andReturn();
+
+            assertThat(result.getResponse().getContentAsString())
+                    .as("a 405 must be as correlatable as a 500 -- it is the "
+                            + "status a client is most likely to report")
+                    .contains("abcdef00112233445566778899aabbcc");
+        } finally {
+            org.slf4j.MDC.remove("traceId");
+        }
     }
 
     /**
