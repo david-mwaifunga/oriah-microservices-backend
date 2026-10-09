@@ -18,7 +18,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 0 | Freeze the contract (baselines + characterization tests) | 🟡 in progress |
 | **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
 | 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
-| 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ⬜ |
+| 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | 🟡 parallel-run **verified 18/18**; 2h removal pending |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ⬜ |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ⬜ |
 | 5 | Service-layer conventions × 12 services | ⬜ |
@@ -190,13 +190,13 @@ returned an empty `{}` on all 12.
 
 | # | Item | Status |
 |---|---|---|
-| 2a | Starter test asserting the active `SpanExporter` bean set (prove-or-fallback gate for dual export) | ⬜ |
-| 2b | `tempo` container + `monitoring/tempo/tempo.yml` (OTLP 4317 grpc / 4318 http, HTTP API 3200) | 🟡 config written; compose service pending |
-| 2c | `spring-boot-starter-opentelemetry` + `management.opentelemetry.tracing.export.otlp.endpoint` | ⬜ artifact confirmed present in the Boot 4.0.6 BOM |
-| 2d | `alloy` container + `monitoring/alloy/config.alloy` (docker discovery → Loki, `shipper="alloy"` label) | 🟡 config written; compose service pending |
-| 2e | Grafana: Tempo datasource + Loki `derivedFields` → trace jump | 🟡 `tempo.yaml` written; UIDs pinned; `derivedFields` switch pending |
+| 2a | Starter test asserting the active `SpanExporter` bean set (prove-or-fallback gate for dual export) | ✅ **COEXIST** — `otlpHttpSpanExporter` + `zipkinSpanExporter` both wired; staged swap is safe |
+| 2b | `tempo` container + `monitoring/tempo/tempo.yml` | ✅ up, `/ready` 200; **pinned to 3.0.0** (see note) |
+| 2c | `spring-boot-starter-opentelemetry` + `management.opentelemetry.tracing.export.otlp.endpoint` | ✅ same traceId as Zipkin present in Tempo across 7 services |
+| 2d | `alloy` container + `monitoring/alloy/config.alloy` | ✅ up, `/-/ready` 200; promtail labelled `shipper=promtail` |
+| 2e | Grafana: Tempo datasource + Loki `derivedFields` → trace jump | ✅ internal link by pinned uid; all 3 datasources provision cleanly |
 | 2f | `monitoring/prometheus.yml` covers all 15 targets | ✅ **already correct** — 3 infra + 12 services, no change needed |
-| 2g | Smoke: Tempo trace assertion + Alloy-shipped-logs assertion (shipper-qualified during overlap) | ⬜ |
+| 2g | Smoke: Tempo trace assertion + Alloy-shipped-logs assertion (shipper-qualified during overlap) | ✅ **18/18** — Tempo has the same traceId, 20 lines `shipper=alloy` |
 | 2h | **Separate commit:** remove Zipkin + Promtail (containers, configs, deps, properties, smoke steps) | ⬜ |
 
 Monolithic Loki retained — the course's read/write/backend + minio + nginx topology exists only to
@@ -212,6 +212,49 @@ demo horizontal scaling and would add 4 containers to an already-33-container st
    `prometheus.yaml` provisioned no explicit `uid`, so Grafana generated a random one and those
    panel references resolved only by falling back to `isDefault: true`. All three datasources now
    pin explicit UIDs, so the dashboard is correct by construction rather than by fallback.
+
+---
+
+**Tier 2 findings.**
+
+1. **Tempo `:latest` is now 3.0.0, with a restructured config.** It refused to start on the
+   top-level `ingester` and `compactor` sections every Tempo 2.x example uses
+   (`field ingester not found in type app.Config`); those settings moved into a new
+   live-store / backend-scheduler architecture. The config now carries only sections verified to
+   parse on 3.0.0, and the image is **pinned to `3.0.0`** rather than floating — `:latest` is
+   what produced this, and Grafana's `:latest` hard-failed startup the same day. The two dropped
+   tuning blocks were flush-speed and retention, neither load-bearing (Tempo searches the live head
+   block, which step 17 asserts).
+2. **My own test defect, worth recording.** `/api/v2/traces/<id>` answers **200 with
+   `{"trace":{}}`** for a trace Tempo does not have — not a 404. The first version of step 17
+   treated that truthy response as success. It now counts spans. A gate that cannot fail is worse
+   than no gate, because it is believed.
+3. **Sequencing mistake of mine.** I added `spring-boot-starter-opentelemetry` to the starter during
+   the image-build window to avoid Maven contention, then restarted the services expecting OTLP
+   export — but the running images predated the dependency, so there was no exporter to consume
+   the property. The Config Server was serving `...otlp.endpoint` correctly all along. A dependency
+   change reaches containers only via `install` + image rebuild.
+
+**Two more defects found by running it (both now fixed, tests first):**
+
+4. **Status-carrying exceptions lost their status — the Tier 0.5 bug class, on the reactive side.**
+   The gateway answered **500** for `NotFoundException: 503 SERVICE_UNAVAILABLE "Unable to find
+   instance for checkout"`. That exception extends `ResponseStatusException` and already carries
+   503, but the `Exception.class` catch-all outranked Spring's own handling, so "this service has
+   not registered with Eureka yet" was reported as "the server is broken" — and made
+   retry-eligible. Fixed generically: any exception carrying a status keeps it, with its reason as
+   the detail and its headers preserved (`Retry-After` on a 503, `Allow` on a 405). The problem
+   `type` slug is derived from the status reason phrase, which reproduces every existing constant
+   exactly (400→`bad-request`, 503→`service-unavailable`).
+5. **Container health ≠ routable, and the smoke test was not idempotent.** The compose healthcheck
+   is a `/dev/tcp` port probe; it says nothing about Eureka registration or the gateway's
+   load-balancer cache. With 32/32 containers healthy, step 5 still died on an unresolvable
+   `lb://checkout`. A **pre-flight gate** now waits until the gateway resolves all 12 (any status
+   but 503 counts). Separately, that failed run left 2 units in the cart, so the next run's totals
+   came out doubled (`subtotal=400`) — one real failure masquerading as a pricing bug on every
+   subsequent run. Step 4 now clears the cart first and asserts its contents.
+
+---
 
 ---
 

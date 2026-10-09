@@ -508,6 +508,81 @@ services:
       retries: 30
       start_period: 30s
 
+  tempo:
+    # Grafana Tempo — trace storage, replacing Zipkin. Ingests OTLP natively,
+    # which is what our spans already are: Micrometer Tracing's OpenTelemetry
+    # bridge produces OTel spans that were only being translated into Zipkin's
+    # v2 wire format on the way out.
+    #
+    # Runs alongside zipkin for one commit. SpanExporterCoexistenceTest proves
+    # both exporters are wired simultaneously, so the smoke test's end-to-end
+    # trace assertion is never without a backend during the swap.
+    extends:
+      file: ../common-config.yml
+      service: network-deploy-service
+    # Pinned, not :latest. `latest` resolved to v3.0.0, which restructured the
+    # config and refused to start on the ingester/compactor sections that every
+    # Tempo 2.x example uses. See the header of monitoring/tempo/tempo.yml.
+    image: grafana/tempo:3.0.0
+    container_name: oriah-tempo
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    # The image runs as uid 10001, but a named volume is created root-owned, so
+    # Tempo cannot write its WAL and exits. Running as root is the pragmatic
+    # local-dev fix; a real deployment would pre-chown the mount or use an
+    # object-store backend and no local volume at all.
+    user: root
+    volumes:
+      - ../../monitoring/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports:
+      # 3200 is the query API Grafana reads and the smoke test asserts against.
+      - "3200:3200"
+      # 4318 is the one the services actually use: the OTLP transport property
+      # defaults to http, so the wired bean is OtlpHttpSpanExporter. 4317 (grpc)
+      # is published anyway because it costs nothing and is the first thing
+      # you'd want if the transport were ever switched.
+      - "4317:4317"
+      - "4318:4318"
+    # No healthcheck: grafana/tempo is distroless — no shell, no wget — so
+    # docker has nothing to exec. Same situation as loki below. Readiness is
+    # asserted over HTTP from the host in smoke-test.ps1 instead.
+
+  alloy:
+    # Grafana Alloy — log shipping, replacing Promtail (which is EOL: Grafana
+    # stopped feature development in favour of Alloy). This is the
+    # modernization the brief asked for in place of the course's Promtail.
+    #
+    # Both run during the overlap. Alloy labels its streams shipper="alloy" and
+    # promtail-config.yaml labels its own shipper="promtail", so Loki queries
+    # can tell them apart; without that every line would exist twice and every
+    # log-rate panel would silently double.
+    extends:
+      file: ../common-config.yml
+      service: network-deploy-service
+    image: grafana/alloy:latest
+    container_name: oriah-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ../../monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # discovery.docker + loki.source.docker enumerate containers and tail
+      # their logs through the Docker API. Not a bind-mount of
+      # /var/lib/docker/containers: on Docker Desktop those files live inside
+      # the WSL2 VM and are not reliably reachable from a container.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      # http://localhost:12345/graph renders the live component graph with
+      # per-component health — the fastest way to see whether discovery found
+      # containers and whether writes to Loki are succeeding.
+      - "12345:12345"
+    depends_on:
+      loki:
+        condition: service_started
+
   # ───────────────────────── platform tier ─────────────────────────
   #
   # configserver and eurekaserver take microservice-base-config, not the
@@ -532,6 +607,11 @@ services:
       # has to be told via env.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
+      # OTLP to Tempo. Set here as well as in config-repo because the platform
+      # tier cannot bootstrap its own configuration from the Config Server.
+      # Port 4318 (http), not 4317 (grpc): the transport property defaults to
+      # http, so the wired exporter is OtlpHttpSpanExporter.
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: "http://tempo:4318/v1/traces"
     depends_on:
       # Spring Cloud Bus publishes /actuator/busrefresh broadcasts on
       # the springCloudBus Kafka topic; without kafka up the bus
@@ -567,6 +647,11 @@ services:
       # Tracing direct-set: eureka doesn't pull from configserver.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
+      # OTLP to Tempo. Set here as well as in config-repo because the platform
+      # tier cannot bootstrap its own configuration from the Config Server.
+      # Port 4318 (http), not 4317 (grpc): the transport property defaults to
+      # http, so the wired exporter is OtlpHttpSpanExporter.
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: "http://tempo:4318/v1/traces"
     ports:
       - "8761:8761"
     healthcheck:
@@ -591,6 +676,11 @@ services:
       # traceparent headers to every backend service via the route.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
       MANAGEMENT_TRACING_EXPORT_ZIPKIN_ENDPOINT: "http://zipkin:9411/api/v2/spans"
+      # OTLP to Tempo. Set here as well as in config-repo because the platform
+      # tier cannot bootstrap its own configuration from the Config Server.
+      # Port 4318 (http), not 4317 (grpc): the transport property defaults to
+      # http, so the wired exporter is OtlpHttpSpanExporter.
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: "http://tempo:4318/v1/traces"
       # NB: -XX:MaxDirectMemorySize=128m is baked into the image at
       # build time via BPE_APPEND_JAVA_TOOL_OPTIONS in
       # infra/gatewayserver/pom.xml -- see the comment there for the
@@ -940,6 +1030,8 @@ volumes:
   grafana-data:
   loki-data:
   promtail-data:
+  tempo-data:
+  alloy-data:
 
 networks:
   oriah:

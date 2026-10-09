@@ -93,6 +93,36 @@ class FrameworkErrorContractTest {
     }
 
     @Test
+    @DisplayName("an exception that carries an HTTP status keeps that status")
+    void responseStatusExceptionKeepsItsStatus() throws Exception {
+        // Found in production, on the gateway. Spring Cloud Gateway signals an
+        // unresolvable downstream with
+        //   NotFoundException: 503 SERVICE_UNAVAILABLE "Unable to find instance for checkout"
+        // which extends ResponseStatusException and already carries 503. The
+        // Exception.class catch-all in this advice outranked Spring's own
+        // handling of it, so the edge reported 500 instead -- turning "that
+        // service has not registered with Eureka yet" into "the server is
+        // broken", and making it retry-eligible on top.
+        //
+        // This is the same defect class as the 405/415/400 cases below, but it
+        // applies to ANY status-carrying exception, so it is worth fixing
+        // generically rather than one exception type at a time.
+        assertStatusAndReport(get("/contract/service-unavailable"), "503 response-status", 503);
+    }
+
+    @Test
+    @DisplayName("a 503 keeps its reason as the problem detail")
+    void responseStatusExceptionKeepsItsReason() throws Exception {
+        MvcResult result = mockMvc.perform(get("/contract/service-unavailable")).andReturn();
+        String body = result.getResponse().getContentAsString();
+
+        assertThat(body)
+                .as("the reason carried by the exception is the only thing telling an "
+                        + "operator WHICH downstream was unreachable: %s", body)
+                .contains("Unable to find instance for checkout");
+    }
+
+    @Test
     @DisplayName("405 advertises the methods that are allowed")
     void methodNotAllowedAdvertisesAllow() throws Exception {
         // RFC 9110: a 405 SHOULD carry Allow. Without it a client cannot
@@ -197,6 +227,13 @@ class FrameworkErrorContractTest {
         @GetMapping(path = "/text-only", produces = MediaType.TEXT_PLAIN_VALUE)
         String textOnly() {
             return "ok";
+        }
+
+        @GetMapping("/service-unavailable")
+        String serviceUnavailable() {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
+                    "Unable to find instance for checkout");
         }
 
         @GetMapping("/needs-param")

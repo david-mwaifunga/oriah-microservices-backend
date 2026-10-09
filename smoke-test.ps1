@@ -38,6 +38,18 @@
 #  16. /actuator/info carries app identity + build provenance (name,
 #      version, artifact, build time) on all 12 services, so a running
 #      container can be traced back to the commit that produced it.
+#  17. Tempo has the SAME saga trace that step 12 found in Zipkin. Asserting
+#      the same traceId in both backends is what makes the Zipkin -> Tempo
+#      swap safe: it proves Tempo is really receiving spans before Zipkin is
+#      removed, rather than discovering that in the removal commit.
+#  18. Loki has log lines shipped by ALLOY specifically ({shipper="alloy"}).
+#      Promtail ships the same containers during the overlap, so an
+#      unqualified query would pass on Promtail's lines alone and tell us
+#      nothing about Alloy.
+
+# A pre-flight block ahead of step 1 waits for the gateway to resolve every
+# service through Eureka; see the comment there for why container health is not
+# sufficient.
 
 $ErrorActionPreference = "Stop"
 
@@ -50,14 +62,73 @@ function Get-Jwt($Username) {
     return $r.access_token
 }
 
+# ---------------------------------------------------------------------------
+# PRE-FLIGHT: wait until the gateway can actually ROUTE to every service.
+#
+# "All containers healthy" is not the same thing. The compose healthcheck is a
+# bash /dev/tcp probe -- it proves the port is bound, nothing more. A service
+# still has to register with Eureka, and the gateway's load-balancer cache has
+# to pick that registration up, before `lb://<service>` resolves. In between,
+# the gateway answers
+#   NotFoundException: 503 SERVICE_UNAVAILABLE "Unable to find instance for checkout"
+# which is exactly how this test failed once: 32/32 containers healthy, and
+# step 5 still died because checkout was not yet discoverable.
+#
+# Any status other than 503 means routing worked -- 401 (needs a token), 405
+# (wrong verb for the probe) and 200 are all fine here. We are testing
+# discoverability, not the endpoint.
+# ---------------------------------------------------------------------------
+Write-Host "[pre-flight] Waiting for the gateway to resolve all 12 services..." -ForegroundColor Cyan
+$routeProbes = [ordered]@{
+    catalog      = '/api/v1/products'
+    inventory    = '/api/v1/admin/inventory'
+    customer     = '/api/v1/customers/me'
+    cart         = '/api/v1/carts/me'
+    payment      = '/api/v1/payments/intents'
+    order        = '/api/v1/orders/me'
+    promotion    = '/api/v1/promotions/__preflight__'
+    shipping     = '/api/v1/shipping/rates'
+    checkout     = '/api/v1/checkout/preview'
+    notification = '/api/v1/notifications/me'
+    review       = '/api/v1/reviews/me'
+    search       = '/api/v1/search'
+}
+$unresolved = @($routeProbes.Keys)
+foreach ($attempt in 1..60) {
+    $stillUnresolved = @()
+    foreach ($svc in $unresolved) {
+        $code = 0
+        try {
+            $r = Invoke-WebRequest -Method GET -Uri "http://localhost:8080$($routeProbes[$svc])" `
+                -UseBasicParsing -TimeoutSec 10
+            $code = $r.StatusCode
+        }
+        catch {
+            $code = $_.Exception.Response.StatusCode.value__
+        }
+        # 503 (or no response at all) means the gateway could not resolve it.
+        if (-not $code -or $code -eq 503) { $stillUnresolved += $svc }
+    }
+    $unresolved = $stillUnresolved
+    if ($unresolved.Count -eq 0) { break }
+    Start-Sleep -Seconds 5
+}
+if ($unresolved.Count -gt 0) {
+    Write-Error ("Gateway still cannot resolve after 5min: $($unresolved -join ', '). " +
+                 "Check Eureka at http://localhost:8761 -- the instances are healthy on their " +
+                 "own ports but not discoverable through lb://.")
+    exit 1
+}
+Write-Host "    all 12 services resolvable through the gateway" -ForegroundColor Gray
+
 # Unique-per-run promo code so re-runs don't collide on the UNIQUE constraint.
 $promoCode = "WELCOME-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
-Write-Host "[1/16] JWTs..." -ForegroundColor Cyan
+Write-Host "[1/18] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/16] Admin: product + inventory + promo code..." -ForegroundColor Cyan
+Write-Host "[2/18] Admin: product + inventory + promo code..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
@@ -76,7 +147,7 @@ Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ code=$promoCode; type="PERCENTAGE"; amount=15; maxRedemptions=0 }) | Out-Null
 Write-Host "    product=$productId, inventory=10, promo=$promoCode" -ForegroundColor Gray
 
-Write-Host "[3/16] Customer: profile + address..." -ForegroundColor Cyan
+Write-Host "[3/18] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me" `
     -Headers @{ Authorization="Bearer $alice" } | Out-Null
@@ -87,14 +158,35 @@ $addr = Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ label="Home"; line1="1 Aurelia Lane"; city="Lagos"; postalCode="100001"; country="NG"; isDefault=$true })
 $addrId = $addr.id
 
-Write-Host "[4/16] Customer: add 2 units to cart..." -ForegroundColor Cyan
+Write-Host "[4/18] Customer: add 2 units to cart..." -ForegroundColor Cyan
+# Clear first, so the run is idempotent. Step 6 (/checkout/confirm) empties the
+# cart on success, but a run that dies anywhere between step 4 and step 6 leaves
+# items behind -- and because each run creates a NEW product, the next run's
+# cart holds both and step 5's totals come out doubled (subtotal=400 instead of
+# 200). That is a confusing way to find out the previous run failed, and it
+# makes one real failure look like a pricing bug on every subsequent run.
+Invoke-RestMethod -Method DELETE `
+    -Uri "http://localhost:8080/api/v1/carts/me" `
+    -Headers @{ Authorization="Bearer $alice" } | Out-Null
+
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ variantId=$productId; quantity=2; unitPrice=100.00; title="Aurelia 18k" }) | Out-Null
 
-Write-Host "[5/16] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
+# Assert the cart holds exactly what we just put in it, so a totals mismatch in
+# step 5 points at the pricing logic rather than at leftover state.
+$cart = Invoke-RestMethod -Method GET `
+    -Uri "http://localhost:8080/api/v1/carts/me" `
+    -Headers @{ Authorization="Bearer $alice" }
+$cartUnits = ($cart.items | Measure-Object -Property quantity -Sum).Sum
+if (@($cart.items).Count -ne 1 -or $cartUnits -ne 2) {
+    Write-Error "Cart should hold exactly 1 line of 2 units; got $(@($cart.items).Count) line(s), $cartUnits unit(s)"
+    exit 1
+}
+
+Write-Host "[5/18] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -106,7 +198,7 @@ if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or $preview.to
 }
 Write-Host "    subtotal=200, -15% promo=30, ship=0, total=170" -ForegroundColor Gray
 
-Write-Host "[6/16] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
+Write-Host "[6/18] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 $confirm = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/confirm" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -124,7 +216,7 @@ if ($confirm.orderStatus -ne "PAID") {
 $orderId = $confirm.orderId
 Write-Host "    order=$orderId PAID" -ForegroundColor Gray
 
-Write-Host "[7/16] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
+Write-Host "[7/18] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
     $r = Invoke-RestMethod -Method POST `
         -Uri "http://localhost:8080/api/v1/admin/orders/$orderId/transition" `
@@ -135,7 +227,7 @@ foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
 }
 Write-Host "    order DELIVERED" -ForegroundColor Gray
 
-Write-Host "[8/16] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
+Write-Host "[8/18] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
 $searchHit = $false
 for ($i = 0; $i -lt 30; $i++) {
     $r = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=aurelia"
@@ -147,7 +239,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $searchHit) { Write-Error "Search index never picked up product $productId from Kafka"; exit 1 }
 Write-Host "    /search?q=aurelia returned the product" -ForegroundColor Gray
 
-Write-Host "[9/16] Customer review; public listing + aggregate..." -ForegroundColor Cyan
+Write-Host "[9/18] Customer review; public listing + aggregate..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/products/$productId/reviews" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -161,7 +253,7 @@ if ($publicReviews.content.Count -ne 1 -or $agg.average -ne 5.0 -or $agg.count -
 }
 Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
 
-Write-Host "[10/16] /notifications/me shows order.* events..." -ForegroundColor Cyan
+Write-Host "[10/18] /notifications/me shows order.* events..." -ForegroundColor Cyan
 $notifsFound = $false
 for ($i = 0; $i -lt 30; $i++) {
     $n = Invoke-RestMethod -Method GET `
@@ -173,7 +265,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $notifsFound) { Write-Error "Expected >=5 notifications, never reached that count"; exit 1 }
 Write-Host "    >=5 notifications received (created+paid+fulfilled+shipped+delivered)" -ForegroundColor Gray
 
-Write-Host "[11/16] Kafka product_index + 401 without token..." -ForegroundColor Cyan
+Write-Host "[11/18] Kafka product_index + 401 without token..." -ForegroundColor Cyan
 $rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
     "SELECT title FROM product_index WHERE variant_id = '$productId'"
 if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index broken; got '$rows'"; exit 1 }
@@ -190,7 +282,7 @@ try {
 }
 Write-Host "    product_index OK + 401 OK" -ForegroundColor Gray
 
-Write-Host "[12/16] Zipkin saga trace spans the chain..." -ForegroundColor Cyan
+Write-Host "[12/18] Zipkin saga trace spans the chain..." -ForegroundColor Cyan
 $saga = $null
 for ($i = 0; $i -lt 30; $i++) {
     $traces = Invoke-RestMethod -Method GET `
@@ -213,7 +305,7 @@ if (-not $saga) {
 }
 Write-Host "    traceId=$($saga[0].traceId) spans=$($saga.Count) services=$($sagaServices -join ',')" -ForegroundColor Gray
 
-Write-Host "[13/16] Prometheus scrapes every service..." -ForegroundColor Cyan
+Write-Host "[13/18] Prometheus scrapes every service..." -ForegroundColor Cyan
 $up = Invoke-RestMethod -Method GET -Uri "http://localhost:9090/api/v1/query?query=up"
 $expected = @("catalog:8081","inventory:8082","customer:8083","cart:8084","payment:8085",
               "order:8086","promotion:8087","shipping:8088","checkout:8089",
@@ -231,7 +323,7 @@ if ($downServices.Count -gt 0) {
 }
 Write-Host "    all 12 services up=1 in Prometheus" -ForegroundColor Gray
 
-Write-Host "[14/16] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
+Write-Host "[14/18] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
 # Invoke-WebRequest (not Invoke-RestMethod) so we can read the raw
 # byte length -- IRM auto-deserializes and would map a 0-byte body
 # silently to $null, hiding exactly the regression we want to catch.
@@ -296,7 +388,7 @@ function Test-Probe($Uri) {
     }
 }
 
-Write-Host "[15/16] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
+Write-Host "[15/18] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
 $probeFailures = @()
 foreach ($svc in $servicePorts.Keys) {
     foreach ($group in @("readiness", "liveness")) {
@@ -315,7 +407,7 @@ if ($probeFailures.Count -gt 0) {
 }
 Write-Host "    24/24 probe endpoints UP (12 services x readiness+liveness)" -ForegroundColor Gray
 
-Write-Host "[16/16] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
+Write-Host "[16/18] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
 $infoFailures = @()
 foreach ($svc in $servicePorts.Keys) {
     $uri = "http://localhost:$($servicePorts[$svc])/actuator/info"
@@ -351,6 +443,85 @@ if ($infoFailures.Count -gt 0) {
     exit 1
 }
 Write-Host "    all 12 services report app.name + build.{version,artifact,time}" -ForegroundColor Gray
+
+Write-Host "[17/18] Tempo has the same saga trace as Zipkin..." -ForegroundColor Cyan
+$sagaTraceId = $saga[0].traceId
+$tempoTrace = $null
+# Tempo serves recent traces from the live head block, but the write path is
+# still asynchronous, so poll briefly rather than assuming instant visibility.
+#
+# NOTE on the response shape: /api/v2/traces/<id> answers 200 with
+# {"trace":{},"metrics":{...}} for a trace it does NOT have -- an empty object,
+# not a 404. Truthiness of the response therefore proves nothing, and an
+# earlier version of this check passed on exactly that empty body. The spans
+# have to be counted.
+foreach ($attempt in 1..15) {
+    try {
+        $r = Invoke-RestMethod -Method GET -TimeoutSec 10 `
+            -Uri "http://localhost:3200/api/v2/traces/$sagaTraceId"
+        $spanSets = if ($r.trace.resourceSpans) { $r.trace.resourceSpans } else { $r.trace.batches }
+        if (@($spanSets).Count -gt 0) { $tempoTrace = $spanSets; break }
+    }
+    catch {
+        # Transport/status errors while Tempo warms up.
+    }
+    Start-Sleep -Seconds 2
+}
+if (-not $tempoTrace) {
+    Write-Error ("Tempo has no spans for trace $sagaTraceId after 30s. Zipkin has it (step 12), so spans " +
+                 "are being produced -- this is the OTLP export path. Check that " +
+                 "management.opentelemetry.tracing.export.otlp.endpoint points at " +
+                 "http://tempo:4318/v1/traces (port 4318 http, NOT 4317 grpc: the transport " +
+                 "property defaults to http, so a grpc endpoint fails silently).")
+    exit 1
+}
+
+# Count the distinct services represented, so this asserts a real cross-service
+# trace rather than a single orphan span that happened to carry the id.
+$tempoServices = @()
+foreach ($b in $tempoTrace) {
+    foreach ($attr in $b.resource.attributes) {
+        if ($attr.key -eq "service.name") {
+            $v = if ($attr.value.stringValue) { $attr.value.stringValue } else { $attr.value.Value }
+            if ($v -and $tempoServices -notcontains $v) { $tempoServices += $v }
+        }
+    }
+}
+if ($tempoServices.Count -lt 4) {
+    Write-Error ("Tempo trace $sagaTraceId spans only $($tempoServices.Count) service(s) " +
+                 "($($tempoServices -join ',')); Zipkin saw $($sagaServices.Count). The trace " +
+                 "arrived but context is not propagating across the saga on the OTLP path.")
+    exit 1
+}
+Write-Host "    traceId=$sagaTraceId present in Tempo, services=$($tempoServices -join ',')" -ForegroundColor Gray
+
+Write-Host "[18/18] Loki has lines shipped by Alloy (shipper-qualified)..." -ForegroundColor Cyan
+$alloyLines = 0
+foreach ($attempt in 1..15) {
+    try {
+        # Shipper-qualified on purpose: Promtail ships the same containers during
+        # the overlap, so {service="catalog"} alone would pass on Promtail's
+        # lines and prove nothing about Alloy.
+        $q = [uri]::EscapeDataString('{shipper="alloy"}')
+        $end = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000000
+        $start = ([DateTimeOffset]::UtcNow.AddMinutes(-15)).ToUnixTimeMilliseconds() * 1000000
+        $res = Invoke-RestMethod -TimeoutSec 15 -Method GET `
+            -Uri "http://localhost:3100/loki/api/v1/query_range?query=$q&start=$start&end=$end&limit=20"
+        foreach ($stream in $res.data.result) { $alloyLines += @($stream.values).Count }
+        if ($alloyLines -gt 0) { break }
+    }
+    catch {
+        # Loki returns 4xx while its ingester ring warms up.
+    }
+    Start-Sleep -Seconds 2
+}
+if ($alloyLines -le 0) {
+    Write-Error ("Loki has no lines labelled shipper=alloy after 30s. Alloy is up but not " +
+                 "shipping: check http://localhost:12345/graph for component health, and that " +
+                 "discovery.docker can reach /var/run/docker.sock.")
+    exit 1
+}
+Write-Host "    $alloyLines log lines in Loki carrying shipper=alloy" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green

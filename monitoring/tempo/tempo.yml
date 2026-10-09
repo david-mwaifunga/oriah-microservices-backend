@@ -7,46 +7,60 @@
 # shares Grafana's data-source plumbing with Loki and Prometheus so a log line
 # can deep-link straight to the trace that produced it.
 #
-# Storage is local filesystem on a docker volume: single-binary, no object
-# store, no separate index. A production deploy would point `backend` at S3/GCS
-# and run the components separately, which is exactly the swap the course's
-# Loki microservices topology demonstrates — deliberately not replicated here
-# (see the divergence table in docs/REFACTOR_SECTION12.md).
+# -----------------------------------------------------------------------------
+# VERSION IS PINNED (3.0.0), and the compose service pins it too.
+#
+# `grafana/tempo:latest` resolved to v3.0.0, a major release that restructured
+# the configuration: the top-level `ingester` and `compactor` sections no longer
+# exist, and Tempo refused to start with
+#
+#   failed parsing config: field ingester not found in type app.Config
+#                          field compactor not found in type app.Config
+#
+# Their settings moved into a new live-store / backend-scheduler architecture
+# (visible in `tempo -help` as `-live-store.complete-block-timeout` and
+# `-backend-worker.compaction.block-retention`). This file therefore carries
+# only the sections verified to parse on 3.0.0, and the two tuning blocks that
+# used to live here were dropped DELIBERATELY, not forgotten:
+#
+#   * ingester.max_block_duration / complete_block_timeout — flush tuning, so a
+#     just-written trace is searchable sooner. Not actually needed: Tempo
+#     searches the live head block as well as completed blocks, so a trace
+#     produced seconds ago is findable. smoke-test.ps1 asserts exactly that, so
+#     if this assumption is ever wrong the smoke test says so.
+#   * compactor.block_retention — retention. The default is generous for a
+#     local-dev volume; a smaller window would only save disk.
+#
+# This is also why the version is pinned rather than floating. `:latest` is what
+# produced this surprise, and the same day Grafana's own `:latest` hard-failed
+# startup on an unrelated change. A local-dev stack still deserves a
+# reproducible one.
+# -----------------------------------------------------------------------------
 
 server:
   http_listen_port: 3200
   log_level: warn
 
-# Allows Grafana to stream search results as they arrive rather than waiting
-# for the whole query. Without it the Explore view feels broken on cold blocks.
+# Lets Grafana stream search results as they arrive rather than waiting for the
+# whole query. Without it the Explore view feels broken on cold blocks.
 stream_over_http_enabled: true
 
 distributor:
   receivers:
     otlp:
       protocols:
-        # 4317 grpc is what the Spring services use
-        # (management.opentelemetry.tracing.export.otlp.endpoint). 4318 http is
-        # kept open because it is the easier one to hand-test with curl when a
-        # service appears to be producing no spans.
-        grpc:
-          endpoint: 0.0.0.0:4317
+        # 4318 (http) is the one the services actually use: the Spring property
+        # management.opentelemetry.tracing.export.otlp.transport defaults to
+        # 'http', so the wired exporter bean is OtlpHttpSpanExporter
+        # (confirmed by SpanExporterCoexistenceTest). Pointing a service at
+        # 4317 instead produces no error whatsoever — the spans simply never
+        # arrive, which reads as "tracing is broken" with nothing to go on.
         http:
           endpoint: 0.0.0.0:4318
-
-ingester:
-  # Flush quickly. The default (5m) is sized for production throughput and in
-  # local dev means a trace you just produced is not searchable yet -- which
-  # reads as "tracing is broken" during a smoke test rather than "not flushed".
-  max_block_duration: 5m
-  complete_block_timeout: 1m
-
-compactor:
-  compaction:
-    # 1h retention is plenty for local debugging and keeps the volume small.
-    # Zipkin's in-memory store capped at 100k spans and lost everything on
-    # restart; this at least survives a container bounce.
-    block_retention: 1h
+        # grpc is published anyway: it costs nothing and is the first thing
+        # you would want if the transport were ever switched.
+        grpc:
+          endpoint: 0.0.0.0:4317
 
 storage:
   trace:
@@ -55,9 +69,6 @@ storage:
       path: /var/tempo/wal
     local:
       path: /var/tempo/blocks
-    pool:
-      max_workers: 20
-      queue_depth: 1000
 
 usage_report:
   reporting_enabled: false

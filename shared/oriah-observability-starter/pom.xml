@@ -60,6 +60,25 @@
         </dependency>
 
         <!--
+            OTLP trace export, for Grafana Tempo. Tempo ingests OTLP natively,
+            and our spans are already OpenTelemetry spans under the hood
+            (micrometer-tracing-bridge-otel below) that were only being
+            translated into Zipkin's v2 wire format on the way out. Exporting
+            OTLP removes that translation step.
+
+            Added ALONGSIDE spring-boot-zipkin rather than replacing it, so the
+            end-to-end trace assertion in smoke-test.ps1 never goes dark during
+            the swap: Tempo is proven to receive spans before Zipkin is removed,
+            in a separate commit. SpanExporterCoexistenceTest is the gate that
+            establishes whether both exporters can actually be active at once;
+            if they cannot, the swap becomes a single atomic commit instead.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-opentelemetry</artifactId>
+        </dependency>
+
+        <!--
             Micrometer Tracing facade + OTel bridge. Spring Boot's auto-
             config wires a Tracer bean when this is on the classpath and
             turns on HTTP-server, RestClient, Feign, WebFlux, Spring

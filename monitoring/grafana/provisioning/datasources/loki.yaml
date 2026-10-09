@@ -18,11 +18,26 @@ datasources:
     jsonData:
       maxLines: 1000
       derivedFields:
-        # Click a traceId in a Loki log line and it deep-links to the
-        # corresponding trace in Zipkin. The brief calls this out as
-        # the single most valuable debugging affordance for the saga.
-        - datasourceUid: zipkin
-          matcherRegex: '"traceId":"([a-f0-9]{16,32})"'
+        # Click a traceId in a Loki log line and it opens the corresponding
+        # trace. The brief calls this out as the single most valuable debugging
+        # affordance for the saga.
+        #
+        # Previously this pointed at `datasourceUid: zipkin` -- a datasource
+        # that was never provisioned (only loki.yaml and prometheus.yaml exist
+        # in this directory), so the link had always resolved to nothing. It
+        # now targets the Tempo datasource by its pinned uid, which makes it an
+        # INTERNAL Grafana link: clicking opens the trace in the split pane
+        # rather than navigating out to a separate UI. That is also why there
+        # is no `url` here -- a datasourceUid link needs none.
+        #
+        # The regex matches our JSON log field, not a bracketed console
+        # pattern. logback-spring.xml emits one-line JSON with a bare <mdc/>
+        # provider, so MDC keys ARE the JSON field names, and
+        # MdcTraceCorrelationKeyTest pins those as camelCase traceId/spanId
+        # (32 hex / 16 hex). The course's `\[.+,(.+),.+\]` scrapes its
+        # `%5p [app,trace_id,span_id]` console layout and would match nothing
+        # here -- a dead "View trace" button, failing silently.
+        - datasourceUid: tempo
+          matcherRegex: '"traceId":"([a-f0-9]{32})"'
           name: traceId
-          url: 'http://localhost:9411/zipkin/traces/${__value.raw}'
-          urlDisplayLabel: 'Trace in Zipkin'
+          urlDisplayLabel: 'View trace'

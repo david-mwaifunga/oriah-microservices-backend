@@ -36,6 +36,15 @@ scrape_configs:
         target_label: 'service'
       - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
         target_label: 'project'
+      # Promtail is being replaced by Grafana Alloy (Promtail is EOL). Both
+      # ship the same container logs for one commit so the Loki assertion in
+      # smoke-test.ps1 is never without a shipper. Without this label every
+      # line would exist twice in Loki: log-rate panels would silently double
+      # and each line would carry two derived trace links. Every query made
+      # during the overlap must be shipper-qualified, e.g.
+      #   {service="checkout", shipper="alloy"}
+      - target_label: 'shipper'
+        replacement: 'promtail'
     pipeline_stages:
       # Most of our containers emit JSON via the oriah-observability-
       # starter's logback config. Parse it so traceId, spanId, level

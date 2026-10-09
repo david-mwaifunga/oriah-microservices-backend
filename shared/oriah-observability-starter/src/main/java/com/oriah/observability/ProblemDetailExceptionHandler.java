@@ -8,8 +8,11 @@ import jakarta.persistence.EntityNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 
 import org.slf4j.MDC;
+import java.util.Locale;
+
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -26,6 +29,7 @@ import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * Cross-service exception handler. Maps the common domain exceptions
@@ -249,11 +253,76 @@ public class ProblemDetailExceptionHandler {
                 "The request could not be bound to this endpoint");
     }
 
+    /**
+     * Any exception that already carries an HTTP status keeps it.
+     *
+     * <p>Found in production, at the edge. Spring Cloud Gateway signals an
+     * unresolvable downstream with
+     * {@code NotFoundException: 503 SERVICE_UNAVAILABLE "Unable to find
+     * instance for checkout"}, which extends {@link ResponseStatusException}
+     * and already carries 503. The {@code Exception.class} catch-all below
+     * outranked Spring's own handling of it, so the gateway reported 500 --
+     * turning "that service has not registered with Eureka yet" into "the
+     * server is broken", and making it retry-eligible into the bargain.
+     *
+     * <p>Handled generically rather than per exception type: this covers
+     * {@code ResponseStatusException}, {@code ErrorResponseException} (its
+     * subclass) and every framework or application exception that chooses to
+     * carry a status, including ones added later. {@code getHeaders()} is
+     * preserved because status-carrying exceptions often supply headers that
+     * are part of the contract -- {@code Retry-After} on a 503,
+     * {@code Allow} on a 405.
+     *
+     * <p>Lives in the shared starter rather than the gateway because it
+     * applies to both stacks: {@code ResponseStatusException} is a spring-web
+     * type, used by the 12 servlet services and the reactive gateway alike.
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ProblemDetail> statusCarrying(ResponseStatusException ex) {
+        HttpStatusCode status = ex.getStatusCode();
+
+        // 5xx here is an infrastructure condition (downstream unreachable,
+        // upstream timeout), not an unexpected bug, so it is WARN rather than
+        // the ERROR-with-stack-trace the catch-all uses. 4xx stays at DEBUG,
+        // consistent with the handlers above.
+        if (status.is5xxServerError()) {
+            log.warn("{} {}: {}", status.value(), ex.getClass().getSimpleName(), ex.getReason());
+        } else {
+            log.debug("{} {}: {}", status.value(), ex.getClass().getSimpleName(), ex.getReason());
+        }
+
+        ProblemDetail pd = problem(status, ex.getReason());
+        return new ResponseEntity<>(pd, ex.getHeaders(), status);
+    }
+
     @ExceptionHandler(Exception.class)
     public ProblemDetail unhandled(Exception ex) {
         log.error("500 unhandled exception", ex);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, TYPE_INTERNAL, "Internal Server Error",
                 "An unexpected error occurred. Use the traceId to correlate with logs and traces.");
+    }
+
+    /**
+     * Builds an RFC 7807 body for an arbitrary status, deriving the title and
+     * the problem {@code type} slug from the status reason phrase.
+     *
+     * <p>That derivation reproduces the explicit constants above exactly --
+     * 400 yields {@code bad-request}, 404 {@code not-found}, 409
+     * {@code conflict}, 503 {@code service-unavailable} -- so a status this
+     * advice has never seen before still gets a {@code type} consistent with
+     * the rest of the vocabulary instead of {@code about:blank}.
+     */
+    private static ProblemDetail problem(HttpStatusCode status, String detail) {
+        HttpStatus resolved = HttpStatus.resolve(status.value());
+        String title = resolved != null ? resolved.getReasonPhrase() : "Error " + status.value();
+        String slug = title.toLowerCase(Locale.ROOT).replace(' ', '-');
+
+        ProblemDetail pd = ProblemDetail.forStatusAndDetail(
+                status, detail != null ? detail : title);
+        pd.setType(URI.create("https://oriah.dev/problems/" + slug));
+        pd.setTitle(title);
+        attachTraceId(pd);
+        return pd;
     }
 
     /**
