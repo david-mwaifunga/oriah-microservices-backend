@@ -15,9 +15,9 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 
 | Tier | What | Status |
 |---|---|---|
-| 0 | Freeze the contract (baselines + characterization tests) | 🟡 in progress |
-| **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | 🟡 code green, live re-verify pending |
-| 1 | Compose modularization + actuator probes + build-info | 🟡 1a–1f done; awaiting image rebuild + 16/16 smoke |
+| 0 | Freeze the contract (baselines + characterization tests) | ✅ complete — goldens captured at the edge |
+| **0.5** | **Error-contract fix — framework exceptions all rendered 500** (found in 0d; promoted ahead of Tier 4) | ✅ verified live, 405/415/400 pinned in the goldens |
+| 1 | Compose modularization + actuator probes + build-info | ✅ complete — images rebuilt, smoke 18/18 |
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
@@ -33,14 +33,14 @@ they shouldn't.
 
 | # | Item | Status |
 |---|---|---|
-| 0a | Repos clean + record SHAs (oriah-api, config-repo, oriah-web) + image digests → `.codex-tmp/baseline/MANIFEST.txt`; `docker compose version` ≥ 2.20 | 🟡 SHAs + compose v5.1.4 recorded; image digests pending rebuild |
+| 0a | Repos clean + record SHAs + image digests | ✅ images rebuilt twice since; digests recorded |
 | 0b | `docker compose config` render → baseline (equivalence oracle for Tier 1) | ✅ 1141 lines → `.codex-tmp/baseline/compose.rendered.yaml` |
 | 0c | Capture OpenAPI spec of all 12 services → `.codex-tmp/baseline/openapi/` (diff oracle for Tier 5) | ✅ 12/12 captured — **43 paths / 51 operations**, canonicalized |
-| 0d | **Service-local** golden error tests — must stay byte-identical forever | 🟡 shared-advice contract pinned (`FrameworkErrorContractTest` 6/6, `ProblemDetailExceptionHandlerTest` 7/7); per-service domain exceptions pending |
-| 0e | **Gateway-through** golden errors — may gain variants in Tier 3 (re-baselined deliberately) | ⬜ |
+| 0d | **Service-local** golden error tests | ✅ closed by Tier 5 — every service now has 404-body, 409 and anti-enumeration tests |
+| 0e | **Gateway-through** golden errors | ✅ `scripts/error_goldens.py` — 14 cases captured + verify mode |
 | 0f | Gateway route-snapshot test (**29** routes, ids + `lb://` targets + path→route resolution, incl. reviews-over-products precedence) | ✅ `RouteSnapshotTest` 25/25 green |
 | 0g | MDC-key probe test (is it `traceId` or `trace_id` on Boot 4?) | ✅ **camelCase `traceId`/`spanId`** — 2/2 green |
-| 0h | Baseline green run: `mvnw clean install` + `smoke-test.ps1` 14/14 + oriah-web `tsc` + tests | 🟡 install SUCCESS, 15/15 images built, 9 third-party images pulled; **blocked on a realm-import bug, now fixed** — see below |
+| 0h | Baseline green run | ✅ **401 tests**, smoke 18/18, oriah-web `tsc` clean + 19/19 |
 | 0i | `scripts/validate-realm.ps1` — static Keycloak realm guard | ✅ fails on the broken file, passes on the fix |
 
 **0f finding — the route table is 29 routes, not 16.** 17 API routes plus **12 `/v3/api-docs/<svc>`
@@ -124,6 +124,75 @@ the contract for all 12 services. Per-service goldens therefore only need to cov
 
 ---
 
+---
+
+## 0e / 0.5f: the error goldens, and what capturing them found
+
+`scripts/error_goldens.py` captures what a client **actually receives at the edge** for 14 error
+cases, and `verify` diffs a fresh capture against the stored file. Volatile parts — traceId, spanId,
+UUIDs, timestamps — are normalised, so a diff is a contract change rather than noise. Proven both
+ways: exit 0 on the real capture, exit 1 on a tampered golden with the difference named.
+
+**Why this is not just more tests.** The per-service tests assert that a *handler* produces a 404
+with a problem body. They cannot see the gateway rewriting a status, swallowing a body, or adding a
+header — and this project has done all three:
+
+| | found by |
+|---|---|
+| framework errors rendered 500 platform-wide | looking at a real response (Tier 0.5) |
+| a 503 from an unresolvable `lb://` reported as 500 | looking at a real response (Tier 2) |
+| a breaker fallback carrying no correlation id | looking at a real response (Tier 3) |
+| every unmapped path answering 500 | looking at a real response (Tier 5) |
+
+Every one was found by eye, once. This makes that look repeatable.
+
+**Three things capturing them surfaced immediately**, which is the argument for having done it:
+
+1. **My own 403 case was mutating state.** It POSTed to `/api/v1/admin/products` with what turned
+   out to be an *admin* token, so it returned **201** and created a product on every capture. The
+   realm gives `maya` every admin role, so "as a user" needed a different principal entirely —
+   `alice`, who holds only `USER`. The case is now a GET.
+2. **The gateway is deliberately stricter than a service, and it reads like a bug.** Anonymous
+   `GET /api/v1/inventory/{id}` is **401 at the edge**, although inventory's own `SecurityConfig`
+   permits it. Both are right: that `permitAll` exists for catalog's Feign call, which goes
+   service-to-service over the docker network and never passes the gateway, whose
+   `PUBLIC_GET_PATHS` is only `/api/v1/products/**` and `/api/v1/search/**`. Captured so nobody
+   "fixes" it.
+3. **Finding #16 — 401 and 403 still return empty bodies.** See below.
+
+---
+
+### Finding #16 — 401 and 403 at the edge have no body
+
+After a tier spent giving every error an RFC 7807 body, these two still answer with nothing:
+
+```
+GET /api/v1/carts/me            (no token)
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer
+content-length: 0                      <- zero bytes
+
+GET /api/v1/products/<unknown-uuid>
+HTTP/1.1 404 Not Found
+Content-Type: application/problem+json
+                                       <- 291 bytes, type + detail + traceId
+```
+
+Spring Security's entry point and access-denied handler run **before** the advice, so they answer
+on their own. The `WWW-Authenticate: Bearer` header is correct and useful, but there is no problem
+`type`, no `detail`, and **no `traceId`** — so a 401 or 403 is the one error in the platform that
+cannot be correlated to a trace. For 403 that also means the caller is told nothing actionable,
+where "you are authenticated but lack this role" is exactly what they need.
+
+The same empty-body class as the 25 404s Tier 5 fixed, one layer further out.
+
+**Not fixed here, deliberately.** It is a contained change — a `ServerAuthenticationEntryPoint` and
+a `ServerAccessDeniedHandler` on the gateway emitting `ProblemDetail` — but it touches the
+Tier 3-verified security chain and deserves its own red/green cycle rather than being appended to a
+long session. The goldens now pin the current behaviour, so the fix will show up as a clean diff on
+exactly these four cases.
+
+
 ## Tier 0.5 — Error-contract fix
 
 Driven by the 0d finding. TDD: flip `FrameworkErrorContractTest`'s expectations to the correct
@@ -138,8 +207,8 @@ statuses (red), then make the handler claim them properly (green).
 | 0.5i | Guard test: gateway must stay reactive after the `jakarta.servlet-api` addition | ✅ `GatewayServerWebApplicationTypeTest`; gateway 27/27 green |
 | 0.5e | Check `oriah-web` for dependence on the 500s | ✅ **safe** — `problemFromResponse` is status-agnostic (parses any problem+json, else synthesizes from `res.status`); nothing branches on 500 |
 | 0.5g | **`fieldErrors` vs `errors` wire mismatch** fixed — typed `fieldErrors` + `fieldErrorMap()` helper for react-hook-form `setError` | ✅ `oriah-web` 19/19, `tsc --noEmit` clean |
-| 0.5h | **404s have no body** — 25 controller sites use `ResponseEntity.notFound().build()`, so 404 returns empty, no `detail`/`traceId`. Fixed by Tier 5's `ResourceNotFoundException` + per-service advice | ⬜ |
-| 0.5f | Live re-capture of 0d/0e goldens through the running stack | ⬜ |
+| 0.5h | **404s have no body** — 25 sites | ✅ **25 → 0**, closed by Tier 5 |
+| 0.5f | Live re-capture of goldens through the running stack | ✅ 14/14 verified at the edge |
 
 **Why not `extends ResponseEntityExceptionHandler`** (the course convention, and what the plan
 originally said): that class lives in **spring-webmvc**. Adding spring-webmvc to the shared starter

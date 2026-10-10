@@ -1,0 +1,224 @@
+{
+  "400-malformed-uuid-path": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Parameter 'id' must be a valid UUID",
+      "instance": "/api/v1/products/not-a-uuid",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "GET /api/v1/products/not-a-uuid",
+    "status": 400
+  },
+  "400-validation-missing-title": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Request validation failed",
+      "instance": "/api/v1/admin/products",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "POST /api/v1/admin/products  (as admin)",
+    "status": 400
+  },
+  "401-admin-products-anonymous": {
+    "contentType": null,
+    "problem": {
+      "body": ""
+    },
+    "request": "GET /api/v1/admin/products",
+    "status": 401
+  },
+  "401-cart-anonymous": {
+    "contentType": null,
+    "problem": {
+      "body": ""
+    },
+    "request": "GET /api/v1/carts/me",
+    "status": 401
+  },
+  "401-contact-info-anonymous": {
+    "contentType": null,
+    "problem": {
+      "body": ""
+    },
+    "request": "GET /api/v1/products/contact-info",
+    "status": 401
+  },
+  "401-inventory-read-anonymous-at-edge": {
+    "contentType": null,
+    "problem": {
+      "body": ""
+    },
+    "request": "GET /api/v1/inventory/<uuid>",
+    "status": 401
+  },
+  "403-admin-products-as-plain-user": {
+    "contentType": null,
+    "problem": {
+      "body": ""
+    },
+    "request": "GET /api/v1/admin/products  (as user)",
+    "status": 403
+  },
+  "404-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/orders/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/orders/<uuid>  (as user)",
+    "status": 404
+  },
+  "404-unknown-payment-intent": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "PaymentIntent not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/payments/intents/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/payments/intents/<uuid>  (as user)",
+    "status": 404
+  },
+  "404-unknown-product": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Product not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/products/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/products/<uuid>",
+    "status": 404
+  },
+  "404-unknown-promotion": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Promotion not found with the given input data code : 'NOSUCHCODE'",
+      "instance": "/api/v1/promotions/NOSUCHCODE",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/promotions/NOSUCHCODE  (as user)",
+    "status": 404
+  },
+  "404-unmapped-path-under-prefix": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "No static resource api/v1/products/does/not/exist.",
+      "instance": "/api/v1/products/does/not/exist",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/products/does/not/exist",
+    "status": 404
+  },
+  "405-wrong-method": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "HTTP method DELETE is not supported by this endpoint",
+      "instance": "/api/v1/products",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 405,
+      "title": "Method Not Allowed",
+      "type": "https://oriah.dev/problems/method-not-allowed"
+    },
+    "request": "DELETE /api/v1/products  (as admin)",
+    "status": 405
+  },
+  "415-wrong-content-type": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Content-Type text/plain;charset=UTF-8 is not supported by this endpoint",
+      "instance": "/api/v1/admin/products",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 415,
+      "title": "Unsupported Media Type",
+      "type": "https://oriah.dev/problems/unsupported-media-type"
+    },
+    "request": "POST /api/v1/admin/products  (as admin)",
+    "status": 415
+  }
+}
