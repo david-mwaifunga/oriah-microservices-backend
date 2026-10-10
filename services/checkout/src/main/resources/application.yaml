@@ -153,3 +153,32 @@ resilience4j:
       shipping:  { base-config: default }
       payment:   { base-config: default }
       order:     { base-config: default }
+
+# ---------------------------------------------------------------------------
+# Local fallback for GET /api/v1/checkout/contact-info.
+#
+# config-repo/checkout.yaml overrides every key below whenever the Config Server
+# is up: spring.config.import wins over the document that imports it. This
+# block exists so the endpoint -- and, more importantly, the @Validated
+# binding -- still work when it is down, which the local/Maven profile
+# explicitly tolerates via `optional:configserver`.
+#
+# Without it, @NotBlank/@NotEmpty on CheckoutContactInfoDto turn an absent prefix
+# into BindValidationException and this service refuses to start. That is the
+# Tier 4 `base-config` hard-link mistake exactly: centralizing a value
+# converted an optional dependency into a required one.
+#
+# The keys here mirror config-repo/checkout.yaml ONE FOR ONE on purpose. Maps
+# merge key by key across property sources while lists are replaced wholesale,
+# so an extra key here would survive a config-repo override that omits it and
+# leak a stale value into the served response.
+# ---------------------------------------------------------------------------
+oriah:
+  checkout:
+    contact-info:
+      message: "Checkout service contact details are unavailable - the Config Server could not be reached"
+      contact-details:
+        name: unavailable
+        email: unavailable
+      on-call-support:
+        - unavailable

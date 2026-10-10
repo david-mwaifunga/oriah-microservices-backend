@@ -30,6 +30,13 @@ public class SecurityConfig {
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(a -> a
                         // Anonymous search — anyone browsing the storefront can use it.
+                        // Must precede the permitAll below: Spring Security
+                        // matches in declaration order, first match wins. The
+                        // contact-info response carries on-call phone numbers,
+                        // which should not be readable anonymously from a
+                        // public storefront edge -- unlike this service's
+                        // product/stock/search reads, which are meant to be.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/search/contact-info").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/search/**").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**", "/actuator/info", "/actuator/prometheus",
                                 "/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()

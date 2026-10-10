@@ -43,3 +43,32 @@ eureka:
       defaultZone: http://localhost:8761/eureka/
   instance:
     prefer-ip-address: true
+
+# ---------------------------------------------------------------------------
+# Local fallback for GET /api/v1/orders/contact-info.
+#
+# config-repo/order.yaml overrides every key below whenever the Config Server
+# is up: spring.config.import wins over the document that imports it. This
+# block exists so the endpoint -- and, more importantly, the @Validated
+# binding -- still work when it is down, which the local/Maven profile
+# explicitly tolerates via `optional:configserver`.
+#
+# Without it, @NotBlank/@NotEmpty on OrderContactInfoDto turn an absent prefix
+# into BindValidationException and this service refuses to start. That is the
+# Tier 4 `base-config` hard-link mistake exactly: centralizing a value
+# converted an optional dependency into a required one.
+#
+# The keys here mirror config-repo/order.yaml ONE FOR ONE on purpose. Maps
+# merge key by key across property sources while lists are replaced wholesale,
+# so an extra key here would survive a config-repo override that omits it and
+# leak a stale value into the served response.
+# ---------------------------------------------------------------------------
+oriah:
+  order:
+    contact-info:
+      message: "Order service contact details are unavailable - the Config Server could not be reached"
+      contact-details:
+        name: unavailable
+        email: unavailable
+      on-call-support:
+        - unavailable

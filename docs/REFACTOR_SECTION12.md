@@ -692,6 +692,46 @@ catch it. **Every service with `@WebMvcTest` slices asserting error bodies needs
 
 ---
 
+---
+
+### The `/contact-info` convention, and three things it forced
+
+All 12 services now serve `GET <prefix>/contact-info` from
+`oriah.<svc>.contact-info.*`, bound into a `@ConfigurationProperties` DTO. **23 tests, all green.**
+
+**1. The path had to sit inside an already-routed prefix.** `/api/v1/products/contact-info`,
+`/api/v1/carts/contact-info`, and so on — each inside the `/**` pattern the gateway already routes
+to that service. A service-named path (`/api/v1/catalog/contact-info`) would have needed a new
+gateway route per service, taking the route snapshot from 29 to 41 and rewriting
+`RouteSnapshotTest`. Leaving it off the gateway was worse: springdoc documents every mapping
+regardless of routing, so the aggregated Swagger UI would have listed 12 endpoints that 404 at the
+edge. As it stands the gateway is untouched and `RouteSnapshotTest`'s 29 routes still pass.
+
+**2. One real path ambiguity, in catalog.** `ProductController` maps
+`GET /api/v1/products/{id}` with a **UUID** path variable, and the new literal
+`/api/v1/products/contact-info` matches that pattern too. Spring's `PathPattern` comparator prefers
+the pattern with fewer URI variables, so the literal wins — but had it not, the request would try to
+parse `"contact-info"` as a UUID and answer 400, and the endpoint would simply never have worked.
+Pinned by a test rather than trusted.
+
+**3. Three services would have published on-call phone numbers anonymously.** catalog, search and
+inventory all `permitAll()` anonymous GETs on exactly the prefix the endpoint sits under, so
+contact-info would have been readable from the public storefront edge. Each gained an explicit
+`.requestMatchers(GET, ".../contact-info").authenticated()` rule declared **before** the
+`permitAll` — Spring Security matches in declaration order, first match wins — and a test per
+service asserts the 401 so the ordering cannot be shuffled away. A deliberate divergence from the
+course, whose version is open.
+
+**Why shipping went first paid off exactly here.** The `@Validated` + fallback design was worked out
+on the smallest module, where getting it wrong only broke one service. The other ten were then
+generated from that template and **passed first time** — no debugging of eleven near-identical
+startup failures.
+
+**And `@ConfigurationPropertiesScan` landed on 11 app classes**, matching catalog's existing
+precedent rather than the course's `@EnableConfigurationProperties(X.class)`, which must be
+re-edited for every future properties class and would have left 11 application classes shaped
+differently from catalog's.
+
 ### Per-service convention items
 
 | Item | shipping | catalog | review | cart | customer | promotion | order | inventory | payment | search | notification |
@@ -700,7 +740,7 @@ catch it. **Every service with `@WebMvcTest` slices asserting error bodies needs
 | `exception/GlobalExceptionHandler` | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ✅ | n/a | n/a | n/a |
 | `mapper/XxxMapper` | n/a | ⬜ | ⬜ | ⬜ | ⚠️ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `constants/XxxConstants` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| `XxxContactInfoDto` + `/contact-info` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| `XxxContactInfoDto` + `/contact-info` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | OpenAPI annotations + pinned operationIds | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `IXxxService` + `service/impl/` | ⬜ | ⬜ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | exists | ⏭️ | exists |
 | Error-advice guard test | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |

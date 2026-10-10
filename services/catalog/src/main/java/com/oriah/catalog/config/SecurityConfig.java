@@ -56,6 +56,13 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Must precede the permitAll below: Spring Security
+                        // matches in declaration order, first match wins. The
+                        // contact-info response carries on-call phone numbers,
+                        // which should not be readable anonymously from a
+                        // public storefront edge -- unlike this service's
+                        // product/stock/search reads, which are meant to be.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/products/contact-info").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/products/**").permitAll()
                         .requestMatchers(
                                 "/actuator/health",
