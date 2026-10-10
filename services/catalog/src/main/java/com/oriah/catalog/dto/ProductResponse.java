@@ -6,13 +6,18 @@ import java.util.UUID;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
 import com.oriah.catalog.model.Availability;
-import com.oriah.catalog.model.Product;
-import com.oriah.catalog.service.ProductWithAvailability;
 
 /**
  * Wire-format response for a single product. Carries only what we want to
  * expose publicly — fields the entity holds but the API shouldn't surface
  * (audit timestamps, soft-delete flags, internal flags) stay off this record.
+ *
+ * <p>Mapping lives in {@link com.oriah.catalog.mapper.ProductMapper}, not on
+ * this record. The enriched overload takes a SERVICE-layer type, so having it
+ * here made com.oriah.catalog.dto depend on com.oriah.catalog.service -- the
+ * wire format depending on the orchestration layer, which is backwards for a
+ * boundary type. ProductMapperTest asserts reflectively that no service type
+ * reappears in this record's signatures.
  *
  * <p>{@code availability} is populated on the GET-by-id endpoint (where
  * we make the inventory call) and is {@code null} on list endpoints
@@ -28,33 +33,4 @@ public record ProductResponse(
         List<String> tags,
         Availability availability
 ) {
-
-    /**
-     * Map a plain {@link Product} to a {@code ProductResponse} without
-     * availability. Used by list endpoints.
-     */
-    public static ProductResponse from(Product product) {
-        return new ProductResponse(
-                product.id(),
-                product.title(),
-                product.description().orElse(null),
-                product.tags(),
-                null
-        );
-    }
-
-    /**
-     * Map a {@link ProductWithAvailability} (product + inventory-derived
-     * availability) to a full response. Used by GET-by-id.
-     */
-    public static ProductResponse from(ProductWithAvailability enriched) {
-        Product product = enriched.product();
-        return new ProductResponse(
-                product.id(),
-                product.title(),
-                product.description().orElse(null),
-                product.tags(),
-                enriched.availability()
-        );
-    }
 }

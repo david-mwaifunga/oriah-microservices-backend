@@ -11,8 +11,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.PageResponse;
 import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.catalog.service.ProductService;
 
@@ -50,7 +52,7 @@ import lombok.extern.slf4j.Slf4j;
  * per-endpoint for the same reason — see {@code list} versus {@code getById}.
  */
 @RestController
-@RequestMapping("/api/v1/products")
+@RequestMapping(CatalogConstants.PUBLIC_BASE)
 @Tag(name = "Products", description = "Public catalogue reads")
 @ApiResponses({
         @ApiResponse(responseCode = "500", description = "Unexpected server error",
@@ -84,10 +86,10 @@ public class ProductController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     public PageResponse<ProductResponse> list(
             @RequestParam(value = "tag", required = false) String tag,
-            @PageableDefault(size = 20) Pageable pageable) {
+            @PageableDefault(size = CatalogConstants.DEFAULT_PAGE_SIZE) Pageable pageable) {
         log.debug("GET /api/v1/products tag={} page={} size={}",
                 tag, pageable.getPageNumber(), pageable.getPageSize());
-        return PageResponse.from(service.findAll(tag, pageable), ProductResponse::from);
+        return PageResponse.from(service.findAll(tag, pageable), ProductMapper::toResponse);
     }
 
     /**
@@ -118,7 +120,7 @@ public class ProductController {
         // Resilience4j wraps the inventory call so catalog stays up even
         // when inventory is down (availability falls back to UNKNOWN).
         return service.findByIdWithAvailability(id)
-                .map(ProductResponse::from)
+                .map(ProductMapper::toResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 }

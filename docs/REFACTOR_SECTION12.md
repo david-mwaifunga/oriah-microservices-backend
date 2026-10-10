@@ -738,8 +738,8 @@ differently from catalog's.
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | 404s gain a body | n/a | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | n/a |
 | `exception/GlobalExceptionHandler` | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ✅ | n/a | n/a | n/a |
-| `mapper/XxxMapper` | n/a | ⬜ | ⬜ | ⬜ | ⚠️ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| `constants/XxxConstants` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| `mapper/XxxMapper` | n/a | ✅ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ |
+| `constants/XxxConstants` | ⏭️ | ✅ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ |
 | `XxxContactInfoDto` + `/contact-info` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | OpenAPI annotations + pinned operationIds | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `IXxxService` + `service/impl/` | ⬜ | ⬜ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | exists | ⏭️ | exists |
@@ -894,6 +894,82 @@ yet), not for an empty body.
 ---
 
 ---
+
+---
+
+### Constants and mappers: measured first, then mostly deferred
+
+Both of these were on the plan as per-service items. Measuring what was actually behind them changed
+the answer, and the measurements are worth recording because they are the justification.
+
+**Role names are not a per-service concern.** `hasRole('USER')` appears **12** times across the
+services and `ROLE_USER` **51** times across their tests. A per-service `XxxConstants` would
+duplicate that vocabulary 12 times — the same mistake the shared-`ResourceNotFoundException`
+decision already rejected. More to the point, a Java constant **cannot be wrong about itself**; it
+can only be wrong about the realm, which lives in a different file in a different language
+(`keycloak/import/oriah-realm.json`).
+
+So the deliverable is the cross-language check, not the constant:
+
+| | |
+|---|---|
+| `scripts/validate_roles.py` | every role the **main** sources guard on must be declared in the realm |
+| Result today | **PASS** — all 5 guarded roles declared; `PAYMENT_ADMIN` declared but guards nothing (known, recorded in Tier 3) |
+| Self-test | **5/5** |
+
+**The failure mode it catches:** `@PreAuthorize("hasRole('CATALOG_ADMN')")` compiles, logs nothing,
+and fails **closed** — the endpoint becomes uncallable by anyone, forever, and the only symptom is a
+403 that looks like correct behaviour. A realm rename does the same from the other side, and the
+realm file is edited by hand.
+
+**Two bugs of my own in that script, found by making it fail on purpose.** It first reported a match
+on line 28 that was really on line 42, because replacing a multi-line javadoc with a single space
+collapses the file; comments are now blanked newline-for-newline. And it reported the realm's *own*
+builtin roles as unknown, because the realm declares `offline_access` lowercase while
+`KeycloakRoleConverter` emits `ROLE_` + uppercase; the comparison is now case-insensitive. Both are
+pinned by self-test cases.
+
+**It scans main sources only, and that is a considered limit.** The first version also scanned tests
+and produced six findings, of which **five were legitimate** — the converter and auditor unit tests
+exercise generic machinery with deliberately arbitrary authorities (`ROLE_X`, `ROLE_ADMIN`,
+`ROLE_ANONYMOUS`), and catalog's 403 test grants a non-admin role on purpose. The sixth came from
+**prose inside an assertion message** (`.as("the 12 services all guard with hasRole('X') …")`),
+which no amount of comment stripping can distinguish from a rule. In main sources the ambiguity does
+not arise: a `hasRole('…')` string literal there *is* the SpEL rule. A guard with a five-in-six
+false-positive rate is one people switch off.
+
+**`CatalogConstants` exists; the other eleven are deferred.** Catalog's holds what is genuinely
+referenced more than once in main code — the two base paths, the role, the default page size — and
+is wired into `@RequestMapping`, `@PreAuthorize` and `@PageableDefault`. That last one needed
+checking rather than assuming: `@PreAuthorize("hasRole('" + ROLE + "')")` compiles only because
+concatenation of `static final String` literals is a compile-time constant expression, which is
+what an annotation value requires. Verified by compiling, and the 401/403 tests confirm the SpEL
+string is byte-identical.
+
+The course's `STATUS_201` / `MESSAGE_200` entries are **not** reproduced: they exist there to fill a
+`ResponseDto` envelope this project does not use, and response statuses now live in `@ApiResponse`
+annotations next to the handlers that produce them, which is where a reader looks.
+
+**The tests deliberately keep their URL literals**, and this is the non-obvious part. If
+`ProductController` and `ProductControllerTest` both read `PUBLIC_BASE`, editing that constant edits
+both and the test still passes — it stops guarding the published path and guards nothing. A test
+asserting a URL should state the URL. `ROLE_CATALOG_ADMIN` is shared precisely because its
+independent source of truth is elsewhere and `validate_roles.py` checks it.
+
+**`mapper/ProductMapper` exists in catalog only, because catalog is the only service with a defect
+behind it.** An inventory of all 12 found exactly one dto→service dependency inversion:
+`ProductResponse` carried `from(ProductWithAvailability)`, a **service-layer** parameter, so
+`com.oriah.catalog.dto` imported `com.oriah.catalog.service` — the wire format depending on the
+orchestration layer, which is backwards for a boundary type. Moving the mapping out fixes it, and
+`ProductMapperTest` asserts the fix **reflectively** rather than by reading imports, because an
+import is only evidence while a signature is the actual coupling. It went red on exactly that
+assertion while the three mapping characterizations passed, which is how the move is known to be
+behaviour-neutral.
+
+The other eleven use `XxxResponse.from(entity)` — a static factory on the DTO, which is the
+idiomatic Java shape, has no inversion, and is already correct. Eleven more mappers would move
+correct code into a less idiomatic shape for parity alone. Flagged rather than done, so it stays
+your call.
 
 ### Finding #12, closed: the document now describes the system
 

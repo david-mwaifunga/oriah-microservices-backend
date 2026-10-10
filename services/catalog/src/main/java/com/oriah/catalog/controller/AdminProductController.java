@@ -15,8 +15,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import org.springframework.security.access.prepost.PreAuthorize;
 
+import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.ProductCreateRequest;
 import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.catalog.model.Product;
@@ -35,10 +37,16 @@ import lombok.extern.slf4j.Slf4j;
  * Admin-facing endpoints for the catalog domain.
  *
  * <p>Mounted under a separate path prefix from {@link ProductController} so
- * we can apply different security and rate-limit policies at the gateway
- * and at the controller level (e.g.
- * {@code @PreAuthorize("hasRole('CATALOG_ADMIN')")} when iteration 7 adds
- * Keycloak).
+ * different security and rate-limit policies apply at the gateway and at the
+ * controller level. The controller-level half is the {@code @PreAuthorize}
+ * below -- the javadoc here used to say it would arrive "when iteration 7 adds
+ * Keycloak", which it did, some time ago.
+ *
+ * <p>The role name comes from {@link CatalogConstants#ROLE_CATALOG_ADMIN}
+ * rather than a literal, so the one string a typo would silently break -- a
+ * role check against a name the realm does not declare fails CLOSED, leaving
+ * the endpoint uncallable with no error anywhere -- has a single definition
+ * that {@code scripts/validate_roles.py} checks against the realm file.
  *
  * <h2>Logging</h2>
  * Inbound mutations are logged at <b>DEBUG</b> here — the matching INFO
@@ -46,8 +54,8 @@ import lombok.extern.slf4j.Slf4j;
  * changed what" record. Logging twice would duplicate every event.
  */
 @RestController
-@RequestMapping("/api/v1/admin/products")
-@PreAuthorize("hasRole('CATALOG_ADMIN')")
+@RequestMapping(CatalogConstants.ADMIN_BASE)
+@PreAuthorize("hasRole('" + CatalogConstants.ROLE_CATALOG_ADMIN + "')")
 @Tag(name = "Products (admin)", description = "Catalogue writes, CATALOG_ADMIN only")
 @ApiResponses({
         // The tail every operation on this controller shares. springdoc merges
@@ -106,7 +114,7 @@ public class AdminProductController {
         Product saved = service.create(request.title(), request.description(), request.tags());
         // Location points at the public read endpoint, not the admin path.
         URI location = URI.create("/api/v1/products/" + saved.id());
-        return ResponseEntity.created(location).body(ProductResponse.from(saved));
+        return ResponseEntity.created(location).body(ProductMapper.toResponse(saved));
     }
 
     @PatchMapping("/{id}")
@@ -123,7 +131,7 @@ public class AdminProductController {
             @Valid @RequestBody ProductUpdateRequest request) {
         log.debug("PATCH /api/v1/admin/products/{}", id);
         return service.update(id, request)
-                .map(ProductResponse::from)
+                .map(ProductMapper::toResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 
