@@ -1,0 +1,43 @@
+# Deliberate exceptions to the additions-only bar.
+#
+# Each line is service|kind|detail, matching exactly what openapi_diff.py
+# prints for that finding. A gate that gets ignored is worse than no gate, so
+# an exception has to be written down here, with a reason, before the gate will
+# pass -- and every finding NOT listed here still fails the build.
+#
+# ---------------------------------------------------------------------------
+# Tier 5: twelve endpoints stopped documenting a 200 they never returned.
+# ---------------------------------------------------------------------------
+#
+# These handlers answer 201 or 204. The baseline documented 200 for all of
+# them, because springdoc cannot see inside ResponseEntity.created(...) and
+# falls back to 200.
+#
+# Documenting the real status is the fix. What was NOT obvious -- and is worth
+# recording, because the Tier 5 notes first claimed the opposite -- is that it
+# cannot be done additively: the moment a method declares any @ApiResponse,
+# swagger-core REPLACES the default response set rather than merging into it.
+# So "add 201" and "remove the false 200" are the same edit. There is no
+# version of this change that keeps the 200.
+#
+# Taken because the removed status NEVER OCCURRED. No client can break by
+# losing a response it was never sent, and oriah-web was checked: apiFetch
+# branches on res.ok and special-cases 204, never on 200 (src/lib/api/client.ts
+# :129 and :133). The alternative -- declaring an explicit 200 beside the 201
+# to keep the gate quiet -- would re-document a status the server does not
+# return, which is the exact defect this tier set out to remove.
+#
+# Reviewed and accepted 2026-10-10.
+
+catalog|response status removed|POST /api/v1/admin/products -> 200
+catalog|response status removed|DELETE /api/v1/admin/products/{id} -> 200
+inventory|response status removed|POST /api/v1/admin/inventory -> 200
+customer|response status removed|POST /api/v1/customers/me -> 200
+customer|response status removed|POST /api/v1/customers/me/addresses -> 200
+customer|response status removed|DELETE /api/v1/customers/me/addresses/{addressId} -> 200
+cart|response status removed|DELETE /api/v1/carts/me -> 200
+cart|response status removed|DELETE /api/v1/carts/me/items/{variantId} -> 200
+payment|response status removed|POST /api/v1/payments/intents -> 200
+order|response status removed|POST /api/v1/orders -> 200
+promotion|response status removed|POST /api/v1/admin/promotions -> 200
+review|response status removed|POST /api/v1/products/{productId}/reviews -> 200

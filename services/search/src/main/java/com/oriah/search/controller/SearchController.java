@@ -1,6 +1,13 @@
 package com.oriah.search.controller;
 
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -13,6 +20,12 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/search")
+@Tag(name = "Search", description = "Full-text product search")
+@ApiResponses({
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 public class SearchController {
 
     private final SearchIndexRepository repository;
@@ -21,6 +34,11 @@ public class SearchController {
         this.repository = repository;
     }
 
+    @Operation(operationId = "search", summary = "Search products by free text")
+    @ApiResponse(responseCode = "200", description = "Matching products, possibly empty")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping
     public ResponseEntity<SearchResultResponse> search(
             @RequestParam("q") String q,

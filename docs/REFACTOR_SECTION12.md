@@ -741,7 +741,7 @@ differently from catalog's.
 | `mapper/XxxMapper` | n/a | ⬜ | ⬜ | ⬜ | ⚠️ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `constants/XxxConstants` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `XxxContactInfoDto` + `/contact-info` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| OpenAPI annotations + pinned operationIds | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| OpenAPI annotations + pinned operationIds | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `IXxxService` + `service/impl/` | ⬜ | ⬜ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | exists | ⏭️ | exists |
 | Error-advice guard test | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
@@ -892,6 +892,62 @@ yet), not for an empty body.
 ---
 
 ---
+
+---
+
+### Finding #12, closed: the document now describes the system
+
+The audit that found it, run against the pre-annotation capture, reported **127 findings** — of
+which **63 operations documented only `200`**, i.e. claimed they could not fail.
+
+What changed:
+
+| | Before | After |
+|---|---|---|
+| Operations documenting an error | **0 of 63** | all |
+| `ProblemDetail` published | **nowhere** | every service |
+| Handlers wrong about their success status | **12** | 0 |
+| Tags | springdoc class names (`admin-product-controller`) | chosen (`Products (admin)`) |
+| `operationId` | derived by springdoc | **pinned to the Tier 0 baseline** |
+
+**The error responses are per-endpoint, not blanket-applied, and that is the point.** A shared
+customizer adding 401/404/409 to everything would have been three lines instead of fifty, and it
+would have documented responses that cannot occur: `GET /api/v1/products` answers an empty page
+rather than a 404, and the anonymous reads can never answer 401. A client branch for an impossible
+status is the same class of defect as a missing one — a contract that does not describe the system.
+So `401` appears only where the endpoint is authenticated, `403` only behind a role check, `404`
+only where the handler can raise it, and `409` only on inventory's three state conflicts. Two
+tests assert both directions: the three 404-capable catalog endpoints document it, and the list
+endpoint **does not**.
+
+**`operationId` pinning is a deliberate no-op.** Each is set to the value springdoc already
+derived, so the additions-only gate stays clean. The point is to stop it *deriving* them: the
+moment two handlers in a service share a name it appends `_1`, and **which handler receives the
+suffix is decided by registration order, not source order**. order already has a `get`/`get_1`
+pair, and the suffix landed on `AdminOrderController` even though it sorts first alphabetically.
+Both halves are now pinned together — pinning one would let springdoc re-derive the collision and
+move the suffix to the other, silently swapping two ids in the published contract.
+
+### 5-pre0b — a second gate, because the first one cannot see this
+
+`scripts/openapi_audit.py` is the other half of the acceptance bar. The diff gate proves the
+contract did not **regress**; the audit proves it is **worth having**. It checks every operation
+has an explicit non-auto-numbered `operationId`, documents its real success status, documents at
+least one failure, references `ProblemDetail` for every error, and carries a chosen tag — then
+checks `ProblemDetail` is actually published wherever it is referenced.
+
+It runs over the captured JSON in milliseconds, with no JVM and no containers. That was the
+deciding factor: the equivalent as Spring tests would have been eleven more 120-second contexts on
+every build, and a gate that slow is one people switch off. One in-JVM example is kept —
+catalog's `OpenApiContractTest`, 7 tests — because the script checks the captured file while that
+test checks the annotations actually reach springdoc. It shares `CatalogIntegrationTest`'s context
+rather than booting its own, which is worth knowing: it first carried an extra
+`spring.cloud.config.enabled=false` property, which changed the context cache key and cost a
+120-second boot for assertions that do not care either way.
+
+`--self-test` mutates a real capture seven ways (strip the errors, unpublish `ProblemDetail`,
+revert 201/204 to 200, restore a springdoc tag, drop an `operationId`, auto-number one, inline an
+error schema) and asserts each is caught.
 
 ## Tier 5 live verification
 

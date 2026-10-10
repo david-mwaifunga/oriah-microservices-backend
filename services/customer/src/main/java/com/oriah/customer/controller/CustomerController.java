@@ -3,6 +3,7 @@ package com.oriah.customer.controller;
 import java.net.URI;
 import java.util.UUID;
 
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,6 +26,13 @@ import com.oriah.customer.model.Customer;
 import com.oriah.customer.service.CustomerService;
 
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -34,6 +42,18 @@ import lombok.extern.slf4j.Slf4j;
  */
 @RestController
 @RequestMapping("/api/v1/customers/me")
+@Tag(name = "Customer", description = "The caller's own profile and addresses")
+@ApiResponses({
+        @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Authenticated, but lacking the required role",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 @PreAuthorize("hasRole('USER')")
 @Slf4j
 public class CustomerController {
@@ -50,6 +70,11 @@ public class CustomerController {
      * email/given_name/family_name claims. Idempotent — 200 if existed,
      * 201 if newly created.
      */
+    @Operation(operationId = "selfProvision", summary = "Create the caller's profile from their JWT; idempotent")
+    @ApiResponse(responseCode = "201", description = "Profile created from the token")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping
     public ResponseEntity<CustomerResponse> selfProvision(@AuthenticationPrincipal Jwt jwt) {
         log.debug("POST /me sub={}", jwt.getSubject());
@@ -78,6 +103,11 @@ public class CustomerController {
      * was actually asked for, and putting an identity claim in a response body
      * sends it into logs, bug reports and screenshots for no benefit.
      */
+    @Operation(operationId = "me", summary = "The caller's profile")
+    @ApiResponse(responseCode = "200", description = "The profile")
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping
     public CustomerResponse me(@AuthenticationPrincipal Jwt jwt) {
         return service.findByKeycloakId(jwt.getSubject())
@@ -85,6 +115,14 @@ public class CustomerController {
                 .orElseThrow(CustomerController::noProfile);
     }
 
+    @Operation(operationId = "updateProfile", summary = "Partially update the caller's profile")
+    @ApiResponse(responseCode = "200", description = "The updated profile")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PatchMapping
     public CustomerResponse updateProfile(
             @AuthenticationPrincipal Jwt jwt,
@@ -94,6 +132,8 @@ public class CustomerController {
                 .orElseThrow(CustomerController::noProfile);
     }
 
+    @Operation(operationId = "listAddresses", summary = "The caller's addresses")
+    @ApiResponse(responseCode = "200", description = "The addresses, possibly empty")
     @GetMapping("/addresses")
     public ResponseEntity<java.util.List<AddressResponse>> listAddresses(@AuthenticationPrincipal Jwt jwt) {
         return ResponseEntity.ok(
@@ -101,6 +141,14 @@ public class CustomerController {
         );
     }
 
+    @Operation(operationId = "addAddress", summary = "Add an address to the caller's profile")
+    @ApiResponse(responseCode = "201", description = "Created; Location points at the new address")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/addresses")
     public ResponseEntity<AddressResponse> addAddress(
             @AuthenticationPrincipal Jwt jwt,
@@ -113,6 +161,11 @@ public class CustomerController {
                 .body(created);
     }
 
+    @Operation(operationId = "deleteAddress", summary = "Remove one of the caller's addresses")
+    @ApiResponse(responseCode = "204", description = "Deleted; no body")
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @DeleteMapping("/addresses/{addressId}")
     public ResponseEntity<Void> deleteAddress(
             @AuthenticationPrincipal Jwt jwt,

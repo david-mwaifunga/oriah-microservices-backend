@@ -3,6 +3,7 @@ package com.oriah.payment.controller;
 import java.net.URI;
 import java.util.UUID;
 
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -27,10 +28,29 @@ import com.oriah.payment.repository.IdempotencyKeyRepository;
 import com.oriah.payment.service.PaymentService;
 
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import lombok.extern.slf4j.Slf4j;
 
 @RestController
 @RequestMapping("/api/v1/payments")
+@Tag(name = "Payments", description = "Payment intents and confirmation")
+@ApiResponses({
+        @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Authenticated, but lacking the required role",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 @PreAuthorize("hasRole('USER')")
 @Slf4j
 public class PaymentController {
@@ -47,6 +67,11 @@ public class PaymentController {
         this.objectMapper = objectMapper;
     }
 
+    @Operation(operationId = "createIntent", summary = "Create a payment intent for an order")
+    @ApiResponse(responseCode = "201", description = "Created; Location points at the intent")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/intents")
     public ResponseEntity<PaymentIntentResponse> createIntent(
             @AuthenticationPrincipal Jwt jwt,
@@ -67,6 +92,14 @@ public class PaymentController {
      * {@code PaymentIntegrationTest.othersIntentIsIndistinguishableFromMissing}
      * asserts the two bodies match.
      */
+    @Operation(operationId = "get", summary = "One of the caller's own payment intents")
+    @ApiResponse(responseCode = "200", description = "The intent")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/intents/{id}")
     public PaymentIntentResponse get(
             @AuthenticationPrincipal Jwt jwt,
@@ -94,6 +127,14 @@ public class PaymentController {
      * already landed, the duplicate is a cheap database read instead
      * of a double-charge.
      */
+    @Operation(operationId = "confirm", summary = "Charge the gateway and settle the intent")
+    @ApiResponse(responseCode = "200", description = "The settled intent; replayed verbatim for a repeated Idempotency-Key")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/intents/{id}/confirm")
     public ResponseEntity<PaymentIntentResponse> confirm(
             @AuthenticationPrincipal Jwt jwt,

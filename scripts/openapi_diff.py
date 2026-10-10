@@ -68,14 +68,29 @@ METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 
 
 class Findings:
-    """Collects breaking changes and additions, grouped by service."""
+    """Collects breaking changes and additions, grouped by service.
 
-    def __init__(self):
+    A breaking finding that matches an entry in the allowlist is moved to
+    `allowed` instead of `breaking`. That is deliberately a separate bucket
+    rather than a silent filter: the report still prints every one, so a
+    reviewer sees what was waived and can go read why.
+    """
+
+    def __init__(self, allowlist=None):
         self.breaking = []
         self.additive = []
+        self.allowed = []
+        self._allowlist = allowlist or set()
 
     def broke(self, service, kind, detail):
-        self.breaking.append((service, kind, detail))
+        # The allowlist is matched on the stable prefix of the detail -- the
+        # part that identifies WHICH finding this is -- because several
+        # findings append an explanatory sentence after it.
+        key = (service, kind, detail.split(' -- ')[0].strip())
+        if key in self._allowlist:
+            self.allowed.append((service, kind, detail))
+        else:
+            self.breaking.append((service, kind, detail))
 
     def added(self, service, kind, detail):
         self.additive.append((service, kind, detail))
@@ -280,8 +295,27 @@ def load(path):
         return json.load(fh)
 
 
-def run(baseline_dir, current_dir, services=None):
-    f = Findings()
+def load_allowlist(path):
+    """Parses `service|kind|detail` lines, ignoring blanks and # comments."""
+    if not path:
+        return set()
+    p = Path(path)
+    if not p.exists():
+        return set()
+    out = set()
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        if len(parts) != 3:
+            raise ValueError("malformed allowlist line (want service|kind|detail): " + line)
+        out.add(tuple(parts))
+    return out
+
+
+def run(baseline_dir, current_dir, services=None, allowlist=None):
+    f = Findings(allowlist)
     baseline_dir, current_dir = Path(baseline_dir), Path(current_dir)
     checked = []
 
@@ -331,6 +365,13 @@ def report(f, checked, baseline_dir, current_dir):
             print("  + [{0}] {1}: {2}".format(service, kind, detail))
         print()
 
+    if f.allowed:
+        print("WAIVED ({0}) -- listed in scripts/openapi-allowed-breaks.txt"
+              .format(len(f.allowed)))
+        for service, kind, detail in sorted(f.allowed):
+            print("  ~ [{0}] {1}: {2}".format(service, kind, detail))
+        print()
+
     if f.breaking:
         print("BREAKING ({0}) -- the acceptance bar is additions only".format(
             len(f.breaking)))
@@ -338,6 +379,9 @@ def report(f, checked, baseline_dir, current_dir):
             print("  ! [{0}] {1}: {2}".format(service, kind, detail))
         print()
         print("FAIL: the contract regressed.")
+    elif f.allowed:
+        print("PASS: additions only, plus {0} waived break(s) -- read the reasons in "
+              "scripts/openapi-allowed-breaks.txt.".format(len(f.allowed)))
     else:
         print("PASS: additions only.")
 
@@ -581,7 +625,43 @@ def self_test(baseline_dir):
         else:
             print("  ok    allowed: " + name)
 
-    total = 1 + len(_breaking_mutations()) + len(_additive_mutations())
+    # The allowlist itself has to be checked: it must waive exactly the finding
+    # it names and leave every other one failing. An allowlist that swallows
+    # more than its line says is the way a waiver quietly becomes a blanket.
+    first_path = sorted(original["paths"])[0]
+    waived_key = (service, "path removed", first_path)
+
+    f, _ = with_mutated(lambda spec: spec["paths"].pop(first_path))
+    if f.breaking and not f.allowed:
+        print("  ok    a removal is breaking with no allowlist")
+    else:
+        failures.append("removal was not breaking without an allowlist")
+        print("  FAIL  a removal should be breaking with no allowlist")
+
+    spec = copy.deepcopy(original)
+    spec["paths"].pop(first_path)
+    tmp = tempfile.mkdtemp()
+    Path(tmp, service + ".json").write_text(
+        json.dumps(spec, sort_keys=True, indent=2), encoding="utf-8")
+
+    f, _ = run(baseline_dir, tmp, services=[service], allowlist={waived_key})
+    if f.ok and len(f.allowed) == 1:
+        print("  ok    the allowlist waives exactly its own entry")
+    else:
+        failures.append("allowlist did not waive its entry")
+        print("  FAIL  allowlist: breaking=%d allowed=%d (wanted 0 and 1)"
+              % (len(f.breaking), len(f.allowed)))
+
+    # ...and an unrelated entry must waive nothing.
+    f, _ = run(baseline_dir, tmp, services=[service],
+               allowlist={(service, "path removed", "/not/this/one")})
+    if f.breaking and not f.allowed:
+        print("  ok    an unrelated allowlist entry waives nothing")
+    else:
+        failures.append("allowlist matched something it does not name")
+        print("  FAIL  an unrelated allowlist entry waived a finding")
+
+    total = 4 + len(_breaking_mutations()) + len(_additive_mutations())
     print()
     if failures:
         print("SELF-TEST FAILED: {0}/{1} checks bad".format(len(failures), total))
@@ -596,6 +676,8 @@ def main(argv):
     ap.add_argument("current", nargs="?", default=".codex-tmp/current/openapi")
     ap.add_argument("--self-test", action="store_true",
                     help="prove the gate can fail, by mutating the baseline")
+    ap.add_argument("--allow", default=str(Path(__file__).with_name("openapi-allowed-breaks.txt")),
+                    help="file of deliberate exceptions (service|kind|detail per line)")
     args = ap.parse_args(argv)
 
     if args.self_test:
@@ -611,7 +693,13 @@ def main(argv):
               + args.current)
         return 2
 
-    f, checked = run(args.baseline, args.current)
+    try:
+        allowlist = load_allowlist(args.allow)
+    except ValueError as exc:
+        print("ERROR: " + str(exc))
+        return 2
+
+    f, checked = run(args.baseline, args.current, allowlist=allowlist)
     if not checked:
         print("ERROR: no services compared -- check the directories")
         return 2

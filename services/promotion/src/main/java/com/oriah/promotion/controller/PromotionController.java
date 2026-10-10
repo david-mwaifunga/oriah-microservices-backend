@@ -2,6 +2,7 @@ package com.oriah.promotion.controller;
 
 import java.math.BigDecimal;
 
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -17,10 +18,29 @@ import com.oriah.promotion.dto.PromotionResponse;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.promotion.service.PromotionService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/v1/promotions")
+@Tag(name = "Promotions", description = "Discount code lookup and redemption")
+@ApiResponses({
+        @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Authenticated, but lacking the required role",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 @PreAuthorize("hasRole('USER')")
 public class PromotionController {
 
@@ -31,6 +51,11 @@ public class PromotionController {
     }
 
     /** Look up a code and return its config (validation hint to UI). */
+    @Operation(operationId = "get", summary = "Look up a discount code")
+    @ApiResponse(responseCode = "200", description = "The code's configuration")
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/{code}")
     public PromotionResponse get(@PathVariable("code") String code) {
         return service.findByCode(code)
@@ -43,6 +68,14 @@ public class PromotionController {
      * the code is unknown/expired/disabled/exhausted — single 404 path
      * avoids leaking which guard failed (UI just shows "code invalid").
      */
+    @Operation(operationId = "apply", summary = "Compute the discount for a subtotal")
+    @ApiResponse(responseCode = "200", description = "The computed discount")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{code}/apply")
     public ApplyResponse apply(
             @PathVariable("code") String code,
@@ -57,6 +90,11 @@ public class PromotionController {
      * — calling this twice double-counts. (Outbox/saga pattern handles
      * idempotency in a real production setup.)
      */
+    @Operation(operationId = "redeem", summary = "Increment the code's redemption count")
+    @ApiResponse(responseCode = "200", description = "The code, with its new redemption count")
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{code}/redeem")
     public PromotionResponse redeem(@PathVariable("code") String code) {
         return service.redeem(code)

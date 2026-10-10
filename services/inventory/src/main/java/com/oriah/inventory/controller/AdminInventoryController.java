@@ -5,6 +5,7 @@ import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.Optional;
 
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -21,6 +22,13 @@ import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.service.InventoryService;
 
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -38,6 +46,18 @@ import lombok.extern.slf4j.Slf4j;
  */
 @RestController
 @RequestMapping("/api/v1/admin/inventory")
+@Tag(name = "Inventory (admin)", description = "Stock writes, INVENTORY_ADMIN only")
+@ApiResponses({
+        @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Authenticated, but lacking the required role",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 @PreAuthorize("hasRole('INVENTORY_ADMIN')")
 @Slf4j
 public class AdminInventoryController {
@@ -48,6 +68,11 @@ public class AdminInventoryController {
         this.service = service;
     }
 
+    @Operation(operationId = "create", summary = "Create a stock record for a variant")
+    @ApiResponse(responseCode = "201", description = "Created; Location points at the public read path")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping
     public ResponseEntity<InventoryResponse> create(
             @Valid @RequestBody InventoryCreateRequest request) {
@@ -57,6 +82,17 @@ public class AdminInventoryController {
         return ResponseEntity.created(location).body(InventoryResponse.from(saved));
     }
 
+    @Operation(operationId = "reserve", summary = "Reserve units against available stock")
+    @ApiResponse(responseCode = "200", description = "Updated stock levels")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The request conflicts with current state",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{variantId}/reserve")
     public ResponseEntity<InventoryResponse> reserve(
             @PathVariable("variantId") UUID variantId,
@@ -64,6 +100,17 @@ public class AdminInventoryController {
         return apply(variantId, request, service::reserve);
     }
 
+    @Operation(operationId = "release", summary = "Release units back from reserved")
+    @ApiResponse(responseCode = "200", description = "Updated stock levels")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The request conflicts with current state",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{variantId}/release")
     public ResponseEntity<InventoryResponse> release(
             @PathVariable("variantId") UUID variantId,
@@ -71,6 +118,17 @@ public class AdminInventoryController {
         return apply(variantId, request, service::release);
     }
 
+    @Operation(operationId = "confirm", summary = "Confirm reserved units as shipped")
+    @ApiResponse(responseCode = "200", description = "Updated stock levels")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The request conflicts with current state",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{variantId}/confirm")
     public ResponseEntity<InventoryResponse> confirm(
             @PathVariable("variantId") UUID variantId,
@@ -78,6 +136,14 @@ public class AdminInventoryController {
         return apply(variantId, request, service::confirm);
     }
 
+    @Operation(operationId = "restock", summary = "Add units to on-hand stock")
+    @ApiResponse(responseCode = "200", description = "Updated stock levels")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{variantId}/restock")
     public ResponseEntity<InventoryResponse> restock(
             @PathVariable("variantId") UUID variantId,

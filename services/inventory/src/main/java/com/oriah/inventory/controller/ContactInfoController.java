@@ -6,7 +6,12 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.inventory.dto.InventoryContactInfoDto;
 
+import org.springframework.http.ProblemDetail;
+
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 /**
@@ -35,7 +40,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
  */
 @RestController
 @RequestMapping("/api/v1/inventory")
-@Tag(name = "contact-info", description = "Who owns this service")
+@Tag(name = "Service contact", description = "Who owns this service")
 public class ContactInfoController {
 
     private final InventoryContactInfoDto contactInfo;
@@ -56,6 +61,13 @@ public class ContactInfoController {
      * suffix is decided by registration order, not source order. Pinning it
      * makes the generated client name stable by construction.
      */
+    @ApiResponse(responseCode = "200", description = "The owning team and how to reach them")
+    @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "500", description = "Unexpected server error",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/contact-info")
     @Operation(operationId = "fetchInventoryContactInfo",
             summary = "Who owns the inventory service, and how to reach them")

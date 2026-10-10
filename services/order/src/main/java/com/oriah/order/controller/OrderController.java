@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -25,10 +26,29 @@ import com.oriah.order.model.Order;
 import com.oriah.order.model.OrderStatus;
 import com.oriah.order.service.OrderService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
+
 import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/v1/orders")
+@Tag(name = "Orders", description = "The caller's own orders")
+@ApiResponses({
+        @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "403", description = "Authenticated, but lacking the required role",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class))),
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 @PreAuthorize("hasRole('USER')")
 public class OrderController {
 
@@ -38,6 +58,11 @@ public class OrderController {
         this.service = service;
     }
 
+    @Operation(operationId = "place", summary = "Place an order")
+    @ApiResponse(responseCode = "201", description = "Created; Location points at the order")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping
     public ResponseEntity<OrderResponse> place(
             @AuthenticationPrincipal Jwt jwt,
@@ -47,6 +72,11 @@ public class OrderController {
                 .body(OrderResponse.from(o));
     }
 
+    @Operation(operationId = "mine", summary = "The caller's orders, paged")
+    @ApiResponse(responseCode = "200", description = "A page of orders")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/me")
     public ResponseEntity<Page<OrderResponse>> mine(
             @AuthenticationPrincipal Jwt jwt,
@@ -65,6 +95,14 @@ public class OrderController {
      * {@code OrderIntegrationTest.othersOrderIsIndistinguishableFromMissing}
      * asserts the two bodies match, so a friendlier message fails the build.
      */
+    @Operation(operationId = "get", summary = "One of the caller's own orders")
+    @ApiResponse(responseCode = "200", description = "The order")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/{id}")
     public OrderResponse get(
             @AuthenticationPrincipal Jwt jwt,
@@ -81,6 +119,17 @@ public class OrderController {
      * the PaymentIntent is actually SUCCEEDED before calling this.
      * (Future checkout orchestrator validates that.)
      */
+    @Operation(operationId = "pay", summary = "Attach a settled payment intent and transition to PAID")
+    @ApiResponse(responseCode = "200", description = "The order, now PAID")
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The request conflicts with current state",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{id}/pay")
     public OrderResponse pay(
             @AuthenticationPrincipal Jwt jwt,
@@ -92,6 +141,14 @@ public class OrderController {
                 .orElseThrow(() -> unknownOrder(id));
     }
 
+    @Operation(operationId = "cancel", summary = "Cancel one of the caller's own orders")
+    @ApiResponse(responseCode = "200", description = "The order, now CANCELLED")
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The request conflicts with current state",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{id}/cancel")
     public OrderResponse cancel(
             @AuthenticationPrincipal Jwt jwt,
