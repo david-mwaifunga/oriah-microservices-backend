@@ -2,6 +2,8 @@ package com.oriah.inventory.model;
 
 import java.util.UUID;
 
+import com.oriah.inventory.exception.InsufficientStockException;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -79,13 +81,14 @@ public class Inventory extends AuditableEntity {
      * Reserves {@code qty} units against this variant. Used when a customer
      * adds the variant to their cart.
      *
-     * @throws IllegalArgumentException if {@code qty <= 0} or not enough stock available.
+     * @throws IllegalArgumentException if {@code qty <= 0} (a malformed argument, 400)
+     * @throws InsufficientStockException if not enough stock is available (a state
+     *         conflict, 409)
      */
     public void reserve(int qty) {
         requirePositive(qty);
         if (qty > available()) {
-            throw new IllegalArgumentException(
-                    "cannot reserve " + qty + " units; only " + available() + " available");
+            throw InsufficientStockException.cannot("reserve", qty, available(), "available");
         }
         this.reserved += qty;
     }
@@ -94,13 +97,14 @@ public class Inventory extends AuditableEntity {
      * Releases {@code qty} units back from the reserved pool — e.g. on
      * cart abandon or order cancel before shipment.
      *
-     * @throws IllegalArgumentException if {@code qty <= 0} or exceeds {@code reserved}.
+     * @throws IllegalArgumentException if {@code qty <= 0} (a malformed argument, 400)
+     * @throws InsufficientStockException if it exceeds {@code reserved} (a state
+     *         conflict, 409)
      */
     public void release(int qty) {
         requirePositive(qty);
         if (qty > reserved) {
-            throw new IllegalArgumentException(
-                    "cannot release " + qty + " units; only " + reserved + " reserved");
+            throw InsufficientStockException.cannot("release", qty, reserved, "reserved");
         }
         this.reserved -= qty;
     }
@@ -110,13 +114,14 @@ public class Inventory extends AuditableEntity {
      * and {@code onHand}. The reservation is converted into a permanent
      * stock decrement.
      *
-     * @throws IllegalArgumentException if {@code qty <= 0} or exceeds {@code reserved}.
+     * @throws IllegalArgumentException if {@code qty <= 0} (a malformed argument, 400)
+     * @throws InsufficientStockException if it exceeds {@code reserved} (a state
+     *         conflict, 409)
      */
     public void confirm(int qty) {
         requirePositive(qty);
         if (qty > reserved) {
-            throw new IllegalArgumentException(
-                    "cannot confirm " + qty + " units; only " + reserved + " reserved");
+            throw InsufficientStockException.cannot("confirm", qty, reserved, "reserved");
         }
         this.reserved -= qty;
         this.onHand -= qty;

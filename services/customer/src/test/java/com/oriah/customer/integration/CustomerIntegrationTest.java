@@ -23,6 +23,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -144,5 +145,88 @@ class CustomerIntegrationTest {
                         .with(jwt().authorities(ROLE_CUSTOMER_ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content").isArray());
+    }
+
+    // ------------------------------------------------------------------
+    // Not-found paths. All five answered 404 with an EMPTY BODY before Tier 5.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("GET /me before provisioning is 404 WITH a problem body")
+    void meBeforeProvisioningIsAProblem404() throws Exception {
+        // Reachable in normal use: a brand-new Keycloak user holds a valid JWT
+        // but has never called POST /me. With an empty 404 the storefront could
+        // only report "Upstream returned 404 Not Found", when the actionable
+        // message is that the profile has not been created yet.
+        mvc.perform(get("/api/v1/customers/me").with(jwt().authorities(ROLE_USER)
+                        .jwt(j -> j.subject("kc-never-provisioned"))))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail").value(
+                        "Customer not found with the given input data customer : 'me'"))
+                .andExpect(jsonPath("$.traceId").exists());
+    }
+
+    @Test
+    @DisplayName("PATCH /me before provisioning is 404 with a problem body")
+    void patchMeBeforeProvisioningIsAProblem404() throws Exception {
+        mvc.perform(patch("/api/v1/customers/me").with(jwt().authorities(ROLE_USER)
+                        .jwt(j -> j.subject("kc-never-provisioned-2")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"firstName\":\"Nobody\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Customer not found with the given input data customer : 'me'"));
+    }
+
+    @Test
+    @DisplayName("POST /me/addresses before provisioning is 404 with a problem body")
+    void addAddressBeforeProvisioningIsAProblem404() throws Exception {
+        // NOTE the inconsistency this does NOT fix, recorded deliberately:
+        // GET /me/addresses answers the SAME state with 200 and an empty list.
+        // One condition, two answers. Harmonizing them is a status change with
+        // no bug behind it, so it is deferred to be done WITH the frontend
+        // rather than slipped into a conventions tier.
+        mvc.perform(post("/api/v1/customers/me/addresses").with(jwt().authorities(ROLE_USER)
+                        .jwt(j -> j.subject("kc-never-provisioned-3")))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"label":"Home","line1":"1 Main St","city":"Lagos",                                "postalCode":"100001","country":"NG","isDefault":true}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Customer not found with the given input data customer : 'me'"));
+    }
+
+    @Test
+    @DisplayName("DELETE an address that is not there is 404 with a problem body")
+    void deleteUnknownAddressIsAProblem404() throws Exception {
+        var jwt = jwt().authorities(ROLE_USER)
+                .jwt(j -> j.subject("kc-addr-404").claim("email", "a@x")
+                        .claim("given_name", "A").claim("family_name", "B"));
+        mvc.perform(post("/api/v1/customers/me").with(jwt)).andExpect(status().isCreated());
+
+        java.util.UUID missing = java.util.UUID.randomUUID();
+        mvc.perform(delete("/api/v1/customers/me/addresses/" + missing).with(jwt))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Address not found with the given input data addressId : '" + missing + "'"));
+    }
+
+    @Test
+    @DisplayName("admin GET /admin/customers/{id} unknown is 404 with a problem body")
+    void adminGetUnknownCustomerIsAProblem404() throws Exception {
+        java.util.UUID missing = java.util.UUID.randomUUID();
+        mvc.perform(get("/api/v1/admin/customers/" + missing)
+                        .with(jwt().authorities(ROLE_CUSTOMER_ADMIN)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Customer not found with the given input data id : '" + missing + "'"));
     }
 }

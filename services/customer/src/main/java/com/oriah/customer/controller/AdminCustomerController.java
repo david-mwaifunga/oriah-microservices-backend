@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.customer.dto.CustomerResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.customer.service.CustomerService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -40,10 +41,9 @@ public class AdminCustomerController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<CustomerResponse> get(@PathVariable("id") UUID id) {
+    public CustomerResponse get(@PathVariable("id") UUID id) {
         return service.findById(id)
                 .map(CustomerResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Customer", "id", id.toString()));
     }
 }

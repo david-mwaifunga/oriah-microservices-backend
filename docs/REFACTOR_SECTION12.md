@@ -513,13 +513,13 @@ JPA, which makes it the cheapest place to prove the genuinely risky part — the
 | 2 | **catalog** | medium | no | yes | 🟡 404 bodies done — **53/53** |
 | 3 | review | small | no | yes | 🟡 404 body done — **11/11** (was 6) |
 | 4 | cart | small | no | yes | 🟡 404 bodies + **the 200 bug** — **10/10** (was 6) |
-| 5 | customer | medium | conditional | yes | ⬜ |
-| 6 | promotion | small | yes | yes | ⬜ |
-| 7 | order | medium | yes | yes | ⬜ |
-| 8 | inventory | medium | yes | yes | ⬜ |
-| 9 | payment | medium | no | yes | ⬜ |
-| 10 | search | small | no | yes | ⬜ |
-| 11 | notification | small | no | yes | ⬜ |
+| 5 | customer | medium | no | yes | 🟡 5 x 404 bodies |
+| 6 | promotion | small | no | yes | 🟡 4 x 404 + anti-enumeration guard |
+| 7 | order | medium | no | yes | 🟡 5 x 404 + cross-user guard |
+| 8 | inventory | medium | **yes** | yes | 🟡 2 x 404 + **3 x 400 to 409** |
+| 9 | payment | medium | no | yes | 🟡 2 x 404 + cross-user guard |
+| 10 | search | small | no | yes | 🟡 guard test |
+| 11 | notification | small | no | yes | 🟡 guard test |
 | 12 | ~~checkout~~ | large | — | — | ⏭️ **lifted out — see below** |
 
 ---
@@ -696,14 +696,14 @@ catch it. **Every service with `@WebMvcTest` slices asserting error bodies needs
 
 | Item | shipping | catalog | review | cart | customer | promotion | order | inventory | payment | search | notification |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 404s gain a body | n/a | ✅ | ✅ | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | n/a | n/a |
-| `exception/GlobalExceptionHandler` | n/a | n/a | n/a | n/a | ⬜ | ⬜ | ⬜ | ⬜ | n/a | n/a | n/a |
+| 404s gain a body | n/a | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | n/a |
+| `exception/GlobalExceptionHandler` | n/a | n/a | n/a | n/a | n/a | n/a | n/a | ✅ | n/a | n/a | n/a |
 | `mapper/XxxMapper` | n/a | ⬜ | ⬜ | ⬜ | ⚠️ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `constants/XxxConstants` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `XxxContactInfoDto` + `/contact-info` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | OpenAPI annotations + pinned operationIds | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | `IXxxService` + `service/impl/` | ⬜ | ⬜ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | exists | ⏭️ | exists |
-| Error-advice guard test | ✅ | ✅ | ✅ | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Error-advice guard test | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 `IXxxService` is deferred (⏭️) everywhere it is pure ceremony — one implementation, one caller. It
 is demonstrated in catalog so the pattern is in the codebase to read, and batched at the end of the

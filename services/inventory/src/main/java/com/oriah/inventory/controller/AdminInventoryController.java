@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.inventory.dto.InventoryCreateRequest;
 import com.oriah.inventory.dto.InventoryResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.inventory.dto.QuantityRequest;
 import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.service.InventoryService;
@@ -93,9 +94,18 @@ public class AdminInventoryController {
             UUID variantId,
             QuantityRequest request,
             BiFunction<UUID, Integer, Optional<Inventory>> serviceCall) {
+        // One 404 path shared by reserve / release / confirm / restock, so all
+        // four gained a problem body from this single change.
+        //
+        // Note what is NOT folded in here: an over-reserve is a 409, raised as
+        // InsufficientStockException from the Inventory aggregate, not an empty
+        // Optional. The two conditions were previously both "4xx with no body"
+        // and are now properly distinct -- 404 the variant does not exist, 409
+        // it exists but the numbers do not allow this.
         return serviceCall.apply(variantId, request.qty())
                 .map(InventoryResponse::from)
                 .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Inventory", "variantId", variantId.toString()));
     }
 }

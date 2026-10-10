@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.order.dto.AttachPaymentRequest;
 import com.oriah.order.dto.OrderResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.order.dto.PlaceOrderRequest;
 import com.oriah.order.model.Order;
 import com.oriah.order.model.OrderStatus;
@@ -53,15 +54,25 @@ public class OrderController {
         return ResponseEntity.ok(service.findMine(jwt.getSubject(), pageable).map(OrderResponse::from));
     }
 
+    /**
+     * One of the caller's own orders.
+     *
+     * <p>The {@code filter} on ownership before the 404 is deliberate:
+     * "not yours" and "does not exist" must be indistinguishable, or an id is
+     * an existence oracle. The shared {@code ResourceNotFoundException}
+     * phrasing preserves that -- it names the id the caller already sent and
+     * nothing else -- and
+     * {@code OrderIntegrationTest.othersOrderIsIndistinguishableFromMissing}
+     * asserts the two bodies match, so a friendlier message fails the build.
+     */
     @GetMapping("/{id}")
-    public ResponseEntity<OrderResponse> get(
+    public OrderResponse get(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id) {
         return service.findById(id)
                 .filter(o -> o.keycloakId().equals(jwt.getSubject()))
                 .map(OrderResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> unknownOrder(id));
     }
 
     /**
@@ -71,26 +82,28 @@ public class OrderController {
      * (Future checkout orchestrator validates that.)
      */
     @PostMapping("/{id}/pay")
-    public ResponseEntity<OrderResponse> pay(
+    public OrderResponse pay(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id,
             @Valid @RequestBody AttachPaymentRequest body) {
         return service.attachPayment(jwt.getSubject(), id, body.paymentIntentId())
                 .flatMap(o -> service.transition(o.id(), OrderStatus.PAID))
                 .map(OrderResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> unknownOrder(id));
     }
 
     @PostMapping("/{id}/cancel")
-    public ResponseEntity<OrderResponse> cancel(
+    public OrderResponse cancel(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id) {
         return service.findById(id)
                 .filter(o -> o.keycloakId().equals(jwt.getSubject()))
                 .flatMap(o -> service.transition(o.id(), OrderStatus.CANCELLED))
                 .map(OrderResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> unknownOrder(id));
+    }
+
+    private static ResourceNotFoundException unknownOrder(UUID id) {
+        return new ResourceNotFoundException("Order", "id", id.toString());
     }
 }

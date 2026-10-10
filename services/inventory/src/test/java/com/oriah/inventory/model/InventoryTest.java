@@ -3,6 +3,8 @@ package com.oriah.inventory.model;
 import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
+
+import com.oriah.inventory.exception.InsufficientStockException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,7 +60,7 @@ class InventoryTest {
         inv.reserve(3);
 
         assertThatThrownBy(() -> inv.reserve(3))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(InsufficientStockException.class)
                 .hasMessageContaining("only 2 available");
     }
 
@@ -93,7 +95,7 @@ class InventoryTest {
         inv.reserve(2);
 
         assertThatThrownBy(() -> inv.release(5))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(InsufficientStockException.class)
                 .hasMessageContaining("only 2 reserved");
     }
 
@@ -117,7 +119,7 @@ class InventoryTest {
         inv.reserve(2);
 
         assertThatThrownBy(() -> inv.confirm(3))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(InsufficientStockException.class)
                 .hasMessageContaining("only 2 reserved");
     }
 

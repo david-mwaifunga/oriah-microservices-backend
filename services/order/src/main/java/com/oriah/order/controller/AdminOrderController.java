@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.order.dto.OrderResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.order.dto.TransitionRequest;
 import com.oriah.order.service.OrderService;
 
@@ -37,26 +38,30 @@ public class AdminOrderController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<OrderResponse> get(@PathVariable("id") UUID id) {
+    public OrderResponse get(@PathVariable("id") UUID id) {
         return service.findById(id)
                 .map(OrderResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
 
     /**
      * Admins can drive any allowed FSM transition (fulfill, ship,
-     * deliver). The domain enforces what's reachable from the current
-     * state — illegal targets throw IllegalStateException -> 500 today;
-     * we'd map to 409 in a polish cycle.
+     * deliver). The domain enforces what is reachable from the current state.
+     *
+     * <p>This used to say illegal targets "throw IllegalStateException -> 500
+     * today; we'd map to 409 in a polish cycle". That comment outlived its
+     * truth: the shared advice has mapped {@code IllegalStateException} to
+     * <strong>409 Conflict</strong> since Tier 0.5, so an illegal transition
+     * already answers correctly. Corrected rather than deleted, because a
+     * comment claiming a 500 would send the next reader looking for a bug that
+     * is not there.
      */
     @PostMapping("/{id}/transition")
-    public ResponseEntity<OrderResponse> transition(
+    public OrderResponse transition(
             @PathVariable("id") UUID id,
             @Valid @RequestBody TransitionRequest body) {
         return service.transition(id, body.targetStatus())
                 .map(OrderResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
 }

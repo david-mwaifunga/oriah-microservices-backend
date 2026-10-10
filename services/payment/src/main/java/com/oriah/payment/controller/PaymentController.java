@@ -20,6 +20,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.payment.dto.ConfirmIntentRequest;
 import com.oriah.payment.dto.CreateIntentRequest;
 import com.oriah.payment.dto.PaymentIntentResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.payment.model.IdempotencyKey;
 import com.oriah.payment.model.PaymentIntent;
 import com.oriah.payment.repository.IdempotencyKeyRepository;
@@ -55,15 +56,29 @@ public class PaymentController {
                 .body(PaymentIntentResponse.from(created));
     }
 
+    /**
+     * One of the caller's own payment intents.
+     *
+     * <p>The ownership {@code filter} before the 404 is the sharpest
+     * anti-enumeration case in the platform: a payment-intent id confirmed to
+     * exist is a far more interesting probe target than an order id. The shared
+     * {@code ResourceNotFoundException} phrasing keeps "not yours" and "does
+     * not exist" identical, and
+     * {@code PaymentIntegrationTest.othersIntentIsIndistinguishableFromMissing}
+     * asserts the two bodies match.
+     */
     @GetMapping("/intents/{id}")
-    public ResponseEntity<PaymentIntentResponse> get(
+    public PaymentIntentResponse get(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id) {
         return service.findById(id)
                 .filter(i -> i.keycloakId().equals(jwt.getSubject()))
                 .map(PaymentIntentResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> unknownIntent(id));
+    }
+
+    private static ResourceNotFoundException unknownIntent(UUID id) {
+        return new ResourceNotFoundException("PaymentIntent", "id", id.toString());
     }
 
     /**
@@ -126,6 +141,6 @@ public class PaymentController {
                     }
                     return ResponseEntity.ok(resp);
                 })
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> unknownIntent(id));
     }
 }

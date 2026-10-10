@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.promotion.dto.CreatePromotionRequest;
 import com.oriah.promotion.dto.PromotionResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.promotion.model.Promotion;
 import com.oriah.promotion.service.PromotionService;
 
@@ -48,10 +49,9 @@ public class AdminPromotionController {
     }
 
     @PostMapping("/{code}/disable")
-    public ResponseEntity<PromotionResponse> disable(@PathVariable("code") String code) {
+    public PromotionResponse disable(@PathVariable("code") String code) {
         return service.disable(code)
                 .map(PromotionResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Promotion", "code", code));
     }
 }

@@ -21,6 +21,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -102,5 +103,75 @@ class PromotionIntegrationTest {
     void requiresJwt() throws Exception {
         mvc.perform(get("/api/v1/promotions/ANY"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    // ------------------------------------------------------------------
+    // Not-found paths -- and the anti-enumeration property they protect.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("GET an unknown code is 404 with a problem body")
+    void getUnknownCodeIsAProblem404() throws Exception {
+        mvc.perform(get("/api/v1/promotions/NOSUCHCODE").with(jwt().authorities(ROLE_USER)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail").value(
+                        "Promotion not found with the given input data code : 'NOSUCHCODE'"))
+                .andExpect(jsonPath("$.traceId").exists());
+    }
+
+    @Test
+    @DisplayName("an exhausted code is INDISTINGUISHABLE from a code that never existed")
+    void exhaustedCodeIsIndistinguishableFromUnknownCode() throws Exception {
+        // The security property that made Tier 5 risky here, now asserted
+        // rather than merely respected.
+        //
+        // promotion answers 404 for BOTH "no such code" and "this code exists
+        // but you have used up its redemptions" -- deliberately, so a caller
+        // cannot enumerate valid codes by watching for a different response.
+        // Adding a HELPFUL detail to these 404s would have been the regression:
+        // "redemption cap reached" confirms the code is real.
+        //
+        // So the bodies must match exactly, apart from traceId. This test is
+        // what stops someone later "improving" one of the two messages.
+        mvc.perform(post("/api/v1/admin/promotions").with(jwt().authorities(ROLE_CATALOG_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"code\":\"ONEUSE\",\"type\":\"FIXED\",\"amount\":10,\"maxRedemptions\":1}"))
+                .andExpect(status().isCreated());
+        mvc.perform(post("/api/v1/promotions/ONEUSE/redeem").with(jwt().authorities(ROLE_USER)))
+                .andExpect(status().isOk());
+
+        String exhausted = bodyOf(post("/api/v1/promotions/ONEUSE/redeem"));
+        String neverExisted = bodyOf(post("/api/v1/promotions/ONEUSE2/redeem"));
+
+        org.assertj.core.api.Assertions.assertThat(stripTraceId(exhausted))
+                .as("an exhausted code and a nonexistent one must be indistinguishable; "
+                        + "any difference lets a caller enumerate real codes")
+                .isEqualTo(stripTraceId(neverExisted).replace("ONEUSE2", "ONEUSE"));
+    }
+
+    @Test
+    @DisplayName("admin disable of an unknown code is 404 with a problem body")
+    void disableUnknownCodeIsAProblem404() throws Exception {
+        mvc.perform(post("/api/v1/admin/promotions/GHOST/disable")
+                        .with(jwt().authorities(ROLE_CATALOG_ADMIN)))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Promotion not found with the given input data code : 'GHOST'"));
+    }
+
+    private String bodyOf(org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder req)
+            throws Exception {
+        return mvc.perform(req.with(jwt().authorities(ROLE_USER)))
+                .andExpect(status().isNotFound())
+                .andReturn().getResponse().getContentAsString();
+    }
+
+    /** traceId is per-request, so it is the one field that legitimately differs. */
+    private static String stripTraceId(String json) {
+        return json.replaceAll(",?\"traceId\":\"[0-9a-f]+\"", "");
     }
 }

@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.inventory.dto.InventoryResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.inventory.service.InventoryService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -30,12 +31,12 @@ public class InventoryController {
     }
 
     @GetMapping("/{variantId}")
-    public ResponseEntity<InventoryResponse> getByVariantId(
+    public InventoryResponse getByVariantId(
             @PathVariable("variantId") UUID variantId) {
         log.debug("GET /api/v1/inventory/{}", variantId);
         return service.findByVariantId(variantId)
                 .map(InventoryResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() ->
+                        new ResourceNotFoundException("Inventory", "variantId", variantId.toString()));
     }
 }

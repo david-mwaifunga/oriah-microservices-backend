@@ -20,6 +20,7 @@ import com.oriah.customer.dto.AddressRequest;
 import com.oriah.customer.dto.AddressResponse;
 import com.oriah.customer.dto.CustomerResponse;
 import com.oriah.customer.dto.CustomerUpdateRequest;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.customer.model.Customer;
 import com.oriah.customer.service.CustomerService;
 
@@ -64,22 +65,33 @@ public class CustomerController {
                 : ResponseEntity.created(URI.create("/api/v1/customers/me")).body(CustomerResponse.from(c));
     }
 
+    /**
+     * The caller's own profile.
+     *
+     * <p>Reachable 404: a brand-new Keycloak user holds a valid JWT but has
+     * never called {@code POST /me}. With the old empty body the storefront
+     * could only report "Upstream returned 404 Not Found" when the actionable
+     * message is that the profile has not been created yet.
+     *
+     * <p>The detail says {@code customer : 'me'} rather than echoing the
+     * subject claim -- the endpoint is {@code /customers/me}, so "me" is what
+     * was actually asked for, and putting an identity claim in a response body
+     * sends it into logs, bug reports and screenshots for no benefit.
+     */
     @GetMapping
-    public ResponseEntity<CustomerResponse> me(@AuthenticationPrincipal Jwt jwt) {
+    public CustomerResponse me(@AuthenticationPrincipal Jwt jwt) {
         return service.findByKeycloakId(jwt.getSubject())
                 .map(CustomerResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(CustomerController::noProfile);
     }
 
     @PatchMapping
-    public ResponseEntity<CustomerResponse> updateProfile(
+    public CustomerResponse updateProfile(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody CustomerUpdateRequest body) {
         return service.updateProfile(jwt.getSubject(), body)
                 .map(CustomerResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(CustomerController::noProfile);
     }
 
     @GetMapping("/addresses")
@@ -93,19 +105,36 @@ public class CustomerController {
     public ResponseEntity<AddressResponse> addAddress(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody AddressRequest body) {
-        return service.addAddress(jwt.getSubject(), body)
+        AddressResponse created = service.addAddress(jwt.getSubject(), body)
                 .map(AddressResponse::from)
-                .map(a -> ResponseEntity.created(URI.create("/api/v1/customers/me/addresses/" + a.id())).body(a))
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(CustomerController::noProfile);
+        return ResponseEntity
+                .created(URI.create("/api/v1/customers/me/addresses/" + created.id()))
+                .body(created);
     }
 
     @DeleteMapping("/addresses/{addressId}")
     public ResponseEntity<Void> deleteAddress(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("addressId") UUID addressId) {
-        return service.removeAddress(jwt.getSubject(), addressId)
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        if (!service.removeAddress(jwt.getSubject(), addressId)) {
+            throw new ResourceNotFoundException("Address", "addressId", addressId.toString());
+        }
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * The caller has a token but no customer row yet.
+     *
+     * <p>Shared by three handlers because it is one condition. Note the
+     * inconsistency this does NOT resolve: {@code GET /me/addresses} answers
+     * the same state with {@code 200} and an empty list. One condition, three
+     * answers. Harmonising them is a status change with no bug behind it, so it
+     * is deferred to be done together with the frontend rather than slipped
+     * into a conventions tier.
+     */
+    private static ResourceNotFoundException noProfile() {
+        return new ResourceNotFoundException("Customer", "customer", "me");
     }
 
     private static String claim(Jwt jwt, String name, String fallback) {

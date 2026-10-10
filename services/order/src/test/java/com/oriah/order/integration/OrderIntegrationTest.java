@@ -27,6 +27,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -181,5 +182,113 @@ class OrderIntegrationTest {
 
     private static org.springframework.test.web.servlet.request.RequestPostProcessor jwtFor(String sub) {
         return jwt().authorities(ROLE_USER).jwt(j -> j.subject(sub));
+    }
+
+    // ------------------------------------------------------------------
+    // Not-found paths -- and the cross-user property they protect.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("GET an unknown order is 404 with a problem body")
+    void getUnknownOrderIsAProblem404() throws Exception {
+        UUID missing = UUID.randomUUID();
+        mvc.perform(get("/api/v1/orders/" + missing).with(jwtFor("alice")))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail").value(
+                        "Order not found with the given input data id : '" + missing + "'"))
+                .andExpect(jsonPath("$.traceId").exists());
+    }
+
+    @Test
+    @DisplayName("someone else's order is INDISTINGUISHABLE from one that does not exist")
+    void othersOrderIsIndistinguishableFromMissing() throws Exception {
+        // The property crossUserLeak protects, now asserted on the BODY as well
+        // as the status. OrderController filters by
+        // keycloakId().equals(jwt.getSubject()) and then 404s, deliberately
+        // collapsing "not yours" into "not found" so bob cannot discover that
+        // an order id is real.
+        //
+        // Adding a detail was the risk here: "this order belongs to another
+        // customer" would confirm existence. The shared
+        // ResourceNotFoundException phrasing says the same thing in both cases,
+        // and this test holds that -- it is what stops a later, friendlier
+        // message reopening the leak.
+        String aliceOrder = placeAliceOrder();
+        UUID fictional = UUID.randomUUID();
+
+        String notYours = bodyOf404(get("/api/v1/orders/" + aliceOrder).with(jwtFor("bob")));
+        String neverExisted = bodyOf404(get("/api/v1/orders/" + fictional).with(jwtFor("bob")));
+
+        org.assertj.core.api.Assertions.assertThat(
+                        stripTraceId(notYours).replace(aliceOrder, "<id>"))
+                .as("bob must not be able to tell alice's real order id from a fictional one")
+                .isEqualTo(stripTraceId(neverExisted).replace(fictional.toString(), "<id>"));
+        org.assertj.core.api.Assertions.assertThat(notYours)
+                .as("the body must not hint at ownership")
+                .doesNotContain("alice").doesNotContain("belongs").doesNotContain("another");
+    }
+
+    @Test
+    @DisplayName("pay / cancel / admin get / admin transition on an unknown id are problem 404s")
+    void otherUnknownOrderPathsAreProblem404s() throws Exception {
+        UUID missing = UUID.randomUUID();
+        var orderAdmin = jwt().authorities(
+                new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "ROLE_ORDER_ADMIN"));
+
+        // The body must be VALID, or bean validation answers 400 before the
+        // handler is reached and the 404 is never exercised -- this assertion
+        // failed that way first time round.
+        mvc.perform(post("/api/v1/orders/" + missing + "/pay").with(jwtFor("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"paymentIntentId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Order not found with the given input data id : '" + missing + "'"));
+
+        mvc.perform(post("/api/v1/orders/" + missing + "/cancel").with(jwtFor("alice")))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+
+        mvc.perform(get("/api/v1/admin/orders/" + missing).with(orderAdmin))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+
+        // The field is targetStatus, not "to". Getting that wrong made this
+        // assertion fail with 400 (@NotNull on a null targetStatus) rather than
+        // reaching the 404 it was written for -- the same way the /pay
+        // assertion above did. Bean validation runs before the handler, so a
+        // not-found test with an invalid body tests validation instead.
+        mvc.perform(post("/api/v1/admin/orders/" + missing + "/transition").with(orderAdmin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"targetStatus\":\"PAID\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+    }
+
+    private String bodyOf404(
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder req)
+            throws Exception {
+        return mvc.perform(req)
+                .andExpect(status().isNotFound())
+                .andReturn().getResponse().getContentAsString();
+    }
+
+    /**
+     * Blanks the traceId property, which is per-request and so the one field
+     * that legitimately differs between two otherwise-identical 404 bodies.
+     *
+     * <p>The {@code .} stands in for the JSON quote character rather than an
+     * escaped {@code \"}: the surrounding context is a regex inside a Java
+     * string, so a literal quote needs four levels of escaping and reads far
+     * worse than it matches. Any character in those positions is a quote in
+     * practice.
+     */
+    private static String stripTraceId(String json) {
+        return json.replaceAll(",?.traceId.:.[0-9a-f]+.", "");
     }
 }

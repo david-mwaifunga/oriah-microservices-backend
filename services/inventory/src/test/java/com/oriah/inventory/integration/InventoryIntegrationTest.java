@@ -24,6 +24,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -189,5 +190,128 @@ class InventoryIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"qty\":0}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    // ------------------------------------------------------------------
+    // Not-found paths, and the three state conflicts that answered 400.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("GET an unknown variant is 404 with a problem body")
+    void getUnknownVariantIsAProblem404() throws Exception {
+        UUID missing = UUID.randomUUID();
+        mvc.perform(get("/api/v1/inventory/" + missing))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail").value(
+                        "Inventory not found with the given input data variantId : '" + missing + "'"))
+                .andExpect(jsonPath("$.traceId").exists());
+    }
+
+    @Test
+    @DisplayName("restocking an unknown variant is 404 with a problem body")
+    void restockUnknownVariantIsAProblem404() throws Exception {
+        UUID missing = UUID.randomUUID();
+        mvc.perform(post("/api/v1/admin/inventory/" + missing + "/restock")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":5}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Inventory not found with the given input data variantId : '" + missing + "'"));
+    }
+
+    @Test
+    @DisplayName("reserving more than is available is 409, not 400")
+    void overReserveIsAConflict() throws Exception {
+        // The approved contract change. 400 said "your input is malformed, fix
+        // it"; the input was valid and the correct advice is to retry later or
+        // ask for fewer units. A client acting on a 400 would not retry at all.
+        //
+        // Admin-only endpoint with no oriah-web call site, so this is safe to
+        // take now rather than coordinating a frontend release.
+        UUID variantId = UUID.randomUUID();
+        createInventory(variantId, 5);
+
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/reserve")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":99}"))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(409))
+                // Refined by inventory's own GlobalExceptionHandler. The STATUS
+                // is inherited from the shared IllegalStateException mapping;
+                // only the problem type is service-specific. That is what lets
+                // the checkout saga branch on the REASON for a 409 rather than
+                // on a message string.
+                .andExpect(jsonPath("$.type")
+                        .value("https://oriah.dev/problems/insufficient-stock"))
+                .andExpect(jsonPath("$.detail").value("cannot reserve 99 units; only 5 available"));
+    }
+
+    @Test
+    @DisplayName("releasing or confirming more than is reserved is 409, not 400")
+    void overReleaseAndOverConfirmAreConflicts() throws Exception {
+        UUID variantId = UUID.randomUUID();
+        createInventory(variantId, 10);
+
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/release")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type")
+                        .value("https://oriah.dev/problems/insufficient-stock"))
+                .andExpect(jsonPath("$.detail").value("cannot release 1 units; only 0 reserved"));
+
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("cannot confirm 1 units; only 0 reserved"));
+    }
+
+    @Test
+    @DisplayName("a non-positive qty is still 400 - only STATE conflicts moved to 409")
+    void nonPositiveQtyIsStillBadRequest() throws Exception {
+        // The other half of the change, and why it is not a blanket rewrite:
+        // qty <= 0 genuinely IS a malformed argument, so it stays a 400.
+        //
+        // The type is "validation", not "bad-request", and that is worth
+        // knowing rather than papering over -- this assertion started out
+        // expecting bad-request and was wrong. QuantityRequest carries
+        // @Min(value = 1), so Bean Validation rejects the payload BEFORE it
+        // reaches the aggregate: the response is a MethodArgumentNotValid
+        // problem with per-field errors, which is strictly more useful to a
+        // client than the aggregate's message would have been.
+        //
+        // The consequence for the aggregate: Inventory.requirePositive is
+        // defence-in-depth and unreachable over HTTP. It still earns its place
+        // for direct callers (the Kafka consumer, future internal callers), but
+        // it is not what produces this response.
+        UUID variantId = UUID.randomUUID();
+        createInventory(variantId, 10);
+
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/reserve")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/validation"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("qty"))
+                .andExpect(jsonPath("$.fieldErrors[0].message").value("qty must be >= 1"));
+    }
+
+    private void createInventory(UUID variantId, int onHand) throws Exception {
+        mvc.perform(post("/api/v1/admin/inventory")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"variantId\":\"" + variantId + "\",\"onHand\":" + onHand + "}"))
+                .andExpect(status().isCreated());
     }
 }

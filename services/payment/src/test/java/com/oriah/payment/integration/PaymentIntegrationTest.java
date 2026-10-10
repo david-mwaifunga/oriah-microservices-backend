@@ -27,6 +27,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -180,5 +181,77 @@ class PaymentIntegrationTest {
 
     private static org.springframework.test.web.servlet.request.RequestPostProcessor jwtFor(String sub) {
         return jwt().authorities(ROLE_USER).jwt(j -> j.subject(sub));
+    }
+
+    // ------------------------------------------------------------------
+    // Not-found paths -- and the cross-user property they protect.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("GET an unknown payment intent is 404 with a problem body")
+    void getUnknownIntentIsAProblem404() throws Exception {
+        UUID missing = UUID.randomUUID();
+        mvc.perform(get("/api/v1/payments/intents/" + missing).with(jwtFor("alice")))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail").value(
+                        "PaymentIntent not found with the given input data id : '" + missing + "'"))
+                .andExpect(jsonPath("$.traceId").exists());
+    }
+
+    @Test
+    @DisplayName("someone else's intent is INDISTINGUISHABLE from one that does not exist")
+    void othersIntentIsIndistinguishableFromMissing() throws Exception {
+        // The sharpest case for this property in the platform: a payment intent
+        // id confirmed to exist is a far more interesting probe target than an
+        // order id. PaymentController filters on
+        // keycloakId().equals(jwt.getSubject()) and then 404s.
+        String aliceIntent = createIntent("alice", "1.00");
+        UUID fictional = UUID.randomUUID();
+
+        String notYours = bodyOf404(
+                get("/api/v1/payments/intents/" + aliceIntent).with(jwtFor("bob")));
+        String neverExisted = bodyOf404(
+                get("/api/v1/payments/intents/" + fictional).with(jwtFor("bob")));
+
+        org.assertj.core.api.Assertions.assertThat(
+                        stripTraceId(notYours).replace(aliceIntent, "<id>"))
+                .as("bob must not be able to tell alice's real intent id from a fictional one")
+                .isEqualTo(stripTraceId(neverExisted).replace(fictional.toString(), "<id>"));
+        org.assertj.core.api.Assertions.assertThat(notYours)
+                .as("the body must not hint at ownership")
+                .doesNotContain("alice").doesNotContain("belongs").doesNotContain("another");
+    }
+
+    @Test
+    @DisplayName("confirming an unknown intent is 404 with a problem body")
+    void confirmUnknownIntentIsAProblem404() throws Exception {
+        UUID missing = UUID.randomUUID();
+        // The body must be VALID, or bean validation answers 400 before the
+        // handler is ever reached and the 404 is never exercised. This test
+        // asserted 404 against an empty body first time round and failed for
+        // that reason, not for the one it was written to catch.
+        mvc.perform(post("/api/v1/payments/intents/" + missing + "/confirm").with(jwtFor("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"cardNumber\":\"4242424242424242\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "PaymentIntent not found with the given input data id : '" + missing + "'"));
+    }
+
+    private String bodyOf404(
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder req)
+            throws Exception {
+        return mvc.perform(req)
+                .andExpect(status().isNotFound())
+                .andReturn().getResponse().getContentAsString();
+    }
+
+    /** traceId is per-request, so it is the one field that legitimately differs. */
+    private static String stripTraceId(String json) {
+        return json.replaceAll(",?.traceId.:.[0-9a-f]+.", "");
     }
 }
