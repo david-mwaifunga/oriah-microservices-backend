@@ -23,6 +23,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
 | 5 | Service-layer conventions × 12 services | ✅ **396 tests**, both gates PASS, smoke 18/18 — 2 items deliberately deferred |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ✅ **401 tests** — no migration needed; **finding #15** |
+| **7** | **Checkout stops reporting failure as success** (7 paths of 200 → 402/409/422/500/502/503) | ✅ **426 tests** (checkout 17 → 37), web 19 → 27, all 4 gates + smoke 18/18; **findings #18, #19** |
 
 ---
 
@@ -594,6 +595,10 @@ JPA, which makes it the cheapest place to prove the genuinely risky part — the
 ---
 
 ### ⚠️ The biggest thing this inventory found: checkout answers **200 on eight failure paths**
+
+> **Closed in Tier 7**, and the count was wrong: it is **seven** branches, not eight.
+> See "Tier 7 — checkout stops reporting failure as success" below for the per-branch
+> statuses and the live before/after.
 
 This is not a convention problem. `POST /api/v1/checkout/confirm` carries failure in an untyped
 `message` string inside a **200**, and `CheckoutClient.tsx:138` fires
@@ -1379,6 +1384,237 @@ response-shape one.
 Not fixed here. It wants a servlet `AuthenticationEntryPoint` and `AccessDeniedHandler` in the
 shared starter so all 12 services inherit one, which is the same shape as the gateway fix but on the
 other stack. The golden pins the current behaviour, so it will show as a one-line diff.
+
+
+## Tier 7 — checkout stops reporting failure as success
+
+The tier with real user harm in it. `POST /api/v1/checkout/confirm` carried every failure in an
+untyped `message` string inside a **200**, and the storefront fires
+`toast.success("Order placed")` on any 200.
+
+**A correction to my own count first.** Tier 5's inventory said "eight failure paths"; the actual
+number is **seven** `return new ConfirmResponse(..., "<reason>")` branches. Counted from the
+pre-change source: cart empty, promo invalid, order unavailable, payment unavailable, payment
+confirmation failed, payment declined, order/pay failed after capture.
+
+### The status per failure, and why each one
+
+Chosen so that the retryable failures are retryable and the final ones are not — which is the
+part a `message` string cannot express at all.
+
+| Failure | Was | Now | Retryable? | Why this status |
+|---|---|---|---|---|
+| Cart is empty | 200 | **409** | no | Request is well-formed; the caller's *state* is wrong. Not 5xx — re-sending can never succeed |
+| Promotion code unusable | 200 | **422** | no | Syntactically fine, semantically unacceptable. 400 would imply malformed |
+| A dependency is unreachable | 200 | **503** + `Retry-After` | **yes, by the client** | Genuinely transient and raised before any money moves — the only failure the storefront offers "Try again" for |
+| A dependency refused our request (4xx) | 200 | **500** | no | *We* sent something wrong. 503 here would invite a loop that cannot succeed and hide a checkout bug as somebody else's outage. Matches `ignore-exceptions: FeignClientException` one layer down |
+| **Card declined** | 200 | **402** | no | Final: the same card will be refused again. Carries the processor's reason so the shopper knows to try another |
+| Payment unconfirmable | 200 | **502** | no | Ambiguous — the charge may or may not have landed. Order left `CREATED`, cart left intact, so the state stays recoverable |
+| **Money captured, no order** | 200 | **500** + ids | never | The worst state the system can reach. Body carries `paymentIntentId` and `orderId`; logged at ERROR |
+
+**402 is the only new status mapping**, and it deliberately stays out of the shared starter: it is
+meaningful in exactly one service, and a shared mapping would be a status the other eleven could
+never produce correctly.
+
+### What the shared contract already did for free
+
+Two of the seven needed no new code, which is the shared error contract paying for itself:
+
+- `CartEmptyException extends IllegalStateException` — the shared advice already answers **409**.
+- `DownstreamUnavailableException extends ResponseStatusException` — the shared `statusCarrying`
+  handler answers **503** *and preserves `getHeaders()`*, so `Retry-After` arrives with no handler
+  of its own. Handling it in checkout would have meant re-adding that header by hand.
+
+Both of those tests passed the moment they were written, before `GlobalExceptionHandler` existed.
+So checkout's advice carries only the four statuses the platform could not have inferred, and
+`DownstreamRejectedException` is left to the shared catch-all on purpose — its generic 500 body is
+right, because the exception message names an internal service and the status it answered with,
+which belongs in the ERROR log and not in a body a shopper reads.
+
+### `ResilientFeignCaller` had to be able to tell failures apart first
+
+`call(name, supplier, fallback)` caught every `Exception` and returned the fallback, so a 404, a
+503, an open circuit and a read timeout arrived at the saga as the same `null`. Typed failures were
+impossible until the caller could distinguish them. Added `callOrThrow` (same decoration, failure
+propagates) and `answeredStatus(Throwable)` — the status a downstream *answered* with, or `-1` if it
+never answered. `call` now delegates to `callOrThrow`, so preview keeps degrading gracefully and
+confirm does not, from one code path.
+
+### Who actually retries what — a claim of mine, corrected
+
+An early draft of these javadocs said 503 was "retry-eligible at the gateway and in Resilience4j".
+Checking it rather than shipping it:
+
+| Layer | Retries `POST /confirm`? | Evidence |
+|---|---|---|
+| Gateway retry filter | **No** | `ResilienceConfig.storefrontRetry` sets `setMethods(HttpMethod.GET)`. Deliberate: auto-replaying a POST that moves money is how a shopper is charged twice |
+| Checkout's Resilience4j | **Outbound calls only** | 3 attempts, 500ms apart, on `IOException` + `FeignServerException`, `ignore-exceptions: FeignClientException`. So a 503 leaving checkout means these are already spent |
+| The client | **Yes, and that is the point** | The storefront offers "Try again" on 503 and on nothing else |
+
+So "retryable" on this path means *the shopper may retry*, and `Retry-After` tells them when — not
+that the stack retries for them. The original observation still holds, for a simpler reason than I
+first gave: a 200 is not an error, so a transient outage reported as one could not be retried by
+anyone, because nothing could see that it had failed.
+
+
+### Finding #18 — every `fallback = XxxClientFallback.class` is dead code
+
+Checkout sets `spring.cloud.openfeign.circuitbreaker.enabled: false` (correctly — the Spring Cloud
+integration dispatches to a ForkJoinPool worker and the `ThreadLocal` SecurityContext, and therefore
+the JWT, is lost). Spring Cloud only reads the `fallback` attribute in `FeignCircuitBreakerTargeter`;
+with the integration off it uses `DefaultTargeter`, which **never looks at it**. Verified rather than
+assumed:
+
+```
+$ javap -p -c DefaultTargeter.class
+  public <T> T target(FeignClientFactoryBean, Feign$Builder, FeignClientFactory, Target$HardCodedTarget<T>);
+         0: aload_2
+         1: aload         4
+         3: invokevirtual  // Feign$Builder.target:(Lfeign/Target;)Ljava/lang/Object;
+         6: areturn
+```
+
+One `builder.target(target)` and nothing else. So the six `*ClientFallback` classes never fire, and
+a failing client **throws** — which is what makes typed checkout failures possible at all. The
+`application.yaml` comment claiming the fallbacks "fire on the synchronous exception path" was
+wrong and is corrected in place. The classes are left for a separate mechanical removal.
+
+### Finding #19 — the browser's `Idempotency-Key` was dropped, so no retry was ever safe
+
+Found by writing a javadoc claim and then checking it. The draft said a retry after the new 502 was
+safe "because payment confirmation is idempotent on `Idempotency-Key`". Half of that was false:
+
+- payment-service **does** implement it (`PaymentController.confirm` replays the stored response for
+  a seen key and does not re-charge), and its javadoc even says "the client (the checkout
+  orchestrator) generates a fresh UUID per logical retry and resends the header on every attempt";
+- `confirmCheckout` in `oriah-web` **does** send it;
+- but `CheckoutController.confirm` never read it and `FeignTokenForwarder` forwards **only**
+  `Authorization`. The key died at checkout and never reached payment-service.
+
+So the guarantee had never been reachable in production. Introducing a 502 that *invites* a retry
+while the key went nowhere would have turned every retry into a second charge — the change would
+have been a net harm. Forwarding is therefore part of this tier, pinned by
+`theIdempotencyKeyReachesPaymentService`.
+
+**Stated precisely, because the residue matters:** with the same key resent, the card is **not
+charged twice**. The retry still places a second order and creates a second intent before reaching
+the replayed confirm, so the first order can be stranded in `CREATED`. One charge, one usable order,
+one abandoned row — strictly better than a double charge, and not yet correct. Full saga
+idempotency needs a checkout-level record keyed on the same header. **Recorded as open, not implied
+to be solved.**
+
+### The frontend half
+
+The backend fix alone turns a green "Order placed" into a generic red toast, because `onError`
+already rendered `problem.detail`. That is most of the harm gone, but it flattens the seven statuses
+back into one message — so the status → advice mapping lives in
+`src/lib/api/checkoutErrors.ts` as a pure function with 8 tests.
+
+`canRetry` is the property worth testing: wrong in one direction it strands a shopper who only had
+to try again, wrong in the other it offers a retry button to someone whose card has already been
+charged. Only **503** is retryable. Two deliberate UI choices:
+
+- the **critical** case (money captured, no order) gets `duration: Infinity` and the
+  `paymentIntentId` on screen. A toast that vanishes in four seconds is the wrong medium for the one
+  failure a shopper must act on;
+- `onError` does **not** regenerate the idempotency key. Reusing it is exactly what lets
+  payment-service replay a settled confirm, and a failure is when that matters.
+
+### Verification: the test suites
+
+| Suite | Result |
+|---|---|
+| `services/checkout` | **37 tests**, 0 failures (from 17) |
+| `ConfirmFailurePathsTest` | 12 — one per failure branch + the key forwarding + happy path |
+| `ConfirmErrorContractTest` | 8 — status, problem `type` and body at the web layer |
+| `oriah-web` | `tsc --noEmit` clean, **27 tests** (from 19) |
+| whole reactor | `clean install` — **BUILD SUCCESS, 426 tests, 0 failures**, 17 modules, 34:48 |
+
+**Reconciling the count, because 401 → 426 is not the +20 this tier added.** The Tier 6 row records
+**401**. Tier 7 adds **20** in checkout (17 → 37). The missing **5** are `EdgeErrorBodyTest`, written
+for finding #16 after the Tier 6 row was already recorded. 401 + 5 + 20 = 426. A total that does not
+add up either gets believed or gets doubted, and both are worse than a line of arithmetic.
+
+The two test classes are deliberately separate. `ConfirmFailurePathsTest` proves the saga *throws*
+the right exception; it cannot prove the status a caller receives, because an exception nothing maps
+still arrives as a bare 500 — and the status is the only part of this contract the storefront
+branches on.
+
+**Three assertions in the web test are there to stop a future "helpful" edit:** the 422 body must not
+contain the code or the word "expired" (promotion-service answers one 404 for unknown / expired /
+disabled / exhausted so the response cannot be used to probe which guard failed, and translating the
+status must not undo that); and the `DownstreamRejectedException` 500 must not contain the name of
+the internal service that refused us.
+
+---
+
+### Verification: the live stack
+
+Tests prove the handler; the gate proves the document. Neither proves the wire. Captured through the
+gateway against the running stack:
+
+```
+POST /api/v1/checkout/confirm   (cart empty)
+  was:  200 {"orderId":null, ..., "message":"cart is empty"}   -> green "Order placed"
+  now:  409 application/problem+json
+        {"detail":"The cart is empty, so there is nothing to check out.",
+         "instance":"/api/v1/checkout/confirm","status":409,"title":"Conflict",
+         "type":"https://oriah.dev/problems/cart-empty",
+         "traceId":"8eb712955dc5643a316627d550e4b4e7"}
+
+POST /api/v1/checkout/confirm   (promotionCode = "NOT-A-REAL-CODE")
+  was:  200 {..., "message":"promotion code invalid: NOT-A-REAL-CODE"}
+  now:  422 {"detail":"That promotion code cannot be used. Remove it to continue, or
+                       check the code and try again.",
+             "type":"https://oriah.dev/problems/promotion-code-invalid", ...}
+        — and note the body does NOT contain "NOT-A-REAL-CODE"
+
+POST /api/v1/checkout/confirm   (card 4000 0000 0000 0002)
+  was:  200 {..., "message":"payment declined: card declined"}  -> green "Order placed"
+  now:  402 {"detail":"The payment was declined: card declined",
+             "type":"https://oriah.dev/problems/payment-declined", ...}
+```
+
+And the state afterwards, which is the part that makes the 402 usable rather than merely correct:
+
+```
+GET /api/v1/carts/me   (after the declined card)
+  items=1 subtotal=100.00      — intact, so the shopper can try another card
+```
+
+Every body carries a `traceId`, so a support conversation about a declined payment can be joined to
+the trace that produced it.
+
+| Gate | Result |
+|---|---|
+| `smoke-test.ps1` | **18/18** — step 6 runs the real saga to a `PAID` order through the new code |
+| `openapi-diff.ps1` | **PASS, additions only** — and **no new allowlist entries** |
+| `openapi_audit.py` | PASS — 12 services, every operation documents a success status and an error contract |
+| `error_goldens.py verify` | PASS — 14/14 unchanged |
+| `validate_roles.py` | PASS — no new roles |
+
+**The gate needed no new waivers, and my prediction about why was wrong in a useful direction.** I
+expected the added statuses to register as breaking, because swagger-core *replaces* an operation's
+default response set as soon as any `@ApiResponse` is declared — the trap that cost 12 waivers in
+Tier 5. It did not apply here: `/confirm` already declared 200 and 400 explicitly, so the set was
+already explicit and there was nothing left to replace. The gate classified all of it additive,
+including the new header:
+
+```
++ [checkout] optional parameter added: POST /api/v1/checkout/confirm: header 'Idempotency-Key'
++ [checkout] response status added: POST /api/v1/checkout/confirm -> 402
++ [checkout] response status added: POST /api/v1/checkout/confirm -> 409
++ [checkout] response status added: POST /api/v1/checkout/confirm -> 422
++ [checkout] response status added: POST /api/v1/checkout/confirm -> 502
++ [checkout] response status added: POST /api/v1/checkout/confirm -> 503
+```
+
+**A tooling note, because it cost two apparent build failures.** `mvnw.cmd ... | Select-String ... |
+Select-Object -First N` closes the pipeline on the Nth match, which terminates the upstream native
+process — Maven exits 255 having printed no verdict, and it reads exactly like a build failure
+mid-module. Both "failures" were self-inflicted. Redirect to a file and filter the file.
+
+---
 
 
 ## Divergences from section_12 — and why

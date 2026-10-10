@@ -7,6 +7,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 
 @FeignClient(name = "payment", fallback = PaymentClientFallback.class)
 public interface PaymentClient {
@@ -14,8 +15,20 @@ public interface PaymentClient {
     @PostMapping("/api/v1/payments/intents")
     IntentResponse createIntent(@RequestBody CreateIntentRequest body);
 
+    /**
+     * Charge the gateway and settle the intent.
+     *
+     * <p>{@code Idempotency-Key} is the caller's single protection against a
+     * double charge: payment-service replays the stored response for a key it
+     * has already seen and does not re-charge. The value must be the one the
+     * <strong>browser</strong> sent, carried end to end -- a key minted here
+     * would be fresh on every attempt and protect nothing.
+     */
     @PostMapping("/api/v1/payments/intents/{id}/confirm")
-    IntentResponse confirm(@PathVariable("id") UUID id, @RequestBody ConfirmRequest body);
+    IntentResponse confirm(@PathVariable("id") UUID id,
+                           @RequestHeader(name = "Idempotency-Key", required = false)
+                           String idempotencyKey,
+                           @RequestBody ConfirmRequest body);
 
     record CreateIntentRequest(UUID orderId, BigDecimal amount, String currency) {}
     record ConfirmRequest(String cardNumber) {}

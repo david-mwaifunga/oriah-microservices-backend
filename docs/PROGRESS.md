@@ -5,6 +5,121 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-10-10 (section_12 convention refactor: **all 7 tiers landed**)
+
+`.\mvnw.cmd -ntp clean install` — **BUILD SUCCESS, 426 tests, 0 failures** across 17
+test-bearing modules (34:48). Previous tier closed at 406.
+
+| Module | Tests | | Module | Tests |
+|---|---|---|---|---|
+| gatewayserver | 108 | | promotion | 20 |
+| catalog | 63 | | customer | 16 |
+| **checkout** | **37** | | shipping | 16 |
+| inventory | 35 | | cart | 15 |
+| oriah-observability-starter | 32 | | review | 13 |
+| order | 24 | | search | 10 |
+| payment | 20 | | notification | 8 |
+| | | | configserver / eurekaserver / oriah-jpa-base | 9 |
+
+Live gates, against the running 35-container stack: `smoke-test.ps1` **18/18**,
+OpenAPI additions-only **PASS (no new waivers)**, OpenAPI content audit PASS,
+`error_goldens.py verify` 14/14, `validate_roles.py` PASS. `oriah-web`:
+`tsc --noEmit` clean, **27 tests**.
+
+**Read `docs/REFACTOR_SECTION12.md`** for the per-item checklist, the findings and
+the live before/after captures.
+
+### Tier 7 — checkout stopped reporting failure as success
+
+The last tier, and the one with real user harm in it.
+`POST /api/v1/checkout/confirm` carried every failure in an untyped `message`
+string inside a **200**, and the storefront fires `toast.success("Order placed")`
+on any 200. So an empty cart, a declined card and — worst — *money captured with
+no order* all showed the shopper the same green success toast.
+
+Seven branches, now one status each, chosen so the retryable ones are retryable:
+
+| Failure | Now | Retryable? |
+|---|---|---|
+| Cart empty | 409 | no |
+| Promotion code unusable | 422 | no |
+| Dependency unreachable | 503 + `Retry-After` | yes, by the client |
+| Dependency refused our request (4xx) | 500 | no |
+| **Card declined** | **402** | no |
+| Payment unconfirmable | 502 | no |
+| **Money captured, no order** | 500 + `paymentIntentId` | never |
+
+Proven at the edge, not just in tests — 409/422/402 captured through the gateway
+with problem bodies and traceIds, and the cart left intact after a decline so the
+shopper can try another card.
+
+### Two findings from Tier 7 worth remembering
+
+- **Every `fallback = XxxClientFallback.class` in checkout is dead code.**
+  `spring.cloud.openfeign.circuitbreaker.enabled: false` (correct — the Spring
+  Cloud integration dispatches to a ForkJoinPool worker and loses the
+  `ThreadLocal` SecurityContext, so the JWT never reaches downstream). But Spring
+  Cloud only reads `fallback` in `FeignCircuitBreakerTargeter`; with the
+  integration off it uses `DefaultTargeter`, whose `target()` is a single
+  `builder.target(target)` (verified with `javap`). The six fallback classes have
+  never fired. This is load-bearing in our favour — a failing client *throws*,
+  which is what makes typed failures possible — but the yaml comment claiming the
+  fallbacks "fire on the synchronous exception path" was wrong and is fixed.
+- **The browser`s `Idempotency-Key` never reached payment-service.**
+  payment-service implements it (replays the stored response, no re-charge);
+  `oriah-web` sends it; `CheckoutController` never read it and
+  `FeignTokenForwarder` forwards **only** `Authorization`. So the guarantee had
+  never been reachable. Introducing a 502 that *invites* a retry while the key
+  went nowhere would have made every retry a second charge, so forwarding is part
+  of Tier 7. Precisely: the card is **not** charged twice, but a retry still
+  places a second order, so the first can be stranded in `CREATED`. Full saga
+  idempotency needs a checkout-level record keyed on the same header — **open**.
+
+### Gotchas added this tier
+
+- **`mvnw.cmd ... | Select-String ... | Select-Object -First N` kills Maven.**
+  The pipeline closes on the Nth match, terminating the upstream native process;
+  Maven exits 255 having printed no verdict, which reads exactly like a build
+  failure mid-module. Cost two phantom failures. Redirect to a file, filter the
+  file.
+  - **Second-order damage: it also strands any watcher keyed on the verdict.**
+    An `until grep -qE "BUILD SUCCESS|BUILD FAILURE" <log>; do sleep 15; done`
+    waiter on that same killed build polled for ~5 hours and would have run
+    forever, because the string it waited for could never be written. A waiter
+    whose exit condition is a *success/failure marker* must also exit on "the
+    producer is gone" — bound the loop, or watch for the process, not just the
+    happy and sad strings. Silence from a watcher is indistinguishable from
+    work still in progress.
+- **Recreating one container needs an Eureka wait, not a health wait.**
+  `docker compose up -d --force-recreate --no-deps checkout` reports healthy in
+  ~30s, but the gateway answers `503 "Unable to find instance for checkout"`
+  until the registration propagates to its load-balancer cache. `smoke-test.ps1`
+  has a pre-flight for this; ad-hoc probes need one too.
+- **swagger-core replacing the default response set is not a universal trap.**
+  It cost 12 allowlist waivers in Tier 5, but it only bites an operation whose
+  responses were still *implicit*. `/confirm` already declared 200 and 400, so
+  adding five statuses was purely additive and needed no waiver.
+
+### What is deliberately left open
+
+Recorded with reasons in `docs/REFACTOR_SECTION12.md`, not forgotten:
+
+1. **Saga idempotency** (finding #19 residue) — a retry cannot double-charge but
+   can strand a `CREATED` order.
+2. **Compensating action for a captured payment with no order** — currently a loud
+   500 naming the intent; wants a refund-or-replay outbox.
+3. `IXxxService` / mapper / constants in 11 services — measured, mostly judged
+   not worth the indirection.
+4. customer`s `404 → 409` inconsistency — wants fixing with the frontend.
+5. Tier 6`s timestamp type-alignment migration.
+6. Finding #16`s servlet half — exactly 2 endpoints
+   (`/api/v1/products/contact-info`, `/api/v1/search/contact-info`) still answer
+   401 with an empty body, from the services` own servlet chains.
+7. Finding #17 — auth failures open no span, so no 401/403 appears in Tempo.
+8. Removing the six dead `*ClientFallback` classes (finding #18) — mechanical.
+
+---
+
 ## CURRENT STATE — 2026-10-09 (section_12 convention refactor: Tiers 0, 0.5, 1 landed)
 
 Refactoring `oriah-api` to the conventions of the Eazy Bytes `section_12` course

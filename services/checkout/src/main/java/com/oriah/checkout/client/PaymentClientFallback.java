@@ -15,7 +15,7 @@ public class PaymentClientFallback implements PaymentClient {
         return null;
     }
     @Override
-    public IntentResponse confirm(UUID id, ConfirmRequest body) {
+    public IntentResponse confirm(UUID id, String idempotencyKey, ConfirmRequest body) {
         log.warn("PaymentClient.confirm fallback fired id={}", id);
         return null;
     }

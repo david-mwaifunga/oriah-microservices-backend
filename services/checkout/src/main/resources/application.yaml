@@ -18,8 +18,19 @@ spring:
         # the worker thread, the Authorization header is omitted, and the
         # downstream resource server returns 401. With CB off, the call
         # stays on the Tomcat servlet thread where the SecurityContext is
-        # populated; resilience comes from Feign's own readTimeout + the
-        # fallbacks that fire on the synchronous exception path.
+        # populated; resilience comes from Feign's own readTimeout plus the
+        # Resilience4j decoration ResilientFeignCaller applies by hand.
+        #
+        # Consequence worth knowing (finding #18): the `fallback =
+        # XxxClientFallback.class` on every @FeignClient is DEAD CODE with
+        # this off. Spring Cloud only reads that attribute in
+        # FeignCircuitBreakerTargeter; the DefaultTargeter used here is a
+        # single `builder.target(target)` and never looks at it (verified by
+        # javap). So a failing client THROWS rather than returning the
+        # fallback's null -- which is what makes typed checkout failures
+        # possible at all. An earlier version of this comment claimed the
+        # fallbacks "fire on the synchronous exception path"; they do not
+        # fire anywhere.
         enabled: false
       client:
         config:

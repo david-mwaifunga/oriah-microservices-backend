@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.oriah.checkout.client.CartClient;
@@ -15,6 +16,13 @@ import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.ConfirmResponse;
 import com.oriah.checkout.dto.PreviewRequest;
 import com.oriah.checkout.dto.PreviewResponse;
+import com.oriah.checkout.exception.CartEmptyException;
+import com.oriah.checkout.exception.DownstreamRejectedException;
+import com.oriah.checkout.exception.DownstreamUnavailableException;
+import com.oriah.checkout.exception.PaymentCapturedWithoutOrderException;
+import com.oriah.checkout.exception.PaymentConfirmationFailedException;
+import com.oriah.checkout.exception.PaymentDeclinedException;
+import com.oriah.checkout.exception.PromotionCodeInvalidException;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
 
 import lombok.extern.slf4j.Slf4j;
@@ -32,13 +40,52 @@ import lombok.extern.slf4j.Slf4j;
  *   <li>Create + confirm a PaymentIntent for the total via FakePaymentGateway.</li>
  *   <li>On payment success: attach the intent to the order (transitions to PAID),
  *       redeem the promo, clear the cart.</li>
- *   <li>On payment failure: cancel the order, leave the cart intact so the user can retry.</li>
  * </ol>
  *
- * <p>This is not a "real" saga with compensating actions across services —
- * the catalog of failure modes is small and we accept a best-effort
- * cleanup pattern. Production would use a saga framework (Eventuate,
- * Axon) or a workflow engine (Camunda, Temporal).
+ * <h2>Preview degrades, confirm does not</h2>
+ *
+ * <p>The two entry points treat a failed downstream call in opposite ways, and
+ * the asymmetry is deliberate. Preview is a read: a missing shipping quote
+ * should still render a page, so it uses
+ * {@link ResilientFeignCaller#call} and tolerates nulls. Confirm moves money,
+ * so it uses {@link ResilientFeignCaller#callOrThrow} and converts every
+ * failure into a status.
+ *
+ * <p>Confirm did not always do that. Every one of its seven failure branches
+ * returned <strong>{@code 200 OK}</strong> with the reason in an untyped
+ * {@code message} string, and the storefront fires
+ * {@code toast.success("Order placed")} on any 200. So an empty cart, an
+ * invalid promo code, an unreachable order service, a <em>declined card</em>
+ * and — worst — <em>money captured with no order</em> all showed the shopper
+ * the same green success toast. Two consequences worth naming:
+ *
+ * <ul>
+ *   <li>A 200 is not an error, so a transient outage could not be retried by
+ *       anything — not a filter and not the client, because neither could see
+ *       that it had failed.</li>
+ *   <li>Dashboards and alerts count 5xx. A captured payment with no order
+ *       raised nothing.</li>
+ * </ul>
+ *
+ * <p>Every failure now carries a status a client can branch on, chosen so the
+ * retryable ones are retryable and the final ones are not: 409 empty cart,
+ * 422 bad promo code, 503 downstream unreachable (with {@code Retry-After}),
+ * 402 declined card, 502 payment unconfirmable, 500 our bug or money stranded.
+ * {@code ConfirmFailurePathsTest} pins one per branch.
+ *
+ * <p>Nothing auto-retries this endpoint, and that is correct: the gateway's
+ * retry filter is GET-only, so a POST that moves money is never replayed for
+ * the shopper. The retrying that does happen is one layer in — Resilience4j
+ * retries each <em>outbound</em> call 3 times on a transport fault or a
+ * downstream 5xx — so a 503 out of here means that already failed, and the
+ * decision to try again is the shopper's.
+ *
+ * <p>This is still not a "real" saga with compensating actions across
+ * services. What changed is that the gap is now <em>loud</em>: a captured
+ * payment that cannot be attached to an order answers 500 and names the intent
+ * to reconcile, instead of reporting success. Closing it properly needs a
+ * refund-or-retry compensation (outbox, or a saga framework such as Eventuate
+ * or a workflow engine such as Temporal) and is tracked separately.
  */
 @Service
 @Slf4j
@@ -117,15 +164,85 @@ public class CheckoutService {
      * so the SecurityContext propagates to {@link
      * com.oriah.checkout.config.FeignTokenForwarder} -- see
      * {@link ResilientFeignCaller} for the rationale.
+     *
+     * <p>For {@link #preview} only. A null here means "no data, carry on",
+     * which is right for a read and wrong for anything that moves money --
+     * confirm uses {@link #mustCall} instead.
      */
     private <T> T safeCall(java.util.function.Supplier<T> call, String name) {
         return resilient.call(name, call, null);
     }
 
-    public ConfirmResponse confirm(ConfirmRequest req) {
-        var myCart = safeCall(cart::getMyCart, "cart");
-        if (myCart == null || myCart.items() == null || myCart.items().isEmpty()) {
-            return new ConfirmResponse(null, null, null, null, BigDecimal.ZERO, "USD", "cart is empty");
+    /**
+     * The confirm-path counterpart of {@link #safeCall}: same decoration, but
+     * a failure becomes a typed exception instead of a null.
+     *
+     * <p>Classification is the whole job, and it turns on one question --
+     * <em>did the downstream answer?</em>
+     *
+     * <ul>
+     *   <li><strong>It answered 4xx</strong> -> it rejected what we sent, which
+     *       is a checkout bug: {@link DownstreamRejectedException}, 500. Not a
+     *       503, because the same payload will be rejected on every retry and
+     *       {@code Retry-After} would start a loop that cannot succeed.</li>
+     *   <li><strong>It never answered</strong>, or answered 5xx, or the circuit
+     *       is open, or the rate limiter is starved ->
+     *       {@link DownstreamUnavailableException}, 503 with
+     *       {@code Retry-After}. Genuinely transient, and now genuinely
+     *       retryable.</li>
+     *   <li><strong>It answered 2xx with no body</strong> -> also
+     *       {@link DownstreamRejectedException}. Reachable in practice: with
+     *       {@code spring.cloud.openfeign.circuitbreaker.enabled = false} the
+     *       {@code fallback} declared on each client is dead code, so a null is
+     *       a real empty body rather than a fallback firing. Dropping this
+     *       check would turn it into an NPE and an unnamed 500.</li>
+     * </ul>
+     */
+    private <T> T mustCall(java.util.function.Supplier<T> call, String name) {
+        T result;
+        try {
+            result = resilient.callOrThrow(name, call);
+        } catch (RuntimeException e) {
+            throw classify(name, e);
+        }
+        if (result == null) {
+            throw new DownstreamRejectedException(name);
+        }
+        return result;
+    }
+
+    private RuntimeException classify(String name, RuntimeException cause) {
+        int answered = ResilientFeignCaller.answeredStatus(cause);
+        if (answered >= 400 && answered < 500) {
+            return new DownstreamRejectedException(name, answered, cause);
+        }
+        return new DownstreamUnavailableException(name, cause);
+    }
+
+    /**
+     * Place and pay for the cart's contents.
+     *
+     * @throws CartEmptyException                    409, nothing to buy
+     * @throws PromotionCodeInvalidException         422, the code cannot be used
+     * @throws DownstreamUnavailableException        503, a dependency is down
+     * @throws DownstreamRejectedException           500, a dependency refused our request
+     * @throws PaymentDeclinedException              402, the card was refused
+     * @throws PaymentConfirmationFailedException    502, the processor gave no usable answer
+     * @throws PaymentCapturedWithoutOrderException  500, money moved and the order did not
+     *
+     * @param idempotencyKey the browser's {@code Idempotency-Key}, forwarded
+     *     verbatim to payment-service so that a retry replays the stored
+     *     response instead of charging again. May be null, in which case there
+     *     is no such protection -- deliberately not generated here, because a
+     *     key minted per attempt is fresh per attempt and guards nothing.
+     */
+    public ConfirmResponse confirm(ConfirmRequest req, String idempotencyKey) {
+        var myCart = mustCall(cart::getMyCart, "cart");
+        if (myCart.items() == null || myCart.items().isEmpty()) {
+            // An empty cart is now distinguishable from an unreachable
+            // cart-service: mustCall has already thrown 503 for the latter,
+            // so reaching here means the cart really is empty.
+            throw new CartEmptyException();
         }
 
         // 1) Promo
@@ -133,19 +250,15 @@ public class CheckoutService {
         BigDecimal discount = BigDecimal.ZERO;
         String appliedPromo = null;
         if (req.promotionCode() != null && !req.promotionCode().isBlank()) {
-            var apply = safeCall(() -> promotion.apply(req.promotionCode(),
-                    new PromotionClient.ApplyRequest(subtotal)), "promotion");
-            if (apply != null) {
-                discount = apply.discount();
-                appliedPromo = apply.code();
-            } else {
-                return new ConfirmResponse(null, null, null, null, BigDecimal.ZERO, "USD",
-                        "promotion code invalid: " + req.promotionCode());
-            }
+            var apply = applyPromotion(req.promotionCode(), subtotal);
+            discount = apply.discount();
+            appliedPromo = apply.code();
         }
         BigDecimal afterDiscount = subtotal.subtract(discount);
 
-        // 2) Shipping (cheapest)
+        // 2) Shipping (cheapest). Still degrades to free rather than failing
+        // the order: an unreachable rate service should not stop a sale, and
+        // under-charging ourselves is the safe direction to be wrong in.
         BigDecimal shippingCost = BigDecimal.ZERO;
         var rates = safeCall(() -> shipping.rates(
                 new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping");
@@ -154,6 +267,9 @@ public class CheckoutService {
                     .map(ShippingClient.ShippingOption::cost)
                     .min(BigDecimal::compareTo)
                     .orElse(BigDecimal.ZERO);
+        } else {
+            log.warn("No shipping rates for country={}; charging zero shipping",
+                    req.destinationCountry());
         }
         BigDecimal total = afterDiscount.add(shippingCost);
 
@@ -161,39 +277,67 @@ public class CheckoutService {
         var items = myCart.items().stream()
                 .map(i -> new OrderClient.LineItem(i.variantId(), i.title(), i.quantity(), i.unitPrice()))
                 .toList();
-        var placed = safeCall(() -> order.place(
+        var placed = mustCall(() -> order.place(
                 new OrderClient.PlaceOrderRequest(req.shippingAddressId(), "USD", items)), "order");
-        if (placed == null) {
-            return new ConfirmResponse(null, null, null, null, total, "USD", "order service unavailable");
-        }
         log.info("Order placed orderId={} status={} total={}", placed.id(), placed.status(), placed.total());
 
-        // 4) Payment
-        var intent = safeCall(() -> payment.createIntent(
+        // 4) Payment. Nothing has been charged yet, so a failure up to and
+        // including createIntent is safe to report as transient.
+        var intent = mustCall(() -> payment.createIntent(
                 new PaymentClient.CreateIntentRequest(placed.id(), total, "USD")), "payment");
-        if (intent == null) {
-            return new ConfirmResponse(placed.id(), placed.status(), null, null, total, "USD", "payment service unavailable");
+
+        PaymentClient.IntentResponse confirmed;
+        try {
+            confirmed = resilient.callOrThrow("payment", () -> payment.confirm(intent.id(),
+                    idempotencyKey, new PaymentClient.ConfirmRequest(req.cardNumber())));
+        } catch (RuntimeException e) {
+            // 502, not 503 and not 402. The charge may or may not have gone
+            // through, so this is the one ambiguous outcome: the order stays
+            // CREATED and the cart stays intact, which keeps it recoverable,
+            // and a retry is safe because confirmation is idempotent on the
+            // intent. Calling it a decline (402) would tell the shopper their
+            // card was refused when it may well have been charged.
+            throw new PaymentConfirmationFailedException(
+                    "the payment service did not answer", e);
         }
-        var confirmed = safeCall(() -> payment.confirm(intent.id(),
-                new PaymentClient.ConfirmRequest(req.cardNumber())), "payment");
-        if (confirmed == null || !"SUCCEEDED".equals(confirmed.status())) {
-            // Best-effort: leave the order in CREATED so the user can retry; cart untouched.
-            return new ConfirmResponse(placed.id(), placed.status(), intent.id(),
-                    confirmed == null ? "UNKNOWN" : confirmed.status(),
-                    total, "USD",
-                    confirmed == null ? "payment confirmation failed" : "payment declined: " + confirmed.failureReason());
+        if (confirmed == null) {
+            throw new PaymentConfirmationFailedException(
+                    "the payment service answered with no body", null);
+        }
+        if (!"SUCCEEDED".equals(confirmed.status())) {
+            // Terminal: payment-service only ever lands an intent in SUCCEEDED
+            // or FAILED, so anything else here is a refusal. 402 and NOT
+            // retryable -- the same card will be refused again.
+            log.info("Payment declined intentId={} status={} reason={}",
+                    intent.id(), confirmed.status(), confirmed.failureReason());
+            throw new PaymentDeclinedException(confirmed.failureReason());
         }
         log.info("Payment SUCCEEDED intentId={}", intent.id());
 
-        // 5) Pay -> attach intent + transition order to PAID
-        var paid = safeCall(() -> order.pay(placed.id(),
-                new OrderClient.AttachPaymentRequest(intent.id())), "order");
-        if (paid == null) {
-            return new ConfirmResponse(placed.id(), placed.status(), intent.id(),
-                    confirmed.status(), total, "USD", "order/pay failed (payment captured)");
+        // 5) Pay -> attach intent + transition order to PAID.
+        //
+        // Past this line the money is gone, so a failure is no longer
+        // transient and must not be reported as one: a 503 invites a retry
+        // that would charge the card a second time.
+        OrderClient.OrderResponse paid;
+        try {
+            paid = mustCall(() -> order.pay(placed.id(),
+                    new OrderClient.AttachPaymentRequest(intent.id())), "order");
+        } catch (RuntimeException e) {
+            log.error("PAYMENT CAPTURED WITHOUT ORDER orderId={} intentId={} amount={} -- "
+                            + "needs manual reconciliation (refund the intent or replay the "
+                            + "transition)",
+                    placed.id(), intent.id(), total, e);
+            throw new PaymentCapturedWithoutOrderException(placed.id(), intent.id(), e);
         }
 
-        // 6) Redeem promo + clear cart (post-success bookkeeping)
+        // 6) Redeem promo + clear cart (post-success bookkeeping).
+        //
+        // Deliberately still best-effort: the order is PAID and the shopper
+        // owns it, so failing the response now would report a loss on a sale
+        // that completed. A stale cart or an unredeemed code is a bookkeeping
+        // drift to reconcile, not a reason to tell the shopper their purchase
+        // failed. Both are logged by ResilientFeignCaller.
         final String promoToRedeem = appliedPromo;
         if (promoToRedeem != null) {
             safeCall(() -> { promotion.redeem(promoToRedeem); return null; }, "promotion");
@@ -202,5 +346,36 @@ public class CheckoutService {
 
         return new ConfirmResponse(paid.id(), paid.status(), intent.id(),
                 confirmed.status(), total, "USD", "order placed and paid");
+    }
+
+    /**
+     * Validate the promo code and compute its discount.
+     *
+     * <p>The one place a 404 is not an error: promotion-service answers 404 for
+     * unknown, expired, disabled and exhausted codes alike, as a single status
+     * on purpose so the response cannot be used to probe which guard failed.
+     * That becomes 422 here -- "this code cannot be used" -- and the reason is
+     * not elaborated, because elaborating it would hand back the signal the
+     * single 404 exists to withhold.
+     *
+     * <p>Any other failure keeps {@link #mustCall}'s classification. Telling a
+     * shopper their code is invalid when the truth is that promotion-service is
+     * down is both wrong and unactionable, and it is what the old
+     * {@code 200 OK} with {@code "promotion code invalid: X"} did on every
+     * outage.
+     */
+    private PromotionClient.ApplyResponse applyPromotion(String code, BigDecimal subtotal) {
+        try {
+            return mustCall(() -> promotion.apply(code,
+                    new PromotionClient.ApplyRequest(subtotal)), "promotion");
+        } catch (DownstreamRejectedException e) {
+            if (e.status() == HttpStatus.NOT_FOUND.value()) {
+                log.info("Promotion code rejected by promotion-service code={}", code);
+                throw new PromotionCodeInvalidException(code);
+            }
+            // 400 from promotion-service means WE sent a bad subtotal: our
+            // bug, so it keeps its 500 rather than being blamed on the code.
+            throw e;
+        }
     }
 }

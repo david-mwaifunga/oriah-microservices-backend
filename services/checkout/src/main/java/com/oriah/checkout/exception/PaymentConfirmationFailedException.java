@@ -1,0 +1,44 @@
+package com.oriah.checkout.exception;
+
+/**
+ * The payment service could not be reached, or answered unusably, while
+ * confirming an intent.
+ *
+ * <p><strong>502 Bad Gateway</strong>: an upstream dependency failed to give a
+ * usable answer. Separate from {@link PaymentDeclinedException} (402, final)
+ * and from {@link DownstreamUnavailableException} (503, nothing attempted yet),
+ * because the three need different client behaviour and this one is the
+ * ambiguous case — the charge may or may not have gone through.
+ *
+ * <p>That ambiguity is why the order is left in {@code CREATED} and the cart is
+ * left intact: the state has to stay recoverable.
+ *
+ * <h2>Exactly how safe a retry is</h2>
+ *
+ * <p>An earlier version of this javadoc said a retry was safe "because payment
+ * confirmation is idempotent on {@code Idempotency-Key}". Half of that was
+ * false when written. payment-service does implement the header — it replays a
+ * stored response rather than re-charging — but checkout forwarded only
+ * {@code Authorization}, so the key the browser sent was dropped and the
+ * guarantee was unreachable. Introducing a 502 that invites a retry while the
+ * key went nowhere would have turned every retry into a second charge, so the
+ * forwarding is now part of this change (finding #19) and pinned by
+ * {@code theIdempotencyKeyReachesPaymentService}.
+ *
+ * <p>What that buys, precisely: with the same key resent, <strong>the card is
+ * not charged twice</strong>. What it does not buy: the retry still places a
+ * second order and creates a second intent before reaching the replayed
+ * confirm, so the first order can be left stranded in {@code CREATED}. One
+ * charge, one usable order, one abandoned row — strictly better than a double
+ * charge, and not yet correct. Making the whole saga idempotent needs a
+ * checkout-level record keyed on the same header; recorded as the residual gap
+ * rather than implied to be solved.
+ */
+public class PaymentConfirmationFailedException extends RuntimeException {
+
+    public PaymentConfirmationFailedException(String detail, Throwable cause) {
+        super("The payment could not be confirmed: " + detail
+                + ". Your order has not been placed; check your payment method "
+                + "before retrying.", cause);
+    }
+}
