@@ -21,7 +21,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
-| 5 | Service-layer conventions × 12 services | 🟡 error contract + contact-info done for **all 12**; **385 tests**, gate PASS, smoke 18/18 |
+| 5 | Service-layer conventions × 12 services | ✅ **396 tests**, both gates PASS, smoke 18/18 — 2 items deliberately deferred |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
 
 ---
@@ -507,19 +507,19 @@ shipping goes **first**, not catalog: it is the smallest module, has no exceptio
 JPA, which makes it the cheapest place to prove the genuinely risky part — the `/contact-info`
 `@ConfigurationProperties` binding, where getting it wrong fails the context on startup.
 
-| # | Service | Size | Own advice? | Mapper | Status |
+| # | Service | Size | Own advice? | Needed a mapper? | Status |
 |---|---|---|---|---|---|
 | 1 | shipping | trivial | no | no | ✅ **16/16** (was 5) |
-| 2 | **catalog** | medium | no | yes | 🟡 404 bodies done — **53/53** |
-| 3 | review | small | no | yes | 🟡 404 body done — **11/11** (was 6) |
-| 4 | cart | small | no | yes | 🟡 404 bodies + **the 200 bug** — **10/10** (was 6) |
-| 5 | customer | medium | no | yes | 🟡 5 x 404 bodies |
-| 6 | promotion | small | no | yes | 🟡 4 x 404 + anti-enumeration guard |
-| 7 | order | medium | no | yes | 🟡 5 x 404 + cross-user guard |
-| 8 | inventory | medium | **yes** | yes | 🟡 2 x 404 + **3 x 400 to 409** |
-| 9 | payment | medium | no | yes | 🟡 2 x 404 + cross-user guard |
-| 10 | search | small | no | yes | 🟡 guard test |
-| 11 | notification | small | no | yes | 🟡 guard test |
+| 2 | **catalog** | medium | no | **yes** | ✅ **63/63** (was 46) — template for the tier |
+| 3 | review | small | no | no | ✅ **13/13** (was 6) |
+| 4 | cart | small | no | no | ✅ **15/15** (was 6) — incl. **the 200 bug** |
+| 5 | customer | medium | no | no | ✅ **16/16** (was 9) |
+| 6 | promotion | small | no | no | ✅ **20/20** — incl. anti-enumeration guard |
+| 7 | order | medium | no | no | ✅ **19/19** — incl. cross-user guard |
+| 8 | inventory | medium | **yes** | no | ✅ **35/35** — incl. **3 x 400 to 409** |
+| 9 | payment | medium | no | no | ✅ **20/20** — incl. cross-user guard |
+| 10 | search | small | no | no | ✅ **10/10** (was 5) |
+| 11 | notification | small | no | no | ✅ **8/8** (was 3) |
 | 12 | ~~checkout~~ | large | — | — | ⏭️ **lifted out — see below** |
 
 ---
@@ -756,8 +756,8 @@ Shared prerequisites:
 | 5-pre0 | **The acceptance gate itself** — `scripts/openapi_diff.py` + `scripts/openapi-diff.ps1`, classifying every spec difference as breaking or additive | ✅ **19/19 self-test**; live run **43→43 paths / 51→51 operations, PASS** |
 | 5-pre1 | `OriahExceptionHandlerSupport` — **abstract, unannotated**; owns RFC 7807 rendering; shared advice de-registered conditionally in the same commit. **Cannot** extend `ResponseEntityExceptionHandler` — see Tier 0.5 | ✅ starter **29/29** (was 23); 2 red → green |
 | 5-pre2 | ~~`ResponseDto` / `ErrorResponseDto` as documented schema types~~ | ⚠️ **recommend dropping — see note** |
-| 5-pre3 | Guard test per service: exactly one **error-contract** advice, **and it is the expected one** | 🟡 catalog + shipping done |
-| 5-post | Regenerate `oriah-web` clients; OpenAPI diff vs 0c must show **additions only** | ⬜ |
+| 5-pre3 | Guard test per service: exactly one **error-contract** advice, **and it is the expected one** | ✅ all 12 |
+| 5-post | Regenerate `oriah-web` clients; OpenAPI diff vs 0c must show **additions only** | ✅ 12/12 regenerated, `tsc` clean, 19/19 |
 
 **5-pre1 — what the red bar settled, as opposed to what I'd have guessed.** The split is
 `OriahExceptionHandlerSupport` (abstract, unannotated, all 14 handlers) + a one-line
@@ -1110,6 +1110,46 @@ sets match — a mismatch would have left a stale `unavailable` sitting next to 
 /api/v1/products                (no token) -> 200     <- public read, untouched
 all 12 .../contact-info         (no token) -> 401
 ```
+
+
+---
+
+## Tier 5 complete
+
+| | |
+|---|---|
+| Tests | **396**, 0 failures across 17 modules (287 at the start of the tier) |
+| Additions-only gate | **PASS** — 259 additions, 12 waived with written reasons, 0 unexplained |
+| Content audit | **PASS** — from **127 findings** to 0 |
+| Live | smoke **18/18**, 84 spans across 7 services in one trace |
+| `oriah-web` | 12/12 clients regenerated, `tsc` clean, 19/19 |
+
+**Four gates now exist that did not before**, each proven able to fail:
+
+| Gate | Checks | Self-test |
+|---|---|---|
+| `openapi-diff.ps1` | the contract only gains, with an explicit waiver file | **22/22** |
+| `openapi_audit.py` | the contract is worth having | **8/8** |
+| `validate_roles.py` | every guarded role exists in the realm | **5/5** |
+| `ErrorAdviceRegistrationTest` | one error-contract advice per service, and it is the right one | 12 services |
+
+**Defects found and closed in this tier** — none of which were on the plan:
+
+1. **25 not-found sites answered 404 with an empty body** across 8 services.
+2. **inventory's over-reserve/release/confirm answered 400**, telling clients to fix valid input.
+3. **cart's PATCH answered 200 having changed nothing** — the miss case gated a log line.
+4. **Every unmapped path in every service answered 500**, making a typo'd URL retry-eligible.
+5. **The OpenAPI document claimed every call succeeds** and was wrong about success on 12 endpoints.
+6. **A regression I introduced**: springdoc's own advice would have silenced the error contract everywhere.
+
+**Deliberately not done, and why** — these stay your call:
+
+| Item | Reason |
+|---|---|
+| `IXxxService` in 11 services | One implementation, one caller. Demonstrated in catalog so the pattern is readable. |
+| `mapper/XxxMapper` in 11 services | Only catalog had a dependency inversion. The rest use `XxxResponse.from(entity)`, which is idiomatic and already correct. |
+| `constants/XxxConstants` in 11 services | The one real failure mode — a role name that does not match the realm — is now guarded across all 12 by `validate_roles.py`. A constant used once is decorative. |
+| customer's 404 → 409 | A judgement call with no bug behind it, and `GET /me/addresses` answers the same state with 200. Fix it with the frontend. |
 
 
 ## Tier 6 — Audit entity rename (isolated: only persistence-risky item)
