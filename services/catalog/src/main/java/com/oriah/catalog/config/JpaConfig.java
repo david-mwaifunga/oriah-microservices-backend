@@ -5,14 +5,14 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.AuditorAware;
 import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
 
-import com.oriah.jpa.KeycloakAuditorAware;
+import com.oriah.jpa.AuditAwareImpl;
 
 /**
  * Activates Spring Data JPA auditing for the catalog service.
  *
- * <p>{@code @EnableJpaAuditing(auditorAwareRef = "auditor")} wires the
+ * <p>{@code @EnableJpaAuditing(auditorAwareRef = "auditAwareImpl")} wires the
  * {@code jpaAuditingHandler} that the {@code AuditingEntityListener}
- * on {@link com.oriah.jpa.AuditableEntity} delegates to on every
+ * on {@link com.oriah.jpa.BaseEntity} delegates to on every
  * {@code persist}/{@code update}. The handler reads the
  * {@code auditor} bean below to populate {@code created_by} and
  * {@code updated_by}; {@code @CreatedDate} / {@code @LastModifiedDate}
@@ -32,11 +32,11 @@ import com.oriah.jpa.KeycloakAuditorAware;
  * which is fine because the V2 Flyway migration makes them nullable.
  */
 @Configuration
-@EnableJpaAuditing(auditorAwareRef = "auditor")
+@EnableJpaAuditing(auditorAwareRef = "auditAwareImpl")
 public class JpaConfig {
 
     @Bean
-    public AuditorAware<String> auditor() {
-        return new KeycloakAuditorAware();
+    public AuditorAware<String> auditAwareImpl() {
+        return new AuditAwareImpl();
     }
 }

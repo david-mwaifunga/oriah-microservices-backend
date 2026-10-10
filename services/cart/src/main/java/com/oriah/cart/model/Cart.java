@@ -14,7 +14,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Shopping cart owned by a Keycloak user (the JWT {@code sub}). Lazy-
@@ -26,7 +26,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "carts")
-public class Cart extends AuditableEntity {
+public class Cart extends BaseEntity {
 
     @Id
     @Column(nullable = false)
@@ -60,7 +60,7 @@ public class Cart extends AuditableEntity {
         Optional<CartItem> existing = items.stream()
                 .filter(i -> i.variantId().equals(variantId))
                 .findFirst();
-        // Note: AuditableEntity's @LastModifiedDate updated_at is refreshed
+        // Note: BaseEntity's @LastModifiedDate updated_at is refreshed
         // automatically by AuditingEntityListener on the next save() / flush().
         return existing
                 .map(i -> { i.bump(quantity); return i; })

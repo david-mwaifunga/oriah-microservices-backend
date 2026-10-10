@@ -13,7 +13,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * One row per Keycloak user. Identified by {@link #keycloakId} (the
@@ -26,7 +26,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "customers")
-public class Customer extends AuditableEntity {
+public class Customer extends BaseEntity {
 
     @Id
     @Column(nullable = false)

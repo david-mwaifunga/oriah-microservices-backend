@@ -32,7 +32,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
  * the same config class. Not a {@code @Component} here so this jar
  * stays a pure type library with no Spring context side effects.
  */
-public class KeycloakAuditorAware implements AuditorAware<String> {
+public class AuditAwareImpl implements AuditorAware<String> {
 
     static final String SYSTEM = "system";
 

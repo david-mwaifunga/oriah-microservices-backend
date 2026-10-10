@@ -12,11 +12,11 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 @Entity
 @Table(name = "promotions")
-public class Promotion extends AuditableEntity {
+public class Promotion extends BaseEntity {
 
     @Id
     @Column(nullable = false)

@@ -9,7 +9,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Inventory aggregate for a single product variant.
@@ -29,7 +29,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "inventory")
-public class Inventory extends AuditableEntity {
+public class Inventory extends BaseEntity {
 
     @Id
     @Column(name = "variant_id")

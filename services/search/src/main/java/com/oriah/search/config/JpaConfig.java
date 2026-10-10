@@ -5,7 +5,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.domain.AuditorAware;
 import org.springframework.data.jpa.repository.config.EnableJpaAuditing;
 
-import com.oriah.jpa.KeycloakAuditorAware;
+import com.oriah.jpa.AuditAwareImpl;
 
 /**
  * Activates Spring Data JPA auditing for the search service.
@@ -14,11 +14,11 @@ import com.oriah.jpa.KeycloakAuditorAware;
  * so @WebMvcTest slices do not bootstrap JPA they do not need).
  */
 @Configuration
-@EnableJpaAuditing(auditorAwareRef = "auditor")
+@EnableJpaAuditing(auditorAwareRef = "auditAwareImpl")
 public class JpaConfig {
 
     @Bean
-    public AuditorAware<String> auditor() {
-        return new KeycloakAuditorAware();
+    public AuditorAware<String> auditAwareImpl() {
+        return new AuditAwareImpl();
     }
 }

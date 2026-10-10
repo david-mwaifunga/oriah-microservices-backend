@@ -7,18 +7,18 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * One row per indexed product. The {@code document} tsvector column is
  * a GENERATED STORED expression in the DB — JPA never writes it. We
  * only manage title/description/tags here; the {@code created_at} /
  * {@code updated_at} / auditor / soft-delete columns are inherited
- * from {@link AuditableEntity}.
+ * from {@link BaseEntity}.
  */
 @Entity
 @Table(name = "search_index")
-public class SearchIndexEntry extends AuditableEntity {
+public class SearchIndexEntry extends BaseEntity {
 
     @Id
     @Column(name = "variant_id", nullable = false)

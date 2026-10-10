@@ -13,9 +13,9 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
-class KeycloakAuditorAwareTest {
+class AuditAwareImplTest {
 
-    private final KeycloakAuditorAware auditor = new KeycloakAuditorAware();
+    private final AuditAwareImpl auditor = new AuditAwareImpl();
 
     @AfterEach
     void clearContext() {

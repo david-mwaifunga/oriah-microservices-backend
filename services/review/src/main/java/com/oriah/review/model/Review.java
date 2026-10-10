@@ -7,11 +7,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 @Entity
 @Table(name = "reviews")
-public class Review extends AuditableEntity {
+public class Review extends BaseEntity {
 
     @Id
     @Column(nullable = false)

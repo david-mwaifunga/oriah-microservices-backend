@@ -14,7 +14,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Product aggregate root for the catalog domain.
@@ -29,7 +29,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "products")
-public class Product extends AuditableEntity {
+public class Product extends BaseEntity {
 
     @Id
     private UUID id;

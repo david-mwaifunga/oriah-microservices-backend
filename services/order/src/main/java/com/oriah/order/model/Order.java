@@ -16,7 +16,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Order aggregate. Created from a cart at checkout time; immutable
@@ -27,7 +27,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "orders")
-public class Order extends AuditableEntity {
+public class Order extends BaseEntity {
 
     @Id
     @Column(nullable = false)

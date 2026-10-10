@@ -1156,12 +1156,85 @@ all 12 .../contact-info         (no token) -> 401
 
 | # | Item | Status |
 |---|---|---|
-| 6a | `AuditableEntity` → `BaseEntity`, `KeycloakAuditorAware` → `AuditAwareImpl` (`@Component("auditAwareImpl")`) | ⬜ |
-| 6b | `auditorAwareRef` updated in all 12 app classes | ⬜ |
-| 6c | Check **real** migration column names; forward-only `V{n}__align_audit_columns.sql` only where they differ | ⬜ |
-| 6d | Testcontainers auditing integration test post-rename | ⬜ |
+| 6a | `AuditableEntity` → `BaseEntity`, `KeycloakAuditorAware` → `AuditAwareImpl` | ✅ 29 files, bean renamed to `auditAwareImpl` |
+| 6b | `auditorAwareRef` updated — in the **10 `JpaConfig` classes**, not the app classes | ✅ |
+| 6c | Check **real** migration column names | ✅ **no migration needed** — see below |
+| 6d | Testcontainers auditing integration test | ✅ `AuditingBehaviourTest`, 5 tests, written **before** the rename |
 
 ---
+
+---
+
+### 6c: the column names were already right. The interesting part was elsewhere.
+
+Queried all 10 live service databases directly rather than reading the migrations. **Every audit
+column has the same name in all 13 tables** (`created_at`, `updated_at`, `created_by`, `updated_by`,
+`is_deleted`), so the planned `V{n}__align_audit_columns.sql` has nothing to align and is **not
+written**. Tier 6 ships no migration.
+
+What the sweep did find is that the **types** are inconsistent:
+
+| | `created_at` | `updated_at` |
+|---|---|---|
+| `orders` | `timestamp` | **`timestamptz NOT NULL`** |
+| `order_items` | `timestamp` | `timestamp` |
+| `carts` | **`timestamptz`** | **`timestamptz`** |
+| `cart_items` | `timestamp` | `timestamp` |
+| `customers`, `reviews`, `promotions`, `payment_intents` | **`timestamptz`** | `timestamp` |
+| `products`, `inventory`, `notification_log` | `timestamp` | `timestamp` |
+
+The cause is `V2__add_audit_columns.sql` using `ADD COLUMN IF NOT EXISTS`: wherever `V1` had already
+created the column, `V2`'s plain `TIMESTAMP` was a silent no-op, so the type depends on which
+migration got there first.
+
+**And this is where I nearly shipped a defect report that was wrong.** A diagnostic on an
+`Africa/Johannesburg` JVM showed the entity holding `15:06:06Z` and the column returning
+`13:06:06Z` — a clean two-hour skew, exactly the kind of thing a naive timestamp column is supposed
+to cause. It was an artefact of the diagnostic. A raw JDBC `getObject(.., Instant.class)` against
+`timestamp without time zone` applies the JVM's zone to the stored digits; **Hibernate's own
+`Instant` mapping does not** — it writes and reads UTC digits directly. The application round-trips
+correctly on any JVM zone, which `AuditingBehaviourTest.createdAtIsStoredAsAnInstantNotLocalWallClock`
+now holds in place.
+
+So the type inconsistency is real but **cosmetic**, and converting ten tables with
+`ALTER COLUMN ... TYPE timestamptz` would be a risky migration bought for tidiness. Recorded, not
+done.
+
+---
+
+### Finding #15 — `@LastModifiedDate` is silently inert on `Order`
+
+`Order` declares its own `updatedAt` mapped to `updated_at`, the same column `BaseEntity` maps with
+`@LastModifiedDate`. Hibernate raises no "Repeated column in mapping": the subclass field
+**shadows** the superclass one as the persistent attribute. Measured, after two wrong guesses:
+
+| | value |
+|---|---|
+| `orders.updated_at` column | matches `Order.updatedAt()` to the microsecond |
+| the `@LastModifiedDate` field (via reflection) | a **different** instant, milliseconds later |
+| the same field after `em.clear()` + reload | **`null`** — never hydrated |
+
+So the listener runs, writes the shadowed field, and Hibernate ignores it. Nothing is user-visible
+**only because** `Order` maintains the column by hand in `transitionTo()` and
+`attachPaymentIntent()`. The trap is that it looks audited and is not: delete those two assignments
+trusting the annotation one class up, and a `NOT NULL` column silently stops advancing.
+
+Left as-is deliberately — removing the duplicate field is a behaviour change on the one
+entity with an FSM and a payment attached, which does not belong in a rename tier. Two tests now
+hold the current behaviour and say what to do if it ever changes.
+
+**Three measurement traps worth not repeating**, each of which cost a wrong conclusion:
+
+1. **A cast does not reach a shadowed field.** `((BaseEntity) order).updatedAt()` dispatches
+   virtually straight back to `Order.updatedAt()`, because `Order` overrides it. Only reflection
+   reads the superclass field.
+2. **Postgres rounds timestamps to microseconds, it does not truncate.** `...057335600Z` comes back
+   as `...057336Z`. So `isEqualTo` fails on the lost nanoseconds *and* `truncatedTo(MICROS)` fails
+   whenever the value rounds up — about half the time, as a convincing-looking flake. A
+   `within(1, MICROS)` tolerance is the only correct comparison.
+3. **Raw JDBC and Hibernate disagree about naive timestamp columns**, which is the two-hour
+   phantom above.
+
 
 ## Divergences from section_12 — and why
 

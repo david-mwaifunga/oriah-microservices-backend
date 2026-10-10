@@ -21,7 +21,7 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
  *       by Spring Data's {@link AuditingEntityListener}.</li>
  *   <li>{@code created_by}, {@code updated_by} -- Keycloak {@code sub}
  *       claim resolved via the {@code auditor} bean
- *       ({@link KeycloakAuditorAware}); falls back to "system" for
+ *       ({@link AuditAwareImpl}); falls back to "system" for
  *       writes from Kafka-consumer threads where the
  *       {@code SecurityContext} is empty.</li>
  *   <li>{@code is_deleted} -- soft-delete flag. Services opt into
@@ -57,7 +57,7 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
  */
 @MappedSuperclass
 @EntityListeners(AuditingEntityListener.class)
-public abstract class AuditableEntity {
+public abstract class BaseEntity {
 
     @CreatedDate
     @Column(name = "created_at", updatable = false)

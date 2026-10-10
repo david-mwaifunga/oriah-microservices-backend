@@ -10,7 +10,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Postal address belonging to a {@link Customer}. The {@code isDefault}
@@ -21,7 +21,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "addresses")
-public class Address extends AuditableEntity {
+public class Address extends BaseEntity {
 
     @Id
     @Column(nullable = false)

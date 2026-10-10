@@ -7,7 +7,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Persisted record of a previously-seen {@code Idempotency-Key} on
@@ -17,11 +17,11 @@ import com.oriah.jpa.AuditableEntity;
  * {@link #responseJson()} verbatim and skips the gateway charge.
  *
  * <p>Inherits audit columns + soft-delete from
- * {@link AuditableEntity} via the per-service JpaConfig.
+ * {@link BaseEntity} via the per-service JpaConfig.
  */
 @Entity
 @Table(name = "idempotency_keys")
-public class IdempotencyKey extends AuditableEntity {
+public class IdempotencyKey extends BaseEntity {
 
     /** The client-supplied key (typically a UUID). PK + unique. */
     @Id

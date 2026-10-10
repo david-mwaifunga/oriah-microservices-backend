@@ -8,7 +8,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
-import com.oriah.jpa.AuditableEntity;
+import com.oriah.jpa.BaseEntity;
 
 /**
  * Inventory's locally-cached awareness of which products catalog knows
@@ -26,7 +26,7 @@ import com.oriah.jpa.AuditableEntity;
  */
 @Entity
 @Table(name = "product_index")
-public class ProductRef extends AuditableEntity {
+public class ProductRef extends BaseEntity {
 
     @Id
     @Column(name = "variant_id", nullable = false)
@@ -56,7 +56,7 @@ public class ProductRef extends AuditableEntity {
 
     /**
      * Updates the cached title to reflect a {@code product.updated} event.
-     * The {@link com.oriah.jpa.AuditableEntity#updatedAt() updatedAt}
+     * The {@link com.oriah.jpa.BaseEntity#updatedAt() updatedAt}
      * field on the superclass is refreshed by the AuditingEntityListener
      * on the next flush.
      */
