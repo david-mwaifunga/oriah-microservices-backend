@@ -42,17 +42,39 @@
     "status": 400
   },
   "401-admin-products-anonymous": {
-    "contentType": null,
+    "contentType": "application/problem+json",
     "problem": {
-      "body": ""
+      "detail": "Authentication is required. Send a Bearer token in the Authorization header.",
+      "instance": "/api/v1/admin/products",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 401,
+      "title": "Unauthorized",
+      "type": "https://oriah.dev/problems/unauthorized"
     },
     "request": "GET /api/v1/admin/products",
     "status": 401
   },
   "401-cart-anonymous": {
-    "contentType": null,
+    "contentType": "application/problem+json",
     "problem": {
-      "body": ""
+      "detail": "Authentication is required. Send a Bearer token in the Authorization header.",
+      "instance": "/api/v1/carts/me",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 401,
+      "title": "Unauthorized",
+      "type": "https://oriah.dev/problems/unauthorized"
     },
     "request": "GET /api/v1/carts/me",
     "status": 401
@@ -66,17 +88,39 @@
     "status": 401
   },
   "401-inventory-read-anonymous-at-edge": {
-    "contentType": null,
+    "contentType": "application/problem+json",
     "problem": {
-      "body": ""
+      "detail": "Authentication is required. Send a Bearer token in the Authorization header.",
+      "instance": "/api/v1/inventory/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 401,
+      "title": "Unauthorized",
+      "type": "https://oriah.dev/problems/unauthorized"
     },
     "request": "GET /api/v1/inventory/<uuid>",
     "status": 401
   },
   "403-admin-products-as-plain-user": {
-    "contentType": null,
+    "contentType": "application/problem+json",
     "problem": {
-      "body": ""
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/products",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
     },
     "request": "GET /api/v1/admin/products  (as user)",
     "status": 403

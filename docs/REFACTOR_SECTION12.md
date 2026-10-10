@@ -1305,6 +1305,82 @@ hold the current behaviour and say what to do if it ever changes.
    phantom above.
 
 
+---
+
+### Finding #16, fixed at the edge — and what fixing it corrected about my own claim
+
+`EdgeProblemResponses` gives the gateway's 401 and 403 an RFC 7807 body, wired onto **both**
+`exceptionHandling` and `oauth2ResourceServer`. Setting only the first would have fixed 403 while
+leaving 401 empty, since token failures (missing, expired, malformed) go through the resource
+server's own pair — which is the shape of the original bug.
+
+Before and after, at the edge:
+
+```
+GET /api/v1/carts/me   (no token)
+  was:  401, WWW-Authenticate: Bearer, content-length: 0
+  now:  401, WWW-Authenticate: Bearer, application/problem+json, 204 bytes
+        {"type":".../problems/unauthorized","title":"Unauthorized","status":401,
+         "detail":"Authentication is required. Send a Bearer token in the
+         Authorization header.","instance":"/api/v1/carts/me"}
+```
+
+**13 of the 14 golden cases now carry a problem body**, up from 9. `WWW-Authenticate` survives, with
+a test that fails if it is dropped — it is the one genuinely useful thing the default entry
+point did, and replacing that entry point is exactly how it gets lost.
+
+**The 403 body deliberately does not name the missing role.** "You need CATALOG_ADMIN" turns a
+denial into a map of the authorization model and points an attacker at the account worth taking. The
+role that was checked is logged; the response says only that a role is missing.
+
+**A correction to what I wrote when recording #16.** I said 401 and 403 were "the only errors that
+could not be correlated to a trace", implying a body would restore that. Measuring showed otherwise:
+the response carries no `traceId` **and neither does the handler's own log line**. There is no span
+at that point in the chain at all. Both the observation filter and the gateway's
+`RequestTraceFilter` (a `GlobalFilter`, so it only runs for a request that *matches a route*) sit
+after the security chain, so a request rejected at the edge never routes and is never traced. The
+body is still a real improvement; trace correlation is not part of it. The `Tracer` lookup stays
+because it is free, null-safe, and would start working by itself if tracing ever moved earlier.
+
+---
+
+### Finding #17 — auth failures leave no trace at all
+
+The corollary, and a monitoring gap rather than a response-shape one: because the security chain
+answers before anything opens a span, **no 401 or 403 appears in Tempo**. A credential-stuffing run
+against the edge is invisible to tracing — it shows up only as gateway log lines. Belongs
+to the observability tier, not to the error contract.
+
+---
+
+### #16s second half: exactly two endpoints, and I created them
+
+`401-contact-info-anonymous` is the one golden case still returning an empty body, and the reason is
+precise. That 401 comes from **catalog`s own servlet chain**, not the gateway: the gateway permits
+`GET /api/v1/products/**`, so the request routes through and catalog rejects it with Spring
+Security`s default servlet entry point — which has the same empty-body behaviour the
+reactive one had.
+
+Measured scope — it affects **two endpoints, not twelve services**:
+
+| | |
+|---|---|
+| `/api/v1/products/contact-info` | 401, no body |
+| `/api/v1/search/contact-info` | 401, no body |
+
+Those are the only paths the gateway permits anonymously (`PUBLIC_GET_PATHS` is just
+`/api/v1/products/**` and `/api/v1/search/**`) that a service then rejects. Every other 401 and 403
+is rejected at the gateway and now has a body.
+
+And they exist **because of the `authenticated()` rules added in Tier 5** to stop contact-info being
+readable anonymously. Worth owning: that change closed a disclosure gap and opened a smaller
+response-shape one.
+
+Not fixed here. It wants a servlet `AuthenticationEntryPoint` and `AccessDeniedHandler` in the
+shared starter so all 12 services inherit one, which is the same shape as the gateway fix but on the
+other stack. The golden pins the current behaviour, so it will show as a one-line diff.
+
+
 ## Divergences from section_12 — and why
 
 | Course convention | What we do | Why |

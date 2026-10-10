@@ -111,7 +111,8 @@ public class SecurityConfig {
     };
 
     @Bean
-    public SecurityWebFilterChain springSecurityFilterChain(ServerHttpSecurity http) {
+    public SecurityWebFilterChain springSecurityFilterChain(
+            ServerHttpSecurity http, EdgeProblemResponses problems) {
         return http
                 // Stateless bearer-token API: there is no session or cookie for
                 // an attacker to ride, and CSRF tokens would simply break every
@@ -147,8 +148,27 @@ public class SecurityConfig {
 
                         // Deny by default.
                         .anyExchange().authenticated())
+                // Finding #16: without these, 401 and 403 go out with
+                // content-length: 0. Spring Security's default entry point and
+                // access-denied handler answer the exchange themselves, before
+                // any controller or @RestControllerAdvice, so the shared
+                // ProblemDetail advice never sees them -- and these were the
+                // only two errors in the platform with no traceId, hence the
+                // only ones that could not be traced from a screenshot.
+                //
+                // Set on BOTH specs deliberately. exceptionHandling covers
+                // authorization denials; oauth2ResourceServer keeps its own
+                // pair for token failures (missing, expired, malformed), and
+                // leaving those at the default would have fixed 403 while
+                // quietly leaving 401 empty -- which is the shape of this bug
+                // in the first place.
+                .exceptionHandling(e -> e
+                        .authenticationEntryPoint(problems.authenticationEntryPoint())
+                        .accessDeniedHandler(problems.accessDeniedHandler()))
                 .oauth2ResourceServer(oauth2 -> oauth2
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(reactiveKeycloakConverter())))
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(reactiveKeycloakConverter()))
+                        .authenticationEntryPoint(problems.authenticationEntryPoint())
+                        .accessDeniedHandler(problems.accessDeniedHandler()))
                 .build();
     }
 
