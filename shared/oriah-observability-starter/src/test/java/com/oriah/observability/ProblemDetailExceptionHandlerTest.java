@@ -107,6 +107,47 @@ class ProblemDetailExceptionHandlerTest {
     }
 
     @Test
+    void resourceNotFound_maps_to_404_with_a_populated_body() throws Exception {
+        // The shared mapping that 25 sites across 8 services depend on. Pinned
+        // once here rather than 8 times in service tests, because the point of
+        // sharing the type is that the rendering CANNOT differ by service --
+        // a per-service copy of this assertion would not catch drift, it would
+        // BE the drift.
+        //
+        // Red before the handler existed: ResourceNotFoundException fell to
+        // @ExceptionHandler(Exception.class) and rendered 500, which is the
+        // Tier 0.5 defect shape -- a caller's bad id reported as a server
+        // fault, logged at ERROR with a stack trace, and retry-eligible.
+        mockMvc.perform(get("/throw/resource-not-found"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status", equalTo(404)))
+                .andExpect(jsonPath("$.title", equalTo("Not Found")))
+                .andExpect(jsonPath("$.type", equalTo("https://oriah.dev/problems/not-found")))
+                .andExpect(jsonPath("$.detail", equalTo(
+                        "Product not found with the given input data id : "
+                                + "'22222222-2222-2222-2222-222222222222'")));
+    }
+
+    @Test
+    void resourceNotFound_carries_the_same_type_slug_as_entityNotFound() throws Exception {
+        // Both mean "the thing you asked for is not here", so a client must not
+        // have to distinguish them. EntityNotFoundException is Hibernate's own
+        // miss; ResourceNotFoundException is the one services throw
+        // deliberately. Same status, same slug, same shape -- asserted together
+        // so that changing one without the other is a red bar.
+        String resource = mockMvc.perform(get("/throw/resource-not-found"))
+                .andReturn().getResponse().getContentAsString();
+        String entity = mockMvc.perform(get("/throw/entity-not-found"))
+                .andReturn().getResponse().getContentAsString();
+
+        org.assertj.core.api.Assertions.assertThat(resource)
+                .contains("https://oriah.dev/problems/not-found");
+        org.assertj.core.api.Assertions.assertThat(entity)
+                .contains("https://oriah.dev/problems/not-found");
+    }
+
+    @Test
     void missing_traceId_omits_property() throws Exception {
         MDC.remove("traceId");
         mockMvc.perform(get("/throw/illegal-argument"))
@@ -135,6 +176,12 @@ class ProblemDetailExceptionHandlerTest {
         @PostMapping("/validation")
         void validation(@Valid @RequestBody Payload p) {
             // Bean Validation triggers before we get here.
+        }
+
+        @org.springframework.web.bind.annotation.GetMapping("/resource-not-found")
+        void resourceNotFound() {
+            throw new ResourceNotFoundException(
+                    "Product", "id", "22222222-2222-2222-2222-222222222222");
         }
 
         @org.springframework.web.bind.annotation.GetMapping("/runtime")

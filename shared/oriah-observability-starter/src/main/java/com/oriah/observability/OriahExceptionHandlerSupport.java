@@ -19,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -151,6 +152,28 @@ public abstract class OriahExceptionHandlerSupport {
     @ExceptionHandler(EntityNotFoundException.class)
     public ProblemDetail notFound(EntityNotFoundException ex) {
         log.debug("404 EntityNotFoundException: {}", ex.getMessage());
+        return problem(HttpStatus.NOT_FOUND, TYPE_NOT_FOUND, "Not Found", ex.getMessage());
+    }
+
+    /**
+     * 404 for the type services throw <em>deliberately</em>, as opposed to
+     * {@link EntityNotFoundException}, which is Hibernate's own miss.
+     *
+     * <p>Rendered identically to it — same status, same {@code type} slug, same
+     * shape — because both mean "the thing you asked for is not here" and a
+     * client must not have to tell them apart. A test asserts the two slugs
+     * together, so changing one without the other is a red bar.
+     *
+     * <p>Logged at DEBUG like every other 4xx: a request for a product that
+     * does not exist is a normal event on a storefront (a stale link, a
+     * bookmark, a crawler indexing deleted products) and not an ops signal.
+     *
+     * @see ResourceNotFoundException for why this one type is shared while
+     *      domain-specific exceptions stay per-service
+     */
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ProblemDetail resourceNotFound(ResourceNotFoundException ex) {
+        log.debug("404 {}", ex.getMessage());
         return problem(HttpStatus.NOT_FOUND, TYPE_NOT_FOUND, "Not Found", ex.getMessage());
     }
 
@@ -334,11 +357,75 @@ public abstract class OriahExceptionHandlerSupport {
         return new ResponseEntity<>(pd, ex.getHeaders(), status);
     }
 
+    /**
+     * The catch-all — but it checks for a carried status first.
+     *
+     * <p>{@link #statusCarrying} covers {@link ResponseStatusException}, and
+     * that looked like enough. It is not. Spring's framework exceptions carry
+     * their status through the {@link ErrorResponse} <em>interface</em>, and
+     * several of them do not extend {@code ResponseStatusException} at all.
+     * The one that mattered:
+     *
+     * <pre>
+     * org.springframework.web.servlet.resource.NoResourceFoundException
+     *     extends jakarta.servlet.ServletException
+     *     implements org.springframework.web.ErrorResponse
+     * </pre>
+     *
+     * <p>That is what a service raises for <strong>any path it does not
+     * map</strong>. Being a bare {@code ServletException} it fell through to
+     * this handler and every unmapped URL in all 12 services answered
+     * <strong>500</strong> — measured, not theorised, by
+     * {@code UnmappedPathContractTest}. Beyond the misleading status that has a
+     * concrete cost: <strong>5xx is retry-eligible.</strong> The gateway's
+     * {@code retry} filter and Tier 4's Resilience4j retry both act on
+     * {@code SERVER_ERROR} only, so one typo'd URL became three requests with
+     * backoff and three ERROR-level stack traces. Exactly the Tier 0.5 defect
+     * class, one layer further out.
+     *
+     * <p>Keyed on {@code ErrorResponse} because it is in <strong>spring-web</strong>,
+     * which both stacks share. {@code NoResourceFoundException} itself is a
+     * spring-webmvc type and so cannot be named here at all — adding
+     * spring-webmvc to this starter would flip the reactive gateway to
+     * {@code SERVLET}. So the interface is not merely the tidier key, it is the
+     * only available one. It also covers every present and future framework
+     * exception that carries a status, rather than requiring a new handler per
+     * type.
+     *
+     * <p>{@code @ExceptionHandler} cannot target {@code ErrorResponse}
+     * directly, since it demands a {@code Class<? extends Throwable>} and the
+     * interface does not extend {@code Throwable} — hence the {@code instanceof}
+     * inside the catch-all rather than a handler of its own.
+     */
     @ExceptionHandler(Exception.class)
-    public ProblemDetail unhandled(Exception ex) {
+    public ResponseEntity<ProblemDetail> unhandled(Exception ex) {
+        if (ex instanceof ErrorResponse carried) {
+            HttpStatusCode status = carried.getStatusCode();
+
+            // 4xx is the caller's mistake and not an ops event; 5xx here is a
+            // framework-reported server condition, so WARN rather than the
+            // ERROR-with-stack-trace reserved for genuinely unexpected bugs.
+            if (status.is5xxServerError()) {
+                log.warn("{} {}: {}", status.value(), ex.getClass().getSimpleName(), ex.getMessage());
+            } else {
+                log.debug("{} {}: {}", status.value(), ex.getClass().getSimpleName(), ex.getMessage());
+            }
+
+            // Spring's own detail is passed through. For an unmapped path it
+            // reads "No static resource <p> for request '<p>'", which is
+            // oddly-worded for an API but accurate (the dispatcher did fall
+            // through to the resource handler) and leaks nothing the caller
+            // does not already know -- it is the path they just requested.
+            ProblemDetail pd = problem(status,
+                    carried.getBody() != null ? carried.getBody().getDetail() : null);
+            return new ResponseEntity<>(pd, carried.getHeaders(), status);
+        }
+
         log.error("500 unhandled exception", ex);
-        return problem(HttpStatus.INTERNAL_SERVER_ERROR, TYPE_INTERNAL, "Internal Server Error",
+        ProblemDetail pd = problem(HttpStatus.INTERNAL_SERVER_ERROR, TYPE_INTERNAL,
+                "Internal Server Error",
                 "An unexpected error occurred. Use the traceId to correlate with logs and traces.");
+        return new ResponseEntity<>(pd, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     /**

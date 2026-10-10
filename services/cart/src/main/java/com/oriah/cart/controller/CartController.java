@@ -46,29 +46,32 @@ public class CartController {
     }
 
     @PatchMapping("/items/{variantId}")
-    public ResponseEntity<CartResponse> updateQuantity(
+    public CartResponse updateQuantity(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("variantId") UUID variantId,
             @Valid @RequestBody UpdateItemRequest body) {
-        return service.updateItemQuantity(jwt.getSubject(), variantId, body.quantity())
-                .map(CartResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+        return CartResponse.from(
+                service.updateItemQuantity(jwt.getSubject(), variantId, body.quantity()));
     }
 
+    /**
+     * 204 on success, 404 with a problem body when the item is not there.
+     *
+     * <p>{@code ResponseEntity} is kept on this handler and on {@link #clear}
+     * because 204 is not what Spring returns for a {@code void} handler -- it
+     * would answer 200 with an empty body, which is a different contract.
+     */
     @DeleteMapping("/items/{variantId}")
     public ResponseEntity<Void> removeItem(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("variantId") UUID variantId) {
-        return service.removeItem(jwt.getSubject(), variantId)
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        service.removeItem(jwt.getSubject(), variantId);
+        return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping
     public ResponseEntity<Void> clear(@AuthenticationPrincipal Jwt jwt) {
-        return service.clear(jwt.getSubject())
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        service.clear(jwt.getSubject());
+        return ResponseEntity.noContent().build();
     }
 }

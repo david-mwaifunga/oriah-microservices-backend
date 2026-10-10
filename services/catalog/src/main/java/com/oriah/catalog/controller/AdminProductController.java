@@ -17,6 +17,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import com.oriah.catalog.dto.ProductCreateRequest;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.ProductUpdateRequest;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
 
@@ -59,21 +60,28 @@ public class AdminProductController {
     }
 
     @PatchMapping("/{id}")
-    public ResponseEntity<ProductResponse> update(
+    public ProductResponse update(
             @PathVariable("id") UUID id,
             @Valid @RequestBody ProductUpdateRequest request) {
         log.debug("PATCH /api/v1/admin/products/{}", id);
         return service.update(id, request)
                 .map(ProductResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 
+    /**
+     * 204 on success. The {@code ResponseEntity} stays here, unlike on the
+     * other two handlers: 204 is not the default status for a {@code void}
+     * handler (Spring would answer 200 with an empty body), and
+     * {@code @ResponseStatus(NO_CONTENT)} would move the status away from the
+     * line that produces it.
+     */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable("id") UUID id) {
         log.debug("DELETE /api/v1/admin/products/{}", id);
-        return service.deleteById(id)
-                ? ResponseEntity.noContent().build()
-                : ResponseEntity.notFound().build();
+        if (!service.deleteById(id)) {
+            throw new ResourceNotFoundException("Product", "id", id.toString());
+        }
+        return ResponseEntity.noContent().build();
     }
 }

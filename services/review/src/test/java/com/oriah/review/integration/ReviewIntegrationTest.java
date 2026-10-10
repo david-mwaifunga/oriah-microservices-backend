@@ -22,6 +22,7 @@ import com.oriah.review.repository.ReviewRepository;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -116,6 +117,47 @@ class ReviewIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"rating\":5}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("POST /reviews/{id}/helpful on an unknown id is 404 WITH a problem body")
+    void markHelpfulUnknownIdIsAProblem404() throws Exception {
+        // review had no test for this path at all, which is how its single
+        // ResponseEntity.notFound().build() site kept answering 404 with an
+        // EMPTY BODY: no detail, no problem type, no traceId. 25 such sites
+        // existed across 8 services, every one of them untested on the body.
+        //
+        // The specific consequence here: oriah-web's apiFetch synthesizes
+        // "Upstream returned 404 Not Found" when there is no problem+json to
+        // parse, so a user clicking "helpful" on a review that was deleted
+        // under them got a generic failure with nothing to report.
+        mvc.perform(post("/api/v1/reviews/" + UUID.randomUUID() + "/helpful")
+                        .with(jwtFor("alice")))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.title").value("Not Found"))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail").value(
+                        org.hamcrest.Matchers.startsWith("Review not found with the given input data id :")))
+                .andExpect(jsonPath("$.traceId").exists());
+    }
+
+    @Test
+    @DisplayName("an unmapped path under review is not reported as a server fault")
+    void unmappedPathIsNotA5xx() throws Exception {
+        // The platform-wide finding, checked here too because review mounts its
+        // controller at /api/v1 rather than a service-named prefix, so it has
+        // the widest unmapped surface of any service: every /api/v1/** path the
+        // gateway routes here and review does not map lands in this case.
+        int status = mvc.perform(get("/api/v1/definitely-not-a-review-endpoint")
+                        .with(jwtFor("alice")))
+                .andReturn().getResponse().getStatus();
+
+        org.assertj.core.api.Assertions.assertThat(status)
+                .as("a path review does not map is the caller's mistake; a 5xx here is "
+                        + "retry-eligible at the gateway and in Resilience4j. Got %s", status)
+                .isLessThan(500);
     }
 
     private void postReview(String sub, int rating) throws Exception {

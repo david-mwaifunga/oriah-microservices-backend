@@ -4,7 +4,6 @@ import java.util.UUID;
 
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -13,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.catalog.dto.PageResponse;
 import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.catalog.service.ProductService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -56,18 +56,25 @@ public class ProductController {
     }
 
     /**
-     * Single product by id. Returns 200 with the body or 404 if the id is
-     * unknown.
+     * Single product by id. Returns 200 with the body, or a 404 carrying an
+     * RFC 7807 problem body naming what was not found.
+     *
+     * <p>This used to end in {@code orElseGet(() ->
+     * ResponseEntity.notFound().build())}, which answered 404 with an
+     * <strong>empty body</strong> — see {@link ResourceNotFoundException} for
+     * why that was a worse answer than it looks. The {@code orElseThrow} form
+     * is also what lets the return type drop {@code ResponseEntity}: the
+     * handler now describes the success case only, and the error case is one
+     * exception the advice renders consistently with every other service.
      */
     @GetMapping("/{id}")
-    public ResponseEntity<ProductResponse> getById(@PathVariable("id") UUID id) {
+    public ProductResponse getById(@PathVariable("id") UUID id) {
         log.debug("GET /api/v1/products/{}", id);
         // PDP endpoint: enrich with availability via the inventory service.
         // Resilience4j wraps the inventory call so catalog stays up even
         // when inventory is down (availability falls back to UNKNOWN).
         return service.findByIdWithAvailability(id)
                 .map(ProductResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 }

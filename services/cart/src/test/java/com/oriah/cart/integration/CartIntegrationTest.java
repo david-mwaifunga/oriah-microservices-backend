@@ -24,6 +24,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -120,6 +121,83 @@ class CartIntegrationTest {
     @DisplayName("/me without JWT is 401")
     void requiresJwt() throws Exception {
         mvc.perform(get("/api/v1/carts/me")).andExpect(status().isUnauthorized());
+    }
+
+    // ------------------------------------------------------------------
+    // Not-found paths. Every one of these answered with an EMPTY BODY before
+    // Tier 5, and the first one answered 200.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("PATCH a variant that is not in the cart is 404 - it used to answer 200")
+    void patchUnknownVariantIsNotFound() throws Exception {
+        // THE BUG. CartService.updateItemQuantity read:
+        //
+        //     return repository.findByKeycloakId(keycloakId).map(cart -> {
+        //         Optional<CartItem> updated = cart.updateQuantity(variantId, qty);
+        //         if (updated.isPresent()) { log.info(...); }
+        //         return cart;                 // <-- regardless
+        //     });
+        //
+        // The empty Optional from Cart.updateQuantity was used ONLY to gate a
+        // log line, then the cart was returned anyway. So the controller saw a
+        // present Optional<Cart> and answered 200 with the UNCHANGED cart: the
+        // caller was told the update succeeded when nothing had changed.
+        //
+        // Invisible from the storefront, which is why it survived -- the UI
+        // re-renders from the returned cart, so a quantity edit against a
+        // variant that had just been removed in another tab silently snapped
+        // back to the old number with no error. No test covered this path.
+        addItem("dave", V1, 1, "100.00", "Aurelia");
+
+        mvc.perform(patch("/api/v1/carts/me/items/" + V2).with(jwtForUser("dave"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":5}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.detail").value(
+                        "CartItem not found with the given input data variantId : '" + V2 + "'"));
+    }
+
+    @Test
+    @DisplayName("PATCH is 404 with a body when the caller has no cart at all")
+    void patchWithNoCartIsNotFound() throws Exception {
+        // Distinguished from the case above by the DETAIL, not the status:
+        // "you have no cart" and "that item is not in your cart" are different
+        // conditions and a client fixing its state needs to know which.
+        mvc.perform(patch("/api/v1/carts/me/items/" + V1).with(jwtForUser("erin"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":2}"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Cart not found with the given input data customer : 'me'"));
+    }
+
+    @Test
+    @DisplayName("DELETE a variant that is not in the cart is 404 with a body")
+    void deleteUnknownVariantIsNotFound() throws Exception {
+        addItem("frank", V1, 1, "100.00", "Aurelia");
+
+        mvc.perform(delete("/api/v1/carts/me/items/" + V2).with(jwtForUser("frank")))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "CartItem not found with the given input data variantId : '" + V2 + "'"));
+    }
+
+    @Test
+    @DisplayName("DELETE the whole cart when there is none is 404 with a body")
+    void clearWithNoCartIsNotFound() throws Exception {
+        // smoke-test.ps1 deliberately tolerates this 404 -- "already empty" is
+        // the desired end state after a successful confirm. The status is
+        // unchanged here; only the body appears, so that tolerance still holds.
+        mvc.perform(delete("/api/v1/carts/me").with(jwtForUser("grace")))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.detail").value(
+                        "Cart not found with the given input data customer : 'me'"));
     }
 
     private void addItem(String sub, UUID variantId, int qty, String price, String title) throws Exception {

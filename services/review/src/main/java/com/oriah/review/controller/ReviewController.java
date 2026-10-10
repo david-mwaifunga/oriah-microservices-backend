@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.oriah.review.dto.AggregateRatingResponse;
 import com.oriah.review.dto.CreateReviewRequest;
 import com.oriah.review.dto.ReviewResponse;
+import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.review.model.Review;
 import com.oriah.review.service.ReviewService;
 
@@ -73,10 +74,14 @@ public class ReviewController {
     /** Auth required: mark a review helpful (any USER). */
     @PostMapping("/reviews/{id}/helpful")
     @PreAuthorize("hasRole('USER')")
-    public ResponseEntity<ReviewResponse> markHelpful(@PathVariable("id") UUID id) {
+    public ReviewResponse markHelpful(@PathVariable("id") UUID id) {
+        // Was orElseGet(() -> ResponseEntity.notFound().build()), which
+        // answered 404 with an EMPTY BODY. A review can disappear under a
+        // reader (deleted, or the product withdrawn), so this path is reachable
+        // in normal use -- and with no problem body oriah-web could only show
+        // "Upstream returned 404 Not Found", giving the user nothing to report.
         return service.markHelpful(id)
                 .map(ReviewResponse::from)
-                .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Review", "id", id.toString()));
     }
 }

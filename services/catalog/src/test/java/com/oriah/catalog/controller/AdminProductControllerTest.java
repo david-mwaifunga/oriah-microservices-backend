@@ -12,7 +12,10 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.context.annotation.Import;
+
+import com.oriah.observability.ObservabilityAutoConfiguration;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 
@@ -30,11 +33,23 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(AdminProductController.class)
+@ImportAutoConfiguration(ObservabilityAutoConfiguration.class)
+// ^ @WebMvcTest filters auto-configuration to a web-related allowlist, so a
+// third-party one is NOT applied -- and since Tier 5 moved the error advice
+// out of catalog and into the shared starter's conditional @Bean, this slice
+// would otherwise have NO @ControllerAdvice and every 404 would come back with
+// an empty body. The three 404-body tests here failed exactly that way.
+//
+// Imported as the AUTO-CONFIGURATION rather than as @Import(
+// ProblemDetailExceptionHandler.class) on purpose: this exercises the real
+// wiring path, condition included, so if the back-off condition regresses the
+// slice notices. Hand-registering the bean would mask it.
 @Import(SecurityConfig.class)
 class AdminProductControllerTest {
 
@@ -215,7 +230,16 @@ class AdminProductControllerTest {
                         .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isNotFound());
+                // Strengthened in Tier 5. This asserted the status and nothing
+                // else, which is how the empty-bodied 404 survived review: an
+                // admin PATCH against a deleted product returned 404 with zero
+                // bytes, so the admin UI could only say "something went wrong".
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/not-found"))
+                .andExpect(jsonPath("$.detail")
+                        .value("Product not found with the given input data id : '" + id + "'"));
     }
 
     @Test
@@ -237,7 +261,15 @@ class AdminProductControllerTest {
 
         mvc.perform(delete("/api/v1/admin/products/{id}", id)
                         .with(jwt().authorities(CATALOG_ADMIN)))
-                .andExpect(status().isNotFound());
+                // A DELETE of something already gone is the one 404 where an
+                // empty body is defensible -- but only if the caller can tell
+                // it apart from a 404 for an unmatched route, which it could
+                // not. The body now says which product and which field.
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.detail")
+                        .value("Product not found with the given input data id : '" + id + "'"));
     }
 
     @Test

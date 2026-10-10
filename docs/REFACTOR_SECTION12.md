@@ -21,7 +21,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
-| 5 | Service-layer conventions × 12 services | 🟡 5-pre0 gate done (19/19, live PASS); inventory in flight |
+| 5 | Service-layer conventions × 12 services | 🟡 shared prereqs + 4 of 11 services; **3 new defects found** |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
 
 ---
@@ -473,17 +473,241 @@ context-free, so it runs in 0.9s rather than 90 — a guard that slow is a guard
 
 ## Tier 5 — Service-layer conventions
 
-Order matters: shared infra first (must compile all 15), then catalog as the template, then the
-other 11.
+**Grounded by a 16-agent inventory of all 12 services** (1.82M tokens, 0 errors): every main
+source file read, plus three cross-cutting investigations (the Spring conditional-advice API, the
+OpenAPI baseline contract, and how `/contact-info` should be fed). Measured totals:
 
-| Item | catalog | inventory | customer | cart | payment | order | promotion | shipping | checkout | notification | review | search |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `exception/` + `GlobalExceptionHandler` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| `IXxxService` + `service/impl/` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| `mapper/XxxMapper` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| `constants/XxxConstants` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| `XxxContactInfoDto` + `/contact-info` + `config-repo/<svc>.yaml` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
-| OpenAPI annotations (`@Tag`/`@Operation`/pinned operationId) | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| | |
+|---|---|
+| Endpoints | **51** across 12 services |
+| `ResponseEntity.notFound().build()` sites | **25** across 8 services — all empty-bodied |
+| `throw new` sites | **22**, of which **5** are mis-statused |
+| Services lacking `@ConfigurationPropertiesScan` | **11 of 12** (only catalog has it) |
+| Services with an existing `@ControllerAdvice` | **0** |
+| Services that already have a service interface | **2** (payment, notification) |
+| Services with **no service layer at all** | **3** (notification, search, arguably checkout) |
+
+### Decisions taken
+
+**Exception layout — shared status mappings, per-service vocabulary.** `ResourceNotFoundException`
+lives in the shared starter, handled once in `OriahExceptionHandlerSupport`, because all 25
+not-found sites mean the same thing and must render the same way; 12 copies would be 12 chances for
+the status or the `type` slug to drift. A service gets its own `exception/GlobalExceptionHandler`
+**only where it has domain exceptions to declare** — inventory, checkout, order, promotion
+(customer conditionally). The mechanism that makes this cheap: a per-service conflict type just
+`extends IllegalStateException` and inherits 409 with **zero shared registration**; one needing a
+new status `extends ResponseStatusException` and the existing `statusCarrying` handler preserves
+both status and headers. So the rule is **share the status mappings, not the domain types.**
+
+**Status fixes — taken, and recorded as deliberate gate exceptions** (see the table below).
+
+### Order (from the inventory, not the original plan)
+
+shipping goes **first**, not catalog: it is the smallest module, has no exceptions, no 404s and no
+JPA, which makes it the cheapest place to prove the genuinely risky part — the `/contact-info`
+`@ConfigurationProperties` binding, where getting it wrong fails the context on startup.
+
+| # | Service | Size | Own advice? | Mapper | Status |
+|---|---|---|---|---|---|
+| 1 | shipping | trivial | no | no | ✅ **16/16** (was 5) |
+| 2 | **catalog** | medium | no | yes | 🟡 404 bodies done — **53/53** |
+| 3 | review | small | no | yes | 🟡 404 body done — **11/11** (was 6) |
+| 4 | cart | small | no | yes | 🟡 404 bodies + **the 200 bug** — **10/10** (was 6) |
+| 5 | customer | medium | conditional | yes | ⬜ |
+| 6 | promotion | small | yes | yes | ⬜ |
+| 7 | order | medium | yes | yes | ⬜ |
+| 8 | inventory | medium | yes | yes | ⬜ |
+| 9 | payment | medium | no | yes | ⬜ |
+| 10 | search | small | no | yes | ⬜ |
+| 11 | notification | small | no | yes | ⬜ |
+| 12 | ~~checkout~~ | large | — | — | ⏭️ **lifted out — see below** |
+
+---
+
+### ⚠️ The biggest thing this inventory found: checkout answers **200 on eight failure paths**
+
+This is not a convention problem. `POST /api/v1/checkout/confirm` carries failure in an untyped
+`message` string inside a **200**, and `CheckoutClient.tsx:138` fires
+`toast.success("Order placed")` on any 200, using `res.message` as the description. So today:
+
+| Actual outcome | What the user sees |
+|---|---|
+| Cart is empty | green **"Order placed"** toast |
+| **Card declined** | green **"Order placed"** toast, description "payment declined: card declined", no redirect |
+| Order/payment service unreachable | green **"Order placed"** toast |
+| Payment confirmation failed | green **"Order placed"** toast |
+| **Payment captured but order creation failed** | green **"Order placed"**, no redirect — money taken, no order |
+
+The last row is the worst state in the system: a captured payment, an order still `CREATED`, and a
+success message. And because the gateway's retry filter and Tier 4's `@Retry` act only on 5xx, a
+transient downstream outage reported as 200 is **never retried anywhere in the stack**.
+
+**Lifted out of Tier 5 into its own tier**, on the inventory's recommendation and because it is too
+important to ride along in a conventions pass. It needs `ResilientFeignCaller` fixed first — that
+class currently flattens a 404, a 503 and an open circuit into the same `null`, so typed exceptions
+are impossible until the caller can tell them apart — plus five new exception types, the only new
+status mapping in the tier (**402**), and a matching frontend arm per status. Tracked as **Tier 7**.
+
+---
+
+### Deliberate gate exceptions — the status changes, with measured frontend impact
+
+The additions-only gate will flag each of these. Taken knowingly, with `oriah-web` checked: the
+**only** status-branching anywhere in `oriah-web/src` is `products/[id]/page.tsx:47` on 404.
+
+| Service | Endpoint | Change | Why | Frontend |
+|---|---|---|---|---|
+| inventory | `POST /admin/inventory/{v}/reserve` | **400 → 409** | Argument is valid; it conflicts with current stock. 400 tells the client to fix its input — wrong advice | Admin-only, no call site |
+| inventory | `…/release`, `…/confirm` | **400 → 409** | Same: illegal state transition, not a malformed argument | Admin-only |
+| cart | `PATCH /carts/me/items/{v}` | **200 → 404** | **A real bug**: `CartService.updateItemQuantity` discards the empty `Optional` and returns the cart anyway, so the caller is told the update succeeded when nothing changed. No test covers it | Cannot currently detect it — shows a stale quantity. No working behaviour to break |
+| customer | `POST /customers/me` (null JWT claim) | **500 → 400** | `Customer.requireNonBlank` splits one rule across two statuses — `requireNonNull` escapes as an NPE → 500, the blank branch is a clean 400 | Masked by controller fallbacks; a 500→400 never breaks a client |
+| customer | `PATCH /customers/me`, `POST /me/addresses` | 404 → 409 | ⏭️ **deferred** — a judgement call with no bug behind it, and `GET /me/addresses` answers the same state with 200 + empty list. One state, three answers; fix it with the frontend, not here |
+| **all 8** | **25 × empty 404** | **404 → 404** | Status unchanged; the **body** appears. These are the only responses in the platform with no problem body, type, detail or traceId | Safe and measured: `problem.ts` already synthesizes a body when none is present. Only visible change is `detail` stops reading "Upstream returned 404 Not Found" |
+
+### Risks the inventory surfaced that the plan did not have
+
+1. **Three services' 404s are deliberately vague as anti-enumeration** — promotion, order and
+   payment collapse distinct conditions into one indistinguishable 404, and **four integration
+   tests pin it** (`PromotionIntegrationTest.unknownCodeIs404`/`redemptionCap`,
+   `OrderIntegrationTest.crossUserLeak`, `PaymentIntegrationTest.crossUserLeak`). Adding a
+   *helpful* `detail` to those 404s **is itself the security regression.** Each needs a body that
+   adds a `type` and a `traceId` without adding discriminating information.
+2. **`@Validated` contact-info + config-repo-only values = the Tier 4 hard-link mistake, repeated.**
+   With the Config Server down the prefix is absent and binding fails the context with
+   `BindValidationException`. **Measured by a spike, not reasoned.** Every service needs a local
+   fallback block in its own `application.yaml`, and the fallback's `contact-details` keys must
+   match config-repo's set exactly, because maps merge key-by-key rather than wholesale.
+3. **order's `get` / `get_1` operationId pair must be pinned in the same commit.** Which handler
+   received the `_1` suffix is decided by registration order, not source order — and it landed on
+   `AdminOrderController` even though that sorts first. Pinning only one lets springdoc re-derive a
+   collision and move the suffix to the other.
+4. **customer's `@EntityGraph(attributePaths = "addresses")` is load-bearing.** `open-in-view` is
+   false and the nested `AddressResponse` mapping runs in the controller after the session closes.
+   A mapper extraction that relocates that mapping yields `LazyInitializationException` **at
+   runtime, not at test time**, unless an integration test actually serializes nested addresses.
+5. **Converting 25 404s changes service signatures, not just controllers.** In catalog it reaches
+   `ProductServiceEventPublishingTest` and `KafkaProductEventBridgeTest:144`, which assert that an
+   unknown-id update publishes **nothing** — the risk being that a throwing `update()` starts
+   publishing on a miss.
+6. **`ProductEventConsumer.java:85` swallows every exception from event handling, with no DLQ.**
+   Found while inventorying; unrelated to Tier 5 but the real finding in that file.
+7. **A Tier 6 collision is already visible in order**: `Order` declares its own writable
+   `@Column(name = "updated_at")` while `AuditableEntity` maps a writable `updated_at` via
+   `@LastModifiedDate` — two JPA fields, one column.
+8. **search's `document` tsvector is `GENERATED ALWAYS … STORED` and `ddl-auto` is `validate`**, so
+   mapping that field without `insertable = false, updatable = false` fails startup and every
+   insert. Same hazard shape in notification, where V2 adds `created_at`/`updated_at` as plain
+   `TIMESTAMP` while `delivered_at` is `TIMESTAMPTZ`.
+9. **Three services have no service layer at all** (notification, search, checkout) — logic lives in
+   a controller or a package-private static nested consumer. Those are from-scratch extractions
+   needing new tests, not the mechanical moves the original uniform table implied.
+
+---
+
+### Finding #13 — **every unmapped path in every service answered 500**
+
+Found by accident: while `/contact-info` was still unimplemented, an authenticated request to it
+came back 500. Pinned, then fixed. `UnmappedPathContractTest` measured it on two shapes — a path
+under a mapped controller prefix and one at the application root — and both answered:
+
+```json
+{"status":500,"title":"Internal Server Error",
+ "type":"https://oriah.dev/problems/internal-server-error",
+ "instance":"/api/v1/shipping/does-not-exist"}
+```
+
+The cause is one interface. A service raises
+`org.springframework.web.servlet.resource.NoResourceFoundException` for any path it does not map,
+and that class is
+
+```
+NoResourceFoundException extends jakarta.servlet.ServletException
+                         implements org.springframework.web.ErrorResponse
+```
+
+— a bare `ServletException`, **not** a `ResponseStatusException`. So the Tier 2 `statusCarrying`
+handler never saw it and the `Exception.class` catch-all claimed it.
+
+This is the Tier 0.5 defect class one layer further out, and it has the same concrete cost rather
+than merely a misleading status line: **5xx is retry-eligible.** The gateway's `retry` filter and
+Tier 4's Resilience4j retry both act on `SERVER_ERROR` only, so **one typo'd URL became three
+requests with backoff**, each logging an ERROR with a full stack trace. A crawler or a stale
+bookmark was generating ops noise and triple traffic.
+
+Fixed by keying the catch-all's first branch on **`ErrorResponse`**, the spring-web interface
+through which Spring's exceptions carry a status. That choice is forced as well as tidier:
+`NoResourceFoundException` is a **spring-webmvc** type and so cannot be named in this starter at
+all — importing spring-webmvc would flip the reactive gateway to `SERVLET`. The interface lives in
+spring-web, which both stacks share, and it covers every present and future framework exception
+carrying a status instead of needing a handler per type. (`@ExceptionHandler` cannot target it
+directly — it demands a `Class<? extends Throwable>` and the interface does not extend `Throwable`
+— hence an `instanceof` inside the catch-all.)
+
+---
+
+### Finding #14 — **cart's PATCH answered 200 when it had changed nothing**
+
+Flagged by the inventory, reproduced as a red bar (`expected:<404> but was:<200>`), then fixed.
+`CartService.updateItemQuantity` read:
+
+```java
+return repository.findByKeycloakId(keycloakId).map(cart -> {
+    Optional<CartItem> updated = cart.updateQuantity(variantId, qty);
+    if (updated.isPresent()) { log.info(...); }   // the miss case gated A LOG LINE
+    return cart;                                  // ...and returned the cart regardless
+});
+```
+
+The empty `Optional` from `Cart.updateQuantity` was used **only** to decide whether to log. The cart
+was returned either way, so the controller saw a present `Optional<Cart>` and answered **200 with
+the unchanged cart** — the caller was told the update succeeded when nothing had changed.
+
+It stayed hidden because the storefront re-renders from the returned cart: editing a quantity for a
+line another tab had just removed made the number **silently snap back** with no error anywhere.
+**No test covered the path** — the one test that touched PATCH only exercised the happy case.
+
+Fixed by throwing, which also splits a distinction the single `Optional` could not express: *you
+have no cart* and *that item is not in your cart* are different problems, and the detail now says
+which. The `"me"` in `Cart not found with the given input data customer : 'me'` is deliberate —
+echoing the Keycloak subject into a response body would put an identifier into logs, bug reports
+and screenshots for no benefit, since a caller cannot address anyone else's cart.
+
+---
+
+### A real cost of the chosen design, recorded honestly
+
+Moving the advice out of catalog broke its **`@WebMvcTest` slice tests**, and the failure was the
+empty-404 symptom returning: `Content type not set` on all three.
+
+`@WebMvcTest` filters auto-configuration to a web-related allowlist, so a **third-party**
+auto-configuration is not applied. While each service had its own `@ControllerAdvice`, slices
+picked it up by component scanning. With the advice coming from the shared starter's conditional
+`@Bean`, a slice has **no advice at all**.
+
+Fixed with `@ImportAutoConfiguration(ObservabilityAutoConfiguration.class)` on the affected slices
+— deliberately the auto-configuration rather than `@Import(ProblemDetailExceptionHandler.class)`,
+so the test exercises the real wiring path including the back-off condition. Hand-registering the
+bean would make a future regression in that condition invisible to exactly the tests most likely to
+catch it. **Every service with `@WebMvcTest` slices asserting error bodies needs this line.**
+
+---
+
+### Per-service convention items
+
+| Item | shipping | catalog | review | cart | customer | promotion | order | inventory | payment | search | notification |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 404s gain a body | n/a | ✅ | ✅ | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | n/a | n/a |
+| `exception/GlobalExceptionHandler` | n/a | n/a | n/a | n/a | ⬜ | ⬜ | ⬜ | ⬜ | n/a | n/a | n/a |
+| `mapper/XxxMapper` | n/a | ⬜ | ⬜ | ⬜ | ⚠️ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| `constants/XxxConstants` | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| `XxxContactInfoDto` + `/contact-info` | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| OpenAPI annotations + pinned operationIds | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| `IXxxService` + `service/impl/` | ⬜ | ⬜ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | ⏭️ | exists | ⏭️ | exists |
+| Error-advice guard test | ✅ | ✅ | ✅ | ✅ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+
+`IXxxService` is deferred (⏭️) everywhere it is pure ceremony — one implementation, one caller. It
+is demonstrated in catalog so the pattern is in the codebase to read, and batched at the end of the
+tier elsewhere rather than interleaved, so it never blocks the work that fixes real defects.
 
 Shared prerequisites:
 
@@ -491,8 +715,8 @@ Shared prerequisites:
 |---|---|---|
 | 5-pre0 | **The acceptance gate itself** — `scripts/openapi_diff.py` + `scripts/openapi-diff.ps1`, classifying every spec difference as breaking or additive | ✅ **19/19 self-test**; live run **43→43 paths / 51→51 operations, PASS** |
 | 5-pre1 | `OriahExceptionHandlerSupport` — **abstract, unannotated**; owns RFC 7807 rendering; shared advice de-registered conditionally in the same commit. **Cannot** extend `ResponseEntityExceptionHandler` — see Tier 0.5 | ✅ starter **29/29** (was 23); 2 red → green |
-| 5-pre2 | `ResponseDto` / `ErrorResponseDto` as documented schema types (additive — used by new endpoints only) | ⬜ |
-| 5-pre3 | Guard test per service: exactly one `@ControllerAdvice` bean, **and it is the expected one** | ⬜ |
+| 5-pre2 | ~~`ResponseDto` / `ErrorResponseDto` as documented schema types~~ | ⚠️ **recommend dropping — see note** |
+| 5-pre3 | Guard test per service: exactly one **error-contract** advice, **and it is the expected one** | 🟡 catalog + shipping done |
 | 5-post | Regenerate `oriah-web` clients; OpenAPI diff vs 0c must show **additions only** | ⬜ |
 
 **5-pre1 — what the red bar settled, as opposed to what I'd have guessed.** The split is
@@ -554,6 +778,21 @@ Two judgment calls this surfaces, neither silently taken:
   can silently attach to a different operation. Renaming it to something meaningful is safe in
   reality (operationIds couple to nothing — see 5-pre0) but trips the gate. Pinning it to the
   literal string `get_1` is gate-clean and removes the hazard while keeping the ugliness visible.
+
+**5-pre2 — recommend dropping `ErrorResponseDto`, and here is why.** The plan called for it as a
+"documented schema type (additive)". But a schema only reaches the published spec if an endpoint
+references it, and **no endpoint ever returns it** — every error in this system is RFC 7807
+`ProblemDetail`. So referencing it would publish a schema the server never emits: the spec would
+advertise `{apiPath, errorCode, errorMessage, errorTime}` while the wire carries
+`{type, title, status, detail, instance, traceId}`. That is worse than having no schema, because a
+client generator would produce a type that never matches a response.
+
+The genuinely valuable version of the same idea is the opposite one: **publish `ProblemDetail`**,
+which the baseline audit shows is referenced **nowhere** today even though it is what all 12
+services actually return. That is the additive, truthful change, and it is folded into the OpenAPI
+annotation work. `ResponseDto` is likewise moot — the recorded divergence is that writes return the
+created resource plus a `Location` header, not a `{statusCode, statusMsg}` envelope, and nothing
+has changed that.
 
 **5-pre0 — the gate, built before any service work, and proven to fail.**
 `scripts/openapi-diff.ps1` captures the live specs and classifies every difference.
