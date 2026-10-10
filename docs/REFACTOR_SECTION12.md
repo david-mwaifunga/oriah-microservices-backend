@@ -22,7 +22,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
 | 5 | Service-layer conventions × 12 services | ✅ **396 tests**, both gates PASS, smoke 18/18 — 2 items deliberately deferred |
-| 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
+| 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ✅ **401 tests** — no migration needed; **finding #15** |
 
 ---
 
