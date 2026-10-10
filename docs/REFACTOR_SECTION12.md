@@ -21,7 +21,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 2 | Tempo + Alloy (parallel-add, then remove Zipkin/Promtail) | ✅ complete — **17/17** after removal |
 | 3 | Gateway code-first (DSL routes, filters, fallback, auth) | ✅ complete — gateway tests **29 → 103**, live smoke 18/18 |
 | 4 | Resilience4j parity (retry + ratelimiter on checkout) | ✅ complete — 4b pre-existing, 4a corrected, 4c strengthened, + catalog guard |
-| 5 | Service-layer conventions × 12 services | 🟡 shared prereqs + 4 of 11 services; **3 new defects found** |
+| 5 | Service-layer conventions × 12 services | 🟡 error contract + contact-info done for **all 12**; **385 tests**, gate PASS, smoke 18/18 |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ⬜ |
 
 ---
@@ -890,6 +890,95 @@ PDP's compute-from-sample fallback is still needed, but for the `average: null` 
 yet), not for an empty body.
 
 ---
+
+---
+
+## Tier 5 live verification
+
+Images rebuilt for all 15 modules, stack recreated, then the three gates that matter.
+
+### The acceptance gate: additions only
+
+```
+paths      43 -> 55
+operations 51 -> 63
+ADDITIONS (24) -- allowed
+  + 12 x path added:   /api/v1/<prefix>/contact-info
+  + 12 x schema added: <Svc>ContactInfo
+PASS: additions only.
+```
+
+**Zero breaking changes**, which is the result worth pausing on. Tier 5 gave 25 not-found sites a
+body, changed three statuses from 400 to 409, converted 18 handler signatures from
+`ResponseEntity<T>` to bare `T`, and added 12 endpoints — and the published contract only gained.
+The `ResponseEntity` unwrapping in particular was predicted to be invisible to springdoc and the
+gate is what turned that prediction into a measurement.
+
+### End to end: `smoke-test.ps1` 18/18
+
+The full purchase saga still completes through every one of the changed services:
+
+```
+[5/18]  subtotal=200, -15% promo=30, ship=0, total=170
+[6/18]  order=6deb0bf1... PAID
+[7/18]  order DELIVERED
+[12/18] traceId=639303873a9f... spans=84 services=cart,gatewayserver,shipping,
+        checkout,order,payment,promotion
+[15/18] 24/24 probe endpoints UP
+[18/18] 8 sensitive endpoints unreachable on the edge
+```
+
+### The changes themselves, observed at the edge
+
+**A 404 that used to be zero bytes:**
+
+```json
+GET /api/v1/products/ea53d232-...        HTTP 404  application/problem+json
+{"detail":"Product not found with the given input data id : 'ea53d232-...'",
+ "instance":"/api/v1/products/ea53d232-...",
+ "status":404,"title":"Not Found",
+ "type":"https://oriah.dev/problems/not-found",
+ "traceId":"83f937568ef1ebbf0302601e89ad2e1d"}
+```
+
+The course's message format, the problem type, the path, and a **traceId** — so a screenshot of a
+failure is now enough to find the request in Tempo. Before this tier the whole body was empty.
+
+**The 400 that meant 409:**
+
+```json
+POST /api/v1/admin/inventory/{id}/reserve  {"qty":99}   HTTP 409
+{"detail":"cannot reserve 99 units; only 5 available",
+ "status":409,"title":"Conflict",
+ "type":"https://oriah.dev/problems/insufficient-stock",
+ "traceId":"d40115ba8744e4744def3838edf48115"}
+```
+
+Note the two halves of the design working together: the **409 is inherited** from the shared
+`IllegalStateException` mapping with no registration in the starter, and the
+**`insufficient-stock` type** comes from inventory's own `GlobalExceptionHandler`. Inherit the
+status, refine the vocabulary.
+
+**contact-info, serving config-repo rather than the fallback:**
+
+```
+products   {"contactDetails":{"name":"Oriah Backend - Catalog","email":"catalog-support@oriah.example"},
+            "message":"Oriah catalog service - the product catalogue and its admin writes",
+            "onCallSupport":["+27 21 555 0188","+27 21 555 0199"]}
+```
+
+That it reads `Oriah Backend - Catalog` and not `unavailable` proves three things at once: the
+Config Server path resolves, the override beats the local fallback, and the `contact-details` key
+sets match — a mismatch would have left a stale `unavailable` sitting next to a real value.
+
+**And the security scoping is right where it had to be:**
+
+```
+/api/v1/products/contact-info   (no token) -> 401     <- new authenticated() rule
+/api/v1/products                (no token) -> 200     <- public read, untouched
+all 12 .../contact-info         (no token) -> 401
+```
+
 
 ## Tier 6 — Audit entity rename (isolated: only persistence-risky item)
 
