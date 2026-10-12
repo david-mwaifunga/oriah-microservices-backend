@@ -212,4 +212,64 @@ class CartIntegrationTest {
     private static org.springframework.test.web.servlet.request.RequestPostProcessor jwtForUser(String sub) {
         return jwt().authorities(ROLE_USER).jwt(j -> j.subject(sub));
     }
+
+    @Test
+    @DisplayName("an empty cart omits updatedAt rather than serializing it as null")
+    void emptyCartDoesNotEmitANullUpdatedAt() throws Exception {
+        // A user with no cart row gets an UNSAVED placeholder from
+        // CartService.getOrEmpty, so JPA auditing never ran and updatedAt is
+        // null on the entity. Jackson serializes that as an explicit
+        // "updatedAt": null -- which the published OpenAPI contract does not
+        // allow: CartResponse.updatedAt is declared a non-nullable,
+        // non-required string.
+        //
+        // That mismatch is not academic. oriah-web parses this response with
+        // Zod, whose .optional() accepts undefined and REJECTS null, so a
+        // shopper who had never added anything to their bag got
+        //   "We couldn't load your bag."
+        //   {"expected":"string","code":"invalid_type","path":["updatedAt"]}
+        // instead of an empty bag. Omitting the field is what the contract
+        // already promises, and it is what "this cart has never been saved"
+        // actually means.
+        mvc.perform(get("/api/v1/carts/me")
+                        .with(jwt().authorities(ROLE_USER)
+                                .jwt(j -> j.subject(UUID.randomUUID().toString()))))
+                .andExpect(status().isOk())
+                // Asserted on the RAW BODY on purpose. jsonPath(...)
+                // .doesNotExist() treats an explicit JSON null as absent, so
+                // it passes against the very payload this test exists to
+                // reject -- a gate that cannot fail. The string check is ugly
+                // and it actually discriminates.
+                .andExpect(result -> org.assertj.core.api.Assertions
+                        .assertThat(result.getResponse().getContentAsString())
+                        .as("an empty cart must omit updatedAt, not send it as null")
+                        .doesNotContain("updatedAt"));
+    }
+
+    @Test
+    @DisplayName("a saved cart still reports its updatedAt")
+    void savedCartStillReportsUpdatedAt() throws Exception {
+        // The fix must omit only what is absent. Suppressing the field
+        // unconditionally would be the same bug wearing a different hat:
+        // clients would stop seeing a timestamp that genuinely exists.
+        String sub = UUID.randomUUID().toString();
+        mvc.perform(post("/api/v1/carts/me/items")
+                        .with(jwt().authorities(ROLE_USER)
+                                .jwt(j -> j.subject(sub)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"variantId":"11111111-1111-1111-1111-111111111111",
+                                 "quantity":1,"unitPrice":100.00,"title":"Aurelia 18k"}
+                                """))
+                .andExpect(status().is2xxSuccessful());
+
+        mvc.perform(get("/api/v1/carts/me")
+                        .with(jwt().authorities(ROLE_USER)
+                                .jwt(j -> j.subject(sub))))
+                .andExpect(status().isOk())
+                .andExpect(result -> org.assertj.core.api.Assertions
+                        .assertThat(result.getResponse().getContentAsString())
+                        .as("a persisted cart still carries its timestamp")
+                        .contains("updatedAt"));
+    }
 }
