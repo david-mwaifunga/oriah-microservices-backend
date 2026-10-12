@@ -10,7 +10,7 @@ import org.springframework.data.repository.query.Param;
 
 import com.oriah.catalog.model.Product;
 
-public interface ProductRepository extends JpaRepository<Product, UUID> {
+public interface ProductRepository extends JpaRepository<Product, UUID>, ProductStorefrontQueries {
 
     /**
      * Returns a page of products, optionally filtered by a single tag.

@@ -14,7 +14,6 @@ import org.springframework.web.bind.annotation.RestController;
 import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.PageResponse;
 import com.oriah.catalog.dto.ProductResponse;
-import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.catalog.service.ProductService;
 
@@ -89,7 +88,7 @@ public class ProductController {
             @PageableDefault(size = CatalogConstants.DEFAULT_PAGE_SIZE) Pageable pageable) {
         log.debug("GET /api/v1/products tag={} page={} size={}",
                 tag, pageable.getPageNumber(), pageable.getPageSize());
-        return PageResponse.from(service.findAll(tag, pageable), ProductMapper::toResponse);
+        return PageResponse.from(service.findAll(tag, pageable), r -> r);
     }
 
     /**
@@ -120,7 +119,6 @@ public class ProductController {
         // Resilience4j wraps the inventory call so catalog stays up even
         // when inventory is down (availability falls back to UNKNOWN).
         return service.findByIdWithAvailability(id)
-                .map(ProductMapper::toResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 }

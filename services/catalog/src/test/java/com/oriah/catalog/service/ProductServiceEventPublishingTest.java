@@ -67,7 +67,7 @@ class ProductServiceEventPublishingTest {
         // 'save' returns the same instance with whatever id was assigned at construction.
         when(repository.save(any(Product.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        Product saved = service.create("Aurelia", "18k", List.of("rings", "gold"));
+        var saved = service.create("Aurelia", "18k", List.of("rings", "gold"));
 
         ProductCreatedEvent expected = new ProductCreatedEvent(
                 saved.id(),

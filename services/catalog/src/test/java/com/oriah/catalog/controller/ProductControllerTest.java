@@ -24,6 +24,8 @@ import com.oriah.observability.ObservabilityAutoConfiguration;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 
 import com.oriah.catalog.config.SecurityConfig;
+import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
@@ -77,7 +79,11 @@ class ProductControllerTest {
         var aurelia = new Product(id, "Aurelia Solitaire Ring",
                 "A single-stone solitaire in 18k recycled gold.",
                 List.of("rings", "engagement"));
-        var enriched = new ProductWithAvailability(aurelia, Availability.LOW_STOCK);
+        // The service maps inside its own transaction now (lazy collections
+        // on the wire format made mapping in the controller a
+        // LazyInitializationException), so the stub supplies the response.
+        var enriched = ProductMapper.toResponse(
+                new ProductWithAvailability(aurelia, Availability.LOW_STOCK));
 
         when(service.findByIdWithAvailability(id)).thenReturn(Optional.of(enriched));
 
@@ -132,7 +138,9 @@ class ProductControllerTest {
         var lume = new Product(UUID.fromString("22222222-2222-2222-2222-222222222222"),
                 "Lume", "Pendant in 14k gold.", List.of("necklaces"));
 
-        Page<Product> page = new PageImpl<>(List.of(aurelia, lume), PageRequest.of(0, 20), 2);
+        Page<ProductResponse> page = new PageImpl<>(
+                List.of(ProductMapper.toResponse(aurelia), ProductMapper.toResponse(lume)),
+                PageRequest.of(0, 20), 2);
         when(service.findAll(isNull(), any(Pageable.class))).thenReturn(page);
 
         mvc.perform(get("/api/v1/products"))
@@ -150,7 +158,7 @@ class ProductControllerTest {
     @Test
     @DisplayName("GET /api/v1/products returns an empty page when no products exist")
     void listReturnsEmptyPageWhenNoProducts() throws Exception {
-        Page<Product> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(0, 20), 0);
+        Page<ProductResponse> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(0, 20), 0);
         when(service.findAll(isNull(), any(Pageable.class))).thenReturn(empty);
 
         mvc.perform(get("/api/v1/products"))
@@ -166,7 +174,7 @@ class ProductControllerTest {
         var aurelia = new Product(UUID.fromString("11111111-1111-1111-1111-111111111111"),
                 "Aurelia", null, List.of("rings"));
 
-        Page<Product> page = new PageImpl<>(List.of(aurelia), PageRequest.of(0, 20), 1);
+        Page<ProductResponse> page = new PageImpl<>(List.of(ProductMapper.toResponse(aurelia)), PageRequest.of(0, 20), 1);
         when(service.findAll(eq("rings"), any(Pageable.class))).thenReturn(page);
 
         mvc.perform(get("/api/v1/products").param("tag", "rings"))
@@ -179,7 +187,7 @@ class ProductControllerTest {
     @Test
     @DisplayName("GET /api/v1/products honors page and size query parameters")
     void listHonorsPagingParameters() throws Exception {
-        Page<Product> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(2, 5), 12);
+        Page<ProductResponse> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(2, 5), 12);
         when(service.findAll(isNull(), any(Pageable.class))).thenReturn(empty);
 
         mvc.perform(get("/api/v1/products").param("page", "2").param("size", "5"))

@@ -1,5 +1,6 @@
 package com.oriah.catalog.model;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -26,6 +27,7 @@ import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.BatchSize;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -120,6 +122,7 @@ public class Product extends BaseEntity {
      * "Gifts". Distinct from tags, which stay as the flat, open label set.
      */
     @ManyToMany(fetch = FetchType.LAZY)
+    @BatchSize(size = 50)
     @JoinTable(name = "product_categories",
             joinColumns = @JoinColumn(name = "product_id"),
             inverseJoinColumns = @JoinColumn(name = "category_id"))
@@ -131,6 +134,7 @@ public class Product extends BaseEntity {
 
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("position asc")
+    @BatchSize(size = 50)
     private List<ProductImage> images = new ArrayList<>();
 
     protected Product() {
@@ -348,6 +352,7 @@ public class Product extends BaseEntity {
                     "variant options " + variant.options().keySet()
                             + " must match the product's option axes " + axes);
         }
+        requireUniformCurrency(variant.currency(), variant);
         boolean duplicate = variants.stream()
                 .anyMatch(existing -> existing.optionDigest().equals(variant.optionDigest()));
         if (duplicate) {
@@ -422,6 +427,124 @@ public class Product extends BaseEntity {
                             + "active variant priced above zero");
         }
         this.status = ProductStatus.ACTIVE;
+    }
+
+    /**
+     * The one currency every variant of this product shares, or empty when it
+     * has no variants yet.
+     *
+     * <p>Uniformity is an invariant, not an observation — see
+     * {@link #requireUniformCurrency}. Empty rather than a default, because a
+     * product with no variants has no price and guessing a currency for it
+     * would put a figure on a card that nobody set.
+     */
+    public Optional<String> currency() {
+        return variants.stream().map(ProductVariant::currency).findFirst();
+    }
+
+    /**
+     * Cheapest price a customer can actually pay.
+     *
+     * <p>Restricted to purchasable variants — active and priced above zero —
+     * for two separate reasons. Including an inactive variant would advertise
+     * "from K4,000" when the cheapest buyable option is K4,500, and including
+     * a zero would make every product migrated by V3 advertise "from K0.00".
+     */
+    public Optional<BigDecimal> lowestActivePrice() {
+        return variants.stream()
+                .filter(ProductVariant::isPurchasable)
+                .map(ProductVariant::unitPrice)
+                .min(BigDecimal::compareTo);
+    }
+
+    /** Dearest purchasable variant, for a "K4,000 - K5,000" range on a card. */
+    public Optional<BigDecimal> highestActivePrice() {
+        return variants.stream()
+                .filter(ProductVariant::isPurchasable)
+                .map(ProductVariant::unitPrice)
+                .max(BigDecimal::compareTo);
+    }
+
+    /**
+     * Reprices one of this product's variants. Routed through the product
+     * rather than called on the variant directly because the currency rule is
+     * a property of the SET of variants, and the variant cannot see its
+     * siblings.
+     */
+    public void repriceVariant(UUID variantId, BigDecimal newPrice, String newCurrency) {
+        ProductVariant variant = requireVariant(variantId);
+        requireUniformCurrency(newCurrency, variant);
+        variant.reprice(newPrice, newCurrency);
+    }
+
+    /**
+     * Withdraws a variant from sale.
+     *
+     * @throws IllegalStateException when the product is ACTIVE and this is its
+     *         last purchasable variant. Publishing requires a purchasable
+     *         variant; without this inverse rule an operator could leave a
+     *         product live on the storefront with nothing to buy — and because
+     *         the list query joins active variants to compute its price range,
+     *         that product would disappear from the grid while still answering
+     *         on its own URL.
+     *
+     *         <p>Refused rather than silently unpublishing: quietly pulling a
+     *         live product off the storefront because of an edit to one
+     *         variant is a bigger surprise than an error naming the variant
+     *         that is load-bearing.
+     */
+    public void deactivateVariant(UUID variantId) {
+        ProductVariant variant = requireVariant(variantId);
+        if (status == ProductStatus.ACTIVE) {
+            boolean anotherRemains = variants.stream()
+                    .filter(v -> !v.id().equals(variantId))
+                    .anyMatch(ProductVariant::isPurchasable);
+            if (!anotherRemains) {
+                throw new IllegalStateException(
+                        "variant " + variant.sku() + " is the last purchasable variant of the "
+                                + "published product '" + slug + "'; price another variant or "
+                                + "withdraw the product first");
+            }
+        }
+        variant.deactivate();
+    }
+
+    private ProductVariant requireVariant(UUID variantId) {
+        return variants.stream()
+                .filter(v -> v.id().equals(variantId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "no variant " + variantId + " on product '" + slug + "'"));
+    }
+
+    /**
+     * A product's variants must all be priced in one currency.
+     *
+     * <p>The storefront card shows a single "from" price, so a product priced
+     * in two currencies has no correct card — "from K4,500" is wrong if the
+     * cheapest variant is in dollars, and two currencies on one tile is not a
+     * price. It also keeps the single-currency-per-cart rule cheap to enforce,
+     * since one product cannot contribute two currencies by itself.
+     *
+     * @param ignoring the variant being changed, excluded from the comparison
+     *                 so repricing it to the shared currency is not compared
+     *                 against its own old value
+     */
+    private void requireUniformCurrency(String candidate, ProductVariant ignoring) {
+        String normalised = candidate == null || candidate.isBlank()
+                ? ProductVariant.DEFAULT_CURRENCY
+                : candidate.trim().toUpperCase();
+
+        variants.stream()
+                .filter(v -> ignoring == null || !v.id().equals(ignoring.id()))
+                .map(ProductVariant::currency)
+                .findFirst()
+                .filter(existing -> !existing.equals(normalised))
+                .ifPresent(existing -> {
+                    throw new IllegalArgumentException(
+                            "product '" + slug + "' is priced in " + existing
+                                    + "; a variant cannot be priced in " + normalised);
+                });
     }
 
     public void unpublishToDraft() {

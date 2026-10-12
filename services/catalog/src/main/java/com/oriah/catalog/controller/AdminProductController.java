@@ -18,10 +18,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.ProductCreateRequest;
 import com.oriah.catalog.dto.ProductResponse;
-import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.observability.ResourceNotFoundException;
-import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -111,10 +109,10 @@ public class AdminProductController {
                         schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<ProductResponse> create(@Valid @RequestBody ProductCreateRequest request) {
         log.debug("POST /api/v1/admin/products title=\"{}\"", request.title());
-        Product saved = service.create(request.title(), request.description(), request.tags());
+        ProductResponse saved = service.create(request.title(), request.description(), request.tags());
         // Location points at the public read endpoint, not the admin path.
         URI location = URI.create("/api/v1/products/" + saved.id());
-        return ResponseEntity.created(location).body(ProductMapper.toResponse(saved));
+        return ResponseEntity.created(location).body(saved);
     }
 
     @PatchMapping("/{id}")
@@ -131,7 +129,6 @@ public class AdminProductController {
             @Valid @RequestBody ProductUpdateRequest request) {
         log.debug("PATCH /api/v1/admin/products/{}", id);
         return service.update(id, request)
-                .map(ProductMapper::toResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 

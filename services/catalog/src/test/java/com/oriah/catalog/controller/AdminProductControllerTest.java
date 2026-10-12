@@ -21,6 +21,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 
 import com.oriah.catalog.config.SecurityConfig;
 import com.oriah.catalog.dto.ProductUpdateRequest;
+import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
 
@@ -93,8 +94,7 @@ class AdminProductControllerTest {
 
         when(service.create(eq("Aurelia Solitaire Ring"),
                 eq("A single-stone solitaire in 18k recycled gold."),
-                any()))
-                .thenReturn(saved);
+                any())).thenReturn(ProductMapper.toResponse(saved));
 
         String body = """
                 {
@@ -165,7 +165,7 @@ class AdminProductControllerTest {
                 List.of("rings", "engagement"));
 
         when(service.update(eq(id), any(ProductUpdateRequest.class)))
-                .thenReturn(Optional.of(updated));
+                .thenReturn(Optional.of(ProductMapper.toResponse(updated)));
 
         String body = """
                 {"title": "Aurelia Renamed"}

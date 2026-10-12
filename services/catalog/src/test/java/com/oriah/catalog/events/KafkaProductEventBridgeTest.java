@@ -86,7 +86,7 @@ class KafkaProductEventBridgeTest {
     @Test
     @DisplayName("create() flows to catalog.product topic as a ProductCreatedEvent with event-type=product.created header")
     void createPublishesToKafkaTopic() throws Exception {
-        Product saved = service.create("Aurelia", "18k", List.of("rings", "gold"));
+        var saved = service.create("Aurelia", "18k", List.of("rings", "gold"));
 
         Message<byte[]> message = outputDestination.receive(2_000, "catalog.product");
         assertThat(message)
@@ -107,7 +107,7 @@ class KafkaProductEventBridgeTest {
     @Test
     @DisplayName("update() flows to catalog.product topic with event-type=product.updated")
     void updatePublishesToKafkaTopic() throws Exception {
-        Product saved = service.create("Aurelia", "18k", List.of("rings"));
+        var saved = service.create("Aurelia", "18k", List.of("rings"));
         outputDestination.receive(2_000, "catalog.product"); // drain create event
 
         service.update(saved.id(), new ProductUpdateRequest("Aurelia Renamed", null, null));
@@ -125,7 +125,7 @@ class KafkaProductEventBridgeTest {
     @Test
     @DisplayName("deleteById() flows to catalog.product topic with event-type=product.deleted")
     void deletePublishesToKafkaTopic() throws Exception {
-        Product saved = service.create("Aurelia", "18k", List.of("rings"));
+        var saved = service.create("Aurelia", "18k", List.of("rings"));
         outputDestination.receive(2_000, "catalog.product"); // drain create event
 
         service.deleteById(saved.id());

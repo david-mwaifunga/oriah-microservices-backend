@@ -13,12 +13,14 @@ import org.springframework.transaction.annotation.Transactional;
 import com.oriah.catalog.client.InventoryClient;
 import com.oriah.catalog.client.InventoryDto;
 import com.oriah.catalog.config.CatalogProperties;
+import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.events.ProductCreatedEvent;
 import com.oriah.catalog.events.ProductDeletedEvent;
 import com.oriah.catalog.events.ProductUpdatedEvent;
 import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
+import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.repository.ProductRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -87,10 +89,20 @@ public class ProductService {
      * lookup instead.
      */
     @Transactional(readOnly = true)
-    public Optional<ProductWithAvailability> findByIdWithAvailability(UUID id) {
+    public Optional<ProductResponse> findByIdWithAvailability(UUID id) {
         log.debug("findByIdWithAvailability id={}", id);
         return repository.findById(id)
-                .map(product -> new ProductWithAvailability(product, lookupAvailability(product.id())));
+                // MAPPED HERE, inside the transaction, and that is the whole
+                // point of returning a DTO rather than the entity. The wire
+                // format now reads variants, images and categories, all of
+                // which are lazy; handing the entity back and letting the
+                // controller map it threw LazyInitializationException on
+                // Product.categories and answered 500. That is the same defect
+                // this codebase already fixed once in CustomerService, so the
+                // fix is the same shape: the transaction that loaded the
+                // entity is the transaction that reads it.
+                .map(product -> ProductMapper.toResponse(
+                        new ProductWithAvailability(product, lookupAvailability(product.id()))));
     }
 
     /**
@@ -120,9 +132,12 @@ public class ProductService {
      * Null {@code tag} means "no filter."
      */
     @Transactional(readOnly = true)
-    public Page<Product> findAll(String tag, Pageable pageable) {
+    public Page<ProductResponse> findAll(String tag, Pageable pageable) {
         log.debug("findAll tag={} page={} size={}", tag, pageable.getPageNumber(), pageable.getPageSize());
-        return repository.findOptionallyFilteredByTag(tag, pageable);
+        // Mapped inside the transaction, for the reason given on
+        // findByIdWithAvailability above.
+        return repository.findOptionallyFilteredByTag(tag, pageable)
+                .map(ProductMapper::toResponse);
     }
 
     /**
@@ -132,7 +147,7 @@ public class ProductService {
      * UUID at construction.
      */
     @Transactional
-    public Product create(String title, String description, List<String> tags) {
+    public ProductResponse create(String title, String description, List<String> tags) {
         // Tag-count logging is friendlier than printing the full list: keeps
         // the line scannable and avoids leaking large payloads at INFO.
         int tagCount = tags == null ? 0 : tags.size();
@@ -149,7 +164,13 @@ public class ProductService {
                 saved.title(),
                 saved.tags() == null ? List.of() : List.copyOf(saved.tags())
         ));
-        return saved;
+        // Mapped inside the transaction like every other read path here. A
+        // freshly constructed product would in fact survive mapping outside
+        // it -- its collections are real collections, not Hibernate proxies --
+        // which is exactly why doing it consistently matters: create would
+        // keep working while update failed, and the difference is invisible
+        // at the call site.
+        return ProductMapper.toResponse(saved);
     }
 
     /**
@@ -163,8 +184,8 @@ public class ProductService {
      * managed state.
      */
     @Transactional
-    public Optional<Product> update(UUID id, ProductUpdateRequest request) {
-        Optional<Product> result = repository.findById(id).map(product -> {
+    public Optional<ProductResponse> update(UUID id, ProductUpdateRequest request) {
+        Optional<ProductResponse> result = repository.findById(id).map(product -> {
             // Track which fields actually changed so the log line is useful
             // when investigating "why did this product's title change?"
             StringBuilder changedFields = new StringBuilder();
@@ -190,7 +211,10 @@ public class ProductService {
                     product.description().orElse(null),
                     product.tags() == null ? List.of() : List.copyOf(product.tags())
             ));
-            return product;
+            // Inside the transaction: the entity's categories, variants and
+            // images are lazy, and mapping them in the controller threw
+            // LazyInitializationException and answered 500.
+            return ProductMapper.toResponse(product);
         });
 
         if (result.isEmpty()) {
