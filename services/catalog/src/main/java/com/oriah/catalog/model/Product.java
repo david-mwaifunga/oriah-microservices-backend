@@ -1,18 +1,33 @@
 package com.oriah.catalog.model;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
+import jakarta.persistence.JoinTable;
+import jakarta.persistence.ManyToMany;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
+
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import com.oriah.jpa.BaseEntity;
 
@@ -44,6 +59,79 @@ public class Product extends BaseEntity {
     @CollectionTable(name = "product_tags", joinColumns = @JoinColumn(name = "product_id"))
     @Column(name = "tag", nullable = false)
     private List<String> tags = new ArrayList<>();
+
+    /**
+     * URL identity, unique across the catalogue. Generated from the title when
+     * not supplied; {@code V3} backfilled it for every pre-existing product
+     * using the same rules {@link Slug} applies, so a title produces the same
+     * slug whichever side of the migration it was created on.
+     */
+    @Column(nullable = false, unique = true)
+    private String slug;
+
+    /**
+     * Which product type's spec fields this product carries. A foreign key to
+     * {@code product_types}; the matching attribute definitions live in
+     * {@link ProductTypeRegistry}.
+     */
+    @Column(name = "product_type_code", nullable = false)
+    private String productTypeCode;
+
+    /**
+     * Type-specific specs, validated against {@link ProductTypeRegistry}
+     * before they ever reach this field, so the column never holds an
+     * unvalidated or undeclared key.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(nullable = false)
+    private Map<String, Object> attributes = new LinkedHashMap<>();
+
+    /**
+     * The axes this product's variants vary on, in display order: {@code
+     * ["Ring Size"]}, or {@code ["Strap", "Case Size"]}. Empty means the
+     * product does not vary — a one-off piece with a single default variant,
+     * which is what the V3 backfill produced for the whole existing catalogue.
+     *
+     * <p>Every variant's option key SET must equal this exactly, so the
+     * storefront can build selectors generically instead of guessing which
+     * keys a given product uses.
+     */
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    @Column(name = "option_names", nullable = false)
+    private String[] optionNames = new String[0];
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private ProductStatus status;
+
+    /**
+     * The category used for breadcrumbs and the canonical URL. Must also be a
+     * member of {@link #categories} — otherwise a breadcrumb points at a
+     * category the product is not in. That is a cross-row rule the database
+     * cannot express in this shape, so it is enforced in the service and
+     * tested there.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "primary_category_id")
+    private Category primaryCategory;
+
+    /**
+     * Many-to-many, because a watch legitimately belongs in both "Watches" and
+     * "Gifts". Distinct from tags, which stay as the flat, open label set.
+     */
+    @ManyToMany(fetch = FetchType.LAZY)
+    @JoinTable(name = "product_categories",
+            joinColumns = @JoinColumn(name = "product_id"),
+            inverseJoinColumns = @JoinColumn(name = "category_id"))
+    private Set<Category> categories = new LinkedHashSet<>();
+
+    @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("position asc")
+    private List<ProductVariant> variants = new ArrayList<>();
+
+    @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("position asc")
+    private List<ProductImage> images = new ArrayList<>();
 
     protected Product() {
         // For JPA hydration only — do not call from application code.
@@ -80,6 +168,23 @@ public class Product extends BaseEntity {
         this.title = title;
         this.description = description;
         this.tags = tags == null ? new ArrayList<>() : new ArrayList<>(tags);
+
+        // Phase 7 defaults. Each is chosen so that adding these columns did
+        // not break the admin create contract or let anything unpriced sell:
+        //
+        //   status DRAFT          nothing reaches the storefront until it has
+        //                         a real price; also where V3 left every
+        //                         migrated product
+        //   type   JEWELLERY      so productTypeCode is not a NEW REQUIRED
+        //                         request field, which would have been a
+        //                         breaking change to POST /admin/products
+        //   slug   from the title generated the same way V3 backfilled it, so
+        //                         one title yields one slug either side of the
+        //                         migration. The service resolves collisions,
+        //                         since the column is UNIQUE.
+        this.status = ProductStatus.DRAFT;
+        this.productTypeCode = ProductTypeRegistry.JEWELLERY;
+        this.slug = Slug.from(title);
     }
 
     public UUID id() {
@@ -124,5 +229,206 @@ public class Product extends BaseEntity {
      */
     public void updateTags(List<String> newTags) {
         this.tags = newTags == null ? new ArrayList<>() : new ArrayList<>(newTags);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 7: type, taxonomy, variants, images
+    // ------------------------------------------------------------------
+
+    public String slug() {
+        return slug;
+    }
+
+    public String productTypeCode() {
+        return productTypeCode;
+    }
+
+    public Map<String, Object> attributes() {
+        return Map.copyOf(attributes);
+    }
+
+    public List<String> optionNames() {
+        return List.of(optionNames);
+    }
+
+    public ProductStatus status() {
+        return status;
+    }
+
+    public Optional<Category> primaryCategory() {
+        return Optional.ofNullable(primaryCategory);
+    }
+
+    public Set<Category> categories() {
+        return Set.copyOf(categories);
+    }
+
+    public List<ProductVariant> variants() {
+        return List.copyOf(variants);
+    }
+
+    public List<ProductImage> images() {
+        return List.copyOf(images);
+    }
+
+    /** Slug is settable so the service can resolve a collision with a suffix. */
+    public void assignSlug(String newSlug) {
+        if (newSlug == null || newSlug.isBlank()) {
+            throw new IllegalArgumentException("slug must not be blank");
+        }
+        this.slug = newSlug.trim();
+    }
+
+    /**
+     * Sets the product's type and validates its attributes against that
+     * type in one step, because the two are only meaningful together: the
+     * attributes a product may carry are entirely a function of its type.
+     */
+    public void applyType(String newTypeCode, Map<String, Object> newAttributes) {
+        // Validated BEFORE either field is assigned, so a rejected change
+        // leaves the product exactly as it was rather than half-applied with
+        // a new type and the old type's attributes.
+        Map<String, Object> validated = ProductTypeRegistry.validate(newTypeCode, newAttributes);
+        this.productTypeCode = newTypeCode;
+        this.attributes = new LinkedHashMap<>(validated);
+    }
+
+    /**
+     * Declares the axes this product's variants vary on.
+     *
+     * @throws IllegalArgumentException if any existing variant's option keys
+     *         would no longer match — otherwise a rename would silently leave
+     *         variants the storefront cannot build a selector for
+     */
+    public void declareOptionNames(List<String> newOptionNames) {
+        List<String> declared = newOptionNames == null ? List.of() : List.copyOf(newOptionNames);
+        var keys = new LinkedHashSet<String>();
+        for (String name : declared) {
+            // Normalised through the same path a variant's option keys take,
+            // so "Ring Size" declared here and submitted there cannot differ
+            // by whitespace or Unicode form and then fail to match.
+            String normalised = VariantOptions.validated(Map.of(name, "x")).keySet().iterator().next();
+            if (!keys.add(normalised)) {
+                throw new IllegalArgumentException("duplicate option name: " + normalised);
+            }
+        }
+
+        // Refused while any existing variant would stop matching. A silent
+        // change would leave variants whose key set no longer corresponds to
+        // any axis, which the storefront cannot build a selector from and the
+        // admin cannot edit back into shape.
+        for (ProductVariant variant : variants) {
+            if (!variant.options().keySet().equals(keys)) {
+                throw new IllegalArgumentException(
+                        "cannot change option axes to " + keys
+                                + " while variant " + variant.sku()
+                                + " has options " + variant.options().keySet()
+                                + "; update or deactivate the variants first");
+            }
+        }
+        this.optionNames = keys.toArray(String[]::new);
+    }
+
+    /**
+     * Adds a variant, enforcing both invariants that make the variant list
+     * coherent: its option keys must match {@link #optionNames()}, and its
+     * option combination must not already be present.
+     *
+     * <p>The duplicate check here is a courtesy that produces a clear error;
+     * the guarantee is the {@code UNIQUE (product_id, option_digest)}
+     * constraint, which is what actually holds when two admins save at once.
+     */
+    public ProductVariant addVariant(ProductVariant variant) {
+        if (variant == null) {
+            throw new IllegalArgumentException("variant must not be null");
+        }
+        Set<String> axes = Set.of(optionNames);
+        if (!variant.options().keySet().equals(axes)) {
+            throw new IllegalArgumentException(
+                    "variant options " + variant.options().keySet()
+                            + " must match the product's option axes " + axes);
+        }
+        boolean duplicate = variants.stream()
+                .anyMatch(existing -> existing.optionDigest().equals(variant.optionDigest()));
+        if (duplicate) {
+            throw new IllegalArgumentException(
+                    "a variant with options " + variant.options() + " already exists");
+        }
+        variant.setPosition(variants.size());
+        variants.add(variant);
+        return variant;
+    }
+
+    public void addImage(ProductImage image) {
+        if (image == null) {
+            throw new IllegalArgumentException("image must not be null");
+        }
+        image.setPosition(images.size());
+        images.add(image);
+    }
+
+    public boolean removeImage(UUID imageId) {
+        boolean removed = images.removeIf(i -> i.id().equals(imageId));
+        if (removed) {
+            // Positions are renumbered so the gallery has no gap. The caller
+            // deletes the stored object separately: that is not transactional,
+            // so it happens after the commit that removes this row.
+            for (int i = 0; i < images.size(); i++) {
+                images.get(i).setPosition(i);
+            }
+        }
+        return removed;
+    }
+
+    public void assignCategories(Set<Category> newCategories, Category newPrimary) {
+        Set<Category> replacement = newCategories == null
+                ? new LinkedHashSet<>()
+                : new LinkedHashSet<>(newCategories);
+
+        // The breadcrumb invariant: a primary category the product is not in
+        // would render a trail pointing somewhere the product does not
+        // appear, which is worse than rendering no trail. The database cannot
+        // express this in the current shape, so it is enforced here.
+        if (newPrimary != null && !replacement.contains(newPrimary)) {
+            throw new IllegalArgumentException(
+                    "primary category '" + newPrimary.slug()
+                            + "' must also be one of the product's categories");
+        }
+        this.categories = replacement;
+        this.primaryCategory = newPrimary;
+    }
+
+    /**
+     * Whether this product may be published: at least one variant that is
+     * active and priced above zero.
+     *
+     * <p>Zero is the V3 backfill's marker for "nobody has priced this", so a
+     * zero-priced variant must not count. Without this rule the migration
+     * would have made the entire existing catalogue free.
+     */
+    public boolean isPublishable() {
+        return variants.stream().anyMatch(ProductVariant::isPurchasable);
+    }
+
+    /**
+     * @throws IllegalStateException if the product is not {@link
+     *         #isPublishable()} — rendered as a 409 by the shared error
+     *         contract
+     */
+    public void publish() {
+        if (!isPublishable()) {
+            throw new IllegalStateException(
+                    "product '" + slug + "' cannot be published: it needs at least one "
+                            + "active variant priced above zero");
+        }
+        this.status = ProductStatus.ACTIVE;
+    }
+
+    public void unpublishToDraft() {
+        this.status = ProductStatus.DRAFT;
+    }
+
+    public void archive() {
+        this.status = ProductStatus.ARCHIVED;
     }
 }
