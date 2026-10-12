@@ -65,4 +65,40 @@
     <logger name="com.oriah" level="INFO"/>
     <logger name="org.springframework.cloud.stream" level="INFO"/>
     <logger name="org.apache.kafka" level="WARN"/>
+
+    <!--
+        ONE class raised to ERROR, and only after the cause was chased down
+        and partly removed. It is not a blanket Kafka silence: the line above
+        keeps org.apache.kafka at WARN, so a real consumer failure stays loud.
+
+        The noise: Spring Cloud Stream's KafkaBinderMetrics builds its OWN
+        KafkaConsumer to compute group lag. That consumer joins no group and
+        owns no partitions, so every evaluation asks for offsets it is not
+        assigned and this class logs, twice,
+
+          Not updating high watermark for partition X as it is no longer
+          assigned
+
+        It was 79% of all idle log volume. The evidence it is harmless: the
+        group member is consumer-<svc>-2 while the WARN comes from
+        consumer-<svc>-3; every group is Stable / 1 member / LAG 0; and the
+        Kafka-driven paths pass end to end (smoke steps 8 and 10).
+
+        Why ERROR rather than fixing it outright: setting
+        spring.cloud.stream.kafka.binder.metrics.default-offset-lag-metrics-enabled=false
+        does NOT switch the observer off. Measured before and after, it drops
+        from 12 lines/min per service to 2 — the flag moves lag computation
+        from per-scrape to a cached 60s refresh, so the partition-less consumer
+        still fetches, just six times less often. There is no supported switch
+        that removes it, so the residue is silenced here.
+
+        Why this cannot hide actionable degradation: OffsetFetcherUtils logs
+        exactly one WARN, this one, about a partition the CALLER does not own.
+        A consumer that genuinely falls behind shows up as lag on
+        kafka_consumer_fetch_manager_records_lag_max (the metric the Grafana
+        panel plots, asserted still present by smoke step 19), and a consumer
+        that genuinely fails logs from the coordinator and listener-container
+        loggers, both still at WARN.
+    -->
+    <logger name="org.apache.kafka.clients.consumer.internals.OffsetFetcherUtils" level="ERROR"/>
 </configuration>

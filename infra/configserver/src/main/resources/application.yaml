@@ -6,6 +6,18 @@ spring:
   # the repo is mounted into /workspace/config-repo. Tests override via
   # @TestPropertySource to point at a temp clone of the bundled fixture.
   cloud:
+    stream:
+      kafka:
+        binder:
+          metrics:
+            # The binder builds its own partition-less consumer to compute lag,
+            # so every evaluation logs "Not updating high watermark ... no
+            # longer assigned". Nothing reads the metric it produces -- the
+            # Grafana lag panel plots
+            # kafka_consumer_fetch_manager_records_lag_max from the real
+            # listener consumers. configserver carries this locally because it
+            # cannot fetch its own central config before it is serving.
+            default-offset-lag-metrics-enabled: false
     config:
       server:
         git:
@@ -28,6 +40,25 @@ server:
   port: 8888
 
 management:
+  # OTLP METRICS: off, and (where the binder is present) the Kafka offset-lag
+  # metric with it.
+  #
+  # Repeated here rather than inherited from config-repo/application.yaml for a
+  # concrete reason: this app cannot read central config at its own startup.
+  # configserver would have to fetch from itself before it is serving, and
+  # eurekaserver races it. Both therefore boot with Micrometer's defaults and,
+  # without this key, were the only processes still logging
+  #   WARN Failed to publish metrics to OTLP receiver
+  #        (url=http://localhost:4318/v1/metrics) ConnectException
+  # every 60s after the rest of the stack went quiet -- which is precisely how
+  # they were identified.
+  #
+  # See the long notes in config-repo/application.yaml for the full reasoning
+  # and the jar-verified property names.
+  otlp:
+    metrics:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:

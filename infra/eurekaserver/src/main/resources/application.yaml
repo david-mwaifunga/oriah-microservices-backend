@@ -30,6 +30,25 @@ eureka:
     enable-self-preservation: false
 
 management:
+  # OTLP METRICS: off, and (where the binder is present) the Kafka offset-lag
+  # metric with it.
+  #
+  # Repeated here rather than inherited from config-repo/application.yaml for a
+  # concrete reason: this app cannot read central config at its own startup.
+  # configserver would have to fetch from itself before it is serving, and
+  # eurekaserver races it. Both therefore boot with Micrometer's defaults and,
+  # without this key, were the only processes still logging
+  #   WARN Failed to publish metrics to OTLP receiver
+  #        (url=http://localhost:4318/v1/metrics) ConnectException
+  # every 60s after the rest of the stack went quiet -- which is precisely how
+  # they were identified.
+  #
+  # See the long notes in config-repo/application.yaml for the full reasoning
+  # and the jar-verified property names.
+  otlp:
+    metrics:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:

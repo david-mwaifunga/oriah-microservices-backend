@@ -80,6 +80,19 @@ eureka:
     prefer-ip-address: true
 
 management:
+  # OTLP METRICS: off. Unlike the twelve services, the gateway does NOT
+  # import the Config Server, so the central default in
+  # config-repo/application.yaml never reaches it -- the property has to be
+  # repeated here or the gateway alone keeps logging
+  #   WARN Failed to publish metrics to OTLP receiver
+  #        (url=http://localhost:4318/v1/metrics) ConnectException
+  # every 60s with a stack trace. Metrics here are scraped by Prometheus like
+  # everywhere else; see the long note in config-repo/application.yaml for the
+  # full reasoning and the jar-verified property name.
+  otlp:
+    metrics:
+      export:
+        enabled: false
   endpoints:
     web:
       exposure:
