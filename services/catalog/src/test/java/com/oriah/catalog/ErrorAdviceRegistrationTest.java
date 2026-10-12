@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 
+import com.oriah.catalog.exception.GlobalExceptionHandler;
 import com.oriah.observability.OriahExceptionHandlerSupport;
 import com.oriah.observability.ProblemDetailExceptionHandler;
 
@@ -67,7 +68,21 @@ class ErrorAdviceRegistrationTest {
      * {@code com.oriah.catalog.exception.GlobalExceptionHandler} and the shared
      * default must then be absent — which the second test checks.
      */
-    private static final Class<?> EXPECTED_ADVICE = ProblemDetailExceptionHandler.class;
+    /**
+     * Catalog now owns its advice, which is the second of the two cases this
+     * class's javadoc describes. It carries two handlers the shared default
+     * cannot: DataIntegrityViolationException (whose type lives in spring-tx,
+     * a dependency the observability starter deliberately avoids so the
+     * non-JPA services stay free of spring-data) and
+     * AttributeValidationException (catalog-specific by nature).
+     *
+     * <p>Changing this constant is the point of the test: the shared starter
+     * backs off when a service declares its own OriahExceptionHandlerSupport
+     * subclass, and this assertion is what proves the back-off happened
+     * rather than leaving two advices whose winner depends on bean-name
+     * ordering.
+     */
+    private static final Class<?> EXPECTED_ADVICE = GlobalExceptionHandler.class;
 
     @Autowired
     private ApplicationContext context;

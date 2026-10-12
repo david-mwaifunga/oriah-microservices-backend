@@ -321,11 +321,23 @@ public class Product extends BaseEntity {
         // change would leave variants whose key set no longer corresponds to
         // any axis, which the storefront cannot build a selector from and the
         // admin cannot edit back into shape.
+        // ACTIVE variants only, which makes the error message below honest.
+        // It tells the caller to "update or deactivate the variants first" --
+        // and until this filter existed, deactivating changed nothing because
+        // the loop consulted every variant regardless. That left the whole
+        // migrated catalogue unable to gain option axes: V3 gave every
+        // pre-existing product one variant with empty options, so adding a
+        // "Ring Size" axis hit this refusal, and the remedy it named did not
+        // work. An inactive variant is not for sale and the storefront builds
+        // no selector from it, so it has no stake in the axes.
         for (ProductVariant variant : variants) {
+            if (!variant.isActive()) {
+                continue;
+            }
             if (!variant.options().keySet().equals(keys)) {
                 throw new IllegalArgumentException(
                         "cannot change option axes to " + keys
-                                + " while variant " + variant.sku()
+                                + " while active variant " + variant.sku()
                                 + " has options " + variant.options().keySet()
                                 + "; update or deactivate the variants first");
             }
@@ -474,6 +486,14 @@ public class Product extends BaseEntity {
     public void repriceVariant(UUID variantId, BigDecimal newPrice, String newCurrency) {
         ProductVariant variant = requireVariant(variantId);
         requireUniformCurrency(newCurrency, variant);
+        // Zero is not a price, so repricing to zero makes a variant
+        // unpurchasable just as surely as deactivating it. Without this the
+        // two mutators disagreed: deactivateVariant refused to strand a
+        // published product while repriceVariant walked straight into the
+        // same state through another door.
+        if (newPrice != null && newPrice.signum() == 0) {
+            requireNotLastPurchasable(variant, "repriced to zero");
+        }
         variant.reprice(newPrice, newCurrency);
     }
 
@@ -495,18 +515,38 @@ public class Product extends BaseEntity {
      */
     public void deactivateVariant(UUID variantId) {
         ProductVariant variant = requireVariant(variantId);
-        if (status == ProductStatus.ACTIVE) {
-            boolean anotherRemains = variants.stream()
-                    .filter(v -> !v.id().equals(variantId))
-                    .anyMatch(ProductVariant::isPurchasable);
-            if (!anotherRemains) {
-                throw new IllegalStateException(
-                        "variant " + variant.sku() + " is the last purchasable variant of the "
-                                + "published product '" + slug + "'; price another variant or "
-                                + "withdraw the product first");
-            }
-        }
+        requireNotLastPurchasable(variant, "deactivated");
         variant.deactivate();
+    }
+
+    /**
+     * Refuses a change that would leave a PUBLISHED product with nothing
+     * purchasable.
+     *
+     * <p>Shared by {@link #deactivateVariant} and {@link #repriceVariant},
+     * which is the point: both reach the same end state — repricing to zero
+     * makes a variant unpurchasable exactly as deactivating it does, because
+     * {@link ProductVariant#isPurchasable()} requires a price above zero — and
+     * having the rule in one place is what stops them drifting apart again.
+     *
+     * <p>The restriction applies only while the product is ACTIVE. A draft is
+     * a work in progress and an archived product is already withdrawn; the
+     * rule exists to protect the storefront, so it applies only while the
+     * product is on it.
+     */
+    private void requireNotLastPurchasable(ProductVariant variant, String change) {
+        if (status != ProductStatus.ACTIVE) {
+            return;
+        }
+        boolean anotherRemains = variants.stream()
+                .filter(v -> !v.id().equals(variant.id()))
+                .anyMatch(ProductVariant::isPurchasable);
+        if (!anotherRemains) {
+            throw new IllegalStateException(
+                    "variant " + variant.sku() + " is the last purchasable variant of the "
+                            + "published product '" + slug + "' and cannot be " + change
+                            + "; price another variant or withdraw the product first");
+        }
     }
 
     private ProductVariant requireVariant(UUID variantId) {

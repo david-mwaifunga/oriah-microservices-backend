@@ -2,24 +2,28 @@ package com.oriah.catalog.repository;
 
 import java.util.UUID;
 
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
 
 import com.oriah.catalog.model.Product;
 
 public interface ProductRepository extends JpaRepository<Product, UUID>, ProductStorefrontQueries {
 
     /**
-     * Returns a page of products, optionally filtered by a single tag.
+     * Used to resolve a slug collision before insert.
      *
-     * <p>When {@code tag} is null the filter is bypassed — JPQL short-circuits
-     * via the first {@code OR} condition. When non-null, {@code MEMBER OF}
-     * joins through the {@code product_tags} table created by
-     * {@code V1__create_products.sql}.
+     * <p>This is a check-then-act, so it does not make the insert safe on its
+     * own -- two concurrent creates of the same title both see "free" and one
+     * loses. The UNIQUE constraint remains the actual guarantee, and
+     * ProductService retries with a collision-proof slug when it fires. The
+     * probe exists only so the common case produces a readable URL rather than
+     * an id-suffixed one.
      */
-    @Query("SELECT p FROM Product p WHERE :tag IS NULL OR :tag MEMBER OF p.tags")
-    Page<Product> findOptionallyFilteredByTag(@Param("tag") String tag, Pageable pageable);
+    boolean existsBySlug(String slug);
+
+    // findOptionallyFilteredByTag lived here and is gone with its only caller.
+    // The storefront query handles the tag filter alongside category, type and
+    // price, and it also excludes DRAFT and ARCHIVED products -- which this
+    // method did not. Keeping both would have left a second list path that
+    // quietly returns unpublished, unpriced products, for a future caller to
+    // choose by accident.
 }

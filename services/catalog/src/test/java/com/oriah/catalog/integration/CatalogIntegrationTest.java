@@ -108,12 +108,39 @@ class CatalogIntegrationTest {
                 .getResponse()
                 .getHeader("Location");
 
+        // A NEW PRODUCT IS NOT PUBLICLY READABLE, because it is DRAFT and has
+        // no price. Hiding it from the LIST is not enough: before this
+        // assertion existed the list excluded DRAFT products while
+        // GET-by-id served one happily, so an unpublished product page was
+        // live to anyone who knew the URL. 404 rather than 403, because a 403
+        // confirms the id exists.
         mvc.perform(get(location))
+                .andExpect(status().isNotFound());
+
+        // The admin can read it, which is how an operator works on a draft.
+        mvc.perform(get("/api/v1/admin/products/" + idOf(location))
+                        .with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("Aurelia Solitaire Ring"))
                 .andExpect(jsonPath("$.description").value("A single-stone solitaire in 18k recycled gold."))
                 .andExpect(jsonPath("$.tags.length()").value(3))
                 .andExpect(jsonPath("$.tags").value(org.hamcrest.Matchers.containsInAnyOrder("rings", "engagement", "18k")))
+                .andExpect(jsonPath("$.status").value("DRAFT"))
+                .andExpect(jsonPath("$.productType").value("JEWELLERY"))
+                .andExpect(jsonPath("$.slug").value("aurelia-solitaire-ring"));
+
+        // Pricing it and publishing it is what puts it on the storefront.
+        addVariant(idOf(location), "AUR-001", "4500.00");
+        publish(idOf(location));
+
+        mvc.perform(get(location))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.title").value("Aurelia Solitaire Ring"))
+                .andExpect(jsonPath("$.status").value("ACTIVE"))
+                .andExpect(jsonPath("$.priceFrom").value(4500.00))
+                .andExpect(jsonPath("$.currency").value("ZMW"))
+                .andExpect(jsonPath("$.variants.length()").value(1))
+                .andExpect(jsonPath("$.variants[0].sku").value("AUR-001"))
                 // No inventory service running in tests + Eureka client
                 // disabled, so the Resilience4j fallback engages and
                 // availability comes back as UNKNOWN. This is the exact
@@ -122,16 +149,53 @@ class CatalogIntegrationTest {
     }
 
     @Test
-    @DisplayName("creating three products increments the list and total count")
-    void createIncrementsListAndTotalCount() throws Exception {
-        createProduct("Aurelia", "rings");
-        createProduct("Lume", "necklaces");
+    @DisplayName("publishing is refused until the product has a variant priced above zero")
+    void cannotPublishWithoutAPrice() throws Exception {
+        String id = idOf(createProduct("Unpriced", "rings"));
+
+        // No variant at all.
+        mvc.perform(post("/api/v1/admin/products/{id}/publish", id)
+                        .with(jwt().authorities(CATALOG_ADMIN)))
+                .andExpect(status().isConflict());
+
+        // A variant at 0.00, which is exactly what the variants migration
+        // wrote for every pre-existing product. Zero is not a price, so this
+        // must not be publishable either -- otherwise the migration would have
+        // made the entire existing catalogue free.
+        addVariant(id, "UNP-001", "0.00");
+        mvc.perform(post("/api/v1/admin/products/{id}/publish", id)
+                        .with(jwt().authorities(CATALOG_ADMIN)))
+                .andExpect(status().isConflict());
+
+        mvc.perform(get("/api/v1/products/" + id)).andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("only PUBLISHED products reach the storefront list")
+    void onlyPublishedProductsAreListed() throws Exception {
+        String aurelia = idOf(createProduct("Aurelia", "rings"));
+        String lume = idOf(createProduct("Lume", "necklaces"));
         createProduct("Cassini", "earrings");
 
+        // All three exist; none is listed, because creating a product cannot
+        // price it, and an unpriced product must not be sellable.
         mvc.perform(get("/api/v1/products"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content.length()").value(3))
-                .andExpect(jsonPath("$.totalElements").value(3))
+                .andExpect(jsonPath("$.content.length()").value(0))
+                .andExpect(jsonPath("$.totalElements").value(0));
+
+        addVariant(aurelia, "AUR-1", "4500.00");
+        publish(aurelia);
+        addVariant(lume, "LUM-1", "1800.00");
+        publish(lume);
+
+        // Cassini stays DRAFT, so the count is 2 rather than 3. That exact
+        // number is the assertion -- "some products are listed" would pass
+        // even if publishing were ignored entirely.
+        mvc.perform(get("/api/v1/products"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(2))
+                .andExpect(jsonPath("$.totalElements").value(2))
                 .andExpect(jsonPath("$.totalPages").value(1))
                 .andExpect(jsonPath("$.page").value(0));
     }
@@ -139,9 +203,15 @@ class CatalogIntegrationTest {
     @Test
     @DisplayName("tag filter returns only products carrying that tag — real MEMBER OF in JPQL")
     void tagFilterReturnsOnlyMatchingProducts() throws Exception {
-        createProduct("Aurelia", "rings");
-        createProduct("Lume", "necklaces");
-        createProduct("Cassini", "earrings");
+        String[][] seeded = {
+                {idOf(createProduct("Aurelia", "rings")), "AUR-1"},
+                {idOf(createProduct("Lume", "necklaces")), "LUM-1"},
+                {idOf(createProduct("Cassini", "earrings")), "CAS-1"},
+        };
+        for (String[] each : seeded) {
+            addVariant(each[0], each[1], "4500.00");
+            publish(each[0]);
+        }
 
         mvc.perform(get("/api/v1/products").param("tag", "rings"))
                 .andExpect(status().isOk())
@@ -170,11 +240,28 @@ class CatalogIntegrationTest {
                 .andExpect(jsonPath("$.title").value("Aurelia Renamed"))
                 .andExpect(jsonPath("$.description").value("Updated copy."));
 
-        mvc.perform(get(location))
+        // Read back through the ADMIN path, because the product is still a
+        // draft and the public endpoint deliberately 404s anything not
+        // ACTIVE. The subject of this test is that JPA dirty checking
+        // persisted the change, not who may read it.
+        mvc.perform(get("/api/v1/admin/products/" + idOf(location))
+                        .with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("Aurelia Renamed"))
                 .andExpect(jsonPath("$.description").value("Updated copy."))
-                .andExpect(jsonPath("$.tags[0]").value("rings"));
+                .andExpect(jsonPath("$.tags[0]").value("rings"))
+                // The slug is NOT regenerated by a rename: it is the product's
+                // URL identity, and silently changing it would break every
+                // existing link to the product the moment someone fixed a typo
+                // in its title.
+                .andExpect(jsonPath("$.slug").value("aurelia-original"));
+
+        // And once published, the public path serves the renamed product.
+        addVariant(idOf(location), "AUR-REN", "4500.00");
+        publish(idOf(location));
+        mvc.perform(get(location))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.title").value("Aurelia Renamed"));
     }
 
     @Test
@@ -215,6 +302,27 @@ class CatalogIntegrationTest {
      * Convenience helper: creates a product with one tag and returns the
      * {@code Location} header (a {@code /api/v1/products/{id}} path).
      */
+    /** The id out of a Location header of the form /api/v1/products/{id}. */
+    private static String idOf(String location) {
+        return location.substring(location.lastIndexOf('/') + 1);
+    }
+
+    private void addVariant(String productId, String sku, String price) throws Exception {
+        String body = "{\"sku\": \"" + sku + "\", \"unitPrice\": " + price
+                + ", \"currency\": \"ZMW\", \"options\": {}}";
+        mvc.perform(post("/api/v1/admin/products/{id}/variants", productId)
+                        .with(jwt().authorities(CATALOG_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated());
+    }
+
+    private void publish(String productId) throws Exception {
+        mvc.perform(post("/api/v1/admin/products/{id}/publish", productId)
+                        .with(jwt().authorities(CATALOG_ADMIN)))
+                .andExpect(status().isOk());
+    }
+
     private String createProduct(String title, String tag) throws Exception {
         String body = """
                 {

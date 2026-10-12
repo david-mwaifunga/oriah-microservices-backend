@@ -139,6 +139,26 @@ class V3BackfillTest {
     }
 
     @Test
+    @DisplayName("the backfilled option_digest is the same SHA-256 the Java canonicaliser produces")
+    void optionDigestMatchesTheJavaSide() throws Exception {
+        // This is a CROSS-LANGUAGE contract and only the Java half was pinned.
+        // VariantOptionsTest asserts this literal for an empty option map;
+        // nothing asserted that V3 wrote the same value, so swapping the
+        // migration's encode(sha256('{}'::bytea),'hex') for md5('{}') -- which
+        // still fits the column -- was invisible to every test. The digest
+        // backs UNIQUE (product_id, option_digest), so a mismatch means the
+        // stored value stops colliding with the one the application computes
+        // and the duplicate-variant guarantee silently lapses.
+        //
+        // Same literal on both sides deliberately: one constant, two
+        // assertions, so the halves cannot drift.
+        assertThat(stringOf("SELECT option_digest FROM product_variants WHERE id = '" + AURELIA + "'"))
+                .isEqualTo("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+        assertThat(countOf("SELECT count(DISTINCT option_digest) FROM product_variants"))
+                .isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("every product ends up with a unique non-null slug derived from its title")
     void slugsAreBackfilledAndUnique() throws Exception {
         assertThat(stringOf("SELECT slug FROM products WHERE id = '" + AURELIA + "'"))

@@ -5,6 +5,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -14,12 +15,18 @@ import com.oriah.catalog.client.InventoryClient;
 import com.oriah.catalog.client.InventoryDto;
 import com.oriah.catalog.config.CatalogProperties;
 import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.events.ProductCreatedEvent;
 import com.oriah.catalog.events.ProductDeletedEvent;
 import com.oriah.catalog.events.ProductUpdatedEvent;
 import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Product;
+import com.oriah.catalog.model.ProductSort;
+import com.oriah.catalog.model.ProductStatus;
+import com.oriah.catalog.model.ProductVariant;
+import com.oriah.catalog.model.Slug;
+import com.oriah.catalog.model.StorefrontFilter;
 import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.repository.ProductRepository;
 
@@ -51,16 +58,26 @@ public class ProductService {
     private final InventoryClient inventoryClient;
     private final ApplicationEventPublisher eventPublisher;
     private final CatalogProperties props;
+    private final CategoryService categoryService;
+
+    /**
+     * How many readable discriminators to try before falling back to the id
+     * suffix. Bounded so a pathological title cannot turn one create into an
+     * unbounded number of queries.
+     */
+    private static final int MAX_SLUG_ATTEMPTS = 25;
 
     public ProductService(
             ProductRepository repository,
             InventoryClient inventoryClient,
             ApplicationEventPublisher eventPublisher,
-            CatalogProperties props) {
+            CatalogProperties props,
+            CategoryService categoryService) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
         this.eventPublisher = eventPublisher;
         this.props = props;
+        this.categoryService = categoryService;
     }
 
     /**
@@ -92,6 +109,16 @@ public class ProductService {
     public Optional<ProductResponse> findByIdWithAvailability(UUID id) {
         log.debug("findByIdWithAvailability id={}", id);
         return repository.findById(id)
+                // PUBLIC read: an unpublished product is invisible here, not
+                // merely absent from the list. Excluding DRAFT from the list
+                // while serving it by id left every unpublished product page
+                // live to anyone holding the URL -- and ids are not secret;
+                // they appear in Location headers, admin screens and logs.
+                //
+                // Empty (so the controller answers 404) rather than 403: a 403
+                // would confirm that the id exists, which is exactly what an
+                // unpublished product should not confirm.
+                .filter(product -> product.status() == ProductStatus.ACTIVE)
                 // MAPPED HERE, inside the transaction, and that is the whole
                 // point of returning a DTO rather than the entity. The wire
                 // format now reads variants, images and categories, all of
@@ -128,16 +155,126 @@ public class ProductService {
     }
 
     /**
-     * Returns a page of products, optionally filtered by a single tag.
-     * Null {@code tag} means "no filter."
+     * The filtered, sorted storefront list.
+     *
+     * <p>Two queries, assembled here: the repository resolves which product
+     * ids match and in what order, then loads those products with their
+     * collections. See {@code ProductStorefrontQueriesImpl} for why that is not
+     * one query with fetch joins.
+     *
+     * <p>Mapped inside this transaction, like every other read path in this
+     * service -- the wire format reads three lazy collections.
+     *
+     * @param categorySlug resolved to the category AND its descendants, so
+     *                     filtering by "Jewellery" returns rings too
+     * @throws IllegalArgumentException for a category slug that does not
+     *         exist, which the shared advice renders as a 400. Deliberately
+     *         NOT an empty result: resolving an unknown slug yields no
+     *         descendant ids, and a filter that matches nothing is
+     *         indistinguishable from a category that is simply empty. This
+     *         differs from the {@code tag} parameter, where an unknown tag
+     *         legitimately answers 200 with an empty page -- a tag is a
+     *         free-form label whose absence says nothing, whereas a category
+     *         is a closed set and a slug outside it is a client error worth
+     *         naming.
      */
     @Transactional(readOnly = true)
-    public Page<ProductResponse> findAll(String tag, Pageable pageable) {
-        log.debug("findAll tag={} page={} size={}", tag, pageable.getPageNumber(), pageable.getPageSize());
-        // Mapped inside the transaction, for the reason given on
-        // findByIdWithAvailability above.
-        return repository.findOptionallyFilteredByTag(tag, pageable)
-                .map(ProductMapper::toResponse);
+    public Page<ProductResponse> findStorefront(
+            String categorySlug, String typeCode, String tag,
+            java.math.BigDecimal minPrice, java.math.BigDecimal maxPrice,
+            ProductSort sort, Pageable pageable) {
+
+        StorefrontFilter filter = StorefrontFilter.unfiltered()
+                .withType(typeCode)
+                .withTag(tag)
+                .withPriceRange(minPrice, maxPrice);
+
+        if (categorySlug != null && !categorySlug.isBlank()) {
+            List<java.util.UUID> ids = categoryService.descendantIdsOf(categorySlug)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "unknown category: " + categorySlug));
+            filter = filter.withCategories(ids);
+        }
+
+        ProductSort effectiveSort = sort == null ? ProductSort.NEWEST : sort;
+        List<java.util.UUID> ids = repository.findStorefrontIds(
+                filter, effectiveSort, pageable.getPageNumber(), pageable.getPageSize());
+        long total = repository.countStorefront(filter);
+
+        List<ProductResponse> content = repository.findAllWithDetailByIdIn(ids).stream()
+                .map(ProductMapper::toResponse)
+                .toList();
+
+        log.debug("findStorefront category={} type={} tag={} sort={} -> {} of {}",
+                categorySlug, typeCode, tag, effectiveSort, content.size(), total);
+        return new org.springframework.data.domain.PageImpl<>(content, pageable, total);
+    }
+
+
+    /**
+     * The same product, for an operator, with no status filter.
+     *
+     * <p>Separate from the public read because the two have opposite jobs:
+     * the storefront must not show a draft, and the admin must be able to work
+     * on one. Collapsing them into one endpoint with a role check would mean a
+     * single code path whose visibility depends on who is asking, which is
+     * exactly the kind of conditional that leaks.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ProductResponse> findByIdForAdmin(UUID id) {
+        log.debug("findByIdForAdmin id={}", id);
+        return repository.findById(id)
+                .map(product -> ProductMapper.toResponse(
+                        new ProductWithAvailability(product, lookupAvailability(product.id()))));
+    }
+
+    /**
+     * Adds a purchasable configuration to a product.
+     *
+     * <p>The product owns the invariants, not the variant: the option key set
+     * must match the product's declared axes, the combination must not already
+     * exist, and the currency must match its siblings. A variant cannot check
+     * any of those, because it cannot see the others.
+     *
+     * @throws IllegalArgumentException on any of those violations, or an
+     *         unknown product id; rendered as a 400 by the shared advice
+     */
+    @Transactional
+    public Optional<ProductResponse> addVariant(UUID productId, VariantCreateRequest request) {
+        return repository.findById(productId).map(product -> {
+            ProductVariant variant = new ProductVariant(
+                    product,
+                    request.sku(),
+                    request.unitPrice(),
+                    request.currency(),
+                    request.options());
+            product.addVariant(variant);
+            log.info("Added variant sku=\"{}\" to product id={} price={} {}",
+                    variant.sku(), productId, variant.unitPrice(), variant.currency());
+            return ProductMapper.toResponse(product);
+        });
+    }
+
+    /**
+     * Publishes a product to the storefront.
+     *
+     * <p>Refused unless the product has at least one active variant priced
+     * above zero. That single rule is what makes the variants migration safe:
+     * it backfilled every pre-existing product with a 0.00 variant, so without
+     * it, publishing would have put the entire existing catalogue on sale for
+     * nothing.
+     *
+     * @throws IllegalStateException when the product is not publishable, which
+     *         the shared advice renders as a 409 -- a conflict with the
+     *         product's current state rather than a malformed request
+     */
+    @Transactional
+    public Optional<ProductResponse> publish(UUID productId) {
+        return repository.findById(productId).map(product -> {
+            product.publish();
+            log.info("Published product id={} slug=\"{}\"", productId, product.slug());
+            return ProductMapper.toResponse(product);
+        });
     }
 
     /**
@@ -152,7 +289,8 @@ public class ProductService {
         // the line scannable and avoids leaking large payloads at INFO.
         int tagCount = tags == null ? 0 : tags.size();
         Product product = new Product(title, description, tags);
-        Product saved = repository.save(product);
+        product.assignSlug(freeSlugFor(product));
+        Product saved = saveResolvingSlugCollision(product);
         log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);
         // Publish via Spring's in-process event bus. The KafkaProductEventBridge
         // listens with @TransactionalEventListener(phase = AFTER_COMMIT) and
@@ -171,6 +309,66 @@ public class ProductService {
         // keep working while update failed, and the difference is invisible
         // at the call site.
         return ProductMapper.toResponse(saved);
+    }
+
+    /**
+     * The first unused slug for this product.
+     *
+     * <h2>Why this exists at all</h2>
+     *
+     * {@code products.slug} is {@code NOT NULL UNIQUE} and the constructor
+     * derives it from the title, so two products whose titles reduce to the
+     * same slug violate the constraint. That is not an edge case: "Aurelia
+     * Ring", "Aurelia-Ring" and "AURELIA RING" all reduce to
+     * {@code aurelia-ring}, every title made only of punctuation reduces to
+     * {@code product}, and a new title can collide with one the V3 migration
+     * backfilled. Before this method, the second create answered
+     * <strong>500</strong>, because nothing in the platform handled
+     * {@code DataIntegrityViolationException}.
+     *
+     * <p>A numeric discriminator is tried first because {@code aurelia-ring-2}
+     * is a URL someone can read, and the attempt is bounded -- past that, the
+     * id suffix (the same shape V3 used) is guaranteed free, since ids are
+     * unique.
+     */
+    private String freeSlugFor(Product product) {
+        String base = Slug.from(product.title());
+        if (!repository.existsBySlug(base)) {
+            return base;
+        }
+        for (int suffix = 2; suffix <= MAX_SLUG_ATTEMPTS; suffix++) {
+            String candidate = base + "-" + suffix;
+            if (!repository.existsBySlug(candidate)) {
+                return candidate;
+            }
+        }
+        return idSuffixedSlug(base, product.id());
+    }
+
+    /** Collision-proof by construction: ids are unique. */
+    private static String idSuffixedSlug(String base, UUID id) {
+        return base + "-" + id.toString().replace("-", "").substring(0, 8);
+    }
+
+    /**
+     * Saves, and survives losing a race for the slug.
+     *
+     * <p>{@link #freeSlugFor} is a check-then-act: two concurrent creates of
+     * the same title both read "free" and one violates the constraint. Rather
+     * than hold a lock for a cosmetic URL, the loser retries once with the
+     * id-suffixed slug, which cannot collide. One retry is enough precisely
+     * because the fallback is not a guess.
+     */
+    private Product saveResolvingSlugCollision(Product product) {
+        try {
+            return repository.saveAndFlush(product);
+        } catch (DataIntegrityViolationException e) {
+            String fallback = idSuffixedSlug(Slug.from(product.title()), product.id());
+            log.warn("Slug collision on save for title=\"{}\"; retrying as slug=\"{}\"",
+                    product.title(), fallback);
+            product.assignSlug(fallback);
+            return repository.saveAndFlush(product);
+        }
     }
 
     /**

@@ -12,9 +12,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.catalog.constants.CatalogConstants;
+import java.math.BigDecimal;
+
 import com.oriah.catalog.dto.PageResponse;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.observability.ResourceNotFoundException;
+import com.oriah.catalog.model.ProductSort;
 import com.oriah.catalog.service.ProductService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -78,17 +81,40 @@ public class ProductController {
      */
     @GetMapping
     @Operation(operationId = "list",
-            summary = "List products, newest first, optionally filtered by tag")
+            summary = "List published products, filtered and sorted",
+            description = "Returns ACTIVE products only. DRAFT and ARCHIVED are never "
+                    + "listed, which is also why the catalogue looks empty immediately "
+                    + "after the variants migration: it left every pre-existing product "
+                    + "DRAFT because none of them had a price anyone had chosen. "
+                    + "`orderBy` is named that way rather than `sort` so it does not "
+                    + "collide with Spring's own paging `sort` parameter, and it is a "
+                    + "closed set of values because the ordering has to be built into "
+                    + "SQL -- a caller-supplied sort expression would be an injection. "
+                    + "`category` matches the category AND its descendants, so filtering "
+                    + "by a parent returns everything beneath it. An unknown category "
+                    + "slug is a 400, unlike an unknown `tag`, which answers 200 with an "
+                    + "empty page: a tag is a free-form label whose absence means nothing, "
+                    + "while a category is a closed set. "
+                    + "Price filtering uses the cheapest PURCHASABLE variant -- active and "
+                    + "priced above zero -- so a deactivated or unpriced variant cannot "
+                    + "pull a product into a price band a customer cannot actually buy at.")
     @ApiResponse(responseCode = "200", description = "A page of products, possibly empty")
     @ApiResponse(responseCode = "400", description = "Unparseable paging or sort parameter",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     public PageResponse<ProductResponse> list(
             @RequestParam(value = "tag", required = false) String tag,
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "type", required = false) String type,
+            @RequestParam(value = "minPrice", required = false) BigDecimal minPrice,
+            @RequestParam(value = "maxPrice", required = false) BigDecimal maxPrice,
+            @RequestParam(value = "orderBy", required = false) ProductSort orderBy,
             @PageableDefault(size = CatalogConstants.DEFAULT_PAGE_SIZE) Pageable pageable) {
-        log.debug("GET /api/v1/products tag={} page={} size={}",
-                tag, pageable.getPageNumber(), pageable.getPageSize());
-        return PageResponse.from(service.findAll(tag, pageable), r -> r);
+        log.debug("GET /api/v1/products tag={} category={} type={} orderBy={} page={} size={}",
+                tag, category, type, orderBy, pageable.getPageNumber(), pageable.getPageSize());
+        return PageResponse.from(
+                service.findStorefront(category, type, tag, minPrice, maxPrice, orderBy, pageable),
+                r -> r);
     }
 
     /**

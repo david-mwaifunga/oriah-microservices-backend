@@ -76,7 +76,19 @@ public class SecurityConfig {
     /** Storefront reads that must work with no token at all. */
     private static final String[] PUBLIC_GET_PATHS = {
             "/api/v1/products/**",
-            "/api/v1/search/**"
+            "/api/v1/search/**",
+            // Added with the products phase. All three are storefront reads a
+            // visitor makes before they could possibly have a token: the
+            // category navigation, the type definitions the product page
+            // renders its spec table from, and the image bytes themselves.
+            //
+            // Permitting them HERE is necessary but not sufficient -- catalog's
+            // own filter chain ends in anyRequest().authenticated(), so each
+            // one is also permitted there, and catalog's PublicAccessTest
+            // calls that service directly and anonymously to prove it.
+            "/api/v1/categories/**",
+            "/api/v1/product-types/**",
+            "/api/v1/product-images/**"
     };
 
     /**
@@ -134,6 +146,17 @@ public class SecurityConfig {
                         // make posting a review anonymous.
                         .pathMatchers(HttpMethod.GET, PUBLIC_GET_PATHS).permitAll()
 
+                        // Variant pricing is a POST, so PUBLIC_GET_PATHS --
+                        // which is deliberately GET-scoped -- cannot carry it.
+                        // It reads nothing but prices, which are already on the
+                        // public product page, and it has to be anonymous
+                        // because cart-service calls it while serving an
+                        // anonymous shopper's bag and has no token to relay.
+                        // Scoped to the exact path rather than /api/v1/variants/**
+                        // so that any future write under that prefix is not
+                        // swept in by this permit.
+                        .pathMatchers(HttpMethod.POST, "/api/v1/variants/pricing").permitAll()
+
                         // Admin roles, each one the role the owning service
                         // actually checks. hasRole adds the ROLE_ prefix
                         // itself, and KeycloakRoleConverter produces prefixed
@@ -145,6 +168,22 @@ public class SecurityConfig {
                         .pathMatchers("/api/v1/admin/customers/**").hasRole("CUSTOMER_ADMIN")
                         .pathMatchers("/api/v1/admin/orders/**").hasRole("ORDER_ADMIN")
                         .pathMatchers("/api/v1/admin/promotions/**").hasRole("CATALOG_ADMIN")
+                        // Categories are catalogue data, so CATALOG_ADMIN -- the
+                        // same role that guards products and promotions. There
+                        // is no CATEGORY_ADMIN in the realm and inventing one
+                        // would fail closed with no error anywhere.
+                        //
+                        // This matcher was MISSING when the route was added,
+                        // so the path fell through to anyExchange().authenticated()
+                        // and a plain USER token was admitted at the edge. The
+                        // test that was supposed to cover it asserted only that
+                        // an anonymous request is 401, which authenticated()
+                        // already guarantees for any unmatched path -- so it
+                        // passed throughout. adminPathsRejectNonAdmins now
+                        // includes this path, and that is the assertion with
+                        // teeth: it fails with 503 (admitted, routed, no
+                        // instance) rather than 403 when the matcher is absent.
+                        .pathMatchers("/api/v1/admin/categories/**").hasRole("CATALOG_ADMIN")
                         // PAYMENT_ADMIN has been declared in the realm since
                         // the beginning and guarded nothing, because the
                         // endpoint it was minted for did not exist. This is

@@ -3,9 +3,11 @@ package com.oriah.catalog.controller;
 import java.net.URI;
 import java.util.UUID;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,6 +20,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.ProductCreateRequest;
 import com.oriah.catalog.dto.ProductResponse;
+import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.catalog.service.ProductService;
@@ -139,6 +142,79 @@ public class AdminProductController {
      * {@code @ResponseStatus(NO_CONTENT)} would move the status away from the
      * line that produces it.
      */
+    /**
+     * Read a product as an operator, including drafts.
+     *
+     * <p>The public endpoint deliberately 404s anything not ACTIVE, so this is
+     * the only way to see a product being worked on.
+     */
+    @GetMapping("/{id}")
+    @Operation(operationId = "getForAdmin",
+            summary = "One product by id, including DRAFT and ARCHIVED")
+    @ApiResponse(responseCode = "200", description = "The product, whatever its status")
+    @ApiResponse(responseCode = "404", description = "No product with that id",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ProductResponse getForAdmin(@PathVariable("id") UUID id) {
+        log.debug("GET /api/v1/admin/products/{}", id);
+        return service.findByIdForAdmin(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
+    }
+
+    /**
+     * Add a purchasable configuration.
+     *
+     * <p>201 with the full product rather than just the variant: an admin
+     * screen needs the product's recomputed price range and publishability
+     * immediately after the write, and returning only the variant would make
+     * it fetch the product again to find out whether it can now be published.
+     */
+    @PostMapping("/{id}/variants")
+    @Operation(operationId = "addVariant", summary = "Add a variant to a product")
+    @ApiResponse(responseCode = "201", description = "The product, with the new variant")
+    @ApiResponse(responseCode = "400",
+            description = "Validation failure: option keys not matching the product's "
+                    + "declared axes, a duplicate option combination, a currency differing "
+                    + "from the product's other variants, or a blank SKU",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No product with that id",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<ProductResponse> addVariant(
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody VariantCreateRequest request) {
+        log.debug("POST /api/v1/admin/products/{}/variants sku=\"{}\"", id, request.sku());
+        ProductResponse updated = service.addVariant(id, request)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
+        return ResponseEntity.status(HttpStatus.CREATED).body(updated);
+    }
+
+    /**
+     * Publish a product to the storefront.
+     *
+     * <p>409 rather than 400 when it is not publishable: the request is
+     * perfectly well formed, and what is wrong is the product's state -- it has
+     * no variant priced above zero. A 400 would tell an operator to fix their
+     * request when what they need to fix is the price.
+     */
+    @PostMapping("/{id}/publish")
+    @Operation(operationId = "publishProduct",
+            summary = "Publish a product, if it has an active variant priced above zero")
+    @ApiResponse(responseCode = "200", description = "The published product")
+    @ApiResponse(responseCode = "404", description = "No product with that id",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409",
+            description = "The product has no active variant priced above zero",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ProductResponse publish(@PathVariable("id") UUID id) {
+        log.debug("POST /api/v1/admin/products/{}/publish", id);
+        return service.publish(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
+    }
+
     @DeleteMapping("/{id}")
     @Operation(operationId = "delete", summary = "Delete a product")
     @ApiResponse(responseCode = "204", description = "Deleted; no body")

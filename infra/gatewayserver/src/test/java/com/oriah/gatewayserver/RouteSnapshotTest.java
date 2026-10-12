@@ -68,7 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RouteSnapshotTest {
 
     /**
-     * Every route id: 18 API routes plus
+     * Every route id: 21 API routes plus
      * 12 per-service {@code /v3/api-docs/<svc>} routes that back the
      * aggregated Swagger UI at the gateway.
      */
@@ -92,6 +92,10 @@ class RouteSnapshotTest {
             "review-route",
             "product-reviews-route",
             "search-route",
+            // Added with the products phase.
+            "catalog-taxonomy-route",
+            "catalog-variants-route",
+            "catalog-categories-admin-route",
             // --- OpenAPI aggregation routes ---
             "catalog-docs",
             "inventory-docs",
@@ -110,7 +114,7 @@ class RouteSnapshotTest {
     private RouteLocator routeLocator;
 
     @Test
-    @DisplayName("route id set is exactly the 30-route snapshot")
+    @DisplayName("route id set is exactly the 33-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
         List<String> actual = routes().stream().map(Route::getId).toList();
 
@@ -147,7 +151,11 @@ class RouteSnapshotTest {
                 // product-reviews route live in review-service.
                 .containsEntry("review-route", "lb://review")
                 .containsEntry("product-reviews-route", "lb://review")
-                .containsEntry("search-route", "lb://search");
+                .containsEntry("search-route", "lb://search")
+                // The three products-phase routes, all catalog.
+                .containsEntry("catalog-taxonomy-route", "lb://catalog")
+                .containsEntry("catalog-variants-route", "lb://catalog")
+                .containsEntry("catalog-categories-admin-route", "lb://catalog");
     }
 
     @ParameterizedTest(name = "{0} -> {1}")
@@ -172,6 +180,15 @@ class RouteSnapshotTest {
             "/api/v1/notifications/me,                           notification-route",
             "/api/v1/reviews/me,                                 review-route",
             "/api/v1/search,                                     search-route",
+            // Products phase. The taxonomy and variant paths are siblings of
+            // the catalog route rather than nested under it, so no ordering
+            // trick is needed -- but they are pinned so a future broadening of
+            // /api/v1/products/** cannot quietly swallow them.
+            "/api/v1/categories,                                 catalog-taxonomy-route",
+            "/api/v1/categories/rings,                           catalog-taxonomy-route",
+            "/api/v1/product-types,                              catalog-taxonomy-route",
+            "/api/v1/variants/pricing,                           catalog-variants-route",
+            "/api/v1/admin/categories,                           catalog-categories-admin-route",
             // THE precedence case: nested product reviews must beat the
             // catalog /api/v1/products/** route via order: -10.
             "/api/v1/products/11111111-1111-1111-1111-111111111111/reviews, product-reviews-route",

@@ -118,6 +118,58 @@ class ProductCoherenceTest {
     }
 
     @Test
+    @DisplayName("repricing the last purchasable variant to zero is refused, exactly like deactivating it")
+    void cannotStrandAnActiveProductByRepricing() {
+        var p = ring();
+        p.addVariant(variant(p, "AUR-001", "4500.00", "ZMW", Map.of()));
+        p.publish();
+
+        // deactivateVariant already refuses this, and its javadoc names the
+        // outcome it is preventing: a product live on the storefront with
+        // nothing to buy, which vanishes from the grid (the list query
+        // requires a purchasable variant) while still answering on its own
+        // URL. Repricing to zero reaches that identical state by another
+        // door, because zero is not a price -- isPurchasable() requires
+        // unitPrice > 0. The two mutators have to agree.
+        assertThatThrownBy(() -> p.repriceVariant(
+                p.variants().getFirst().id(), new BigDecimal("0.00"), "ZMW"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("AUR-001");
+
+        assertThat(p.variants().getFirst().unitPrice()).isEqualByComparingTo("4500.00");
+        assertThat(p.status()).isEqualTo(ProductStatus.ACTIVE);
+        assertThat(p.isPublishable()).isTrue();
+    }
+
+    @Test
+    @DisplayName("repricing to zero is allowed while another purchasable variant remains")
+    void repricingToZeroIsFineWithASpare() {
+        var p = ring();
+        p.declareOptionNames(List.of("Ring Size"));
+        p.addVariant(variant(p, "AUR-M", "4500.00", "ZMW", Map.of("Ring Size", "M")));
+        p.addVariant(variant(p, "AUR-L", "4700.00", "ZMW", Map.of("Ring Size", "L")));
+        p.publish();
+
+        p.repriceVariant(p.variants().getFirst().id(), new BigDecimal("0.00"), "ZMW");
+
+        assertThat(p.isPublishable()).isTrue();
+        // The zero-priced one drops out of the range rather than setting it.
+        assertThat(p.lowestActivePrice()).contains(new BigDecimal("4700.00"));
+    }
+
+    @Test
+    @DisplayName("a DRAFT product's last variant may be repriced to zero, because nothing is live")
+    void draftCanBeRepricedToZero() {
+        var p = ring();
+        p.addVariant(variant(p, "AUR-001", "4500.00", "ZMW", Map.of()));
+
+        p.repriceVariant(p.variants().getFirst().id(), new BigDecimal("0.00"), "ZMW");
+
+        assertThat(p.variants().getFirst().unitPrice()).isEqualByComparingTo("0.00");
+        assertThat(p.isPublishable()).isFalse();
+    }
+
+    @Test
     @DisplayName("deactivating a variant is fine while another purchasable one remains")
     void deactivatingIsFineWithASpare() {
         var p = ring();

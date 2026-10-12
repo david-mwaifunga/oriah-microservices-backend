@@ -215,6 +215,76 @@ class ProductStorefrontQueryTest {
     }
 
     @Test
+    @DisplayName("the price used is the LOWEST purchasable variant, not the highest")
+    void priceIsTheMinimumNotTheMaximum() {
+        // Without this test, changing MIN to MAX in the query's price
+        // expression changes NO assertion in this class -- which an
+        // adversarial review demonstrated by making the swap and re-running.
+        // The reason was the seed: solitaire's whole 4000-5000 range sat
+        // strictly between cuff (1200) and diveWatch (9000), so min and max
+        // ordered the three products identically and fell in the same bands.
+        //
+        // Giving solitaire a 900 variant makes its range STRADDLE cuff's
+        // single price, so min and max now disagree about both the ordering
+        // and the band.
+        solitaire = products.findById(solitaire.id()).orElseThrow();
+        solitaire.addVariant(new ProductVariant(solitaire, "AUR-XS", new BigDecimal("900.00"),
+                "ZMW", Map.of("Ring Size", "XS")));
+        products.save(solitaire);
+        entityManager.flush();
+        entityManager.clear();
+
+        // By MIN, solitaire is now the cheapest product (900 < 1200).
+        // By MAX it would be the dearest of the two (5000 > 1200).
+        assertThat(products.findStorefrontIds(
+                StorefrontFilter.unfiltered(), ProductSort.PRICE_ASC, 0, 50))
+                .containsExactly(solitaire.id(), cuff.id(), diveWatch.id());
+
+        // By MIN solitaire matches a band cuff does not; by MAX neither would.
+        assertThat(idsFor(StorefrontFilter.unfiltered().withPriceRange(null, new BigDecimal("1000"))))
+                .containsExactly(solitaire.id());
+    }
+
+    @Test
+    @DisplayName("a zero-priced variant on a LIVE product does not drag its price down to zero")
+    void zeroPricedVariantIsNotTheProductsPrice() {
+        // The `unit_price > 0` condition appears TWICE in the query -- once in
+        // the EXISTS that decides whether a product is listable at all, and
+        // once in the expression that computes its price. Only the first was
+        // covered: the single zero-priced variant in the seed belonged to a
+        // DRAFT product, so deleting `> 0` from the price expression broke
+        // nothing. This is the reachable case, since a published product can
+        // be given an unpriced variant afterwards.
+        solitaire = products.findById(solitaire.id()).orElseThrow();
+        solitaire.addVariant(new ProductVariant(solitaire, "AUR-FREE", new BigDecimal("0.00"),
+                "ZMW", Map.of("Ring Size", "XS")));
+        products.save(solitaire);
+        entityManager.flush();
+        entityManager.clear();
+
+        // PRECONDITION, asserted rather than assumed. The first version of
+        // this test passed even with `unit_price > 0` deleted from the price
+        // expression -- the mutation it was written to catch -- because the
+        // 0.00 variant was not actually reaching the database, so there was
+        // no zero for the query to pick up and nothing to get wrong. A test
+        // whose setup silently fails passes for the wrong reason, which is
+        // indistinguishable from passing for the right one.
+        assertThat(products.findById(solitaire.id()).orElseThrow().variants())
+                .as("the 0.00 variant must actually be persisted, or this test proves nothing")
+                .hasSize(3)
+                .anySatisfy(v -> assertThat(v.unitPrice()).isEqualByComparingTo("0.00"));
+
+        // Zero is V3's marker for "nobody has priced this yet", not a price.
+        // Were it treated as one, this product would advertise "from K0.00"
+        // and match a band nobody can buy in.
+        assertThat(idsFor(StorefrontFilter.unfiltered().withPriceRange(null, new BigDecimal("1"))))
+                .isEmpty();
+        assertThat(products.findStorefrontIds(
+                StorefrontFilter.unfiltered(), ProductSort.PRICE_ASC, 0, 50))
+                .containsExactly(cuff.id(), solitaire.id(), diveWatch.id());
+    }
+
+    @Test
     @DisplayName("sorting by price ascending and descending uses the lowest purchasable price")
     void sortByPrice() {
         var asc = products.findStorefrontIds(

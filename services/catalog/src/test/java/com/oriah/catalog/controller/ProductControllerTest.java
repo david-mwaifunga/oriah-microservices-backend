@@ -7,6 +7,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.data.domain.Page;
@@ -27,6 +29,7 @@ import com.oriah.catalog.config.SecurityConfig;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.model.Availability;
+import com.oriah.catalog.model.ProductSort;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductService;
 import com.oriah.catalog.service.ProductWithAvailability;
@@ -141,7 +144,8 @@ class ProductControllerTest {
         Page<ProductResponse> page = new PageImpl<>(
                 List.of(ProductMapper.toResponse(aurelia), ProductMapper.toResponse(lume)),
                 PageRequest.of(0, 20), 2);
-        when(service.findAll(isNull(), any(Pageable.class))).thenReturn(page);
+        when(service.findStorefront(isNull(), isNull(), isNull(), isNull(), isNull(),
+                isNull(), any(Pageable.class))).thenReturn(page);
 
         mvc.perform(get("/api/v1/products"))
                 .andExpect(status().isOk())
@@ -159,7 +163,8 @@ class ProductControllerTest {
     @DisplayName("GET /api/v1/products returns an empty page when no products exist")
     void listReturnsEmptyPageWhenNoProducts() throws Exception {
         Page<ProductResponse> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(0, 20), 0);
-        when(service.findAll(isNull(), any(Pageable.class))).thenReturn(empty);
+        when(service.findStorefront(isNull(), isNull(), isNull(), isNull(), isNull(),
+                isNull(), any(Pageable.class))).thenReturn(empty);
 
         mvc.perform(get("/api/v1/products"))
                 .andExpect(status().isOk())
@@ -175,7 +180,9 @@ class ProductControllerTest {
                 "Aurelia", null, List.of("rings"));
 
         Page<ProductResponse> page = new PageImpl<>(List.of(ProductMapper.toResponse(aurelia)), PageRequest.of(0, 20), 1);
-        when(service.findAll(eq("rings"), any(Pageable.class))).thenReturn(page);
+        // tag is the third argument now: (category, type, tag, min, max, orderBy, pageable)
+        when(service.findStorefront(isNull(), isNull(), eq("rings"), isNull(), isNull(),
+                isNull(), any(Pageable.class))).thenReturn(page);
 
         mvc.perform(get("/api/v1/products").param("tag", "rings"))
                 .andExpect(status().isOk())
@@ -188,7 +195,8 @@ class ProductControllerTest {
     @DisplayName("GET /api/v1/products honors page and size query parameters")
     void listHonorsPagingParameters() throws Exception {
         Page<ProductResponse> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(2, 5), 12);
-        when(service.findAll(isNull(), any(Pageable.class))).thenReturn(empty);
+        when(service.findStorefront(isNull(), isNull(), isNull(), isNull(), isNull(),
+                isNull(), any(Pageable.class))).thenReturn(empty);
 
         mvc.perform(get("/api/v1/products").param("page", "2").param("size", "5"))
                 .andExpect(status().isOk())
@@ -196,5 +204,67 @@ class ProductControllerTest {
                 .andExpect(jsonPath("$.size").value(5))
                 .andExpect(jsonPath("$.totalElements").value(12))
                 .andExpect(jsonPath("$.totalPages").value(3));
+    }
+
+    @Test
+    @DisplayName("GET /api/v1/products passes every new filter through to the service")
+    void listForwardsAllFilters() throws Exception {
+        Page<ProductResponse> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(0, 20), 0);
+        when(service.findStorefront(eq("rings"), eq("WATCH"), eq("gift"),
+                eq(new java.math.BigDecimal("1000")), eq(new java.math.BigDecimal("9000")),
+                eq(ProductSort.PRICE_ASC), any(Pageable.class))).thenReturn(empty);
+
+        mvc.perform(get("/api/v1/products")
+                        .param("category", "rings")
+                        .param("type", "WATCH")
+                        .param("tag", "gift")
+                        .param("minPrice", "1000")
+                        .param("maxPrice", "9000")
+                        .param("orderBy", "PRICE_ASC"))
+                .andExpect(status().isOk());
+
+        // Strict argument matchers above are the assertion: if a parameter
+        // were dropped or bound to the wrong position, the stub would not
+        // match, the service would return null and this would be a 500. The
+        // seven-argument signature makes a positional mistake easy, and
+        // category/type/tag are all Strings, so the compiler cannot catch one.
+    }
+
+    @ParameterizedTest(name = "orderBy={0} is accepted")
+    @DisplayName("every declared sort value is accepted")
+    @ValueSource(strings = {"NEWEST", "PRICE_ASC", "PRICE_DESC", "TITLE_ASC"})
+    void listAcceptsEveryDeclaredSort(String orderBy) throws Exception {
+        Page<ProductResponse> empty = new PageImpl<>(Collections.emptyList(), PageRequest.of(0, 20), 0);
+        when(service.findStorefront(isNull(), isNull(), isNull(), isNull(), isNull(),
+                eq(ProductSort.valueOf(orderBy)), any(Pageable.class))).thenReturn(empty);
+
+        mvc.perform(get("/api/v1/products").param("orderBy", orderBy))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("an unrecognised orderBy is a 400, not a silent fallback to the default")
+    void unknownSortRejected() throws Exception {
+        // The closed enum is what keeps a caller-supplied ordering out of the
+        // SQL. Silently defaulting would hide a client bug and, worse, make
+        // the API look like it supports an ordering it ignores.
+        mvc.perform(get("/api/v1/products").param("orderBy", "PRICE_SIDEWAYS"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("an unknown category slug is a 400 naming the slug, not an empty page")
+    void unknownCategoryRejected() throws Exception {
+        when(service.findStorefront(eq("sofas"), isNull(), isNull(), isNull(), isNull(),
+                isNull(), any(Pageable.class)))
+                .thenThrow(new IllegalArgumentException("unknown category: sofas"));
+
+        // An empty page would be indistinguishable from a category that
+        // simply has no products, and the alternative failure mode -- treating
+        // an unresolved slug as "no filter" -- would return the whole
+        // catalogue and look like it had worked.
+        mvc.perform(get("/api/v1/products").param("category", "sofas"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value("unknown category: sofas"));
     }
 }

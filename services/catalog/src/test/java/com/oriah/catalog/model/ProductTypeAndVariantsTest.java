@@ -166,6 +166,30 @@ class ProductTypeAndVariantsTest {
         }
 
         @Test
+        @DisplayName("a DEACTIVATED variant does not block declaring new axes, which is what the error message tells you to do")
+        void deactivatedVariantsDoNotBlockAxisChanges() {
+            // The refusal message says "update or deactivate the variants
+            // first", but the check iterated EVERY variant regardless of
+            // whether it was active -- so following that instruction changed
+            // nothing and the operation stayed impossible.
+            //
+            // This is not hypothetical for the migrated catalogue: V3 gave
+            // every pre-existing product one variant with empty options, so
+            // adding a "Ring Size" axis to any of them hit the refusal, and
+            // the remedy the message named did not work.
+            var p = ring();
+            p.addVariant(variant(p, "LEGACY-1", "4500.00", Map.of()));
+            p.deactivateVariant(p.variants().getFirst().id());
+
+            p.declareOptionNames(List.of("Ring Size"));
+
+            assertThat(p.optionNames()).containsExactly("Ring Size");
+            // And a sized variant is now addable, which is the point.
+            p.addVariant(variant(p, "AUR-M", "4500.00", Map.of("Ring Size", "M")));
+            assertThat(p.variants()).hasSize(2);
+        }
+
+        @Test
         @DisplayName("declaring new axes is refused while existing variants would stop matching")
         void cannotStrandExistingVariants() {
             var p = ring();

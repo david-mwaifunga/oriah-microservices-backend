@@ -125,10 +125,61 @@ class GatewaySecurityConfigTest {
             "/api/v1/products/11111111-1111-1111-1111-111111111111",
             "/api/v1/products/11111111-1111-1111-1111-111111111111/reviews",
             "/api/v1/products/11111111-1111-1111-1111-111111111111/reviews/aggregate",
-            "/api/v1/search?q=aurelia"
+            "/api/v1/search?q=aurelia",
+            // Added with the products phase: the category navigation, the type
+            // definitions the product page builds its spec table from, and the
+            // image bytes. All three are read by a visitor who could not
+            // possibly hold a token yet.
+            "/api/v1/categories",
+            "/api/v1/categories/rings",
+            "/api/v1/product-types",
+            "/api/v1/product-images/11111111-1111-1111-1111-111111111111"
     })
     void permitsAnonymousStorefrontReads(String path) {
         assertAdmitted(client.get().uri(path));
+    }
+
+    @Test
+    @DisplayName("variant pricing is anonymous, because cart has no token to relay")
+    void variantPricingIsPublic() {
+        // A POST, so PUBLIC_GET_PATHS cannot carry it -- that array is
+        // deliberately GET-scoped. It reads nothing but prices, which are
+        // already on the public product page, and cart-service calls it while
+        // serving an anonymous shopper's bag.
+        assertAdmitted(client.post().uri("/api/v1/variants/pricing"));
+    }
+
+    @Test
+    @DisplayName("the pricing permit is scoped to that exact path, not to every variant write")
+    void variantPricingPermitIsNarrow() {
+        // The permit names /api/v1/variants/pricing rather than
+        // /api/v1/variants/**, so a future write under that prefix is not
+        // swept in by it. This is the assertion that would fail if someone
+        // broadened the matcher for convenience.
+        client.post().uri("/api/v1/variants/11111111-1111-1111-1111-111111111111")
+                .exchange().expectStatus().isUnauthorized();
+        client.delete().uri("/api/v1/variants/11111111-1111-1111-1111-111111111111")
+                .exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test
+    @DisplayName("admin category writes require CATALOG_ADMIN, not merely a token")
+    void adminCategoriesRequireCatalogAdmin() {
+        // This test replaces one that asserted only "anonymous gets 401".
+        // That assertion was worthless here: anyExchange().authenticated()
+        // gives a 401 to every unmatched path, so it passed while the
+        // categories matcher was entirely MISSING and a plain USER token was
+        // being admitted at the edge. The DisplayName claimed role enforcement
+        // the body never checked.
+        client.post().uri("/api/v1/admin/categories")
+                .exchange().expectStatus().isUnauthorized();
+
+        client.mutateWith(mockJwt().authorities(authority("ROLE_USER")))
+                .post().uri("/api/v1/admin/categories")
+                .exchange().expectStatus().isForbidden();
+
+        assertAdmitted(client.mutateWith(mockJwt().authorities(authority("ROLE_CATALOG_ADMIN")))
+                .post().uri("/api/v1/admin/categories"));
     }
 
     @Test
@@ -210,7 +261,8 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/customers",
             "/api/v1/admin/orders",
             "/api/v1/admin/promotions",
-            "/api/v1/admin/payments"
+            "/api/v1/admin/payments",
+            "/api/v1/admin/categories"
     })
     void adminPathsRejectNonAdmins(String path) {
         client.mutateWith(mockJwt().authorities(authority("ROLE_USER")))

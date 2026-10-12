@@ -57,15 +57,27 @@ class ProductServiceEventPublishingTest {
         // lowStockThreshold at its initializer value (5), which these
         // unit tests don't read anyway (they verify event publishing,
         // not availability calculation).
+        // CategoryService is mocked and never stubbed: these tests exercise
+        // create/update/delete, none of which resolve a category. The
+        // storefront list is the only caller that does, and it is covered
+        // against real Postgres in ProductStorefrontQueryTest.
         service = new ProductService(repository, inventoryClient, eventPublisher,
-                new com.oriah.catalog.config.CatalogProperties());
+                new com.oriah.catalog.config.CatalogProperties(),
+                mock(CategoryService.class));
     }
 
     @Test
     @DisplayName("create() publishes ProductCreatedEvent carrying the saved product's id/title/tags")
     void createPublishesProductCreatedEvent() {
-        // 'save' returns the same instance with whatever id was assigned at construction.
-        when(repository.save(any(Product.class))).thenAnswer(inv -> inv.getArgument(0));
+        // saveAndFlush, not save: create() flushes explicitly so that a slug
+        // collision raises DataIntegrityViolationException inside the try
+        // block where it can be retried. At transaction-commit time it would
+        // be too late to do anything with it.
+        //
+        // Returns the same instance with whatever id was assigned at
+        // construction, and existsBySlug defaults to false (no collision),
+        // which is the path these event-publishing assertions care about.
+        when(repository.saveAndFlush(any(Product.class))).thenAnswer(inv -> inv.getArgument(0));
 
         var saved = service.create("Aurelia", "18k", List.of("rings", "gold"));
 

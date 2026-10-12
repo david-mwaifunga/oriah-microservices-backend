@@ -94,6 +94,8 @@ public class GatewayRoutesConfig {
         // ambiguity reason in the constructor javadoc.
         registerStorefrontRateLimit("catalog-public-route");
         registerStorefrontRateLimit("search-route");
+        registerStorefrontRateLimit("catalog-taxonomy-route");
+        registerStorefrontRateLimit("catalog-variants-route");
 
         RouteLocatorBuilder.Builder routes = builder.routes();
 
@@ -114,6 +116,34 @@ public class GatewayRoutesConfig {
         routes = routes.route("catalog-public-route", r -> r
                 .path("/api/v1/products/**")
                 .filters(f -> resilientStorefront(f, "catalog")
+                        .requestRateLimiter(c -> c
+                                .setRateLimiter(redisRateLimiter)
+                                .setKeyResolver(ipKeyResolver)))
+                .uri("lb://catalog"));
+
+        // ------------------- storefront taxonomy -------------------
+        // The category tree and the product-type definitions. JSON reads, so
+        // they get the same treatment as the other anonymous storefront
+        // routes -- including the circuit breaker, because a problem+json
+        // fallback is a perfectly reasonable answer for a failed JSON read.
+        // (That is NOT true of the image route added later, where an <img>
+        // tag receiving an RFC 7807 body is useless.)
+        routes = routes.route("catalog-taxonomy-route", r -> r
+                .path("/api/v1/categories/**", "/api/v1/product-types/**")
+                .filters(f -> resilientStorefront(f, "catalog-taxonomy")
+                        .requestRateLimiter(c -> c
+                                .setRateLimiter(redisRateLimiter)
+                                .setKeyResolver(ipKeyResolver)))
+                .uri("lb://catalog"));
+
+        // Variant pricing. Routed at the edge rather than kept internal
+        // because the storefront bag calls it directly to re-check its lines,
+        // not only cart-service. Rate limited like its neighbours: it is
+        // anonymous, and an anonymous caller cannot be stopped by revoking a
+        // token it never had.
+        routes = routes.route("catalog-variants-route", r -> r
+                .path("/api/v1/variants/**")
+                .filters(f -> resilientStorefront(f, "catalog-variants")
                         .requestRateLimiter(c -> c
                                 .setRateLimiter(redisRateLimiter)
                                 .setKeyResolver(ipKeyResolver)))
@@ -144,6 +174,7 @@ public class GatewayRoutesConfig {
         // PROMOTION_ADMIN role (no such role exists in the realm). The
         // authoritative mapping lives in each service's @PreAuthorize.
         routes = simple(routes, "catalog-admin-route", "/api/v1/admin/products/**", "catalog");
+        routes = simple(routes, "catalog-categories-admin-route", "/api/v1/admin/categories/**", "catalog");
         routes = simple(routes, "inventory-admin-route", "/api/v1/admin/inventory/**", "inventory");
         routes = simple(routes, "customer-admin-route", "/api/v1/admin/customers/**", "customer");
         routes = simple(routes, "order-admin-route", "/api/v1/admin/orders/**", "order");

@@ -64,6 +64,29 @@ public class SecurityConfig {
                         // product/stock/search reads, which are meant to be.
                         .requestMatchers(HttpMethod.GET, "/api/v1/products/contact-info").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/v1/products/**").permitAll()
+                        // Added by the products phase. Each of these is public
+                        // for the same reason the product reads are: a
+                        // storefront visitor is anonymous.
+                        //
+                        // Listing them in the GATEWAY's PUBLIC_GET_PATHS is
+                        // necessary but NOT sufficient -- this chain ends in
+                        // anyRequest().authenticated(), so without these lines
+                        // every one of them answers 401 when called, and the
+                        // gateway's allow-list would simply be forwarding a
+                        // request this service then refuses. PublicAccessTest
+                        // calls this service DIRECTLY and anonymously to prove
+                        // both halves are in place.
+                        .requestMatchers(HttpMethod.GET, "/api/v1/categories/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product-types/**").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/product-images/**").permitAll()
+                        // POST, and permitAll, and both are deliberate. It is a
+                        // read whose identifier list is too long for a URL, and
+                        // prices are already public on the product page. The
+                        // alternative -- requiring a token -- would mean
+                        // cart-service relaying one, which it has no mechanism
+                        // for, and would make the pricing path depend on auth
+                        // while the product page it quotes does not.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/variants/pricing").permitAll()
                         .requestMatchers(
                                 "/actuator/health",
                                 "/actuator/health/**",
