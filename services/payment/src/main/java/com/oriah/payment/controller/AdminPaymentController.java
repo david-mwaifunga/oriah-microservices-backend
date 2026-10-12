@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.payment.dto.AdminPaymentResponse;
+import com.oriah.payment.dto.AdminPaymentSummary;
 import com.oriah.payment.model.PaymentStatus;
 import com.oriah.payment.repository.PaymentIntentRepository;
 
@@ -114,6 +115,23 @@ public class AdminPaymentController {
                         .map(AdminPaymentResponse::from);
 
         return ResponseEntity.ok(result);
+    }
+
+    @Operation(operationId = "paymentSummary",
+            summary = "Exact ledger totals: counts by status and captured money per currency")
+    @ApiResponse(responseCode = "200", description = "The summary")
+    @GetMapping("/summary")
+    public ResponseEntity<AdminPaymentSummary> summary() {
+        // Every figure is computed by the database. The alternative -- letting
+        // the dashboard add up a page of payments -- gives a revenue number
+        // that is right until there is more than one page and then quietly
+        // wrong, which on a money figure is worse than no number at all.
+        return ResponseEntity.ok(new AdminPaymentSummary(
+                repository.countByDeletedFalse(),
+                repository.countByDeletedFalseAndStatus(PaymentStatus.SUCCEEDED),
+                repository.countByDeletedFalseAndStatus(PaymentStatus.FAILED),
+                repository.countByDeletedFalseAndStatus(PaymentStatus.PENDING),
+                repository.sumAmountByCurrency(PaymentStatus.SUCCEEDED)));
     }
 
     /**

@@ -4,9 +4,12 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.oriah.inventory.dto.AdminInventoryRow;
 import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.repository.InventoryRepository;
 
@@ -94,5 +97,15 @@ public class InventoryService {
             log.debug("{} skipped, variantId not found: {}", pastTense, variantId);
         }
         return result;
+    }
+
+    /**
+     * The admin list. Read-only and projection-based: the query builds
+     * AdminInventoryRow directly, so no Inventory entities are loaded to be
+     * mapped and discarded.
+     */
+    @Transactional(readOnly = true)
+    public Page<AdminInventoryRow> findAdminRows(Boolean outOfStock, Pageable pageable) {
+        return repository.findAdminRows(outOfStock, pageable);
     }
 }

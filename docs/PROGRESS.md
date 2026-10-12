@@ -5,6 +5,75 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-10-12 (admin dashboard finished; two new aggregate endpoints)
+
+The dashboard's six cards each rendered a hardcoded em-dash under copy
+promising the numbers would "light up as the corresponding admin services get
+wired in Phase 5 Tier 3". The services had been wired for tiers; the dashboard
+had not. The Observability card was worse than stale — it pointed at
+**Zipkin :9411**, an address that has served nothing since Tempo replaced
+Zipkin in Tier 2.
+
+### What the cards show now, and why each number is trustworthy
+
+| Card | Source | Exact? |
+|---|---|---|
+| Products | `GET /products` `totalElements` | yes — COUNT query |
+| Variants tracked | `GET /admin/inventory` `totalElements` | yes, **new endpoint** |
+| Orders placed | `GET /admin/orders` `totalElements` | yes |
+| Registered customers | `GET /admin/customers` `totalElements` | yes |
+| Captured revenue | `GET /admin/payments/summary` | yes, **new endpoint**, summed in the DB |
+| Observability | link to Grafana | no number invented |
+
+**Counts are safe to take from a page; sums are not.** `totalElements` is a
+COUNT query, so each count query asks for `size: 1` and throws the rows away.
+Revenue cannot work that way: summing one page of payments gives a figure that
+is right until there is more than one page and then silently under-reports
+money. Hence the summary endpoint.
+
+**Totals are per currency, never added across them.** `captured` is a list
+keyed by currency, because 100 USD + 100 EUR is not 200 of anything.
+
+### Two new endpoints
+
+- `GET /api/v1/admin/payments/summary` — PAYMENT_ADMIN. Counts by status plus
+  captured money grouped by currency, aggregated in the database. Excludes
+  soft-deleted rows. Empty ledger reports zeroes and an empty list, not nulls.
+- `GET /api/v1/admin/inventory` — INVENTORY_ADMIN. Paged stock, scarcest
+  first, LEFT joined to `ProductRef` so a variant whose catalog event has not
+  arrived still lists (with a null title) rather than being hidden by an inner
+  join. `?outOfStock=true` filters on `onHand - reserved <= 0`, which catches
+  fully-RESERVED rows that a naive `onHand = 0` check would miss. Size is
+  rejected above 200, not clamped.
+
+Neither needed a gateway change: `/api/v1/admin/payments/**` and
+`/api/v1/admin/inventory/**` were already routed and role-guarded.
+
+**The inventory list also fixed the Inventory admin page**, which was a "seed
+stock" form with no way to see what stock existed.
+
+### Two bugs found while building it
+
+- **The dashboard invented zeros.** Disabled queries (no usable session) are
+  neither loading nor errored, so `value ?? "0"` rendered "0 Products" when the
+  truth was "the session died". Caught in the browser against a live stack
+  returning 8. Now gated on `hasUsableSession`, showing an em-dash plus a
+  banner offering re-auth.
+- **`formatCurrency` hardcoded EUR while every service produces USD.** The
+  whole app — cart, checkout, orders — printed a euro sign in front of dollar
+  amounts. Surfaced on the revenue card: the ledger said $850.00 and the card
+  said "€850.00". The formatter now takes the currency from the data, with a
+  configurable fallback that defaults to USD rather than EUR, and every surface
+  whose API carries a currency now passes it.
+
+### Verification
+
+`clean install` — **BUILD SUCCESS, 460 tests, 0 failures** (payment 32 → 37,
+inventory 35 → 42). `oriah-web` **78 tests**, `tsc` and `next build` clean.
+smoke 19/19, OpenAPI additions-only PASS, audit PASS, goldens 14/14, roles PASS.
+
+---
+
 ## CURRENT STATE — 2026-10-12 (idle log hygiene + the admin surface completed)
 
 `.\mvnw.cmd -ntp clean install` — **BUILD SUCCESS, 448 tests, 0 failures**,
