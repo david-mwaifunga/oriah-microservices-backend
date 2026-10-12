@@ -68,7 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RouteSnapshotTest {
 
     /**
-     * Every route id: 21 API routes plus
+     * Every route id: 22 API routes plus
      * 12 per-service {@code /v3/api-docs/<svc>} routes that back the
      * aggregated Swagger UI at the gateway.
      */
@@ -96,6 +96,7 @@ class RouteSnapshotTest {
             "catalog-taxonomy-route",
             "catalog-variants-route",
             "catalog-categories-admin-route",
+            "catalog-images-route",
             // --- OpenAPI aggregation routes ---
             "catalog-docs",
             "inventory-docs",
@@ -114,7 +115,7 @@ class RouteSnapshotTest {
     private RouteLocator routeLocator;
 
     @Test
-    @DisplayName("route id set is exactly the 33-route snapshot")
+    @DisplayName("route id set is exactly the 34-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
         List<String> actual = routes().stream().map(Route::getId).toList();
 
@@ -155,7 +156,8 @@ class RouteSnapshotTest {
                 // The three products-phase routes, all catalog.
                 .containsEntry("catalog-taxonomy-route", "lb://catalog")
                 .containsEntry("catalog-variants-route", "lb://catalog")
-                .containsEntry("catalog-categories-admin-route", "lb://catalog");
+                .containsEntry("catalog-categories-admin-route", "lb://catalog")
+                .containsEntry("catalog-images-route", "lb://catalog");
     }
 
     @ParameterizedTest(name = "{0} -> {1}")
@@ -189,6 +191,10 @@ class RouteSnapshotTest {
             "/api/v1/product-types,                              catalog-taxonomy-route",
             "/api/v1/variants/pricing,                           catalog-variants-route",
             "/api/v1/admin/categories,                           catalog-categories-admin-route",
+            // Image bytes must NOT resolve to catalog-public-route, whose
+            // rate limiter and circuit breaker would throttle a product grid
+            // and hand an <img> tag a problem+json document.
+            "/api/v1/product-images/11111111-1111-1111-1111-111111111111, catalog-images-route",
             // THE precedence case: nested product reviews must beat the
             // catalog /api/v1/products/** route via order: -10.
             "/api/v1/products/11111111-1111-1111-1111-111111111111/reviews, product-reviews-route",

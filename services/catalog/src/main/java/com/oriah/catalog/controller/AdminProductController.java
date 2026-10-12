@@ -23,6 +23,15 @@ import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.observability.ResourceNotFoundException;
+import java.io.IOException;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.CacheControl;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.multipart.MultipartFile;
+import com.oriah.catalog.dto.ProductImageResponse;
+import com.oriah.catalog.service.ProductImageService;
+import com.oriah.catalog.service.ServedImage;
 import com.oriah.catalog.service.ProductService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -83,9 +92,11 @@ import lombok.extern.slf4j.Slf4j;
 public class AdminProductController {
 
     private final ProductService service;
+    private final ProductImageService imageService;
 
-    public AdminProductController(ProductService service) {
+    public AdminProductController(ProductService service, ProductImageService imageService) {
         this.service = service;
+        this.imageService = imageService;
     }
 
     /**
@@ -213,6 +224,117 @@ public class AdminProductController {
         log.debug("POST /api/v1/admin/products/{}/publish", id);
         return service.publish(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
+    }
+
+    /**
+     * Upload a product image.
+     *
+     * <p>Multipart, and the only endpoint in the platform that accepts one.
+     * The {@code Content-Type} and filename the client sends are recorded in
+     * the error message and used for nothing else: the ingest path identifies
+     * the format from the bytes, re-encodes them, and derives the stored
+     * content type from the decode. A client assertion about file contents is
+     * not evidence.
+     *
+     * <p>Returns the image reference rather than the whole product, because an
+     * admin gallery adds one image at a time and wants its URL immediately.
+     *
+     * <p>201 even when the image already existed. A re-upload of identical
+     * bytes is idempotent and returns the original id, and answering 200 in
+     * that case would make the admin UI branch on something it cannot act on
+     * differently.
+     */
+    @PostMapping(value = "/{id}/images", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(operationId = "uploadProductImage",
+            summary = "Upload an image for a product",
+            description = "JPEG, PNG or WebP, up to 5 MB. The bytes are re-encoded: EXIF "
+                    + "is applied and then stripped (so a supplier's GPS coordinates are "
+                    + "not published and the photograph is not left sideways), and the "
+                    + "stored content type comes from decoding the file rather than from "
+                    + "the request. Uploading the same bytes twice returns the first image.")
+    @ApiResponse(responseCode = "201", description = "The image reference")
+    @ApiResponse(responseCode = "400",
+            description = "Not a supported image, truncated, over 5 MB, or of implausible "
+                    + "dimensions",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No product with that id",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<ProductImageResponse> uploadImage(
+            @PathVariable("id") UUID id,
+            @RequestPart("file") MultipartFile file,
+            @RequestPart(value = "altText", required = false) String altText) throws IOException {
+
+        log.debug("POST /api/v1/admin/products/{}/images name=\"{}\" declared={} bytes={}",
+                id, file.getOriginalFilename(), file.getContentType(), file.getSize());
+
+        ProductImageResponse uploaded = imageService.upload(
+                id,
+                file.getBytes(),
+                file.getOriginalFilename(),
+                file.getContentType(),
+                altText);
+        return ResponseEntity.status(HttpStatus.CREATED).body(uploaded);
+    }
+
+    /**
+     * Preview an image, including on an unpublished product.
+     *
+     * <p>Exists because the public endpoint deliberately 404s anything whose
+     * product is not ACTIVE, so without this an operator could not see the
+     * photographs of the draft they are working on.
+     *
+     * <p>Served {@code private, no-store}, unlike the public path's one-year
+     * immutable cache: this response is specific to an authenticated operator,
+     * and letting a shared cache keep it would serve an unpublished product's
+     * image to whoever asked next.
+     */
+    @GetMapping("/{id}/images/{imageId}")
+    @Operation(operationId = "previewProductImage",
+            summary = "Image bytes for any product, published or not")
+    @ApiResponse(responseCode = "200", description = "The image bytes, uncacheable")
+    @ApiResponse(responseCode = "404", description = "No such image",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<InputStreamResource> previewImage(
+            @PathVariable("id") UUID id,
+            @PathVariable("imageId") UUID imageId) {
+
+        ServedImage image = imageService.serveForAdmin(imageId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "ProductImage", "id", imageId.toString()));
+
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore().cachePrivate())
+                .contentLength(image.byteSize())
+                .contentType(MediaType.parseMediaType(image.contentType()))
+                .header("X-Content-Type-Options", "nosniff")
+                .body(new InputStreamResource(image.content()));
+    }
+
+    /**
+     * Remove an image from a product.
+     *
+     * <p>The product id in the path is part of the identity rather than
+     * decoration: without checking it, knowing an image id would be enough to
+     * delete that image from any product.
+     */
+    @DeleteMapping("/{id}/images/{imageId}")
+    @Operation(operationId = "deleteProductImage", summary = "Delete one of a product's images")
+    @ApiResponse(responseCode = "204", description = "Deleted; no body")
+    @ApiResponse(responseCode = "404",
+            description = "No such image on that product",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<Void> deleteImage(
+            @PathVariable("id") UUID id,
+            @PathVariable("imageId") UUID imageId) {
+        log.debug("DELETE /api/v1/admin/products/{}/images/{}", id, imageId);
+        if (!imageService.delete(id, imageId)) {
+            throw new ResourceNotFoundException("ProductImage", "id", imageId.toString());
+        }
+        return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/{id}")

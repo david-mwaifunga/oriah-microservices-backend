@@ -10,6 +10,37 @@ spring:
     # is a fail-fast condition.
     import: "optional:configserver:http://localhost:8888"
 
+  # -------------------------------------------------------------------------
+  # Multipart limits for product image uploads.
+  #
+  # max-file-size matches ProductImageIngest.MAX_BYTES exactly. The two are
+  # separate limits doing different jobs and both are needed: Spring rejects an
+  # oversized part before the bytes are buffered at all, while the ingest check
+  # catches a file arriving under this limit by some other route. If they ever
+  # disagree, the looser one wins and the tighter becomes decoration.
+  #
+  # max-request-size is deliberately a little larger, to leave room for the
+  # multipart envelope and accompanying form fields. Setting them equal makes a
+  # file at exactly the limit fail with a confusing request-size error instead
+  # of the file-size one.
+  #
+  # A THIRD limit sits at the edge: the gateway's RequestSize filter on
+  # /api/v1/admin/products/**. That one exists because an oversized body
+  # streaming through the reactive gateway is what exhausts its direct buffers,
+  # and the gateway image bakes -XX:MaxDirectMemorySize=128m for exactly that
+  # reason.
+  #
+  # Nested here rather than appended as a second top-level `spring:` block,
+  # which is what the first attempt did -- a duplicate top-level key that
+  # Spring Boot's YAML loader rejects, and that a more permissive loader would
+  # resolve by keeping only the last occurrence, silently discarding the
+  # datasource, JPA and Flyway settings below.
+  # -------------------------------------------------------------------------
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+
   # Datasource is left unset on purpose:
   # - In tests, the @ServiceConnection PostgreSQLContainer in TestcontainersConfiguration
   #   supplies url/username/password automatically.
@@ -183,3 +214,22 @@ oriah:
         email: unavailable
       on-call-support:
         - unavailable
+    storage:
+      bucket: oriah-catalog
+      region: us-east-1
+
+# ---------------------------------------------------------------------------
+# Object storage for product images.
+#
+# NO endpoint here on purpose. Absent means the in-memory implementation, which
+# is what makes `mvnw spring-boot:test-run` and the test suite work without a
+# container. application-docker.yaml supplies the real endpoint, following the
+# same split as the datasource URL: in-container hostnames live in the docker
+# profile, never in the base file.
+#
+# Credentials are supplied by the environment rather than written here. They
+# belong to an account scoped to this one bucket -- not the storage admin --
+# which was verified against the server: the scoped key receives 403 when it
+# attempts to create a bucket, so a compromise of this service cannot create or
+# replace storage locations.
+# ---------------------------------------------------------------------------

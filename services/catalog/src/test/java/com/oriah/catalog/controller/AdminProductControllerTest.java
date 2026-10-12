@@ -23,6 +23,7 @@ import com.oriah.catalog.config.SecurityConfig;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.model.Product;
+import com.oriah.catalog.service.ProductImageService;
 import com.oriah.catalog.service.ProductService;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -69,6 +70,17 @@ class AdminProductControllerTest {
 
     @MockitoBean
     private ProductService service;
+
+    /**
+     * The controller gained image endpoints, so the slice has to supply this
+     * collaborator too or the context cannot construct it. Mocked and unused:
+     * the image endpoints have their own coverage in ProductImageHttpTest,
+     * against real persistence and real multipart handling, which is where
+     * header and status assertions actually mean something.
+     */
+    @MockitoBean
+    @SuppressWarnings("unused")
+    private ProductImageService imageService;
 
     /**
      * Required because Spring Security's OAuth2 resource server

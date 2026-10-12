@@ -56,6 +56,75 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+            Object storage, over the S3 API.
+
+            url-connection-client, not the default apache-client and
+            emphatically not netty-nio-client: this is a blocking MVC service,
+            so an async HTTP stack buys nothing, and the gateway's experience
+            with Netty direct buffers (its image bakes
+            -XX:MaxDirectMemorySize=128m because Paketo's 10M default exhausted
+            them under steady load) is a good reason not to add a second Netty
+            to a service that currently has none.
+        -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <exclusions>
+                <!-- Pulled in transitively; replaced by url-connection-client below. -->
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>netty-nio-client</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>software.amazon.awssdk</groupId>
+                    <artifactId>apache-client</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>url-connection-client</artifactId>
+        </dependency>
+
+        <!--
+            Image decoding beyond what the JDK ships.
+
+            imageio-jpeg: stock ImageIO cannot decode CMYK or YCCK JPEGs,
+            which is the colour space print-oriented product photography
+            arrives in. It does not fail cleanly either: it produces an
+            image with the channels misread, so the defect ships as a product
+            photo with inverted colours rather than as an error.
+
+            imageio-webp: adds WebP reading, so an admin can upload what their
+            tooling exports.
+
+            Both register through ImageIO's ServiceLoader, so no code
+            references them; they are on the classpath and ImageIO finds them.
+        -->
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId>
+            <artifactId>imageio-jpeg</artifactId>
+            <version>${twelvemonkeys.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.twelvemonkeys.imageio</groupId>
+            <artifactId>imageio-webp</artifactId>
+            <version>${twelvemonkeys.version}</version>
+        </dependency>
+
+        <!--
+            EXIF orientation. Needed because stripping orientation without
+            APPLYING it leaves a camera's sideways pixels with nothing left to
+            say they are sideways, so a supplier's photo silently appears
+            rotated on the storefront.
+        -->
+        <dependency>
+            <groupId>com.drewnoakes</groupId>
+            <artifactId>metadata-extractor</artifactId>
+            <version>${metadata-extractor.version}</version>
+        </dependency>
+
         <!-- Persistence -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -233,6 +302,12 @@
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+            No testcontainers-minio dependency, deliberately. The module exists
+            on Central at the version this build uses, but it pulls a MinIO
+            image, which is the thing that is unavailable. The S3 integration test
+            uses a plain GenericContainer on the SeaweedFS image instead.
+        -->
 
         <!--
             Spring Security testing utilities. Provides the jwt() post-processor

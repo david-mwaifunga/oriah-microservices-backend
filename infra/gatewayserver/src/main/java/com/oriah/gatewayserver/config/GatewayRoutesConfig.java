@@ -96,6 +96,15 @@ public class GatewayRoutesConfig {
         registerStorefrontRateLimit("search-route");
         registerStorefrontRateLimit("catalog-taxonomy-route");
         registerStorefrontRateLimit("catalog-variants-route");
+        // Images get their OWN, far more generous limiter rather than the
+        // storefront one. A grid of 24 product cards is 24 or more image
+        // requests in a single paint, against a storefront allowance of 20
+        // per second with a burst of 40 -- so the shop would throttle itself
+        // on first load.
+        //
+        // Generous, but NOT absent: this path serves bytes anonymously, which
+        // makes it the cheapest bandwidth-amplification target in the stack.
+        registerImageRateLimit("catalog-images-route");
 
         RouteLocatorBuilder.Builder routes = builder.routes();
 
@@ -119,6 +128,38 @@ public class GatewayRoutesConfig {
                         .requestRateLimiter(c -> c
                                 .setRateLimiter(redisRateLimiter)
                                 .setKeyResolver(ipKeyResolver)))
+                .uri("lb://catalog"));
+
+        // ------------------------- product images -------------------------
+        // Image BYTES, on a deliberately separate top-level path rather than
+        // nested under /api/v1/products/**.
+        //
+        // Nesting it there would have inherited two filters that are actively
+        // harmful for binary responses:
+        //
+        //   The rate limiter (20/s, burst 40) would throttle a single page
+        //   paint, because one product grid is dozens of image requests.
+        //
+        //   The circuit breaker would, when open, hand an <img> tag the
+        //   /contactSupport fallback -- an RFC 7807 application/problem+json
+        //   document with HTTP 503, where image data was expected. A broken
+        //   image is a better failure than a JSON document pretending to be
+        //   a photograph.
+        //
+        //   And storefrontRetry retries GETs on 5xx twice, which during a
+        //   wobble triples the bytes crossing the edge at exactly the moment
+        //   the service is struggling.
+        //
+        // So: no breaker, no retry, and a limiter sized for a page of images.
+        // order(-20) keeps it ahead of everything else and is the FIRST call
+        // in the lambda, which Spring Cloud Gateway's DSL requires (see note
+        // 2 in the class javadoc).
+        routes = routes.route("catalog-images-route", r -> r
+                .order(-20)
+                .path("/api/v1/product-images/**")
+                .filters(f -> f.requestRateLimiter(c -> c
+                        .setRateLimiter(redisRateLimiter)
+                        .setKeyResolver(ipKeyResolver)))
                 .uri("lb://catalog"));
 
         // ------------------- storefront taxonomy -------------------
@@ -237,6 +278,24 @@ public class GatewayRoutesConfig {
     private static RouteLocatorBuilder.Builder simple(
             RouteLocatorBuilder.Builder routes, String id, String pathPattern, String service) {
         return routes.route(id, r -> r.path(pathPattern).uri("lb://" + service));
+    }
+
+    /**
+     * The image route's allowance.
+     *
+     * <p>Ten times the storefront's, sized for a product grid: a page of 24
+     * cards with two images each is ~48 requests in one paint, and a visitor
+     * scrolling a category hits several pages in quick succession. The burst
+     * matters more than the sustained rate here, because image requests arrive
+     * all at once rather than spread out.
+     */
+    private static final int IMAGE_REPLENISH_RATE = 200;
+    private static final int IMAGE_BURST_CAPACITY = 400;
+
+    private void registerImageRateLimit(String routeId) {
+        redisRateLimiter.getConfig().put(routeId, new RedisRateLimiter.Config()
+                .setReplenishRate(IMAGE_REPLENISH_RATE)
+                .setBurstCapacity(IMAGE_BURST_CAPACITY));
     }
 
     private void registerStorefrontRateLimit(String routeId) {

@@ -67,6 +67,7 @@
 #   5441 → postgres-review:5432
 #   5442 → postgres-search:5432
 #   6379 → redis:6379
+#   8333 → oriah-s3:8333               # S3 API for product images
 #   7080 → keycloak:8080
 #   8080 → gatewayserver:8080
 #   8081 → catalog:8081               # services are exposed for direct
@@ -257,6 +258,101 @@ services:
       - postgres-search-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U search -d search"]
+
+  # ─────────────────────────── object storage ───────────────────────────
+  #
+  # SeaweedFS in single-binary S3 mode, holding product image bytes.
+  #
+  # NOT MinIO, which this phase was planned around: its server and client
+  # images have been withdrawn from Docker Hub (the minio/ namespace still
+  # publishes twenty repositories, but minio/minio and minio/mc are not among
+  # them, and an authenticated pull fails exactly as an anonymous one does).
+  # catalog talks to the S3 API through the AWS SDK, so the server is a
+  # configuration choice and MinIO stays a drop-in if its images return.
+  #
+  # No host port is published. Nothing outside the compose network needs to
+  # reach it: image bytes are served BY catalog at a relative URL, which is
+  # what keeps the browser, the server-rendering container and any other
+  # environment agreeing on one string without an absolute URL in the
+  # database. Publishing 8333 would also expose an object store whose
+  # development credentials are committed to this repository.
+  oriah-s3:
+    extends:
+      file: ../common-config.yml
+      service: network-deploy-service
+    image: chrislusf/seaweedfs:3.80
+    container_name: oriah-s3
+    command: ["server", "-s3", "-s3.config=/etc/seaweedfs/s3.json", "-dir=/data"]
+    volumes:
+      - oriah-s3-data:/data
+      # Two identities: an admin that may create buckets, and a bucket-scoped
+      # account for catalog that may not. See s3-config/README.md for why that
+      # split exists and why this file is mandatory -- the AWS SDK always
+      # signs, and SeaweedFS rejects a signed request outright when it has no
+      # identities to check it against.
+      - ../../s3-config/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      # wget, not curl: this image ships wget and nc but NEITHER curl nor
+      # bash, which was verified by inspecting the image rather than assumed.
+      # The same class of trap as Keycloak's /dev/tcp probe below.
+      #
+      # 403 is a PASS. Once identities are configured the gateway refuses
+      # anonymous requests, so a 403 means the config was read and the service
+      # is answering -- which is exactly what readiness means here. wget exits
+      # non-zero on 403, hence the explicit acceptance.
+      test: ["CMD-SHELL", "wget -q -O- -T2 http://127.0.0.1:8333/ 2>&1 | grep -q . || wget -S -q -O /dev/null -T2 http://127.0.0.1:8333/ 2>&1 | grep -qE '200|403'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot bucket creation, with the ADMIN identity.
+  #
+  # A separate container because catalog cannot do this itself: its credentials
+  # are scoped to the bucket and receive 403 on a bucket create (measured, not
+  # assumed). That is the point of the scoping -- a compromise of catalog
+  # cannot create or replace storage locations -- and it is why
+  # ObjectStorageConfig FAILS STARTUP on a missing bucket rather than creating
+  # one.
+  #
+  # `weed shell` speaks to the filer rather than the S3 gateway, so the bucket
+  # is created as a filer directory under /buckets, which is how SeaweedFS
+  # represents an S3 bucket. Idempotent: creating an existing bucket is not an
+  # error, so a restart is harmless.
+  oriah-s3-init:
+    extends:
+      file: ../common-config.yml
+      service: network-deploy-service
+    image: chrislusf/seaweedfs:3.80
+    container_name: oriah-s3-init
+    restart: "no"
+    depends_on:
+      oriah-s3:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        # -filer is REQUIRED, not optional. weed shell needs both addresses:
+        # with only -master it reports
+        #   "fail to dial : failed to exit idle mode: passthrough: received
+        #    empty target in Build()"
+        # and creates nothing. The first version of this script also ended
+        # each line with `|| true`, so the container exited 0 having done
+        # nothing at all -- catalog then started and failed its own bucket
+        # check with a confusing error instead of this one.
+        weed shell -master=oriah-s3:9333 -filer=oriah-s3:8888 <<'CMD'
+        s3.bucket.create -name oriah-catalog
+        CMD
+        # Verified rather than assumed. s3.bucket.create is idempotent (a
+        # second run reports success for an existing bucket), so a restart is
+        # harmless -- but a create that silently failed would otherwise look
+        # identical to one that worked. grep makes the container exit non-zero
+        # in that case, which blocks catalog with the real cause.
+        weed shell -master=oriah-s3:9333 -filer=oriah-s3:8888 <<'CMD' | grep -q oriah-catalog
+        s3.bucket.list
+        CMD
+        echo "bucket oriah-catalog is present"
 
   keycloak:
     extends:
@@ -664,12 +760,22 @@ services:
     image: oriah/catalog:dev
     container_name: oriah-catalog
     environment:
+      # The bucket-SCOPED identity, not the storage admin. Development values;
+      # see s3-config/README.md.
+      CATALOG_S3_ACCESS_KEY: catalogkey
+      CATALOG_S3_SECRET_KEY: catalogsecret
       # Compose-managed secret. Override in a .env file for non-default values.
       SPRING_DATASOURCE_USERNAME: catalog
       SPRING_DATASOURCE_PASSWORD: catalog
     ports:
       - "8081:8081"
     depends_on:
+      # The bucket must exist before catalog starts: it checks for the bucket
+      # at startup and refuses to run without it, because accepting uploads
+      # into storage that is not there would answer 201 to an admin and lose
+      # the file.
+      oriah-s3-init:
+        condition: service_completed_successfully
       postgres-catalog:
         condition: service_healthy
       kafka:
@@ -967,6 +1073,10 @@ services:
       start_period: 60s
 
 volumes:
+  # Product image bytes. Named so they survive a `docker compose down` and
+  # only a `down -v` discards them -- losing every product photograph on an
+  # ordinary restart would make the stack unusable for development.
+  oriah-s3-data:
   postgres-catalog-data:
   postgres-inventory-data:
   postgres-customer-data:

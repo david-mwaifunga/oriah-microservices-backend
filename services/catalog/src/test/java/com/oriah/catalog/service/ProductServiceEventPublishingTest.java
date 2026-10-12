@@ -63,7 +63,12 @@ class ProductServiceEventPublishingTest {
         // against real Postgres in ProductStorefrontQueryTest.
         service = new ProductService(repository, inventoryClient, eventPublisher,
                 new com.oriah.catalog.config.CatalogProperties(),
-                mock(CategoryService.class));
+                mock(CategoryService.class),
+                // Image storage reclamation is mocked: these tests assert
+                // which EVENT is published, and deleteById now also schedules
+                // object cleanup, which has its own coverage in
+                // ProductImageServiceTest against real persistence.
+                mock(ProductImageService.class));
     }
 
     @Test

@@ -1,0 +1,28 @@
+{
+  "identities": [
+    {
+      "name": "admin",
+      "credentials": [
+        {
+          "accessKey": "oriah-s3-admin",
+          "secretKey": "oriah-s3-admin-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    },
+    {
+      "name": "catalog",
+      "credentials": [
+        {
+          "accessKey": "catalogkey",
+          "secretKey": "catalogsecret"
+        }
+      ],
+      "actions": [
+        "Read:oriah-catalog",
+        "Write:oriah-catalog",
+        "List:oriah-catalog"
+      ]
+    }
+  ]
+}

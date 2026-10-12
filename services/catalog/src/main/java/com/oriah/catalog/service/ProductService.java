@@ -59,6 +59,7 @@ public class ProductService {
     private final ApplicationEventPublisher eventPublisher;
     private final CatalogProperties props;
     private final CategoryService categoryService;
+    private final ProductImageService imageService;
 
     /**
      * How many readable discriminators to try before falling back to the id
@@ -72,12 +73,14 @@ public class ProductService {
             InventoryClient inventoryClient,
             ApplicationEventPublisher eventPublisher,
             CatalogProperties props,
-            CategoryService categoryService) {
+            CategoryService categoryService,
+            ProductImageService imageService) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
         this.eventPublisher = eventPublisher;
         this.props = props;
         this.categoryService = categoryService;
+        this.imageService = imageService;
     }
 
     /**
@@ -431,6 +434,14 @@ public class ProductService {
     public boolean deleteById(UUID id) {
         boolean removed = repository.findById(id)
                 .map(product -> {
+                    // Scheduled BEFORE the delete, because it reads the
+                    // storage keys while the product_images rows still exist
+                    // and defers the object removal until after this
+                    // transaction commits. Object storage has no foreign keys,
+                    // so the FK cascade that drops those rows cannot touch the
+                    // objects -- without this every deleted product would
+                    // leave its photographs in storage permanently.
+                    imageService.reclaimStorageFor(id);
                     repository.delete(product);
                     return true;
                 })

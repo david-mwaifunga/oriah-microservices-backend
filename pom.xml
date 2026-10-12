@@ -42,6 +42,20 @@
         -->
         <spring-cloud.version>2025.1.1</spring-cloud.version>
         <springdoc.version>3.0.2</springdoc.version>
+        <!--
+            Object storage and image handling, none of which the Spring Boot
+            BOM manages.
+
+            TwelveMonkeys replaces hand-rolling the two things stock ImageIO
+            gets wrong for photographs: CMYK/YCCK JPEGs, which it decodes as
+            channel-garbled nonsense, and WebP, which it cannot read at all.
+            metadata-extractor reads EXIF orientation, which ImageIO exposes
+            only as a raw APP1 segment to be parsed by hand.
+        -->
+        <aws-sdk.version>2.55.14</aws-sdk.version>
+        <twelvemonkeys.version>3.15.3</twelvemonkeys.version>
+        <metadata-extractor.version>2.21.0</metadata-extractor.version>
+
         <!-- Maven plugin versions (pin so the build is reproducible regardless of what Maven defaults to). -->
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <!--
@@ -81,6 +95,28 @@
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>
                 <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!--
+                AWS SDK v2 BOM. Pinned here like springdoc, because the Spring
+                Boot BOM does not manage it.
+
+                The S3 API is how catalog talks to object storage, and the
+                client is deliberately vendor-neutral rather than MinIO's own:
+                this phase was planned against MinIO and MinIO's server and
+                client images turned out to have been withdrawn from Docker
+                Hub (the minio/ namespace still publishes twenty repositories;
+                minio/minio and minio/mc are not among them, and an
+                authenticated pull fails exactly as an anonymous one does).
+                Changing to SeaweedFS cost an endpoint property. Had we used a
+                vendor SDK it would have cost a rewrite.
+            -->
+            <dependency>
+                <groupId>software.amazon.awssdk</groupId>
+                <artifactId>bom</artifactId>
+                <version>${aws-sdk.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
