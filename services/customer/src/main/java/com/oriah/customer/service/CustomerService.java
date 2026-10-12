@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.oriah.customer.dto.AddressRequest;
+import com.oriah.customer.dto.CustomerResponse;
 import com.oriah.customer.dto.CustomerUpdateRequest;
 import com.oriah.customer.model.Address;
 import com.oriah.customer.model.Customer;
@@ -56,10 +57,28 @@ public class CustomerService {
         return repository.findById(id);
     }
 
+    /**
+     * The admin list, mapped to DTOs <strong>inside</strong> the transaction.
+     *
+     * <p>This used to return {@code Page<Customer>} and let the controller
+     * call {@code CustomerResponse::from}. That mapping iterates the lazy
+     * {@code addresses} collection, by which point the transaction had closed,
+     * so every call died with
+     *
+     * <pre>LazyInitializationException: Cannot lazily initialize collection
+     * of role Customer.addresses</pre>
+     *
+     * and the endpoint answered 500 for its entire life. No test caught it
+     * because none listed a customer that HAD an address; it was found by
+     * calling the live endpoint while building the admin UI on top of it.
+     *
+     * <p>Mapping here rather than widening the fetch keeps pagination on the
+     * database. {@code @BatchSize} on the collection keeps it to two queries.
+     */
     @Transactional(readOnly = true)
-    public Page<Customer> findAll(Pageable pageable) {
+    public Page<CustomerResponse> findAllForAdmin(Pageable pageable) {
         log.debug("findAll page={} size={}", pageable.getPageNumber(), pageable.getPageSize());
-        return repository.findAll(pageable);
+        return repository.findAll(pageable).map(CustomerResponse::from);
     }
 
     @Transactional

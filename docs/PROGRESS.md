@@ -5,6 +5,126 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-10-12 (idle log hygiene + the admin surface completed)
+
+`.\mvnw.cmd -ntp clean install` — **BUILD SUCCESS, 448 tests, 0 failures**,
+17 modules, 32:58. Previous state closed at 426; the +22 is payment +12,
+gateway +4, observability-starter +3, cart +2, customer +1.
+
+`smoke-test.ps1` is now **19 steps** and passes. `oriah-web`: **73 tests**,
+`tsc --noEmit` and `next build` clean. OpenAPI additions-only PASS, content
+audit PASS, error goldens 14/14, `validate_roles.py` PASS — and that last one
+now lists **PAYMENT_ADMIN** among the code guards for the first time.
+
+### Why this session happened
+
+An observation, not a plan: *"seems like we have multiple [logs] being
+generated even without using the system, which might mean some things are
+wrong."* Correct on both counts.
+
+**Idle, 34 containers, no browser, nobody touching anything:**
+
+| | before | after |
+|---|---|---|
+| total | 82.7 lines/min (~119k/day) | **16.7/min** |
+| WARN | 225 of 229 JSON lines (98%) | **0** |
+
+Two loggers were 99% of it. Smoke step 19 now asserts both are silent AND that
+the lag metric the Grafana panel plots still has series, so the quiet cannot be
+bought by deleting the signal.
+
+### Findings #20-#23
+
+- **#20 OTLP metric export had never worked.** Nothing ever set a metrics URL,
+  so Micrometer defaulted to `http://localhost:4318/v1/metrics` — inside a
+  container, the service itself. Every service threw a ConnectException every
+  60s WITH A STACK TRACE. Traces were fine (separate, correctly wired to
+  `tempo:4318`). Disabled, and the contract written down: **metrics are
+  scraped, traces are pushed**.
+- **#21 The Kafka "no longer assigned" WARN**, where I was wrong twice. Not a
+  rebalance storm (groups Stable / 1 member / LAG 0). And the supported binder
+  flag does NOT switch the observer off — measured before and after, it goes
+  12/min → 2/min, because it moves lag computation from per-scrape to a cached
+  60s refresh. So: flag off AND `OffsetFetcherUtils` alone scoped to ERROR.
+  Never `org.apache.kafka` wholesale.
+- **#22 Every 401 in the app was two 401s.** `retry: 1` was global in
+  `providers.tsx`, and a retry carries the same dead token.
+- **#23 `GET /api/v1/admin/customers` had returned 500 for its whole life.**
+  `LazyInitializationException` on `Customer.addresses`: the service was
+  `@Transactional` and returned entities, and the CONTROLLER mapped them after
+  the transaction closed. No test caught it because none ever listed a customer
+  who HAD an address.
+
+### The admin surface: 7 of 7
+
+Three pages were `ComingSoon` placeholders.
+
+| Page | Backend before | Now |
+|---|---|---|
+| Customers | existed but 500 on every call (#23) | fixed; read-only list with addresses |
+| Promotions | complete | list, create, disable |
+| Payments | **nothing existed** | new `GET /api/v1/admin/payments` + UI |
+
+`PAYMENT_ADMIN` has been declared in the realm from the beginning and guarded
+nothing, because the endpoint it was minted for did not exist. This is its
+first use — at the gateway and in the service.
+
+### Gotchas worth remembering
+
+- **`docker compose` from `oriah-api/` silently manages NOTHING.** The running
+  stack belongs to compose project **`default`** (it was started from
+  `docker-compose/default/`), while from `oriah-api/` compose computes project
+  `oriah-api`. `restart` then succeeds having done nothing, and
+  `up --force-recreate` fails on a container-name conflict. Run compose from
+  `oriah-api/docker-compose/default/`.
+- **Never restart configserver and the services together.** Services fail-fast
+  on config import in the docker profile, so they race the config server and
+  all twelve exit 1 with `ConfigClientFailFastException`. configserver first,
+  wait healthy, then the rest.
+- **configserver and eurekaserver cannot read their own central config at
+  startup**, so platform-wide properties must ALSO be written into their own
+  `application.yaml`. They were the only two processes still logging after the
+  central fix, which is how this was found.
+- **`--` is illegal inside an XML comment.** An em-dash in a `logback-spring.xml`
+  comment broke logging config for every service at once
+  (`Could not initialize Logback logging from classpath:logback-spring.xml`),
+  and because the starter jar ships that file, it took every image with it.
+- **PowerShell + `docker logs`:** neither `2>&1` nor `2>$null` is safe. Any
+  stderr from a native command becomes a NativeCommandError and aborts the
+  script; Tempo and Grafana write routine warnings there. Route through
+  `cmd /c "... 2>nul"`.
+- **`mv`/restore preserves mtime, so Maven skips recompiling.** A restored file
+  older than its `.class` silently kept a temporary edit in the build. `touch`
+  it, or use `clean`.
+- **`npm run lint` cannot run.** The script is `next lint`, removed in Next 15;
+  it drops into an interactive codemod. Not part of the bar until someone
+  migrates the project to the ESLint CLI deliberately.
+- **Zod `.optional()` rejects `null` — FOURTH sighting.** `line2` and `state`
+  come back null on essentially every address. The rule: any field the backend
+  can null is `.nullish()`, checked against a captured payload rather than the
+  Java DTO.
+
+### Still open
+
+1. **Saga idempotency** — a checkout retry cannot double-charge but can strand a
+   `CREATED` order.
+2. **Compensating action for a captured payment with no order** — currently a
+   loud 500 naming the intent.
+3. **`AUTH_SECRET` is the repo's published placeholder** in the running
+   container (`dev-secret-replace-me-with-32-bytes-of-random`), so a forged
+   Auth.js cookie grants the admin shell UI-side. Gateway still refuses the
+   API calls.
+4. **Admin roles are decoded once at sign-in** into a rolling 30-day cookie, so
+   revoked roles keep UI access.
+5. **`id_token` is serialized to the browser** despite its own comment saying
+   server-side only.
+6. **Keycloak `start-dev` is in-memory with unpinned user ids**, so every
+   restart mints new subs and orphans every `keycloak_id`-keyed row.
+7. Finding #16's servlet half (2 endpoints), #17 (auth failures open no span),
+   #18 (six dead `*ClientFallback` classes).
+
+---
+
 ## CURRENT STATE — 2026-10-10 (section_12 convention refactor: **all 7 tiers landed**)
 
 `.\mvnw.cmd -ntp clean install` — **BUILD SUCCESS, 426 tests, 0 failures** across 17

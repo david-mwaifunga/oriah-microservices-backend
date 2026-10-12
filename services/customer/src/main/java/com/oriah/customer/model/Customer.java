@@ -13,6 +13,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.BatchSize;
+
 import com.oriah.jpa.BaseEntity;
 
 /**
@@ -44,6 +46,17 @@ public class Customer extends BaseEntity {
     @Column(name = "last_name", nullable = false)
     private String lastName;
 
+    /**
+     * {@code @BatchSize} so that mapping a PAGE of customers costs two
+     * queries instead of N+1. Without it, the admin list issues one
+     * addresses query per row; with it, Hibernate fetches the collections
+     * for up to 50 customers in a single IN query.
+     *
+     * <p>Deliberately not a join fetch: combining a collection fetch with
+     * pagination makes Hibernate page IN MEMORY (HHH90003004), which is
+     * correct but loads the whole table to return 20 rows.
+     */
+    @BatchSize(size = 50)
     @OneToMany(mappedBy = "customer", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Address> addresses = new ArrayList<>();
 

@@ -148,6 +148,7 @@ public class GatewayRoutesConfig {
         routes = simple(routes, "customer-admin-route", "/api/v1/admin/customers/**", "customer");
         routes = simple(routes, "order-admin-route", "/api/v1/admin/orders/**", "order");
         routes = simple(routes, "promotion-admin-route", "/api/v1/admin/promotions/**", "promotion");
+        routes = simple(routes, "payment-admin-route", "/api/v1/admin/payments/**", "payment");
 
         // --------------------- OpenAPI aggregation ---------------------
         // /v3/api-docs/<svc> on the edge -> /v3/api-docs upstream. These back

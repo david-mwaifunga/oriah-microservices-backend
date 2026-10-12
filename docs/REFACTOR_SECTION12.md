@@ -24,6 +24,7 @@ Legend: ⬜ not started · 🟡 in progress · ✅ done · ⏭️ deliberately d
 | 5 | Service-layer conventions × 12 services | ✅ **396 tests**, both gates PASS, smoke 18/18 — 2 items deliberately deferred |
 | 6 | BaseEntity / AuditAwareImpl rename (persistence-risky, isolated) | ✅ **401 tests** — no migration needed; **finding #15** |
 | **7** | **Checkout stops reporting failure as success** (7 paths of 200 → 402/409/422/500/502/503) | ✅ **426 tests** (checkout 17 → 37), web 19 → 27, all 4 gates + smoke 18/18; **findings #18, #19** |
+| **8** | **Idle log hygiene + the 3 stub admin pages** (82.7 lines/min → quiet; Customers / Promotions / Payments) | ✅ findings **#20–#23**; `PAYMENT_ADMIN` first use; smoke now **19 steps** |
 
 ---
 
@@ -1616,6 +1617,217 @@ mid-module. Both "failures" were self-inflicted. Redirect to a file and filter t
 
 ---
 
+
+## Tier 8 — idle log hygiene, and the admin surface completed
+
+Started from an observation, not a plan: *"seems like we have multiple [logs]
+being generated even without using the system, which might mean some things are
+wrong."* It did.
+
+### What idle actually cost
+
+34 containers up, no browser open, nobody touching anything. 180s window,
+counted by parsing the JSON log lines:
+
+**82.7 lines/min (~119k/day). 225 of 229 JSON lines were WARN (98%).** Two
+loggers were **99%** of it:
+
+| lines | share | logger |
+|---|---|---|
+| 180 | 79% | `org.apache.kafka...OffsetFetcherUtils` |
+| 45 | 20% | `io.micrometer.registry.otlp.OtlpMeterRegistry` |
+
+A first measurement included a stale browser tab of mine polling
+`/notifications/me`; closing it and re-measuring is why the table above says
+"no browser open". Measuring your own noise as the system`s is an easy way to
+chase a ghost.
+
+### Finding #20 — OTLP metric export has never worked
+
+Every service, every 60s, with a full stack trace:
+
+```
+WARN OtlpMeterRegistry Failed to publish metrics to OTLP receiver
+  (url=http://localhost:4318/v1/metrics, service.name=cart)
+java.net.ConnectException: Connection refused
+```
+
+`localhost:4318` **inside a container** is the service itself. Nothing listens
+there. A repo-wide grep of every `resources/*.yaml` for `otlp` finds only the
+**tracing** endpoint — correctly wired to `tempo:4318`, and working (smoke
+step 12 finds the saga trace, 74 spans). Nobody ever configured a metrics URL,
+so Micrometer used its default.
+
+The registry is on the classpath only because `micrometer-registry-otlp` rides
+in transitively with the tracing stack. Spring Boot sees the jar and
+auto-configures a meter registry nobody asked for.
+
+**Fix: turn it off, and write the contract down.** `metrics = Prometheus
+scrapes /actuator/prometheus; traces = we push OTLP to tempo:4318`. Prometheus
+already owns metrics (smoke step 13 asserts all 12 services report `up=1`), so
+this was a dead second pipeline, not a missing one. Removing the jar was
+considered and rejected: it would risk a working trace pipeline to silence a
+log line.
+
+Property name verified against the jar rather than memory, because Boot 4 moved
+this out of the 3.x actuator package: `javap -v` on `OtlpMetricsProperties` in
+`spring-boot-micrometer-metrics-4.0.6.jar` gives
+`@ConfigurationProperties("management.otlp.metrics.export")`, and
+`OtlpMetricsExportAutoConfiguration` carries `@ConditionalOnEnabledMetricsExport`.
+`OtlpMetricsExportDisabledTest` pins all three facts, **including a control case
+proving a mistyped property leaves the registry enabled** — without which the
+test would pass just as happily against a name that binds to nothing.
+
+### Finding #21 — the Kafka WARN, and two wrong hypotheses
+
+```
+WARN OffsetFetcherUtils [Consumer clientId=consumer-inventory-3,
+     groupId=inventory] Not updating high watermark for partition
+     catalog.product-0 as it is no longer assigned
+```
+
+**Hypothesis 1, wrong: a rebalance storm.** `kafka-consumer-groups --describe`
+twice, 20s apart: every group **Stable, 1 member, LAG 0**, same member id both
+times. Not a rebalance, and not consumer breakage.
+
+**The tell:** the group member is `consumer-inventory-**2**`; the WARN comes
+from `consumer-inventory-**3**` — a second, non-member consumer in the same
+JVM.
+
+**Narrowing it, by experiment rather than reading:** stopping Prometheus for
+60s took it from 12/min to 4/min per service. `scrape_interval: 15s` × 2 lines
+= the missing 8/min exactly. A SIGQUIT thread dump showed the emitter parked in
+a `ScheduledThreadPoolExecutor`, and the surviving 4/min arrives on an exact
+15.000s cadence. So: a `MeterBinder` evaluated on every scrape, plus its own
+timer.
+
+**The culprit, confirmed:** `spring_cloud_stream_binder_kafka_offset` exists in
+Prometheus and `spring-cloud-stream-binder-kafka-5.0.1.jar` is on the classpath.
+Spring Cloud Stream`s `KafkaBinderMetrics` builds its own consumer to compute
+lag; it owns no partitions, so every evaluation asks for offsets it is not
+assigned.
+
+**Hypothesis 2, also wrong: the supported switch fixes it.**
+`spring.cloud.stream.kafka.binder.metrics.default-offset-lag-metrics-enabled=false`
+(name taken from the binder`s own `spring-configuration-metadata.json`) drops it
+from **12/min to 2/min, not to zero** — the flag moves lag computation from
+per-scrape to a cached 60s refresh. Measured before and after. Had I asserted
+the fix instead of measuring it, this would have shipped as "fixed" at a sixth
+of the original noise.
+
+**So both:** the binder metric is off (removing a pointless per-scrape Kafka
+round trip), and `OffsetFetcherUtils` alone is scoped to ERROR for the residue.
+Not `org.apache.kafka` wholesale — that line stays at WARN so a real consumer
+failure is still loud.
+
+**The guard that makes this honest:** nothing in the repo reads
+`spring_cloud_stream_binder_kafka_offset`. The Grafana lag panel plots
+`kafka_consumer_fetch_manager_records_lag_max`, from the real listener
+consumers. Smoke step 19 asserts **both** halves — zero watermark warnings AND
+that the lag metric still has series — so the quiet cannot be bought by
+deleting the signal. Series existence only: the value is `NaN` while idle, so
+asserting a number would flap.
+
+### Finding #22 — every 401 in the app was two 401s
+
+`providers.tsx` set `retry: 1` globally, so a dead session produced a *pair* of
+gateway rejections per poll, forever. A retry of a 401 carries the same dead
+token as the first attempt and cannot succeed. Now
+`retry: (count, err) => !isAuthError(err) && count < 1`, and the one polling
+query is gated on `hasUsableSession` so it stops entirely rather than merely
+failing more quietly.
+
+### Finding #23 — `GET /api/v1/admin/customers` has returned 500 for its whole life
+
+Found by calling it while building the admin UI on top of it:
+
+```
+org.hibernate.LazyInitializationException: Cannot lazily initialize
+collection of role Customer.addresses
+```
+
+`CustomerService.findAll` is `@Transactional` and returns **entities**;
+`AdminCustomerController` then calls `CustomerResponse::from`, which iterates
+the lazy `addresses` collection after the transaction has closed. No test caught
+it because no test ever listed a customer that *had* an address.
+
+Fixed by mapping to DTOs **inside** the transaction, plus `@BatchSize(50)` on
+the collection so a page costs two queries instead of N+1. Deliberately not a
+join fetch: combining a collection fetch with pagination makes Hibernate page in
+memory. Pinned by a test that creates a customer *with* an address and asserts
+the city comes back.
+
+### The admin surface
+
+Three of seven pages were `ComingSoon` placeholders. Two had working backends
+nobody had wired; one had no backend at all.
+
+| Page | Backend before | Now |
+|---|---|---|
+| Customers | existed, **but 500 on every call** (#23) | fixed + read-only list with addresses |
+| Promotions | complete | list, create, disable |
+| Payments | **nothing** | new `GET /api/v1/admin/payments` + UI |
+
+**`PAYMENT_ADMIN` finally guards something.** The realm has declared it from the
+beginning and `validate_roles.py` has been reporting it as declared-but-unused,
+because the endpoint it was minted for did not exist. The new endpoint is its
+first use, at the gateway *and* in the service.
+
+Three deliberate choices in that endpoint, each the result of a review point:
+
+- **Paging rejects, never clamps.** Spring`s `PageableHandlerMethodArgumentResolver`
+  silently caps an oversized `size`: ask for 1000, get 100, believe you got
+  everything. On a list used to reconcile money, a page that quietly is not the
+  page you asked for is worse than an error. `size=101` → 400; `sort=anything`
+  → 400, because the endpoint has exactly one order and a partial index built
+  for it.
+- **No `keycloakId`.** The entity has it and it would have been free to include.
+  It is a stable cross-system subject id that helps nobody read a payment list,
+  and putting it in a table puts it in a screenshot. The test asserts the JSON
+  key set **exactly**, so a future field addition fails loudly rather than
+  leaking quietly — verified by temporarily adding `keycloakId` and watching
+  exactly that one test go red.
+- **Partial indexes.** `(created_at DESC) WHERE is_deleted = false` and
+  `(status, created_at DESC) WHERE is_deleted = false`. A plain
+  `(status, created_at)` cannot serve the unfiltered list at all, because
+  `status` is leftmost and the unfiltered query has no status predicate.
+
+**Customers has no search box that pretends to search.** The endpoint takes
+`pageable` and nothing else. A box that silently matched only the rows already
+downloaded would let an admin conclude someone is not a customer when they are,
+so the input is labelled as filtering the current page and shows the count it is
+filtering.
+
+### What Codex changed, over three rounds
+
+It caught **two factual errors**: that `AdminPromotionController` already has a
+service-level `@PreAuthorize` (I had read `SecurityConfig` and missed method
+security, and was about to "add" defence in depth that existed), and that the
+gateway had no `/api/v1/admin/payments` route **or** rule. It killed a fake
+"search by email" by pointing out the endpoint has no search parameter; replaced
+a composite index with partial ones; caught the pageable clamp; and — most
+usefully — refused to accept logger suppression as a fix until the cause was
+chased down, which is what produced the measurement that the binder flag only
+reduces the noise sixfold.
+
+### Verification
+
+| Gate | Result |
+|---|---|
+| `services/payment` | **32 tests** (from 20), incl. 12 new admin-list tests |
+| `services/customer` | **17 tests** (from 16), incl. the #23 regression test |
+| `infra/gatewayserver` | **112 tests** (from 108) |
+| `shared/oriah-observability-starter` | **35 tests** (from 32) |
+| `oriah-web` | **71 tests** (from 63), `tsc` clean, `next build` clean |
+| `smoke-test.ps1` | **19 steps** (was 18) — step 19 is the log-hygiene gate |
+| whole reactor | `clean install` — **BUILD SUCCESS, 448 tests, 0 failures**, 17 modules, 32:58 (from 426) |
+
+**`npm run lint` is not part of the bar and could not be run:** the script is
+`next lint`, deprecated in Next 15, which drops into an interactive codemod
+prompt. Migrating the project to the ESLint CLI was not in scope and is not
+something to do unasked.
+
+---
 
 ## Divergences from section_12 — and why
 

@@ -145,6 +145,13 @@ public class SecurityConfig {
                         .pathMatchers("/api/v1/admin/customers/**").hasRole("CUSTOMER_ADMIN")
                         .pathMatchers("/api/v1/admin/orders/**").hasRole("ORDER_ADMIN")
                         .pathMatchers("/api/v1/admin/promotions/**").hasRole("CATALOG_ADMIN")
+                        // PAYMENT_ADMIN has been declared in the realm since
+                        // the beginning and guarded nothing, because the
+                        // endpoint it was minted for did not exist. This is
+                        // its first use; payment-service carries the same
+                        // check in @PreAuthorize so the edge is not the only
+                        // thing standing between a USER token and the list.
+                        .pathMatchers("/api/v1/admin/payments/**").hasRole("PAYMENT_ADMIN")
 
                         // Deny by default.
                         .anyExchange().authenticated())

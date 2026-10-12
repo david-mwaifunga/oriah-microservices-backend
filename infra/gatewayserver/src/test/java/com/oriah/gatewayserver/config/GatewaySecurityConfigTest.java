@@ -98,7 +98,8 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/inventory",
             "/api/v1/admin/customers",
             "/api/v1/admin/orders",
-            "/api/v1/admin/promotions"
+            "/api/v1/admin/promotions",
+            "/api/v1/admin/payments"
     })
     void rejectsUnauthenticatedRequests(String path) {
         client.get().uri(path).exchange().expectStatus().isUnauthorized();
@@ -189,7 +190,11 @@ class GatewaySecurityConfigTest {
             // NOT PROMOTION_ADMIN. promotion's AdminPromotionController is
             // guarded by hasRole('CATALOG_ADMIN'), so CATALOG_ADMIN spans two
             // services.
-            "/api/v1/admin/promotions,  ROLE_CATALOG_ADMIN"
+            "/api/v1/admin/promotions,  ROLE_CATALOG_ADMIN",
+            // PAYMENT_ADMIN's first use. The realm has declared it since the
+            // beginning and nothing guarded on it, because the endpoint it
+            // was minted for did not exist until now.
+            "/api/v1/admin/payments,    ROLE_PAYMENT_ADMIN"
     })
     void adminPathsRequireTheCorrectRole(String path, String requiredAuthority) {
         assertAdmitted(client
@@ -204,7 +209,8 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/inventory",
             "/api/v1/admin/customers",
             "/api/v1/admin/orders",
-            "/api/v1/admin/promotions"
+            "/api/v1/admin/promotions",
+            "/api/v1/admin/payments"
     })
     void adminPathsRejectNonAdmins(String path) {
         client.mutateWith(mockJwt().authorities(authority("ROLE_USER")))

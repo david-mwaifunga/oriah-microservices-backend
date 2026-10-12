@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import java.util.UUID;
+
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -228,5 +230,43 @@ class CustomerIntegrationTest {
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.detail").value(
                         "Customer not found with the given input data id : '" + missing + "'"));
+    }
+
+    @Test
+    @DisplayName("the admin list renders customers WITH their addresses, instead of a 500")
+    void adminListIncludesAddressesAndDoesNotBlowUp() throws Exception {
+        // This endpoint has returned 500 for its whole life, and nothing
+        // caught it because no test ever listed a customer that HAD an
+        // address. CustomerService.findAll is @Transactional and returns
+        // ENTITIES; AdminCustomerController then calls
+        // CustomerResponse::from, which iterates the lazy `addresses`
+        // collection after the transaction has closed:
+        //
+        //   org.hibernate.LazyInitializationException: Cannot lazily
+        //   initialize collection of role Customer.addresses
+        //
+        // Found by calling the live endpoint while building the admin UI on
+        // top of it, not by reading the code.
+        String sub = UUID.randomUUID().toString();
+        mvc.perform(post("/api/v1/customers/me")
+                        .with(jwt().authorities(ROLE_USER).jwt(j -> j.subject(sub)
+                                .claim("email", "listed@oriah.test"))))
+                .andExpect(status().is2xxSuccessful());
+        mvc.perform(post("/api/v1/customers/me/addresses")
+                        .with(jwt().authorities(ROLE_USER).jwt(j -> j.subject(sub)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"label":"Home","line1":"1 Atelier Way","city":"Lagos",
+                                 "postalCode":"100001","country":"NG","isDefault":true}
+                                """))
+                .andExpect(status().is2xxSuccessful());
+
+        mvc.perform(get("/api/v1/admin/customers")
+                        .with(jwt().authorities(ROLE_CUSTOMER_ADMIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[?(@.email == 'listed@oriah.test')]").exists())
+                .andExpect(jsonPath(
+                        "$.content[?(@.email == 'listed@oriah.test')].addresses[0].city")
+                        .value(org.hamcrest.Matchers.hasItem("Lagos")));
     }
 }

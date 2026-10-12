@@ -62,7 +62,9 @@ public class AdminCustomerController {
     @GetMapping
     public ResponseEntity<Page<CustomerResponse>> list(
             @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(service.findAll(pageable).map(CustomerResponse::from));
+        // Mapping happens in the service, inside the transaction -- see
+        // CustomerService.findAllForAdmin for why doing it here was a 500.
+        return ResponseEntity.ok(service.findAllForAdmin(pageable));
     }
 
     @Operation(operationId = "get", summary = "One customer by id")

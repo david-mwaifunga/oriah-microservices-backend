@@ -68,7 +68,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RouteSnapshotTest {
 
     /**
-     * Every route id as of the pre-refactor baseline: 17 API routes plus
+     * Every route id: 18 API routes plus
      * 12 per-service {@code /v3/api-docs/<svc>} routes that back the
      * aggregated Swagger UI at the gateway.
      */
@@ -85,6 +85,7 @@ class RouteSnapshotTest {
             "order-admin-route",
             "promotion-route",
             "promotion-admin-route",
+            "payment-admin-route",
             "shipping-route",
             "checkout-route",
             "notification-route",
@@ -109,7 +110,7 @@ class RouteSnapshotTest {
     private RouteLocator routeLocator;
 
     @Test
-    @DisplayName("route id set is exactly the 29-route baseline snapshot")
+    @DisplayName("route id set is exactly the 30-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
         List<String> actual = routes().stream().map(Route::getId).toList();
 
@@ -138,6 +139,7 @@ class RouteSnapshotTest {
                 .containsEntry("order-admin-route", "lb://order")
                 .containsEntry("promotion-route", "lb://promotion")
                 .containsEntry("promotion-admin-route", "lb://promotion")
+                .containsEntry("payment-admin-route", "lb://payment")
                 .containsEntry("shipping-route", "lb://shipping")
                 .containsEntry("checkout-route", "lb://checkout")
                 .containsEntry("notification-route", "lb://notification")
@@ -164,6 +166,7 @@ class RouteSnapshotTest {
             "/api/v1/admin/orders,                               order-admin-route",
             "/api/v1/promotions/WELCOME15,                        promotion-route",
             "/api/v1/admin/promotions,                           promotion-admin-route",
+            "/api/v1/admin/payments,                             payment-admin-route",
             "/api/v1/shipping/rates,                             shipping-route",
             "/api/v1/checkout/preview,                           checkout-route",
             "/api/v1/notifications/me,                           notification-route",
