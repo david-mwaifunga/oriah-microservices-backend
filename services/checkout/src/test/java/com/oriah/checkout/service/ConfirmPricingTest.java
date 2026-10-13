@@ -13,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 
 import com.oriah.checkout.client.CartClient;
 import com.oriah.checkout.client.CatalogPricingClient;
+import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
 import com.oriah.checkout.client.PromotionClient;
@@ -104,6 +105,7 @@ class ConfirmPricingTest {
     private ShippingClient shipping;
     private PaymentClient payment;
     private OrderClient order;
+    private CustomerClient customer;
     private CheckoutService service;
 
     @BeforeEach
@@ -114,12 +116,14 @@ class ConfirmPricingTest {
         shipping = mock(ShippingClient.class);
         payment = mock(PaymentClient.class);
         order = mock(OrderClient.class);
+        customer = mock(CustomerClient.class);
 
         ResilientFeignCaller resilient = new ResilientFeignCaller(
                 CircuitBreakerRegistry.ofDefaults(),
                 RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
                 RateLimiterRegistry.of(RateLimiterConfig.ofDefaults()));
-        service = new CheckoutService(cart, catalog, promotion, shipping, payment, order, resilient);
+        service = new CheckoutService(cart, catalog, promotion, shipping, payment, order,
+                customer, resilient);
 
         // A bag whose stored line and subtotal both claim one cent. This is
         // what a pre-fix cart would have handed over, and what a compromised or
@@ -131,6 +135,9 @@ class ConfirmPricingTest {
         shippingIsFree();
         orderIsPlaced();
         intentSucceeds();
+        // By default the address agrees with the request body, so the other
+        // tests in this class exercise their own subject rather than this one.
+        addressIsIn("NG");
     }
 
     /** The entry the catalog stub is currently answering with. */
@@ -183,6 +190,12 @@ class ConfirmPricingTest {
         return FeignException.errorStatus("ShippingClient#rates(RateRequest)",
                 Response.builder().status(status).reason("generated")
                         .request(request).headers(Map.of()).build());
+    }
+
+    /** The caller's one address, in the given country. */
+    private void addressIsIn(String country) {
+        doReturn(List.of(new CustomerClient.Address(ADDRESS, country)))
+                .when(customer).myAddresses();
     }
 
     private void shippingIsFree() {
@@ -254,7 +267,7 @@ class ConfirmPricingTest {
     void previewChargesWhatItShowed() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
 
-        PreviewResponse preview = service.preview(new PreviewRequest("NG", null));
+        PreviewResponse preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
         // The real round trip: confirm echoes the token preview handed out,
         // which is what a storefront does and what the staleness check exists
         // to make meaningful.
@@ -289,6 +302,81 @@ class ConfirmPricingTest {
         assertThat(intent.getValue().currency())
                 .as("a ZMW bag must not become a USD intent")
                 .isEqualTo("ZMW");
+    }
+
+    // ---------------------------------- the zone is not the client's to choose
+
+    @Test
+    @DisplayName("the shipping zone comes from the ADDRESS, not from the request body")
+    void theZoneComesFromTheAddressNotTheRequest() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // The shopper's address is in the United States, which is
+        // INTERNATIONAL -- 1,125.00 standard, free only over 12,500.00. The
+        // request claims NG, which is DOMESTIC: 125.00 standard, free over
+        // 3,750.00. A K4,000 bag shipped internationally would be charged
+        // 0.00 instead of 1,125.00.
+        addressIsIn("US");
+
+        service.confirm(confirmRequest(), "key-30");
+
+        ArgumentCaptor<ShippingClient.RateRequest> rates =
+                ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        verify(shipping).rates(rates.capture());
+        assertThat(rates.getValue().destinationCountry())
+                .as("the country of the address being shipped to, not the one the "
+                        + "caller typed -- this is the same defect the phase fixed for "
+                        + "prices, one leg over")
+                .isEqualTo("US");
+    }
+
+    @Test
+    @DisplayName("an address that is not the shopper's is refused, and nothing is ordered")
+    void anAddressThatIsNotTheShoppersIsRefused() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // customer-service lists the CALLER's addresses only, so an id that is
+        // not in that list is either somebody else's or does not exist. The two
+        // are deliberately indistinguishable in the response.
+        doReturn(List.of()).when(customer).myAddresses();
+
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-31"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("customer-service being unreachable fails closed before anything is charged")
+    void customerUnreachableFailsClosed() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // The zone decides the shipping charge, so a checkout that cannot
+        // establish it must not guess. Nothing has been charged at this point,
+        // so this is safe to report as transient.
+        doThrow(feign(503)).when(customer).myAddresses();
+
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-32"))
+                .isInstanceOf(RuntimeException.class);
+
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("preview quotes the address's zone too, so its total matches what confirm charges")
+    void previewUsesTheAddressZoneAsWell() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        addressIsIn("US");
+
+        service.preview(new PreviewRequest("NG", null, ADDRESS));
+
+        ArgumentCaptor<ShippingClient.RateRequest> rates =
+                ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        verify(shipping).rates(rates.capture());
+        // If only confirm derived the country, a mismatched request would make
+        // preview quote the cheap zone and confirm the dear one -- and the
+        // shipping half of the pricing version would then 409 every attempt,
+        // with preview still showing the wrong zone. An unbreakable loop.
+        assertThat(rates.getValue().destinationCountry()).isEqualTo("US");
     }
 
     // ------------------------------------- what the review found, as tests
@@ -365,7 +453,7 @@ class ConfirmPricingTest {
         // Shipping is down while the shopper reaches the review step, so the
         // quote they read is items-only and the Place order button is enabled.
         doThrow(feign(503)).when(shipping).rates(any());
-        var preview = service.preview(new PreviewRequest("NG", null));
+        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
         assertThat(preview.shippingCost()).isEqualByComparingTo("0.00");
         assertThat(preview.total()).isEqualByComparingTo(REAL_PRICE);
 
@@ -390,7 +478,7 @@ class ConfirmPricingTest {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
         shippingCosts("125.00");
 
-        var preview = service.preview(new PreviewRequest("NG", null));
+        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
         service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
                 preview.pricingVersion()), "key-24");
 
@@ -431,7 +519,7 @@ class ConfirmPricingTest {
     void theVersionFromPreviewIsAccepted() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
 
-        var preview = service.preview(new PreviewRequest("NG", null));
+        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
         var response = service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242",
                 null, preview.pricingVersion()), "key-13");
 
@@ -442,7 +530,7 @@ class ConfirmPricingTest {
     @DisplayName("changing a quantity does not invalidate the version")
     void aQuantityEditDoesNotInvalidateTheVersion() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
-        var preview = service.preview(new PreviewRequest("NG", null));
+        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
 
         // The shopper nudges the stepper from 1 to 3 after previewing. No price
         // changed, so their token must still be good: a version that included

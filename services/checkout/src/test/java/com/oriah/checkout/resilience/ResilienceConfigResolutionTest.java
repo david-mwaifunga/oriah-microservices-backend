@@ -58,7 +58,7 @@ class ResilienceConfigResolutionTest {
 
     /** Every Feign client checkout orchestrates. */
     private static final String[] CLIENTS =
-            {"cart", "catalog", "promotion", "shipping", "payment", "order"};
+            {"cart", "catalog", "customer", "promotion", "shipping", "payment", "order"};
 
     @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
@@ -81,7 +81,7 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0} has a circuit breaker")
     @DisplayName("every Feign client still gets its own breaker instance")
-    @ValueSource(strings = {"cart", "catalog", "promotion", "shipping", "payment", "order"})
+    @ValueSource(strings = {"cart", "catalog", "customer", "promotion", "shipping", "payment", "order"})
     void everyClientHasItsOwnBreaker(String client) {
         // One instance per client, not per method: when a downstream is
         // unhealthy every call from this orchestrator to it should trip the

@@ -291,7 +291,7 @@ $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="NG"; promotionCode=$promoCode })
+    -Body (ConvertTo-Json @{ destinationCountry="NG"; promotionCode=$promoCode; shippingAddressId=$addrId })
 # 2 x K100 = K200, less 15% = K30, plus K125 domestic standard shipping.
 #
 # Shipping is no longer FREE here, and that is the correct answer rather than a

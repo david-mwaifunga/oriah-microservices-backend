@@ -123,6 +123,9 @@ resilience4j:
       # blocks because ResilientFeignCaller looks the instance up by name in
       # each -- an unregistered name silently gets R4J's defaults.
       catalog:   { base-config: default }
+      # customer answers "which addresses are yours", which decides the
+      # shipping zone and therefore the charge.
+      customer:  { base-config: default }
       promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
@@ -151,6 +154,9 @@ resilience4j:
       # blocks because ResilientFeignCaller looks the instance up by name in
       # each -- an unregistered name silently gets R4J's defaults.
       catalog:   { base-config: default }
+      # customer answers "which addresses are yours", which decides the
+      # shipping zone and therefore the charge.
+      customer:  { base-config: default }
       promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
@@ -172,6 +178,9 @@ resilience4j:
       # blocks because ResilientFeignCaller looks the instance up by name in
       # each -- an unregistered name silently gets R4J's defaults.
       catalog:   { base-config: default }
+      # customer answers "which addresses are yours", which decides the
+      # shipping zone and therefore the charge.
+      customer:  { base-config: default }
       promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }

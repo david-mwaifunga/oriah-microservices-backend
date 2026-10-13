@@ -11,6 +11,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.oriah.checkout.client.CartClient;
 import com.oriah.checkout.client.CatalogPricingClient;
+import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
 import com.oriah.checkout.client.PromotionClient;
@@ -112,8 +113,16 @@ class ConfirmFailurePathsTest {
      */
     private final CatalogPricingClient catalog = mock(CatalogPricingClient.class);
 
+    /**
+     * customer answers "which addresses are yours", which is how the shipping
+     * ZONE is decided now -- the request body's destinationCountry is ignored
+     * when an address is present. Stubbed to agree with the body so every test
+     * here still fails or passes for its own reason.
+     */
+    private final CustomerClient customer = mock(CustomerClient.class);
+
     private final CheckoutService service = new CheckoutService(
-            cart, catalog, promotion, shipping, payment, order, resilient);
+            cart, catalog, promotion, shipping, payment, order, customer, resilient);
 
     /**
      * The version matching what cartHasOneItem() makes catalog answer.
@@ -137,6 +146,11 @@ class ConfirmFailurePathsTest {
         return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", code, version());
     }
 
+    private void addressAgreesWithTheBody() {
+        when(customer.myAddresses()).thenReturn(
+                List.of(new CustomerClient.Address(ADDRESS, "NG")));
+    }
+
     private void cartHasOneItem() {
         when(cart.getMyCart()).thenReturn(new CartClient.CartView(
                 UUID.randomUUID(), new BigDecimal("100.00"),
@@ -148,6 +162,7 @@ class ConfirmFailurePathsTest {
         when(catalog.price(any())).thenReturn(new CatalogPricingClient.PricingResponse(
                 List.of(new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(),
                         "Aurelia", "Aurelia", new BigDecimal("100.00"), "USD"))));
+        addressAgreesWithTheBody();
     }
 
     private void shippingIsFree() {

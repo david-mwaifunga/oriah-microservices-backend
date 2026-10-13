@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 
 import com.oriah.checkout.client.CartClient;
 import com.oriah.checkout.client.CatalogPricingClient;
+import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
 import com.oriah.checkout.client.PromotionClient;
@@ -99,6 +100,7 @@ public class CheckoutService {
 
     private final CartClient cart;
     private final CatalogPricingClient catalog;
+    private final CustomerClient customer;
     private final PromotionClient promotion;
     private final ShippingClient shipping;
     private final PaymentClient payment;
@@ -108,9 +110,11 @@ public class CheckoutService {
     public CheckoutService(CartClient cart, CatalogPricingClient catalog,
                            PromotionClient promotion, ShippingClient shipping,
                            PaymentClient payment, OrderClient order,
+                           CustomerClient customer,
                            ResilientFeignCaller resilient) {
         this.cart = cart;
         this.catalog = catalog;
+        this.customer = customer;
         this.promotion = promotion;
         this.shipping = shipping;
         this.payment = payment;
@@ -241,7 +245,13 @@ public class CheckoutService {
         }
 
         BigDecimal afterDiscount = subtotal.subtract(discount);
-        var rates = quoteShipping(req.destinationCountry(), afterDiscount, priced.currency());
+        // Derived here as well as in confirm, and not only for tidiness: if
+        // only confirm derived it, a mismatched body would make preview quote
+        // the cheap zone and confirm the dear one -- and the shipping half of
+        // the pricing version would then refuse every attempt while preview
+        // kept showing the wrong zone. An unbreakable loop.
+        String destination = resolveDestination(req.shippingAddressId(), req.destinationCountry());
+        var rates = quoteShipping(destination, afterDiscount, priced.currency());
         requireQuotedInBagCurrency(rates, priced.currency());
         List<PreviewResponse.ShippingOptionDto> options = new ArrayList<>();
         BigDecimal cheapest = BigDecimal.ZERO;
@@ -378,6 +388,53 @@ public class CheckoutService {
      * shipping. {@code requireQuotedInBagCurrency} stays as belt and braces for
      * an older or third-party shipping build that ignores the currency field.
      */
+    /**
+     * The country to quote shipping for: the one on the address being shipped
+     * to.
+     *
+     * <h2>Why the request body cannot be trusted with this</h2>
+     *
+     * {@code destinationCountry} decided the zone, and the zone decides both
+     * the shipping cost and the free-shipping threshold -- 125.00 and free over
+     * 3,750.00 for DOMESTIC against 1,125.00 and free over 12,500.00 for
+     * INTERNATIONAL. Nothing reconciled it with {@code shippingAddressId}, so a
+     * caller could pay domestic rates to ship abroad, and the order recorded
+     * only the address, so fulfilment shipped to the real one. Exactly the
+     * shape of defect this phase removed for prices.
+     *
+     * <p>So the body's value is ignored whenever an address is available. The
+     * storefront already derives it the same way
+     * ({@code selectedAddress?.country}), so only a hand-rolled caller could
+     * ever have diverged -- which is precisely who this is for.
+     *
+     * @throws IllegalArgumentException the id is not one of the caller's
+     *         addresses -- 400. customer-service lists only the caller's own,
+     *         so "not yours" and "does not exist" are indistinguishable here,
+     *         which is the right amount for checkout to know.
+     */
+    private String resolveDestination(UUID shippingAddressId, String fallbackCountry) {
+        if (shippingAddressId == null) {
+            // preview only, and only for a caller that sent no address. A quote
+            // is not a charge.
+            return fallbackCountry;
+        }
+        // mustCall: the zone decides money, so a checkout that cannot
+        // establish it must not guess. Nothing is charged at this point, so
+        // the failure is classified as transient and is safe to retry.
+        List<CustomerClient.Address> addresses =
+                mustCall(customer::myAddresses, "customer");
+        return addresses.stream()
+                .filter(a -> shippingAddressId.equals(a.id()))
+                .map(CustomerClient.Address::country)
+                .findFirst()
+                .orElseThrow(() -> {
+                    log.warn("Refusing checkout: addressId={} is not one of the caller's",
+                            shippingAddressId);
+                    return new IllegalArgumentException(
+                            "That shipping address is not one of yours.");
+                });
+    }
+
     private ShippingClient.RateResponse quoteShipping(String country, BigDecimal afterDiscount,
                                                       String currency) {
         try {
@@ -508,7 +565,10 @@ public class CheckoutService {
         // the order: an unreachable rate service should not stop a sale, and
         // under-charging ourselves is the safe direction to be wrong in.
         BigDecimal shippingCost = BigDecimal.ZERO;
-        var rates = quoteShipping(req.destinationCountry(), afterDiscount, priced.currency());
+        // confirm ALWAYS has an address, so the body's country is always
+        // ignored here. This is the call that decides the charge.
+        String destination = resolveDestination(req.shippingAddressId(), req.destinationCountry());
+        var rates = quoteShipping(destination, afterDiscount, priced.currency());
         requireQuotedInBagCurrency(rates, priced.currency());
         // The second half of the agreement, checked as soon as it is knowable:
         // the quote depends on the discounted subtotal, so it cannot be known
