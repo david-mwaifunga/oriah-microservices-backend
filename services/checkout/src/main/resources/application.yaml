@@ -118,7 +118,11 @@ resilience4j:
         wait-duration-in-open-state: 30s
     instances:
       cart:      { base-config: default }
-      inventory: { base-config: default }
+      # catalog is the pricing authority: checkout derives the charged amount
+      # from it rather than trusting cart's arithmetic. Registered in all three
+      # blocks because ResilientFeignCaller looks the instance up by name in
+      # each -- an unregistered name silently gets R4J's defaults.
+      catalog:   { base-config: default }
       promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
@@ -142,7 +146,11 @@ resilience4j:
           - feign.FeignException$FeignClientException
     instances:
       cart:      { base-config: default }
-      inventory: { base-config: default }
+      # catalog is the pricing authority: checkout derives the charged amount
+      # from it rather than trusting cart's arithmetic. Registered in all three
+      # blocks because ResilientFeignCaller looks the instance up by name in
+      # each -- an unregistered name silently gets R4J's defaults.
+      catalog:   { base-config: default }
       promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
@@ -159,7 +167,11 @@ resilience4j:
         timeout-duration: 100ms
     instances:
       cart:      { base-config: default }
-      inventory: { base-config: default }
+      # catalog is the pricing authority: checkout derives the charged amount
+      # from it rather than trusting cart's arithmetic. Registered in all three
+      # blocks because ResilientFeignCaller looks the instance up by name in
+      # each -- an unregistered name silently gets R4J's defaults.
+      catalog:   { base-config: default }
       promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }

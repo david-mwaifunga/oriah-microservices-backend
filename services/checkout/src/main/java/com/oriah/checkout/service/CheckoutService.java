@@ -3,11 +3,14 @@ package com.oriah.checkout.service;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.oriah.checkout.client.CartClient;
+import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
 import com.oriah.checkout.client.PromotionClient;
@@ -92,21 +95,106 @@ import lombok.extern.slf4j.Slf4j;
 public class CheckoutService {
 
     private final CartClient cart;
+    private final CatalogPricingClient catalog;
     private final PromotionClient promotion;
     private final ShippingClient shipping;
     private final PaymentClient payment;
     private final OrderClient order;
     private final ResilientFeignCaller resilient;
 
-    public CheckoutService(CartClient cart, PromotionClient promotion, ShippingClient shipping,
+    public CheckoutService(CartClient cart, CatalogPricingClient catalog,
+                           PromotionClient promotion, ShippingClient shipping,
                            PaymentClient payment, OrderClient order,
                            ResilientFeignCaller resilient) {
         this.cart = cart;
+        this.catalog = catalog;
         this.promotion = promotion;
         this.shipping = shipping;
         this.payment = payment;
         this.order = order;
         this.resilient = resilient;
+    }
+
+    /**
+     * What the bag really costs, priced by catalog rather than taken on trust.
+     *
+     * <h2>This replaced the single most important line in the service</h2>
+     *
+     * {@code confirm} read {@code BigDecimal subtotal = myCart.subtotal();} and
+     * that one field was the sole input to the charged total. Cart stored the
+     * price the shopper sent, so a request naming one cent produced a one-cent
+     * charge. Cart no longer accepts a price -- but a service that charges a
+     * card must not depend on another service's arithmetic being right, so the
+     * amount is derived here, first-hand, from the same authority cart uses.
+     *
+     * <h2>Every line, or none</h2>
+     *
+     * A line catalog will not price refuses the whole bag rather than being
+     * dropped from it. Dropping it would place an order the shopper did not
+     * agree to; charging around it would ship it free, which is exactly what
+     * would have happened once cart started excluding unsellable lines from
+     * its subtotal while still listing them.
+     *
+     * <p>Mixed currencies refuse too. Summing two units is meaningless, and
+     * picking one would charge the wrong number in the wrong denomination.
+     *
+     * @throws IllegalStateException the bag cannot be priced as it stands --
+     *         409, and the shopper has to change something. Distinct problem
+     *         types for the two reasons come with the staleness guard; today
+     *         both read as a conflict.
+     */
+    private RepricedBag reprice(CartClient.CartView myCart) {
+        List<UUID> variantIds = myCart.items().stream()
+                .map(CartClient.CartItem::variantId)
+                .distinct()
+                .toList();
+
+        // mustCall, not safeCall: a preview or a confirm that cannot price the
+        // bag must fail rather than show or charge a number nobody stands
+        // behind. Nothing has been ordered or charged at this point, so the
+        // failure is classified as transient and is safe to retry.
+        var response = mustCall(() -> catalog.price(
+                new CatalogPricingClient.PricingRequest(variantIds)), "catalog");
+
+        Map<UUID, CatalogPricingClient.Entry> byVariant = response.results() == null
+                ? Map.of()
+                : response.results().stream()
+                        .filter(e -> e.variantId() != null)
+                        .collect(java.util.stream.Collectors.toMap(
+                                CatalogPricingClient.Entry::variantId, e -> e, (a, b) -> a));
+
+        List<OrderClient.LineItem> lines = new ArrayList<>();
+        BigDecimal subtotal = BigDecimal.ZERO;
+        String currency = null;
+        for (CartClient.CartItem item : myCart.items()) {
+            CatalogPricingClient.Entry entry = byVariant.get(item.variantId());
+            if (entry == null || !entry.isPriced()) {
+                log.warn("Refusing checkout: variantId={} prices as {}", item.variantId(),
+                        entry == null ? "(absent from the pricing response)" : entry.status());
+                throw new IllegalStateException(
+                        "One or more items in your bag are no longer available. "
+                                + "Remove them and try again.");
+            }
+            if (currency == null) {
+                currency = entry.currency();
+            } else if (!currency.equals(entry.currency())) {
+                log.warn("Refusing checkout: bag mixes {} and {}", currency, entry.currency());
+                throw new IllegalStateException(
+                        "Your bag mixes currencies and cannot be checked out as one order.");
+            }
+            int quantity = item.quantity() == null ? 0 : item.quantity();
+            subtotal = subtotal.add(entry.unitPrice().multiply(BigDecimal.valueOf(quantity)));
+            // Catalog's label, not the stored one: the order is the record of
+            // what was sold, and it should say what the shop calls it now.
+            lines.add(new OrderClient.LineItem(
+                    item.variantId(), entry.variantTitle(), quantity, entry.unitPrice()));
+        }
+        return new RepricedBag(lines, subtotal, currency);
+    }
+
+    /** The bag as catalog prices it: order lines, their sum, and one currency. */
+    private record RepricedBag(List<OrderClient.LineItem> lines, BigDecimal subtotal,
+                               String currency) {
     }
 
     public PreviewResponse preview(PreviewRequest req) {
@@ -122,7 +210,13 @@ public class CheckoutService {
                     "USD", null, List.of(), null
             );
         }
-        BigDecimal subtotal = myCart.subtotal();
+        // Repriced here too, not just in confirm. The plan for this phase
+        // replaced only confirm's subtotal, which would have left a bag
+        // previewing one number and being charged another -- the shopper
+        // agreeing to a total the server never intended to take, or being
+        // shown more than it charged. Both paths go through the same code.
+        RepricedBag priced = reprice(myCart);
+        BigDecimal subtotal = priced.subtotal();
 
         BigDecimal discount = BigDecimal.ZERO;
         String applied = null;
@@ -154,7 +248,8 @@ public class CheckoutService {
         }
 
         BigDecimal total = afterDiscount.add(cheapest);
-        return new PreviewResponse(subtotal, discount, cheapest, total, "USD", applied, options, zone);
+        return new PreviewResponse(subtotal, discount, cheapest, total,
+                priced.currency(), applied, options, zone);
     }
 
     /**
@@ -245,8 +340,13 @@ public class CheckoutService {
             throw new CartEmptyException();
         }
 
+        // 0) Price the bag. THE fix: this used to be
+        //    `BigDecimal subtotal = myCart.subtotal();`, which charged whatever
+        //    cart reported.
+        RepricedBag priced = reprice(myCart);
+
         // 1) Promo
-        BigDecimal subtotal = myCart.subtotal();
+        BigDecimal subtotal = priced.subtotal();
         BigDecimal discount = BigDecimal.ZERO;
         String appliedPromo = null;
         if (req.promotionCode() != null && !req.promotionCode().isBlank()) {
@@ -273,18 +373,20 @@ public class CheckoutService {
         }
         BigDecimal total = afterDiscount.add(shippingCost);
 
-        // 3) Place order in CREATED state
-        var items = myCart.items().stream()
-                .map(i -> new OrderClient.LineItem(i.variantId(), i.title(), i.quantity(), i.unitPrice()))
-                .toList();
-        var placed = mustCall(() -> order.place(
-                new OrderClient.PlaceOrderRequest(req.shippingAddressId(), "USD", items)), "order");
+        // 3) Place order in CREATED state, from the REPRICED lines. Mapping
+        //    cart's items here instead would record a sale at the cart's
+        //    prices while charging catalog's -- two answers to "what did we
+        //    sell and for how much", on the one record that is supposed to
+        //    settle it.
+        var placed = mustCall(() -> order.place(new OrderClient.PlaceOrderRequest(
+                req.shippingAddressId(), priced.currency(), priced.lines())), "order");
         log.info("Order placed orderId={} status={} total={}", placed.id(), placed.status(), placed.total());
 
         // 4) Payment. Nothing has been charged yet, so a failure up to and
         // including createIntent is safe to report as transient.
         var intent = mustCall(() -> payment.createIntent(
-                new PaymentClient.CreateIntentRequest(placed.id(), total, "USD")), "payment");
+                new PaymentClient.CreateIntentRequest(placed.id(), total, priced.currency())),
+                "payment");
 
         PaymentClient.IntentResponse confirmed;
         try {
@@ -345,7 +447,7 @@ public class CheckoutService {
         safeCall(() -> { cart.clearMyCart(); return null; }, "cart");
 
         return new ConfirmResponse(paid.id(), paid.status(), intent.id(),
-                confirmed.status(), total, "USD", "order placed and paid");
+                confirmed.status(), total, priced.currency(), "order placed and paid");
     }
 
     /**

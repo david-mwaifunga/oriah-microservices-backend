@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.oriah.checkout.client.CartClient;
+import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
 import com.oriah.checkout.client.PromotionClient;
@@ -102,8 +103,17 @@ class ConfirmFailurePathsTest {
             RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
             RateLimiterRegistry.of(RateLimiterConfig.ofDefaults()));
 
+    /**
+     * catalog is new: checkout derives the charged amount from it rather than
+     * trusting cart's subtotal. Every test in this class routes through
+     * cartHasOneItem(), which now also programs the pricing answer -- without
+     * it every confirm here would fail on the pricing call instead of on the
+     * path it means to exercise.
+     */
+    private final CatalogPricingClient catalog = mock(CatalogPricingClient.class);
+
     private final CheckoutService service = new CheckoutService(
-            cart, promotion, shipping, payment, order, resilient);
+            cart, catalog, promotion, shipping, payment, order, resilient);
 
     private ConfirmRequest request() {
         return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null);
@@ -118,6 +128,12 @@ class ConfirmFailurePathsTest {
                 UUID.randomUUID(), new BigDecimal("100.00"),
                 List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT, "Aurelia", 1,
                         new BigDecimal("100.00"), new BigDecimal("100.00")))));
+        // Catalog agrees with the cart at 100.00, so the money in this class
+        // is unchanged and each test still fails or passes for its own reason.
+        // ConfirmPricingTest is where the two are made to DISAGREE.
+        when(catalog.price(any())).thenReturn(new CatalogPricingClient.PricingResponse(
+                List.of(new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(),
+                        "Aurelia", "Aurelia", new BigDecimal("100.00"), "USD"))));
     }
 
     private void shippingIsFree() {
