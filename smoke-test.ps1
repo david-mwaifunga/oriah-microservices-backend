@@ -1086,5 +1086,62 @@ if ($authzFailures.Count -gt 0) {
 }
 Write-Host "    6 exploit attempts refused; no order paid, no extra charge, owner replay intact" -ForegroundColor Gray
 
+Write-Host "[20b/20] Payment refuses an intent it cannot price unambiguously..." -ForegroundColor Cyan
+# POST /intents took amount @DecimalMin("0.01") and a currency that was
+# @Size(3) and nothing else. Three gaps, all verified live before the fix:
+#
+#   currency omitted   -> 201, stored as "USD". A hardcoded default on a
+#                         platform priced in Kwacha, written in TWO places
+#                         (PaymentService and the PaymentIntent constructor).
+#   currency "zmw"     -> 201, stored as-is. PaymentIntentVerifier compares
+#                         currencies with equals(), so a lower-case intent can
+#                         never settle an upper-case order; and the admin
+#                         payment summary groups totals BY currency, so "zmw"
+#                         and "ZMW" split one figure into two rows that each
+#                         read as the whole.
+#   amount 1e11        -> 500. It exceeded NUMERIC(12,2), reached Postgres and
+#                         came back as "An unexpected error occurred" -- an
+#                         ordinary bad request recorded as the server fault an
+#                         operator pages on.
+#
+# Each must now be a 400 naming the field. A 201 here means a default came
+# back; a 500 means the column is deciding again.
+$intentProbes = @(
+    @{ Name = "no currency";        Body = @{ orderId=$orderId; amount=100.00 } },
+    @{ Name = "lower-case ZMW";     Body = @{ orderId=$orderId; amount=100.00; currency="zmw" } },
+    @{ Name = "amount past the column"; Body = @{ orderId=$orderId; amount=100000000000.00; currency="ZMW" } }
+)
+$intentFailures = @()
+foreach ($probe in $intentProbes) {
+    try {
+        Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+            -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
+            -Body (ConvertTo-Json $probe.Body) | Out-Null
+        $intentFailures += "$($probe.Name) was ACCEPTED"
+    }
+    catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+        if ($code -ne 400) {
+            $intentFailures += "$($probe.Name) gave $code, expected 400"
+        }
+    }
+}
+# And the shape must still narrow the input rather than the feature: a
+# well-formed intent is created, in the currency it was asked for.
+$goodIntent = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/payments/intents" `
+    -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ orderId=$orderId; amount=4500.00; currency="ZMW" })
+if ($goodIntent.currency -ne "ZMW" -or $goodIntent.status -ne "PENDING") {
+    $intentFailures += "a well-formed intent came back currency=$($goodIntent.currency) status=$($goodIntent.status)"
+}
+if ($intentFailures.Count -gt 0) {
+    $intentFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "payment intent input surface regressed on $($intentFailures.Count) check(s)"
+    exit 1
+}
+Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent still created" -ForegroundColor Gray
+
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green

@@ -28,11 +28,15 @@ public class PaymentService {
 
     @Transactional
     public PaymentIntent createIntent(String keycloakId, CreateIntentRequest req) {
+        // No default. CreateIntentRequest requires a currency, so there is
+        // nothing to substitute -- and the substitute was "USD" on a platform
+        // priced in Kwacha, written here AND in the PaymentIntent constructor,
+        // which is how two defaults drift apart.
         PaymentIntent intent = new PaymentIntent(
                 req.orderId(),
                 keycloakId,
                 req.amount(),
-                req.currency() == null ? "USD" : req.currency()
+                req.currency()
         );
         PaymentIntent saved = repository.save(intent);
         log.info("Created PaymentIntent id={} orderId={} amount={}", saved.id(), saved.orderId(), saved.amount());

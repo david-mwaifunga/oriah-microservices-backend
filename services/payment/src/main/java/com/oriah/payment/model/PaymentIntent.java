@@ -53,7 +53,17 @@ public class PaymentIntent extends BaseEntity {
         this.orderId = orderId;
         this.keycloakId = keycloakId;
         this.amount = amount;
-        this.currency = currency == null || currency.isBlank() ? "USD" : currency;
+        // Fails fast rather than defaulting. The old default was "USD" on a
+        // Kwacha platform, and because the service substituted one too, the
+        // same decision lived in two places with nothing keeping them in step.
+        // Every construction site -- the service, and every test -- passes a
+        // currency explicitly, so there is nothing for a default to serve
+        // except hiding a caller that forgot.
+        if (currency == null || currency.isBlank()) {
+            throw new IllegalArgumentException(
+                    "A payment intent must name its currency; money with no unit is not an amount.");
+        }
+        this.currency = currency;
         this.status = PaymentStatus.PENDING;
     }
 

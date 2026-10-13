@@ -126,3 +126,62 @@ cart|schema property type changed|UpdateItemRequest.quantity: {"format": "int32"
 # Reviewed and accepted 2026-10-13.
 
 checkout|property became required|ConfirmRequest.pricingVersion
+
+# ---------------------------------------------------------------------------
+# Phase 7, step 27: payment's create-intent input surface was unbounded.
+# ---------------------------------------------------------------------------
+#
+# Three deliberate TIGHTENINGS of what the server accepts. Verified live
+# against the running stack before and after:
+#
+#   currency omitted   -> was 201 with currency silently "USD"; now 400
+#   currency "zmw"     -> was 201 stored as-is;                  now 400
+#   amount 1e11        -> was 500 from the NUMERIC(12,2) column; now 400
+#
+# Why each is not merely cosmetic:
+#
+# * The USD default was a hardcoded currency on a platform priced in Kwacha,
+#   and it was written in TWO places that had to agree -- PaymentService
+#   .createIntent and the PaymentIntent constructor. Requiring the field
+#   removes the decision rather than centralising it: nothing has to guess
+#   which currency money is in.
+#
+# * Case matters twice. order-service's PaymentIntentVerifier compares the
+#   intent's currency to the order's with equals(), so a lower-case intent
+#   could never settle an upper-case order; and AdminPaymentSummary groups
+#   captured totals BY currency, so "zmw" and "ZMW" split one figure into two
+#   rows that each read as the whole.
+#
+# * The amount ceiling is the column's real capacity, not a round number.
+#   Exceeding NUMERIC(12,2) reached Postgres, violated CHECK (amount > 0)'s
+#   sibling precision limit, and surfaced through the shared advice as
+#   "500 An unexpected error occurred" -- which tells the caller nothing it
+#   can act on and records an ordinary bad request as the server fault an
+#   operator pages on. A column is a backstop; if it fires again, a 500 is
+#   then the honest answer.
+#
+# Taken because there is exactly ONE runtime caller of POST /intents and it
+# already complies. checkout-service builds its own
+# PaymentClient.CreateIntentRequest record and always passes
+# priced.currency(), which reprice() guarantees non-null and upper-case:
+# CatalogPricingClient.Entry.isPriced() requires a non-blank currency, and
+# confirm throws CartEmptyException before reprice() runs, so there is no path
+# that reaches payment without one. Checked, not assumed.
+#
+# oriah-web was checked too: src/lib/api/generated/payment.ts carries a
+# createIntent type because codegen emits the whole spec, but NOTHING outside
+# that generated file references createIntent or the /payments/intents path.
+# The storefront confirms intents through checkout; it never creates one. So
+# the generated type will change on the next `npm run codegen` and no call
+# site changes with it.
+#
+# Not waived, and worth recording as the gate earning its keep: the first
+# version of this change replaced @Size(min=3,max=3) with @NotBlank, which
+# dropped maxLength:3 from the published schema and left a LOOSER contract
+# beside a stricter server. The gate caught it and @Size was restored, which
+# is why the currency entry below shows only a pattern being added.
+#
+# Reviewed and accepted 2026-10-13.
+payment|property became required|CreateIntentRequest.currency
+payment|schema property type changed|CreateIntentRequest.amount: {"minimum": 0.01, "type": "number"} -> {"maximum": 9999999999.99, "minimum": 0.01, "type": "number"}
+payment|schema property type changed|CreateIntentRequest.currency: {"maxLength": 3, "minLength": 3, "type": "string"} -> {"maxLength": 3, "minLength": 3, "pattern": "^[A-Z]{3}$", "type": "string"}
