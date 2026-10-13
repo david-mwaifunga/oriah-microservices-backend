@@ -35,7 +35,14 @@ public class CartService {
     public Cart addItem(String keycloakId, AddItemRequest req) {
         Cart cart = repository.findByKeycloakId(keycloakId)
                 .orElseGet(() -> repository.save(new Cart(keycloakId)));
-        CartItem item = cart.addOrIncrement(req.variantId(), req.quantity(), req.unitPrice(), req.title());
+        // STILL THE CLIENT'S PRICE, for one more commit. The aggregate now has
+        // somewhere to put a currency but no source for one: the only authority
+        // is catalog's pricing endpoint, and wiring that up is the next change.
+        // Passing the brand default here keeps this honest about what it is --
+        // a placeholder on the one remaining client-priced path -- rather than
+        // inventing a currency per request.
+        CartItem item = cart.addOrIncrement(req.variantId(), req.quantity(), req.unitPrice(),
+                req.title(), CartItem.DEFAULT_CURRENCY);
         log.info("Cart add cartId={} variantId={} qty={} title=\"{}\"",
                 cart.id(), req.variantId(), item.quantity(), item.title());
         return cart;
