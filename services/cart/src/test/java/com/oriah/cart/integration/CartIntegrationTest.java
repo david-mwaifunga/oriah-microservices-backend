@@ -318,9 +318,6 @@ class CartIntegrationTest {
     @DisplayName("an unreachable catalog is a 503 and leaves the bag exactly as it was")
     void anUnreachableCatalogLeavesTheBagUntouched() throws Exception {
         addItem("alice", V1, 1, "100.00", "Aurelia");
-        String before = mvc.perform(get("/api/v1/carts/me").with(jwtForUser("alice")))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
 
         // doThrow, not when(...).thenThrow: price() is already stubbed with an
         // Answer, and when(mock.price(any())) would CALL it -- with a null
@@ -335,12 +332,22 @@ class CartIntegrationTest {
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(content().contentTypeCompatibleWith("application/problem+json"));
 
-        // The bag must be byte-identical: a failed add that half-wrote a cart
-        // row would show up here.
-        assertThat(mvc.perform(get("/api/v1/carts/me").with(jwtForUser("alice")))
+        // The bag's CONTENTS must be untouched: one line, the original
+        // variant, the original quantity, and no line for the variant whose
+        // add failed. A half-written cart row would show up as a second line.
+        //
+        // Asserted on contents rather than on the whole body, because the body
+        // legitimately differs now: with catalog unreachable the read degrades
+        // to stored snapshots with UNKNOWN lines and checkout blocked, so a
+        // byte-comparison against a response captured while catalog was up
+        // would fail for the right reason and tell us nothing about writes.
+        mvc.perform(get("/api/v1/carts/me").with(jwtForUser("alice")))
                 .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString())
-                .isEqualTo(before);
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andExpect(jsonPath("$.items[0].variantId").value(V1.toString()))
+                .andExpect(jsonPath("$.items[0].quantity").value(1))
+                .andExpect(jsonPath("$.items[0].unitPrice").value(100.00))
+                .andExpect(jsonPath("$.checkoutEnabled").value(false));
     }
 
     @Test

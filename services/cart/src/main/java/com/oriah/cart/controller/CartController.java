@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.oriah.cart.dto.AddItemRequest;
 import com.oriah.cart.dto.CartResponse;
 import com.oriah.cart.dto.UpdateItemRequest;
+import com.oriah.cart.model.Cart;
 import com.oriah.cart.service.CartService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -57,7 +58,7 @@ public class CartController {
     @ApiResponse(responseCode = "200", description = "The cart; an empty placeholder if none exists yet")
     @GetMapping
     public ResponseEntity<CartResponse> get(@AuthenticationPrincipal Jwt jwt) {
-        return ResponseEntity.ok(CartResponse.from(service.getOrEmpty(jwt.getSubject())));
+        return ResponseEntity.ok(mapped(service.getOrEmpty(jwt.getSubject())));
     }
 
     @Operation(operationId = "addItem", summary = "Add a variant, or increment it if already present")
@@ -69,7 +70,11 @@ public class CartController {
     public ResponseEntity<CartResponse> addItem(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody AddItemRequest body) {
-        return ResponseEntity.ok(CartResponse.from(service.addPricedItem(
+        // Price the one variant first -- that call decides whether the line may
+        // exist at all and at what price -- then price the resulting bag for
+        // the response. Two calls, never more than 100 ids each; see
+        // CartService.priceAll for why one call does not work at the cap.
+        return ResponseEntity.ok(mapped(service.addPricedItem(
                 jwt.getSubject(), body, service.resolvePricing(body.variantId()))));
     }
 
@@ -86,7 +91,7 @@ public class CartController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("variantId") UUID variantId,
             @Valid @RequestBody UpdateItemRequest body) {
-        return CartResponse.from(
+        return mapped(
                 service.updateItemQuantity(jwt.getSubject(), variantId, body.quantity()));
     }
 
@@ -119,5 +124,20 @@ public class CartController {
     public ResponseEntity<Void> clear(@AuthenticationPrincipal Jwt jwt) {
         service.clear(jwt.getSubject());
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * The single way a cart becomes a response.
+     *
+     * <p>All three cart-returning endpoints go through here so they cannot
+     * drift apart. The specific drift this prevents: giving the add path a
+     * pricing lookup and leaving the quantity-edit path without one, which
+     * would answer every PATCH with UNKNOWN lines and checkout blocked -- so
+     * the bag drawer would disable checkout the moment a shopper touched a
+     * quantity stepper. Pinned by
+     * CartReadModelTest.aQuantityEditStillReturnsAPricedBag.
+     */
+    private CartResponse mapped(Cart cart) {
+        return CartResponse.from(cart, service.priceAll(cart));
     }
 }

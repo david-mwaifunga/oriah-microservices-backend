@@ -1,7 +1,10 @@
 package com.oriah.cart.service;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -9,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import com.oriah.cart.client.CartPricing;
 import com.oriah.cart.client.CatalogPricingClient;
 import com.oriah.cart.dto.AddItemRequest;
 import com.oriah.cart.model.Cart;
@@ -112,6 +116,59 @@ public class CartService {
         log.debug("getOrEmpty sub={}", keycloakId);
         return repository.findByKeycloakId(keycloakId)
                 .orElseGet(() -> new Cart(keycloakId)); // unsaved placeholder; safe for read-only view
+    }
+
+    /**
+     * Prices every line in a bag, for the response.
+     *
+     * <h2>This one DEGRADES where {@link #resolvePricing} refuses</h2>
+     *
+     * Deliberately different policies for a read and a write. An unreachable
+     * catalog must not add a line at a price nobody established -- that throws
+     * a 503. But a bag that answers 503 is useless to a shopper who only wants
+     * to see what is in it, so this returns {@link CartPricing#unavailable()}
+     * and the response falls back to stored snapshots with checkout blocked.
+     * Money paths still fail closed; the shop window does not have to.
+     *
+     * <h2>Why the add path makes two calls rather than one</h2>
+     *
+     * The obvious optimisation -- price the existing lines and the new variant
+     * together, then reuse the result for the response -- breaks at exactly the
+     * cap. A bag holding {@link com.oriah.cart.model.Cart#MAX_LINES} lines plus
+     * one new variant is 101 ids, and catalog's pricing request is
+     * {@code @Size(max = 100)}: the single call would be rejected for the
+     * fullest bags, which is the worst possible place to fail. Resolving the
+     * one variant and then pricing the bag afterwards is never more than 100
+     * ids on either call, because the aggregate refuses the 101st line.
+     */
+    public CartPricing priceAll(Cart cart) {
+        List<UUID> ids = cart.items().stream()
+                .map(CartItem::variantId)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            // Catalog rejects an empty variantIds list, and this is the
+            // most-hit endpoint in the service: an empty bag must not cost a
+            // round trip.
+            return CartPricing.nothingToPrice();
+        }
+        try {
+            CatalogPricingClient.PricingResponse response =
+                    catalog.price(new CatalogPricingClient.PricingRequest(ids));
+            if (response == null || response.results() == null) {
+                log.warn("Pricing cart {} returned no body; serving stored snapshots", cart.id());
+                return CartPricing.unavailable();
+            }
+            Map<UUID, CatalogPricingClient.Entry> byVariant = response.results().stream()
+                    .filter(e -> e.variantId() != null)
+                    .collect(Collectors.toMap(CatalogPricingClient.Entry::variantId,
+                            e -> e, (first, second) -> first));
+            return CartPricing.of(byVariant);
+        } catch (RuntimeException e) {
+            log.warn("Could not price cart {}; serving stored snapshots with checkout blocked",
+                    cart.id(), e);
+            return CartPricing.unavailable();
+        }
     }
 
     /**
