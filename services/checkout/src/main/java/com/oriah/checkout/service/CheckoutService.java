@@ -241,8 +241,7 @@ public class CheckoutService {
         }
 
         BigDecimal afterDiscount = subtotal.subtract(discount);
-        var rates = safeCall(() -> shipping.rates(new ShippingClient.RateRequest(
-                req.destinationCountry(), afterDiscount, priced.currency())), "shipping");
+        var rates = quoteShipping(req.destinationCountry(), afterDiscount, priced.currency());
         requireQuotedInBagCurrency(rates, priced.currency());
         List<PreviewResponse.ShippingOptionDto> options = new ArrayList<>();
         BigDecimal cheapest = BigDecimal.ZERO;
@@ -260,8 +259,13 @@ public class CheckoutService {
         }
 
         BigDecimal total = afterDiscount.add(cheapest);
+        // The token covers the shipping component as well as the prices: an
+        // items-only quote shown during a shipping outage must not validate a
+        // confirm that can now add shipping to it.
         return new PreviewResponse(subtotal, discount, cheapest, total,
-                priced.currency(), applied, options, zone, priced.pricingVersion());
+                priced.currency(), applied, options, zone,
+                PricingVersion.compose(priced.pricingVersion(),
+                        PricingVersion.shippingComponent(zone, rates != null)));
     }
 
     /**
@@ -319,11 +323,76 @@ public class CheckoutService {
      * the ordinary storefront behaviour of reusing the key is no longer a hole.
      */
     private void requireAgreedPrices(String echoed, RepricedBag priced) {
-        if (!priced.pricingVersion().equals(echoed)) {
-            log.info("409 stale pricing: client echoed {}, current is {}",
+        if (!priced.pricingVersion().equals(PricingVersion.catalogHalfOf(echoed))) {
+            log.info("409 stale pricing: client echoed {}, current catalog digest is {}",
                     echoed, priced.pricingVersion());
             throw new PricingChangedException(
                     priced.lines().stream().map(OrderClient.LineItem::variantId).toList());
+        }
+    }
+
+    /**
+     * Refuses a confirm whose SHIPPING component has moved since the quote.
+     *
+     * <p>The case that matters is a shipping outage during preview: the shopper
+     * reads an items-only total, shipping recovers, and confirm would charge
+     * more than the screen said. The catalog prices are identical, so the
+     * price half validates -- this is the half that notices.
+     *
+     * <p>Tolerant of a token with no shipping half, so an older client (or the
+     * contract's own additive window) is not locked out; such a token simply
+     * does not get this protection.
+     */
+    private void requireAgreedShipping(String echoed, String zone, boolean quoted) {
+        String agreed = PricingVersion.shippingHalfOf(echoed);
+        if (agreed.isEmpty()) {
+            return;
+        }
+        String current = PricingVersion.shippingComponent(zone, quoted);
+        if (!agreed.equals(current)) {
+            log.info("409 shipping moved since the quote: agreed {}, current {}", agreed, current);
+            throw new PricingChangedException(List.of());
+        }
+    }
+
+    /**
+     * Quotes shipping, distinguishing "did not answer" from "answered and
+     * refused".
+     *
+     * <h2>The bug this replaces</h2>
+     *
+     * Both paths used {@code safeCall}, whose contract is "any failure becomes
+     * null". shipping-service refuses to quote a currency its rate card is not
+     * written in, with an IllegalArgumentException the shared advice renders
+     * as 400 -- so a currency mismatch became {@code rates == null}, which is
+     * the documented outage path, which charges ZERO shipping. Every affected
+     * bag shipped free, consistently, so nothing looked wrong to anyone; and
+     * {@link #requireQuotedInBagCurrency} could never fire, because a refusing
+     * shipping-service never returns an option in the wrong currency for it to
+     * inspect.
+     *
+     * <p>So the two are separated here, exactly as {@code mustCall}'s
+     * {@code classify} already does for the confirm path: a 4xx means shipping
+     * rejected what WE sent, which is our bug and must be loud; anything else
+     * means no answer, which is a courier outage and still degrades to free
+     * shipping. {@code requireQuotedInBagCurrency} stays as belt and braces for
+     * an older or third-party shipping build that ignores the currency field.
+     */
+    private ShippingClient.RateResponse quoteShipping(String country, BigDecimal afterDiscount,
+                                                      String currency) {
+        try {
+            return resilient.callOrThrow("shipping", () -> shipping.rates(
+                    new ShippingClient.RateRequest(country, afterDiscount, currency)));
+        } catch (RuntimeException e) {
+            int answered = ResilientFeignCaller.answeredStatus(e);
+            if (answered >= 400 && answered < 500) {
+                log.error("shipping REFUSED a {} quote for {} with {} -- configuration "
+                                + "mismatch, not an outage", currency, country, answered, e);
+                throw new DownstreamRejectedException("shipping");
+            }
+            log.warn("No shipping quote for country={} ({}); charging zero shipping",
+                    country, answered < 0 ? "no response" : answered);
+            return null;
         }
     }
 
@@ -423,6 +492,7 @@ public class CheckoutService {
 
         requireAgreedPrices(req.pricingVersion(), priced);
 
+
         // 1) Promo
         BigDecimal subtotal = priced.subtotal();
         BigDecimal discount = BigDecimal.ZERO;
@@ -438,9 +508,14 @@ public class CheckoutService {
         // the order: an unreachable rate service should not stop a sale, and
         // under-charging ourselves is the safe direction to be wrong in.
         BigDecimal shippingCost = BigDecimal.ZERO;
-        var rates = safeCall(() -> shipping.rates(new ShippingClient.RateRequest(
-                req.destinationCountry(), afterDiscount, priced.currency())), "shipping");
+        var rates = quoteShipping(req.destinationCountry(), afterDiscount, priced.currency());
         requireQuotedInBagCurrency(rates, priced.currency());
+        // The second half of the agreement, checked as soon as it is knowable:
+        // the quote depends on the discounted subtotal, so it cannot be known
+        // before the promo has been applied. Still before anything is ordered,
+        // charged or redeemed.
+        requireAgreedShipping(req.pricingVersion(),
+                rates == null ? null : rates.zone(), rates != null);
         if (rates != null && rates.options() != null && !rates.options().isEmpty()) {
             shippingCost = rates.options().stream()
                     .map(ShippingClient.ShippingOption::cost)

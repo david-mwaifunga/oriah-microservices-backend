@@ -1,7 +1,9 @@
 package com.oriah.checkout.service;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -18,8 +20,15 @@ import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.PreviewRequest;
 import com.oriah.checkout.dto.PreviewResponse;
+import com.oriah.checkout.exception.BagNotPurchasableException;
+import com.oriah.checkout.exception.DownstreamRejectedException;
+import com.oriah.checkout.exception.MixedCurrencyException;
 import com.oriah.checkout.exception.PricingChangedException;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
+import feign.FeignException;
+import feign.Request;
+import feign.RequestTemplate;
+import feign.Response;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.ratelimiter.RateLimiterConfig;
@@ -30,6 +39,8 @@ import io.github.resilience4j.retry.RetryRegistry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -154,6 +165,26 @@ class ConfirmPricingTest {
                 : PricingVersion.of(List.of(answer));
     }
 
+    /** A shipping quote at a real cost, in the bag's currency. */
+    private void shippingCosts(String cost) {
+        // doReturn, not when(...): rates() may already be stubbed to throw, and
+        // when(mock.rates(any())) would CALL it while setting up the new stub.
+        doReturn(new ShippingClient.RateResponse(
+                "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
+                        "Local Courier", "Standard", new BigDecimal(cost), "ZMW", 2, 4))))
+                .when(shipping).rates(any());
+    }
+
+    /** A FeignException carrying a real status, as the client would throw. */
+    private static FeignException feign(int status) {
+        Request request = Request.create(Request.HttpMethod.POST,
+                "http://shipping/api/v1/shipping/rates", Map.of(),
+                new byte[0], StandardCharsets.UTF_8, new RequestTemplate());
+        return FeignException.errorStatus("ShippingClient#rates(RateRequest)",
+                Response.builder().status(status).reason("generated")
+                        .request(request).headers(Map.of()).build());
+    }
+
     private void shippingIsFree() {
         when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
                 "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
@@ -258,6 +289,117 @@ class ConfirmPricingTest {
         assertThat(intent.getValue().currency())
                 .as("a ZMW bag must not become a USD intent")
                 .isEqualTo("ZMW");
+    }
+
+    // ------------------------------------- what the review found, as tests
+
+    @Test
+    @DisplayName("a bag mixing currencies is refused with its OWN type, not as unpurchasable")
+    void aMixedCurrencyBagIsRefusedWithItsOwnType() {
+        // Nothing exercised this path at the checkout layer: the only
+        // mixed-currency test in the platform was cart's checkoutEnabled flag.
+        // The type matters because the storefront words the three conflicts
+        // differently -- this one tells the shopper to split the order, which
+        // is useless advice for an unavailable item and vice versa.
+        UUID second = UUID.randomUUID();
+        when(cart.getMyCart()).thenReturn(new CartClient.CartView(
+                UUID.randomUUID(), ONE_CENT,
+                List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT, "Ring", 1,
+                                ONE_CENT, ONE_CENT),
+                        new CartClient.CartItem(UUID.randomUUID(), second, "Cuff", 1,
+                                ONE_CENT, ONE_CENT))));
+        when(catalog.price(any())).thenReturn(new CatalogPricingClient.PricingResponse(List.of(
+                new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(),
+                        "Ring", "Ring", REAL_PRICE, "ZMW"),
+                new CatalogPricingClient.Entry(second, "PRICED", UUID.randomUUID(),
+                        "Cuff", "Cuff", new BigDecimal("250.00"), "USD"))));
+
+        assertThatThrownBy(() -> service.confirm(
+                new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null, "any"), "key-20"))
+                .isInstanceOf(MixedCurrencyException.class);
+
+        verify(order, never()).place(any());
+    }
+
+    @Test
+    @DisplayName("shipping ANSWERING 400 is loud, not free shipping")
+    void aShippingFourHundredIsLoudNotFreeShipping() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // shipping-service refuses to quote a currency its rate card is not
+        // written in -- an IllegalArgumentException rendered as 400. Treating
+        // that as an outage ships every such bag FREE, consistently, so
+        // nothing looks wrong to anyone: the currency guard this service
+        // already has cannot fire, because a refusing shipping-service never
+        // returns an option in the wrong currency for it to inspect.
+        doThrow(feign(400)).when(shipping).rates(any());
+
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-21"))
+                .isInstanceOf(DownstreamRejectedException.class);
+
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("shipping being UNREACHABLE is still free shipping, not an error")
+    void aShippingOutageIsStillFree() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // The documented degrade must survive the fix above: a courier outage
+        // (no response at all) must not stop a sale. 503 and a connection
+        // failure both land here.
+        doThrow(feign(503)).when(shipping).rates(any());
+
+        service.confirm(confirmRequest(), "key-22");
+
+        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
+                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
+        verify(payment).createIntent(intent.capture());
+        assertThat(intent.getValue().amount()).isEqualByComparingTo(REAL_PRICE);
+    }
+
+    @Test
+    @DisplayName("a shipping outage at PREVIEW does not let confirm charge more than it showed")
+    void aShippingOutageAtPreviewCannotOverchargeAtConfirm() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+
+        // Shipping is down while the shopper reaches the review step, so the
+        // quote they read is items-only and the Place order button is enabled.
+        doThrow(feign(503)).when(shipping).rates(any());
+        var preview = service.preview(new PreviewRequest("NG", null));
+        assertThat(preview.shippingCost()).isEqualByComparingTo("0.00");
+        assertThat(preview.total()).isEqualByComparingTo(REAL_PRICE);
+
+        // The circuit half-opens while they type their card, and shipping
+        // answers again.
+        shippingCosts("125.00");
+
+        // The catalog prices are byte-identical, so a digest over catalog
+        // alone validates and the card is charged MORE than the screen said.
+        // That is the one direction the staleness guard exists to make
+        // impossible.
+        assertThatThrownBy(() -> service.confirm(new ConfirmRequest(ADDRESS, "NG",
+                "4242424242424242", null, preview.pricingVersion()), "key-23"))
+                .isInstanceOf(PricingChangedException.class);
+
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("a shipping quote appearing between preview and confirm is fine if it was quoted at both")
+    void aStableShippingQuoteDoesNotInvalidateTheVersion() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        shippingCosts("125.00");
+
+        var preview = service.preview(new PreviewRequest("NG", null));
+        service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+                preview.pricingVersion()), "key-24");
+
+        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
+                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
+        verify(payment).createIntent(intent.capture());
+        assertThat(intent.getValue().amount())
+                .as("items plus the shipping the shopper was shown")
+                .isEqualByComparingTo("4625.00");
     }
 
     // ----------------------------------------------------- the staleness guard
@@ -384,8 +526,13 @@ class ConfirmPricingTest {
     void anUnpublishedLineIsRefusedEntirely() {
         catalogSays("UNPUBLISHED", null, null);
 
+        // The TYPE, not just IllegalStateException: BagNotPurchasableException,
+        // PricingChangedException and MixedCurrencyException all extend it, so
+        // asserting the supertype would stay green if this throw were swapped
+        // for the "prices changed" one -- telling the shopper to retry a bag
+        // that will be refused forever.
         assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-5"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(BagNotPurchasableException.class);
 
         // Cart excludes such a line from its subtotal while still listing it,
         // so an order placed from items() and charged from subtotal() would
@@ -400,7 +547,7 @@ class ConfirmPricingTest {
         catalogSays("UNKNOWN", null, null);
 
         assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-6"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(BagNotPurchasableException.class);
         verify(order, never()).place(any());
     }
 
@@ -411,7 +558,7 @@ class ConfirmPricingTest {
                 new CatalogPricingClient.PricingResponse(List.of()));
 
         assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-7"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(BagNotPurchasableException.class);
         verify(payment, never()).createIntent(any());
     }
 

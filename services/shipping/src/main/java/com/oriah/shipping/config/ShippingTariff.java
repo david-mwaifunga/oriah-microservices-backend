@@ -3,6 +3,7 @@ package com.oriah.shipping.config;
 import java.math.BigDecimal;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.validation.annotation.Validated;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
@@ -42,6 +43,14 @@ import jakarta.validation.constraints.Size;
  * local card and the Config Server overrides it key by key.
  */
 @ConfigurationProperties(prefix = "oriah.shipping.tariff")
+// @Validated, without which the constraints below are INERT. Spring Boot runs
+// the JSR-303 validator over a @ConfigurationProperties type only when the type
+// carries this annotation, so the javadoc above claimed a startup failure that
+// could not happen: a half-written rate card bound nulls, and
+// ShippingService.standard() then threw an NPE on freeOver() -- rendered as a
+// 500, which checkout treats as an outage, which ships every order free.
+// Pinned by TariffBindingTest.
+@Validated
 public record ShippingTariff(
 
         /**

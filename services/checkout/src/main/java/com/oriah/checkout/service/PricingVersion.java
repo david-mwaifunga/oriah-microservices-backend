@@ -60,6 +60,66 @@ final class PricingVersion {
     private static final char FIELD = '\u001f';
     private static final char RECORD = '\u001e';
 
+    /**
+     * The two halves are compared at DIFFERENT points in the saga, which is
+     * why the token is composite rather than one digest.
+     *
+     * <p>The catalog half is checked before anything is ordered or charged.
+     * The shipping half cannot be: the quote depends on the discounted
+     * subtotal, so it is not known until the promo has been applied. Splitting
+     * the token lets each half be compared as soon as it can be.
+     */
+    private static final char HALVES = '.';
+
+    /**
+     * Describes the shipping component of a quote: the zone, and whether a
+     * quote was obtained at all.
+     *
+     * <h2>Why this is in the version</h2>
+     *
+     * A shipping outage during preview shows the shopper an items-only total
+     * with an otherwise valid token. If shipping recovers before they press
+     * Place order, confirm quotes successfully and charges MORE than the screen
+     * said -- the one direction this guard exists to make impossible. The
+     * catalog prices are byte-identical in that scenario, so a digest over
+     * catalog alone validates it.
+     *
+     * <h2>What is deliberately NOT in it</h2>
+     *
+     * The shipping COST. It is a function of the discounted subtotal, so it
+     * moves whenever the shopper changes a quantity -- and a quantity edit must
+     * not invalidate the prices they were quoted (see the class javadoc). Zone
+     * plus "was it quoted" captures the two transitions that can change the
+     * total without the shopper doing anything, and ignores the one they cause
+     * themselves.
+     */
+    static String shippingComponent(String zone, boolean quoted) {
+        return quoted ? "q:" + (zone == null ? "?" : zone) : "noquote";
+    }
+
+    /** Combines the catalog digest with the shipping component. */
+    static String compose(String catalogDigest, String shippingComponent) {
+        return catalogDigest + HALVES + shippingComponent;
+    }
+
+    /** The catalog half of a token a client echoed, or the whole thing if it carries no half. */
+    static String catalogHalfOf(String token) {
+        if (token == null) {
+            return "";
+        }
+        int at = token.indexOf(HALVES);
+        return at < 0 ? token : token.substring(0, at);
+    }
+
+    /** The shipping half of a token a client echoed, or "" if absent. */
+    static String shippingHalfOf(String token) {
+        if (token == null) {
+            return "";
+        }
+        int at = token.indexOf(HALVES);
+        return at < 0 ? "" : token.substring(at + 1);
+    }
+
     static String of(Collection<CatalogPricingClient.Entry> entries) {
         StringBuilder canonical = new StringBuilder();
         entries.stream()

@@ -3,6 +3,8 @@ package com.oriah.shipping.config;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.TestPropertySource;
 
@@ -39,6 +41,95 @@ class TariffBindingTest {
 
     @Autowired
     private ShippingTariff tariff;
+
+    /**
+     * A half-written rate card must stop the service, not bind nulls.
+     *
+     * <p>The constraints on ShippingTariff were INERT until this was written:
+     * Spring Boot runs the JSR-303 validator over a @ConfigurationProperties
+     * type only when the type carries @Validated, and it did not. The javadoc
+     * claimed otherwise, so the claim was false and nothing checked it.
+     *
+     * <p>What that cost, concretely: an edit to config-repo/shipping.yaml that
+     * leaves free-over empty binds null (config-repo wins key by key over
+     * application.yaml), ShippingService.standard() then evaluates
+     * subtotal.compareTo(null) -> NPE -> 500, checkout reads a 500 as an
+     * outage, and every domestic order ships FREE. Silently, because that
+     * degradation is by design.
+     *
+     * <p>An ApplicationContextRunner rather than a @SpringBootTest, following
+     * ContactInfoBindingTest: the outcome under test is a context that REFUSES
+     * to start, which cannot be written as a context that has to start.
+     */
+    @Test
+    @DisplayName("a rate card with a missing figure refuses to start the service")
+    void aPartialCardFailsTheContext() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(TariffHolder.class)
+                .withPropertyValues(
+                        "oriah.shipping.tariff.currency=ZMW",
+                        "oriah.shipping.tariff.domestic.standard-cost=125.00",
+                        "oriah.shipping.tariff.domestic.express-cost=300.00",
+                        // free-over deliberately absent
+                        "oriah.shipping.tariff.regional.standard-cost=375.00",
+                        "oriah.shipping.tariff.regional.express-cost=875.00",
+                        "oriah.shipping.tariff.regional.free-over=6250.00",
+                        "oriah.shipping.tariff.international.standard-cost=1125.00",
+                        "oriah.shipping.tariff.international.express-cost=2125.00",
+                        "oriah.shipping.tariff.international.free-over=12500.00")
+                .run(ctx -> assertThat(ctx)
+                        .as("quoting from a partially bound money table is worse than "
+                                + "not starting")
+                        .hasFailed());
+    }
+
+    @Test
+    @DisplayName("a currency that is not a 3-letter code refuses to start the service")
+    void aMalformedCurrencyFailsTheContext() {
+        // ZMWX would reach ShippingService.requireQuotableCurrency and refuse
+        // every quote from checkout with a 400 -- which, before the companion
+        // fix in CheckoutService, was swallowed as an outage and shipped
+        // everything free.
+        new ApplicationContextRunner()
+                .withUserConfiguration(TariffHolder.class)
+                .withPropertyValues(
+                        "oriah.shipping.tariff.currency=ZMWX",
+                        "oriah.shipping.tariff.domestic.standard-cost=125.00",
+                        "oriah.shipping.tariff.domestic.express-cost=300.00",
+                        "oriah.shipping.tariff.domestic.free-over=3750.00",
+                        "oriah.shipping.tariff.regional.standard-cost=375.00",
+                        "oriah.shipping.tariff.regional.express-cost=875.00",
+                        "oriah.shipping.tariff.regional.free-over=6250.00",
+                        "oriah.shipping.tariff.international.standard-cost=1125.00",
+                        "oriah.shipping.tariff.international.express-cost=2125.00",
+                        "oriah.shipping.tariff.international.free-over=12500.00")
+                .run(ctx -> assertThat(ctx).hasFailed());
+    }
+
+    @Test
+    @DisplayName("a complete card binds and starts")
+    void aCompleteCardStarts() {
+        // The other direction, so the two tests above cannot pass by the
+        // holder being broken in some unrelated way.
+        new ApplicationContextRunner()
+                .withUserConfiguration(TariffHolder.class)
+                .withPropertyValues(
+                        "oriah.shipping.tariff.currency=ZMW",
+                        "oriah.shipping.tariff.domestic.standard-cost=125.00",
+                        "oriah.shipping.tariff.domestic.express-cost=300.00",
+                        "oriah.shipping.tariff.domestic.free-over=3750.00",
+                        "oriah.shipping.tariff.regional.standard-cost=375.00",
+                        "oriah.shipping.tariff.regional.express-cost=875.00",
+                        "oriah.shipping.tariff.regional.free-over=6250.00",
+                        "oriah.shipping.tariff.international.standard-cost=1125.00",
+                        "oriah.shipping.tariff.international.express-cost=2125.00",
+                        "oriah.shipping.tariff.international.free-over=12500.00")
+                .run(ctx -> assertThat(ctx).hasNotFailed());
+    }
+
+    @EnableConfigurationProperties(ShippingTariff.class)
+    static class TariffHolder {
+    }
 
     @Test
     @DisplayName("the shipped rate card is denominated in the brand currency")

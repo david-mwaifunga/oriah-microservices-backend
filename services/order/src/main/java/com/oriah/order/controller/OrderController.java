@@ -119,7 +119,17 @@ public class OrderController {
      *
      * <p>The claim in the body is verified against payment-service before
      * anything is attached: the intent must be SUCCEEDED, must name this
-     * order, and must match its total and currency. See
+     * order, and must be in this order's currency.
+     *
+     * <p>It is NOT checked against the order's AMOUNT, and that gap is
+     * deliberate rather than an oversight -- {@code order.total} is the
+     * client-supplied line sum while checkout charges
+     * {@code afterDiscount + shipping}, so an exact comparison would reject
+     * real checkouts. A 0.01 intent therefore still settles a 4,500.00 order,
+     * and closing that needs the order total to become authoritative. This
+     * paragraph exists because the previous wording claimed the amount WAS
+     * verified: anyone auditing the money path from this controller would have
+     * concluded the hole was closed and stopped reading. See
      * {@link com.oriah.order.service.PaymentIntentVerifier}. This endpoint
      * previously trusted the body, so any shopper could post a random UUID
      * against their own order and receive a PAID order having paid nothing.

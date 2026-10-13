@@ -8,7 +8,6 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.InOrder;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -26,7 +25,7 @@ import feign.Response;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -148,17 +147,30 @@ class AddItemPricingTest {
     }
 
     @Test
-    @DisplayName("the pricing call happens before the repository is touched at all")
-    void pricingHappensBeforeTheRepositoryIsTouched() {
+    @DisplayName("the write phase prices nothing itself: the entry it is given is the entry it uses")
+    void theWritePhaseDoesNotPriceAgain() {
         catalogAnswers(priced());
         when(repository.findByKeycloakId(ALICE)).thenReturn(Optional.of(new Cart(ALICE)));
 
         CatalogPricingClient.Entry entry = service.resolvePricing(VARIANT);
-        service.addPricedItem(ALICE, request(1), entry);
+        clearInvocations(catalog);
 
-        InOrder order = inOrder(catalog, repository);
-        order.verify(catalog).price(any());
-        order.verify(repository).findByKeycloakId(ALICE);
+        Cart cart = service.addPricedItem(ALICE, request(1), entry);
+
+        // A second lookup inside the transaction would undo the reason the two
+        // phases are split -- an HTTP call holding a database connection -- and
+        // could disagree with the price the shopper was just quoted.
+        verifyNoInteractions(catalog);
+        assertThat(cart.items().getFirst().unitPrice()).isEqualByComparingTo(CATALOG_PRICE);
+
+        // The previous version of this test asserted, with an InOrder, that
+        // catalog was called before the repository. It could not fail: the test
+        // itself calls resolvePricing and then addPricedItem, and those are the
+        // only methods that touch catalog and the repository, so the assertion
+        // restated the test's own sequence. The property worth having -- that
+        // nothing is written before a price is established -- is pinned by the
+        // refusal tests below, each of which asserts verifyNoInteractions on
+        // the repository.
     }
 
     // ------------------------------------------------------ refusals (409)
