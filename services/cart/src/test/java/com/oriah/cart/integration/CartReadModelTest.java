@@ -271,6 +271,25 @@ class CartReadModelTest {
                 .andExpect(jsonPath("$.checkoutEnabled").value(false));
     }
 
+    @Test
+    @DisplayName("the response carries no field nobody declared")
+    void theBodyHasNoAccidentalFields() throws Exception {
+        priced(RING, "100.00", "ZMW", "Aurelia");
+        add("ivy", RING, 1);
+
+        // isPurchasable() is an internal helper, but Jackson treats an isX()
+        // method on a record as a derived property and serialized it -- the
+        // payload carried an undeclared "purchasable" field duplicating
+        // pricingStatus. Found by capturing a real response from the running
+        // stack; every assertion in this class names specific fields, so none
+        // of them objected to an extra one.
+        mvc.perform(get("/api/v1/carts/me").with(as("ivy")))
+                .andExpect(status().isOk())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .as("an accidental derived property is an accidental public contract")
+                        .doesNotContain("purchasable"));
+    }
+
     // ------------------------------------------------------------ the empty bag
 
     @Test

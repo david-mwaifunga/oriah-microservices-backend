@@ -3,6 +3,8 @@ package com.oriah.cart.dto;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import com.oriah.cart.client.CatalogPricingClient;
 import com.oriah.cart.model.CartItem;
 
@@ -106,7 +108,17 @@ public record CartItemResponse(
                 i.currency());
     }
 
-    /** Whether this line may be sold at the price it is showing. */
+    /**
+     * Whether this line may be sold at the price it is showing.
+     *
+     * <p>{@code @JsonIgnore} because Jackson treats an {@code isX()} method on
+     * a record as a derived PROPERTY and serializes it: without this the
+     * payload carried an undeclared "purchasable" field duplicating
+     * {@code pricingStatus}. Caught by capturing a real response from the
+     * running stack, not by any unit test -- the assertions all named specific
+     * fields and none of them objected to an extra one.
+     */
+    @JsonIgnore
     public boolean isPurchasable() {
         return PRICED.equals(pricingStatus);
     }
