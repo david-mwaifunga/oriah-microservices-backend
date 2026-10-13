@@ -51,6 +51,6 @@ public class ShippingController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/rates")
     public ResponseEntity<RateResponse> rates(@Valid @RequestBody RateRequest body) {
-        return ResponseEntity.ok(service.quote(body.destinationCountry(), body.subtotal()));
+        return ResponseEntity.ok(service.quote(body.destinationCountry(), body.subtotal(), body.currency()));
     }
 }

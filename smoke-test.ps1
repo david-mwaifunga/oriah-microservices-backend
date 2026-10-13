@@ -167,7 +167,7 @@ $withVariant = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products/$productId/variants" `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ sku=$sku; unitPrice=100.00; currency="USD"; options=@{} })
+    -Body (ConvertTo-Json @{ sku=$sku; unitPrice=100.00; currency="ZMW"; options=@{} })
 $variantId = ($withVariant.variants | Select-Object -First 1).id
 if (-not $variantId) { Write-Error "Variant was not created; got: $($withVariant | ConvertTo-Json -Depth 4)"; exit 1 }
 
@@ -292,11 +292,30 @@ $preview = Invoke-RestMethod -Method POST `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ destinationCountry="NG"; promotionCode=$promoCode })
-if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or $preview.total -ne 170.00) {
-    Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) total=$($preview.total)"
+# 2 x K100 = K200, less 15% = K30, plus K125 domestic standard shipping.
+#
+# Shipping is no longer FREE here, and that is the correct answer rather than a
+# regression. The old assertion expected 170.00 because 200 USD cleared a
+# 150 USD free-shipping threshold; the rate card is published in Kwacha now and
+# K200 is nowhere near the K3,750 threshold. A K200 order earning free delivery
+# was only ever true because the card was silently denominated in dollars.
+#
+# Asserting the shipping line explicitly is stronger than the old version too:
+# it proves the cost is applied in the bag's currency rather than quietly
+# degrading to zero -- which is what an unreachable shipping-service does, and
+# what a currency mismatch used to do.
+$expectedShip = 125.00
+$expectedTotal = 295.00
+if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or
+    $preview.shippingCost -ne $expectedShip -or $preview.total -ne $expectedTotal) {
+    Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total)"
     exit 1
 }
-Write-Host "    subtotal=200, -15% promo=30, ship=0, total=170" -ForegroundColor Gray
+if ($preview.currency -ne "ZMW") {
+    Write-Error "Preview currency should be the bag's ZMW, got $($preview.currency)"
+    exit 1
+}
+Write-Host "    subtotal=200, promo=30, ship=125, total=295 ZMW" -ForegroundColor Gray
 
 Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up

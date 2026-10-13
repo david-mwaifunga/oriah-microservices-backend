@@ -13,7 +13,16 @@ public interface ShippingClient {
     @PostMapping("/api/v1/shipping/rates")
     RateResponse rates(@RequestBody RateRequest body);
 
-    record RateRequest(String destinationCountry, BigDecimal subtotal) {}
+    /**
+     * @param currency what {@code subtotal} is denominated in. shipping-service
+     *                 publishes its rate card in one currency and refuses to
+     *                 quote in another rather than inventing an exchange rate,
+     *                 so it has to be told. Checkout checks the answer again on
+     *                 its own side -- a service that cannot be bothered to read
+     *                 this field is exactly the one that would return the wrong
+     *                 currency.
+     */
+    record RateRequest(String destinationCountry, BigDecimal subtotal, String currency) {}
     record RateResponse(String destinationCountry, String zone, List<ShippingOption> options) {}
     record ShippingOption(String carrier, String service, BigDecimal cost, String currency, Integer etaDaysMin, Integer etaDaysMax) {}
 }

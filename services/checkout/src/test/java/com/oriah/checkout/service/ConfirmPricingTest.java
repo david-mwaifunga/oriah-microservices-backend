@@ -232,6 +232,61 @@ class ConfirmPricingTest {
     // ------------------------------------------------------- refuse, don't guess
 
     @Test
+    @DisplayName("the bag's currency is sent to shipping, so it can refuse to quote in it")
+    void theBagCurrencyIsSentToShipping() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+
+        service.confirm(confirmRequest(), "key-9");
+
+        ArgumentCaptor<ShippingClient.RateRequest> rates =
+                ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        verify(shipping).rates(rates.capture());
+        assertThat(rates.getValue().currency())
+                .as("shipping cannot refuse a currency it is never told about")
+                .isEqualTo("ZMW");
+    }
+
+    @Test
+    @DisplayName("a shipping quote in another currency is refused, not added to the total")
+    void aShippingQuoteInAnotherCurrencyIsRefused() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // shipping-service minted every option in USD until this phase, and
+        // checkout discarded the currency field entirely -- so a 45-dollar
+        // courier charge landed on a Kwacha order as though it were 45 Kwacha.
+        // Unlike an outage, this is a configuration mismatch: paper over it
+        // with free shipping and the mistake is permanent and invisible.
+        when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
+                "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
+                        "DHL", "International", new BigDecimal("45.00"), "USD", 7, 14))));
+
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-10"))
+                .isInstanceOf(RuntimeException.class);
+
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("shipping being UNREACHABLE still degrades to free, as it always has")
+    void anUnreachableShippingServiceStillDegradesToFree() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // Pinned so the refusal above cannot quietly become a refusal here.
+        // An unreachable rate service must not stop a sale -- under-charging
+        // ourselves by the shipping cost is the safe direction to be wrong in,
+        // and that is a deliberate, documented choice rather than an oversight.
+        when(shipping.rates(any())).thenThrow(new IllegalStateException("shipping is down"));
+
+        service.confirm(confirmRequest(), "key-11");
+
+        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
+                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
+        verify(payment).createIntent(intent.capture());
+        assertThat(intent.getValue().amount())
+                .as("the items, with no shipping added")
+                .isEqualByComparingTo(REAL_PRICE);
+    }
+
+    @Test
     @DisplayName("a line catalog will not price is never ordered and never charged")
     void anUnpublishedLineIsRefusedEntirely() {
         catalogSays("UNPUBLISHED", null, null);

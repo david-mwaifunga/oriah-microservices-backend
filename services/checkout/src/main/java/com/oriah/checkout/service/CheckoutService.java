@@ -230,8 +230,9 @@ public class CheckoutService {
         }
 
         BigDecimal afterDiscount = subtotal.subtract(discount);
-        var rates = safeCall(() -> shipping.rates(
-                new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping");
+        var rates = safeCall(() -> shipping.rates(new ShippingClient.RateRequest(
+                req.destinationCountry(), afterDiscount, priced.currency())), "shipping");
+        requireQuotedInBagCurrency(rates, priced.currency());
         List<PreviewResponse.ShippingOptionDto> options = new ArrayList<>();
         BigDecimal cheapest = BigDecimal.ZERO;
         String zone = null;
@@ -264,6 +265,39 @@ public class CheckoutService {
      * which is right for a read and wrong for anything that moves money --
      * confirm uses {@link #mustCall} instead.
      */
+    /**
+     * Refuses a shipping quote that is not denominated in the bag's currency.
+     *
+     * <h2>Why this is not the same as shipping being down</h2>
+     *
+     * An unreachable rate service degrades to free shipping, deliberately:
+     * under-charging ourselves is the safe direction to be wrong in, and a
+     * courier outage should not stop a sale. A quote in the WRONG CURRENCY is
+     * a different animal -- shipping answered, and the answer is unusable.
+     * Treating it as an outage would add a dollar cost to a Kwacha total as
+     * though the two were one unit, permanently and invisibly, which is
+     * precisely what happened while checkout discarded this field.
+     *
+     * <p>So it is a 500, not a 409 and not a silent zero: nothing the shopper
+     * did caused it and nothing they can do will fix it. It is a
+     * configuration mismatch between two of our own services, and the only
+     * safe behaviour is to stop and be noticed.
+     *
+     * <p>A null quote (the outage path) passes through here untouched.
+     */
+    private void requireQuotedInBagCurrency(ShippingClient.RateResponse rates, String bagCurrency) {
+        if (rates == null || rates.options() == null) {
+            return;
+        }
+        for (ShippingClient.ShippingOption option : rates.options()) {
+            if (option.currency() != null && !option.currency().equalsIgnoreCase(bagCurrency)) {
+                log.error("shipping quoted {} for a {} bag -- refusing rather than adding "
+                                + "one currency to another", option.currency(), bagCurrency);
+                throw new DownstreamRejectedException("shipping");
+            }
+        }
+    }
+
     private <T> T safeCall(java.util.function.Supplier<T> call, String name) {
         return resilient.call(name, call, null);
     }
@@ -360,8 +394,9 @@ public class CheckoutService {
         // the order: an unreachable rate service should not stop a sale, and
         // under-charging ourselves is the safe direction to be wrong in.
         BigDecimal shippingCost = BigDecimal.ZERO;
-        var rates = safeCall(() -> shipping.rates(
-                new ShippingClient.RateRequest(req.destinationCountry(), afterDiscount)), "shipping");
+        var rates = safeCall(() -> shipping.rates(new ShippingClient.RateRequest(
+                req.destinationCountry(), afterDiscount, priced.currency())), "shipping");
+        requireQuotedInBagCurrency(rates, priced.currency());
         if (rates != null && rates.options() != null && !rates.options().isEmpty()) {
             shippingCost = rates.options().stream()
                     .map(ShippingClient.ShippingOption::cost)
