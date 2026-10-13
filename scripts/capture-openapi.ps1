@@ -24,10 +24,32 @@
     Gateway base URL. Defaults to http://localhost:8080.
 
 .PARAMETER OutDir
-    Where to write <service>.json. Defaults to .codex-tmp/baseline/openapi.
+    Where to write <service>.json. Defaults to .codex-tmp/current/openapi --
+    the AFTER side of the comparison.
+
+    It used to default to .codex-tmp/baseline/openapi, which is the side the
+    diff treats as the reference. So running this with no arguments silently
+    overwrote the reference with the live spec, and the next openapi_diff.py
+    run compared the new spec against itself-reversed: a freshly ADDED optional
+    property was reported as a REMOVED one, i.e. a breaking change. The gate
+    said "FAIL: the contract regressed" about a change that was purely
+    additive, and the baseline it needed in order to say otherwise was gone --
+    .codex-tmp is gitignored, so there was nothing to restore it from.
+
+    A gate whose reference can be destroyed by the command you run before it is
+    worse than no gate, because it fails in the direction that looks like the
+    code is broken. The baseline is now written only when asked for by name.
 
 .EXAMPLE
+    # The after side, which is what you want when verifying a change:
     powershell.exe -ExecutionPolicy Bypass -File .\scripts\capture-openapi.ps1
+
+.EXAMPLE
+    # Re-baselining, which is a deliberate act: it discards the reference the
+    # additions-only bar is measured against, so do it only when the current
+    # contract has been accepted.
+    powershell.exe -ExecutionPolicy Bypass -File .\scripts\capture-openapi.ps1 `
+        -OutDir .codex-tmp/baseline/openapi
 
 .NOTES
     Run from the oriah-api root with the compose stack up. If PowerShell
@@ -36,7 +58,7 @@
 #>
 param(
     [string] $GatewayUrl = "http://localhost:8080",
-    [string] $OutDir = ".codex-tmp/baseline/openapi"
+    [string] $OutDir = ".codex-tmp/current/openapi"
 )
 
 $ErrorActionPreference = "Stop"

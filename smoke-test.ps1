@@ -321,6 +321,83 @@ if (-not $preview.pricingVersion) {
 }
 Write-Host "    subtotal=200, promo=30, ship=125, total=295 ZMW, version=$($preview.pricingVersion.Substring(0,12))..." -ForegroundColor Gray
 
+Write-Host "[5b/20] The shipping zone comes from the ADDRESS, not the request body..." -ForegroundColor Cyan
+# destinationCountry used to decide the zone, and the zone decides both the
+# shipping charge and the free-shipping threshold. Nothing reconciled it with
+# the address being shipped to, so a caller could declare "NG" (DOMESTIC:
+# K125, free over K3,750) while shipping to America (INTERNATIONAL: K1,125,
+# free over K12,500) -- and the order recorded only the address, so fulfilment
+# shipped to the real one and nothing in the order showed the discrepancy.
+#
+# This probe sends exactly that mismatch and asserts the EXPENSIVE zone comes
+# back. 125.00 here would mean the body is still being believed.
+$usAddr = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/customers/me/addresses" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ label="Overseas"; line1="1 Fifth Avenue"; city="New York"; postalCode="10003"; country="US"; isDefault=$false })
+
+$lie = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/checkout/preview" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ destinationCountry="NG"; shippingAddressId=$usAddr.id })
+if ($lie.shippingCost -ne 1125.00) {
+    Write-Error ("Zone taken from the request body: shipping quoted $($lie.shippingCost) " +
+                 "for a US address while the body claimed NG. Expected 1125.00 " +
+                 "(INTERNATIONAL); 125.00 means the client still picks the zone.")
+    exit 1
+}
+if ($lie.shippingZone -ne "INTERNATIONAL") {
+    Write-Error "Quote should name the INTERNATIONAL zone, got $($lie.shippingZone)"
+    exit 1
+}
+# K200 bag, no promo code: the whole K1,125 lands on the total. The old
+# behaviour billed K325 for the same shipment.
+if ($lie.total -ne 1325.00) {
+    Write-Error "Total should be 200 + 1125 = 1325.00, got $($lie.total)"
+    exit 1
+}
+
+# The crossed direction, which is what gives the pair its teeth: the SAME two
+# fields, swapped. Body says US (INTERNATIONAL, K1,125), address says NG
+# (DOMESTIC, K125). If the body still decided, this would quote K1,125; if
+# checkout ignored both and fell back to a fixed zone, one of the two probes
+# would fail. Only "the address decides" satisfies both.
+$crossed = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/checkout/preview" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ destinationCountry="US"; shippingAddressId=$addrId })
+if ($crossed.shippingCost -ne 125.00 -or $crossed.shippingZone -ne "DOMESTIC") {
+    Write-Error ("Crossed probe: body US + address NG should quote DOMESTIC 125.00, " +
+                 "got $($crossed.shippingZone) $($crossed.shippingCost). Together with " +
+                 "the probe above this pins the zone to the address in both directions.")
+    exit 1
+}
+
+# An address that is not the caller's is refused outright, and the refusal
+# names neither "not yours" nor "does not exist" -- customer-service lists only
+# the caller's own, so checkout genuinely cannot tell which it was.
+try {
+    Invoke-RestMethod -Method POST `
+        -Uri "http://localhost:8080/api/v1/checkout/preview" `
+        -Headers @{ Authorization="Bearer $alice" } `
+        -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ destinationCountry="NG"; shippingAddressId="11111111-2222-3333-4444-555555555555" }) | Out-Null
+    Write-Error "An address belonging to nobody was ACCEPTED for a shipping quote"
+    exit 1
+}
+catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+    if ($code -ne 400) {
+        Write-Error "A foreign address id should be 400, got $code"
+        exit 1
+    }
+}
+Write-Host "    NG body + US address -> INTERNATIONAL K1,125; US body + NG address -> DOMESTIC K125; foreign address 400" -ForegroundColor Gray
+
 Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up
 # front instead of being recovered afterwards by scraping the backend for
