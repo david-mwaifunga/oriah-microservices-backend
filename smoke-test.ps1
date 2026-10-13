@@ -131,31 +131,65 @@ Write-Host "    all 12 services resolvable through the gateway" -ForegroundColor
 
 # Unique-per-run promo code so re-runs don't collide on the UNIQUE constraint.
 $promoCode = "WELCOME-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
+# Variant SKUs are globally UNIQUE (V3: `sku TEXT NOT NULL UNIQUE`), so a
+# fixed one makes this script runnable exactly once -- the second run gets a
+# 409 from catalog's integrity handler. Randomised for the same reason as the
+# promo code above: this test has to be re-runnable against a live stack that
+# still holds everything previous runs created.
+$sku = "AUR-18K-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
-Write-Host "[1/19] JWTs..." -ForegroundColor Cyan
+Write-Host "[1/20] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/19] Admin: product + inventory + promo code..." -ForegroundColor Cyan
+Write-Host "[2/20] Admin: product + inventory + promo code..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ title="Aurelia 18k"; description="Hand-finished gold band"; tags=@("rings","gold") })
 $productId = $product.id
+
+# A product is not purchasable until it has a priced VARIANT, and it is not
+# visible publicly until it is published. Both are new since the products
+# phase, and both are load-bearing for the steps below:
+#
+#   * inventory, the cart and product_index are all keyed by VARIANT id now.
+#     A freshly created product has no variants, so it registers nothing in
+#     product_index -- step 11 asserted on the product id and would fail.
+#   * the public read 404s anything not ACTIVE, which step 14 probes for a
+#     200.
+#
+# The variant id, NOT the product id, is the purchasable identity from here
+# on. They coincided before the variants migration, which is exactly why
+# using the wrong one silently worked until now.
+$withVariant = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/admin/products/$productId/variants" `
+    -Headers @{ Authorization="Bearer $maya" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ sku=$sku; unitPrice=100.00; currency="USD"; options=@{} })
+$variantId = ($withVariant.variants | Select-Object -First 1).id
+if (-not $variantId) { Write-Error "Variant was not created; got: $($withVariant | ConvertTo-Json -Depth 4)"; exit 1 }
+
+# Publish, or the public read and the storefront list both 404. Refuses a
+# zero-priced variant, which is why unitPrice above is real.
+Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/admin/products/$productId/publish" `
+    -Headers @{ Authorization="Bearer $maya" } | Out-Null
+
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/inventory" `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$productId; onHand=10 }) | Out-Null
+    -Body (ConvertTo-Json @{ variantId=$variantId; onHand=10 }) | Out-Null
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/promotions" `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ code=$promoCode; type="PERCENTAGE"; amount=15; maxRedemptions=0 }) | Out-Null
-Write-Host "    product=$productId, inventory=10, promo=$promoCode" -ForegroundColor Gray
+Write-Host "    product=$productId, variant=$variantId, published, inventory=10, promo=$promoCode" -ForegroundColor Gray
 
-Write-Host "[3/19] Customer: profile + address..." -ForegroundColor Cyan
+Write-Host "[3/20] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me" `
     -Headers @{ Authorization="Bearer $alice" } | Out-Null
@@ -166,7 +200,7 @@ $addr = Invoke-RestMethod -Method POST `
     -Body (ConvertTo-Json @{ label="Home"; line1="1 Aurelia Lane"; city="Lagos"; postalCode="100001"; country="NG"; isDefault=$true })
 $addrId = $addr.id
 
-Write-Host "[4/19] Customer: add 2 units to cart..." -ForegroundColor Cyan
+Write-Host "[4/20] Customer: add 2 units to cart..." -ForegroundColor Cyan
 # Clear first, so the run is idempotent. Step 6 (/checkout/confirm) empties the
 # cart on success, but a run that dies anywhere between step 4 and step 6 leaves
 # items behind -- and because each run creates a NEW product, the next run's
@@ -191,7 +225,7 @@ Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$productId; quantity=2; unitPrice=100.00; title="Aurelia 18k" }) | Out-Null
+    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=2; unitPrice=100.00; title="Aurelia 18k" }) | Out-Null
 
 # Assert the cart holds exactly what we just put in it, so a totals mismatch in
 # step 5 points at the pricing logic rather than at leftover state.
@@ -204,7 +238,7 @@ if (@($cart.items).Count -ne 1 -or $cartUnits -ne 2) {
     exit 1
 }
 
-Write-Host "[5/19] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
+Write-Host "[5/20] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -216,7 +250,7 @@ if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or $preview.to
 }
 Write-Host "    subtotal=200, -15% promo=30, ship=0, total=170" -ForegroundColor Gray
 
-Write-Host "[6/19] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
+Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up
 # front instead of being recovered afterwards by scraping the backend for
 # "the most recent trace that looks like a saga". Deterministic, and it also
@@ -244,7 +278,7 @@ if ($confirm.orderStatus -ne "PAID") {
 $orderId = $confirm.orderId
 Write-Host "    order=$orderId PAID" -ForegroundColor Gray
 
-Write-Host "[7/19] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
+Write-Host "[7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
     $r = Invoke-RestMethod -Method POST `
         -Uri "http://localhost:8080/api/v1/admin/orders/$orderId/transition" `
@@ -255,11 +289,15 @@ foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
 }
 Write-Host "    order DELIVERED" -ForegroundColor Gray
 
-Write-Host "[8/19] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
+Write-Host "[8/20] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
 $searchHit = $false
 for ($i = 0; $i -lt 30; $i++) {
     $r = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=aurelia"
-    if ($r.count -ge 1 -and ($r.hits | Where-Object { $_.variantId -eq $productId })) {
+    # productId, not the deprecated variantId alias: this index holds one row
+    # per PRODUCT and always did, so the value was never wrong but the name
+    # stopped being defensible. Both carry the same value for the deprecation
+    # window; reading the new one means removing the alias will not break this.
+    if ($r.count -ge 1 -and ($r.hits | Where-Object { $_.productId -eq $productId })) {
         $searchHit = $true; break
     }
     Start-Sleep -Milliseconds 500
@@ -267,7 +305,7 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $searchHit) { Write-Error "Search index never picked up product $productId from Kafka"; exit 1 }
 Write-Host "    /search?q=aurelia returned the product" -ForegroundColor Gray
 
-Write-Host "[9/19] Customer review; public listing + aggregate..." -ForegroundColor Cyan
+Write-Host "[9/20] Customer review; public listing + aggregate..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/products/$productId/reviews" `
     -Headers @{ Authorization="Bearer $alice" } `
@@ -281,7 +319,7 @@ if ($publicReviews.content.Count -ne 1 -or $agg.average -ne 5.0 -or $agg.count -
 }
 Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
 
-Write-Host "[10/19] /notifications/me shows order.* events..." -ForegroundColor Cyan
+Write-Host "[10/20] /notifications/me shows order.* events..." -ForegroundColor Cyan
 $notifsFound = $false
 for ($i = 0; $i -lt 30; $i++) {
     $n = Invoke-RestMethod -Method GET `
@@ -293,9 +331,9 @@ for ($i = 0; $i -lt 30; $i++) {
 if (-not $notifsFound) { Write-Error "Expected >=5 notifications, never reached that count"; exit 1 }
 Write-Host "    >=5 notifications received (created+paid+fulfilled+shipped+delivered)" -ForegroundColor Gray
 
-Write-Host "[11/19] Kafka product_index + 401 without token..." -ForegroundColor Cyan
+Write-Host "[11/20] Kafka product_index + 401 without token..." -ForegroundColor Cyan
 $rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
-    "SELECT title FROM product_index WHERE variant_id = '$productId'"
+    "SELECT title FROM product_index WHERE variant_id = '$variantId'"
 if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index broken; got '$rows'"; exit 1 }
 try {
     Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/checkout/preview" `
@@ -310,7 +348,7 @@ try {
 }
 Write-Host "    product_index OK + 401 OK" -ForegroundColor Gray
 
-Write-Host "[12/19] Tempo has the saga trace spanning the chain..." -ForegroundColor Cyan
+Write-Host "[12/20] Tempo has the saga trace spanning the chain..." -ForegroundColor Cyan
 # Poll until the trace is COMPLETE, not merely present.
 #
 # Two separate traps here, both hit for real:
@@ -388,7 +426,7 @@ if (-not $sagaComplete) {
 }
 Write-Host "    traceId=$sagaTraceId spans=$sagaSpanCount services=$($sagaServices -join ',')" -ForegroundColor Gray
 
-Write-Host "[13/19] Prometheus scrapes every service..." -ForegroundColor Cyan
+Write-Host "[13/20] Prometheus scrapes every service..." -ForegroundColor Cyan
 $up = Invoke-RestMethod -Method GET -Uri "http://localhost:9090/api/v1/query?query=up"
 $expected = @("catalog:8081","inventory:8082","customer:8083","cart:8084","payment:8085",
               "order:8086","promotion:8087","shipping:8088","checkout:8089",
@@ -406,7 +444,7 @@ if ($downServices.Count -gt 0) {
 }
 Write-Host "    all 12 services up=1 in Prometheus" -ForegroundColor Gray
 
-Write-Host "[14/19] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
+Write-Host "[14/20] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
 # Invoke-WebRequest (not Invoke-RestMethod) so we can read the raw
 # byte length -- IRM auto-deserializes and would map a 0-byte body
 # silently to $null, hiding exactly the regression we want to catch.
@@ -471,7 +509,7 @@ function Test-Probe($Uri) {
     }
 }
 
-Write-Host "[15/19] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
+Write-Host "[15/20] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
 $probeFailures = @()
 foreach ($svc in $servicePorts.Keys) {
     foreach ($group in @("readiness", "liveness")) {
@@ -490,7 +528,7 @@ if ($probeFailures.Count -gt 0) {
 }
 Write-Host "    24/24 probe endpoints UP (12 services x readiness+liveness)" -ForegroundColor Gray
 
-Write-Host "[16/19] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
+Write-Host "[16/20] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
 $infoFailures = @()
 foreach ($svc in $servicePorts.Keys) {
     $uri = "http://localhost:$($servicePorts[$svc])/actuator/info"
@@ -527,7 +565,7 @@ if ($infoFailures.Count -gt 0) {
 }
 Write-Host "    all 12 services report app.name + build.{version,artifact,time}" -ForegroundColor Gray
 
-Write-Host "[17/19] Loki has lines shipped by Alloy (shipper-qualified)..." -ForegroundColor Cyan
+Write-Host "[17/20] Loki has lines shipped by Alloy (shipper-qualified)..." -ForegroundColor Cyan
 $alloyLines = 0
 foreach ($attempt in 1..15) {
     try {
@@ -555,7 +593,7 @@ if ($alloyLines -le 0) {
 }
 Write-Host "    $alloyLines log lines in Loki carrying shipper=alloy" -ForegroundColor Gray
 
-Write-Host "[18/19] Gateway's own actuator is not exposed on the public edge..." -ForegroundColor Cyan
+Write-Host "[18/20] Gateway's own actuator is not exposed on the public edge..." -ForegroundColor Cyan
 # health and info are intentionally open: compose/orchestrators probe them, and
 # they carry nothing sensitive. Everything else must be unreachable
 # unauthenticated from 8080 -- 401/403 (secured) or 404 (not exposed) all pass;
@@ -591,7 +629,7 @@ if ($edgeLeaks.Count -gt 0) {
 }
 Write-Host "    8 sensitive endpoints unreachable; health + info still open for probes" -ForegroundColor Gray
 
-Write-Host "[19/19] Idle log hygiene: the two loggers that were 99% of the noise..." -ForegroundColor Cyan
+Write-Host "[19/20] Idle log hygiene: the two loggers that were 99% of the noise..." -ForegroundColor Cyan
 # Measured before this step existed: 82.7 lines/min across 34 containers with
 # NOBODY using the system, and 225 of 229 JSON lines were WARN. Two loggers were
 # 99% of it, and one of them was a broken feature rather than noise.
@@ -657,6 +695,186 @@ if ($hygieneProblems.Count -gt 0) {
     exit 1
 }
 Write-Host "    0 OTLP publish failures, 0 Kafka watermark warnings, lag metric intact" -ForegroundColor Gray
+
+# ---------------------------------------------------------------------------
+# Money-path authorization. Every attempt below produced a PAID order or a
+# real charge before the authorization sweep, and each is asserted on the
+# STATE it leaves behind rather than on the status code alone -- the whole
+# shape of these bugs was that the refusal looked correct while the money had
+# already moved.
+#
+# The unit and integration suites cover the same rules against a real
+# Postgres, but with a mocked JwtDecoder and (in order's case) a mocked
+# payment client. Only here are Eureka discovery, the forwarded JWT and the
+# real gateway in the loop, which is where a config regression would hide:
+# order falling back instead of throwing, or the circuit breaker losing the
+# Authorization header, would both leave these green in Maven and broken here.
+# ---------------------------------------------------------------------------
+Write-Host "[20/20] Money-path authorization holds (live exploit attempts)..." -ForegroundColor Cyan
+
+function New-ProbeOrder($Headers, $Amount) {
+    return Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
+        -Headers $Headers -ContentType "application/json" `
+        -Body (ConvertTo-Json @{
+            shippingAddressId = $addrId
+            currency = "USD"
+            items = @(@{ variantId=$variantId; title="Authz probe"
+                         quantity=1; unitPrice=$Amount })
+        })
+}
+function Probe-Status($err) {
+    $c = $err.Exception.Response.StatusCode.value__
+    if (-not $c) { $c = [int]$err.Exception.Response.StatusCode }
+    return $c
+}
+function Charge-Count($Amount) {
+    # The gateway logs one line per charge. Counting them is the only way to
+    # tell "refused" from "charged, then refused" -- which is the entire
+    # distinction these checks exist for.
+    #
+    # Routed through cmd with 2>nul, matching the idle-log step's idiom below.
+    # In PowerShell 5.1 a native command's stderr arrives as an ErrorRecord,
+    # and with $ErrorActionPreference="Stop" the container's "Picked up
+    # JAVA_TOOL_OPTIONS" banner on stderr is enough to abort the script.
+    # Discarding stderr inside cmd keeps it out of PowerShell altogether.
+    $logs = cmd /c "docker logs oriah-payment 2>nul"
+    $hits = @($logs | Select-String -SimpleMatch "FakePaymentGateway.charge amount=$Amount ")
+    return $hits.Count
+}
+
+$aliceH = @{ Authorization = "Bearer $alice" }
+$mayaH  = @{ Authorization = "Bearer $maya" }
+$authzFailures = @()
+
+# (a) A fabricated payment intent id must not pay an order.
+$probe = New-ProbeOrder $aliceH 4500.00
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders/$($probe.id)/pay" `
+        -Headers $aliceH -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ paymentIntentId=[guid]::NewGuid().ToString() }) | Out-Null
+    $authzFailures += "a made-up paymentIntentId was accepted"
+} catch {
+    $code = Probe-Status $_
+    $after = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/$($probe.id)" -Headers $aliceH).status
+    if ($code -ne 409 -or $after -ne "CREATED") {
+        $authzFailures += "fabricated intent: code=$code status=$after (want 409/CREATED)"
+    }
+}
+
+# (b) A genuinely settled intent belonging to ANOTHER order must not pay this
+#     one. Without this check, settling one cheap order would pay every order
+#     the shopper owns.
+$victim = New-ProbeOrder $aliceH 4500.00
+$decoy  = New-ProbeOrder $aliceH 1.00
+$decoyIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+    -Headers $aliceH -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ orderId=$decoy.id; amount=1.00; currency="USD" })
+$settledDecoy = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/payments/intents/$($decoyIntent.id)/confirm" `
+    -Headers $aliceH -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
+if ($settledDecoy.status -ne "SUCCEEDED") {
+    $authzFailures += "probe setup: decoy intent did not settle ($($settledDecoy.status))"
+}
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders/$($victim.id)/pay" `
+        -Headers $aliceH -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ paymentIntentId=$settledDecoy.id }) | Out-Null
+    $authzFailures += "one order's settled intent paid a DIFFERENT order"
+} catch {
+    $code = Probe-Status $_
+    $after = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/$($victim.id)" -Headers $aliceH).status
+    if ($code -ne 409 -or $after -ne "CREATED") {
+        $authzFailures += "wrong-order intent: code=$code status=$after (want 409/CREATED)"
+    }
+}
+
+# (c) Re-confirming a settled intent must not reach the gateway a second time.
+#     The guard existed but ran AFTER the charge, so this used to be a second
+#     real charge that the caller was told had failed.
+$before = Charge-Count "1.00"
+try {
+    Invoke-RestMethod -Method POST `
+        -Uri "http://localhost:8080/api/v1/payments/intents/$($decoyIntent.id)/confirm" `
+        -Headers $aliceH -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ cardNumber="4242424242424242" }) | Out-Null
+    $authzFailures += "a SUCCEEDED intent was confirmed a second time"
+} catch {
+    $code = Probe-Status $_
+    if ($code -ne 409) { $authzFailures += "double confirm: code=$code (want 409)" }
+}
+if ((Charge-Count "1.00") -ne $before) {
+    $authzFailures += "double confirm reached the gateway (charge count moved)"
+}
+
+# (d) Another customer must not settle, or replay a key against, someone
+#     else's intent. maya carries ROLE_USER alongside her admin roles, so she
+#     is a second real customer here. The amount is distinctive so the
+#     gateway's charge count is unambiguous.
+$crossAmount = 77.77
+$aliceOrder = New-ProbeOrder $aliceH $crossAmount
+$aliceIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+    -Headers $aliceH -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ orderId=$aliceOrder.id; amount=$crossAmount; currency="USD" })
+$chargesBefore = Charge-Count $crossAmount
+try {
+    Invoke-RestMethod -Method POST `
+        -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
+        -Headers $mayaH -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ cardNumber="4242424242424242" }) | Out-Null
+    $authzFailures += "another customer settled Alice's intent"
+} catch {
+    $code = Probe-Status $_
+    $still = (Invoke-RestMethod -Method GET `
+        -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)" -Headers $aliceH).status
+    if ($code -ne 404 -or $still -ne "PENDING") {
+        $authzFailures += "foreign confirm: code=$code intent=$still (want 404/PENDING)"
+    }
+}
+# THE assertion for (d): a 404 was always returned. What was broken is whether
+# the card was charged before it.
+if ((Charge-Count $crossAmount) -ne $chargesBefore) {
+    $authzFailures += "foreign confirm CHARGED the card before refusing"
+}
+
+# (e) An Idempotency-Key must not replay one customer's stored response to
+#     another. Alice confirms with her own key first, which must still work.
+$sharedKey = "smoke-authz-" + [guid]::NewGuid().ToString()
+$aliceOwn = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
+    -Headers ($aliceH + @{ "Idempotency-Key" = $sharedKey }) -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
+if ($aliceOwn.status -ne "SUCCEEDED") {
+    $authzFailures += "the owner's own keyed confirm broke ($($aliceOwn.status))"
+}
+try {
+    $leaked = Invoke-RestMethod -Method POST `
+        -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
+        -Headers ($mayaH + @{ "Idempotency-Key" = $sharedKey }) -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
+    $authzFailures += "an Idempotency-Key replayed another customer's payment body"
+} catch {
+    $code = Probe-Status $_
+    if ($code -ne 404) { $authzFailures += "cross-customer replay: code=$code (want 404)" }
+}
+
+# (f) The owner's own replay must still be served -- the mechanism has to keep
+#     working, or the scoping above has simply broken idempotency.
+$aliceReplay = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
+    -Headers ($aliceH + @{ "Idempotency-Key" = $sharedKey }) -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
+if ($aliceReplay.id -ne $aliceOwn.id -or $aliceReplay.status -ne $aliceOwn.status) {
+    $authzFailures += "the owner's replay no longer returns the stored response"
+}
+
+if ($authzFailures.Count -gt 0) {
+    Write-Host "    money-path authorization FAILED:" -ForegroundColor Red
+    $authzFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "money-path authorization regressed on $($authzFailures.Count) check(s)"
+    exit 1
+}
+Write-Host "    6 exploit attempts refused; no order paid, no extra charge, owner replay intact" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green
