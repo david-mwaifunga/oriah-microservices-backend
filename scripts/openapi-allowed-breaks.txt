@@ -41,3 +41,52 @@ payment|response status removed|POST /api/v1/payments/intents -> 200
 order|response status removed|POST /api/v1/orders -> 200
 promotion|response status removed|POST /api/v1/admin/promotions -> 200
 review|response status removed|POST /api/v1/products/{productId}/reviews -> 200
+
+# ---------------------------------------------------------------------------
+# Pricing phase: cart stops accepting a price, and caps a quantity.
+# ---------------------------------------------------------------------------
+#
+# AddItemRequest loses unitPrice and title.
+#
+# The client may no longer name a price. POST /api/v1/carts/me/items with
+# "unitPrice": 0.01 bought a K4,500 ring for one cent -- demonstrated live
+# against the running stack, not inferred. cart-service now resolves the price
+# from catalog's POST /api/v1/variants/pricing before any mutation. Keeping the
+# property for compatibility would leave the hole reachable, which is the whole
+# reason it goes; there is no additive version of this change.
+#
+# title goes with it because the line label is now catalog's composed
+# variantTitle rather than a client string stored verbatim. Side benefit: the
+# old field carried @NotBlank with no @Size against a VARCHAR(255) column, so a
+# 256-character title was a DataIntegrityViolationException rendered as a 500.
+#
+# Two findings, not one: openapi_diff.py iterates properties individually.
+#
+# What a stale client actually experiences: cart sets no spring.jackson block,
+# so FAIL_ON_UNKNOWN_PROPERTIES=false applies and a request still sending
+# unitPrice is accepted with the field IGNORED and the catalog price used. So
+# the break is in the published schema rather than in behaviour -- a storefront
+# mid-deploy keeps working and quietly starts getting correct prices. oriah-web
+# sends this body, it does not parse it, so no Zod schema throws (the gate's
+# generic note about Zod applies to response types).
+#
+# The quantity caps are a NARROWING, and the gate is right to call it breaking.
+#
+# Adding maximum: 99 to AddItemRequest.quantity and UpdateItemRequest.quantity
+# means a request the server used to accept is now a 400. That is deliberate
+# and it replaces something worse: CartItem.bump was `this.quantity += by` on an
+# Integer with no maximum anywhere, so a large quantity wrapped negative and the
+# row was rejected by V1's CHECK (quantity > 0) -- a 500. Every real client is
+# strictly better off: 99 is far past any plausible purchase of a piece of
+# jewellery, and what used to be a 500 is now a 400 with fieldErrors naming the
+# field.
+#
+# The map for this phase predicted three findings in total and missed both of
+# these; they were found by running the gate rather than by reading the plan.
+#
+# Reviewed and accepted 2026-10-13.
+
+cart|schema property removed|AddItemRequest.unitPrice
+cart|schema property removed|AddItemRequest.title
+cart|schema property type changed|AddItemRequest.quantity: {"format": "int32", "minimum": 1, "type": "integer"} -> {"format": "int32", "maximum": 99, "minimum": 1, "type": "integer"}
+cart|schema property type changed|UpdateItemRequest.quantity: {"format": "int32", "minimum": 1, "type": "integer"} -> {"format": "int32", "maximum": 99, "minimum": 1, "type": "integer"}

@@ -221,11 +221,52 @@ catch {
     if ($code -ne 404) { throw }
 }
 
+# TWO adds, deliberately, and the first one lies about the price.
+#
+# This is the only place in the repo that can prove the one-cent purchase is
+# dead against a live stack. The Java tests cannot: cart ignores unknown
+# properties (no spring.jackson block, so FAIL_ON_UNKNOWN_PROPERTIES=false), so
+# a test that posts a stale unitPrice goes green the moment the field leaves the
+# DTO whether or not any catalog lookup happens.
+#
+# Add #1 is a stale client -- a storefront mid-deploy, still sending the old
+# body -- claiming this K4,500-class ring costs one cent. The field is accepted
+# and IGNORED, and the stored line must carry catalog's 100.00. Before this
+# phase the same request produced a 0.01 line that checkout charged.
+#
+# Note the assertion is on the line's unitPrice, not on the request being
+# refused: a 400 here would be the wrong outcome, because breaking every
+# in-flight storefront on deploy is worse than quietly charging the right price.
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=2; unitPrice=100.00; title="Aurelia 18k" }) | Out-Null
+    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1; unitPrice=0.01; title="Free ring please" }) | Out-Null
+
+$afterStale = Invoke-RestMethod -Method GET `
+    -Uri "http://localhost:8080/api/v1/carts/me" `
+    -Headers @{ Authorization="Bearer $alice" }
+$stalePrice = @($afterStale.items)[0].unitPrice
+$staleTitle = @($afterStale.items)[0].title
+if ([decimal]$stalePrice -ne [decimal]100.00) {
+    Write-Error "ONE-CENT HOLE IS OPEN: sent unitPrice=0.01, cart stored $stalePrice (expected catalog's 100.00)"
+    exit 1
+}
+if ($staleTitle -eq "Free ring please") {
+    Write-Error "Cart stored the CLIENT's title verbatim; expected catalog's variantTitle"
+    exit 1
+}
+Write-Host "    a stale unitPrice=0.01 was ignored; line priced at $stalePrice from catalog" -ForegroundColor Gray
+
+# Add #2 uses the body the API actually declares now -- no price, no title, just
+# which variant and how many. It also exercises the bump branch, which refreshes
+# the line from the fresh pricing entry instead of keeping the first snapshot.
+# The two adds leave exactly 2 units, which is what step 5's totals assume.
+Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/carts/me/items" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
 
 # Assert the cart holds exactly what we just put in it, so a totals mismatch in
 # step 5 points at the pricing logic rather than at leftover state.
@@ -235,6 +276,13 @@ $cart = Invoke-RestMethod -Method GET `
 $cartUnits = ($cart.items | Measure-Object -Property quantity -Sum).Sum
 if (@($cart.items).Count -ne 1 -or $cartUnits -ne 2) {
     Write-Error "Cart should hold exactly 1 line of 2 units; got $(@($cart.items).Count) line(s), $cartUnits unit(s)"
+    exit 1
+}
+# 2 x catalog's 100.00. Coupled on purpose to the variant price set in step 2:
+# if that price changes and this does not, the mismatch surfaces here rather
+# than as a confusing promo arithmetic failure in step 5.
+if ([decimal]$cart.subtotal -ne [decimal]200.00) {
+    Write-Error "Cart subtotal should be 2 x catalog's 100.00 = 200.00; got $($cart.subtotal)"
     exit 1
 }
 
