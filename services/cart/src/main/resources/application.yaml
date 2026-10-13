@@ -3,6 +3,33 @@ spring:
     name: cart
   config:
     import: "optional:configserver:http://localhost:8888"
+  # Nested under the EXISTING spring key deliberately. A second top-level
+  # `spring:` document key is rejected by Spring Boot's loader, and a
+  # permissive loader would resolve the clash by discarding one of the two --
+  # here, silently taking the datasource and JPA config with it.
+  cloud:
+    openfeign:
+      circuitbreaker:
+        # OFF, so Spring Cloud uses DefaultTargeter and a failed pricing call
+        # THROWS. The alternative is a fallback, and there is no correct
+        # default answer to "what does this variant cost": zero sells it for
+        # nothing and the last known price is the stale snapshot this phase
+        # exists to remove. Catalog is the counter-example in this repo -- it
+        # enables the breaker, which is what makes its InventoryClientFallback
+        # live and turns an unreachable inventory into Availability.UNKNOWN.
+        # Reasonable for stock, unacceptable for price.
+        # Pinned by CatalogPricingClientWiringTest.
+        enabled: false
+      client:
+        config:
+          default:
+            # Deliberately tighter than checkout's 5s/15s. This call sits in
+            # front of a shopper pressing "Add to bag", and a pricing lookup is
+            # one indexed read: if catalog cannot answer in 5s, a prompt 503
+            # that leaves the bag untouched is a better answer than a request
+            # that hangs long enough for the shopper to press the button again.
+            connectTimeout: 2000
+            readTimeout: 5000
   jpa:
     hibernate:
       ddl-auto: validate

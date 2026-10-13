@@ -77,6 +77,16 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
         </dependency>
+        <!-- Cart's first outbound HTTP dependency: it resolves prices from
+             catalog instead of believing the request body. See
+             com.oriah.cart.client.CatalogPricingClient. No version: the root
+             POM imports the Spring Cloud BOM. Deliberately NOT paired with
+             spring-cloud-starter-circuitbreaker-resilience4j, so a failed
+             pricing call throws rather than being answered by a fallback. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
