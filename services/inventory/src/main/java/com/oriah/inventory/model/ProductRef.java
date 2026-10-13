@@ -35,15 +35,47 @@ public class ProductRef extends BaseEntity {
     @Column(name = "title", nullable = false)
     private String title;
 
+    /**
+     * The catalog PRODUCT this variant belongs to.
+     *
+     * <p>Needed because {@code product.deleted} names a product, and without
+     * it there is no way to find that product's variant rows. For rows that
+     * predate catalog's variants migration it equals {@link #variantId}, which
+     * is correct rather than coincidental: that migration gave every
+     * pre-existing product one variant whose id is the product's own.
+     */
+    @Column(name = "product_id", nullable = false)
+    private UUID productId;
+
+    /**
+     * Whether the owning product has been removed from the catalogue.
+     *
+     * <h2>Why a flag and not a delete</h2>
+     *
+     * Dropping the row on {@code product.deleted} would lose the only title an
+     * operator has for stock that still physically exists. The admin inventory
+     * list LEFT JOINs this table precisely so a stock row with no catalog
+     * reference still appears, so after a delete it would show a bare UUID and
+     * a quantity — which nobody can act on. Leaving the row unflagged is no
+     * better: the screen would show a live-looking product that is gone.
+     *
+     * <p>Flagged, the row keeps its title and the list can say
+     * "Aurelia 18k (deleted product)" beside the real figure.
+     */
+    @Column(name = "product_deleted", nullable = false)
+    private boolean productDeleted;
+
     /** JPA-only no-args constructor. Do not call from application code. */
     protected ProductRef() {}
 
-    public ProductRef(UUID variantId, String title) {
+    public ProductRef(UUID variantId, UUID productId, String title) {
         this.variantId = Objects.requireNonNull(variantId, "variantId must not be null");
+        this.productId = Objects.requireNonNull(productId, "productId must not be null");
         if (title == null || title.isBlank()) {
             throw new IllegalArgumentException("title must not be blank");
         }
         this.title = title;
+        this.productDeleted = false;
     }
 
     public UUID variantId() {
@@ -54,11 +86,45 @@ public class ProductRef extends BaseEntity {
         return title;
     }
 
+    public UUID productId() {
+        return productId;
+    }
+
+    public boolean isProductDeleted() {
+        return productDeleted;
+    }
+
+    /**
+     * Marks the owning product as gone from the catalogue.
+     *
+     * <p>There is no inverse. A product cannot be un-deleted in catalog, so an
+     * un-flag would only ever be reached by a replayed or reordered event —
+     * see {@code updateTitle}, which refuses to clear this for the same
+     * reason.
+     */
+    public void markProductDeleted() {
+        this.productDeleted = true;
+    }
+
     /**
      * Updates the cached title to reflect a {@code product.updated} event.
      * The {@link com.oriah.jpa.BaseEntity#updatedAt() updatedAt}
      * field on the superclass is refreshed by the AuditingEntityListener
      * on the next flush.
+     */
+    /**
+     * Refreshes the display title.
+     *
+     * <p>Deliberately does NOT clear {@link #productDeleted}. There is no
+     * ordering guarantee on the catalog topic — no message key is set, so with
+     * more than one partition a {@code product.updated} can arrive after the
+     * {@code product.deleted} that superseded it, and at-least-once delivery
+     * means an old update can simply be redelivered. A product that has been
+     * deleted cannot subsequently be updated, so a later update for it is
+     * always stale and the correct response is to leave the flag alone.
+     *
+     * <p>That makes the flag monotonic, which is what lets this consumer be
+     * correct without timestamps or sequence numbers to compare.
      */
     public void updateTitle(String newTitle) {
         if (newTitle == null || newTitle.isBlank()) {

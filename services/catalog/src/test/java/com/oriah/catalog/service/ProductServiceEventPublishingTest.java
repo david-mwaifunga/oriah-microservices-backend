@@ -89,7 +89,16 @@ class ProductServiceEventPublishingTest {
         ProductCreatedEvent expected = new ProductCreatedEvent(
                 saved.id(),
                 "Aurelia",
-                List.of("rings", "gold")
+                List.of("rings", "gold"),
+                // A new product is JEWELLERY and DRAFT by default, and has no
+                // variants yet -- a product is created before it can be
+                // priced. The empty list is the real value rather than a
+                // placeholder, and it is why inventory registers nothing for
+                // a freshly created product: there is nothing purchasable to
+                // track stock against until a variant is added.
+                "JEWELLERY",
+                "DRAFT",
+                List.of()
         );
         verify(eventPublisher, times(1)).publishEvent(expected);
     }
@@ -115,7 +124,10 @@ class ProductServiceEventPublishingTest {
                 existing.id(),
                 "Aurelia Renamed",
                 "new copy",
-                List.of("rings", "gold")
+                List.of("rings", "gold"),
+                "JEWELLERY",
+                "DRAFT",
+                List.of()
         );
         verify(eventPublisher, times(1)).publishEvent(expected);
     }

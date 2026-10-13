@@ -105,6 +105,13 @@ public class DefaultVariantPricingService implements VariantPricingService {
             return Entry.unknown(requestedId);
         }
         Product product = variant.product();
+        // NOTE: a DELETED product is deliberately NOT special-cased here. It is
+        // archived, so it falls into the UNPUBLISHED branch below along with
+        // drafts and withdrawn products -- which is the whole point of making
+        // the delete soft. A bag holding a line for a deleted product can say
+        // "no longer available"; before, the row was gone and the answer was
+        // UNKNOWN, which means "we have no idea what this is" and is a
+        // different thing to tell a customer.
         if (product.status() != ProductStatus.ACTIVE || !variant.isPurchasable()) {
             // Product id and title are still returned so a bag can say WHICH
             // line is unavailable. The price is not.

@@ -119,6 +119,7 @@ public class DefaultProductImageService implements ProductImageService {
     @Transactional(readOnly = true)
     public Optional<ServedImage> servePublicly(UUID imageId) {
         return images.findByIdWithProduct(imageId)
+                .filter(image -> !image.product().isDeleted())
                 .filter(image -> image.product().status() == ProductStatus.ACTIVE)
                 .flatMap(this::openFor);
     }
@@ -127,7 +128,14 @@ public class DefaultProductImageService implements ProductImageService {
     @Override
     @Transactional(readOnly = true)
     public Optional<ServedImage> serveForAdmin(UUID imageId) {
-        return images.findByIdWithProduct(imageId).flatMap(this::openFor);
+        return images.findByIdWithProduct(imageId)
+                // The admin may review a DRAFT's photographs, but not a
+                // deleted product's: its objects have already been reclaimed,
+                // so this would 404 from storage anyway -- better to say so
+                // from the row than to log a missing-object warning for an
+                // expected state.
+                .filter(image -> !image.product().isDeleted())
+                .flatMap(this::openFor);
     }
 
     private Optional<ServedImage> openFor(ProductImage image) {

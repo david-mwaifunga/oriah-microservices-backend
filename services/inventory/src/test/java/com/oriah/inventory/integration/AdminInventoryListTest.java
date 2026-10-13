@@ -144,7 +144,7 @@ class AdminInventoryListTest {
         // title -- an inventory row that exists is worth showing even if the
         // catalogue has not caught up.
         UUID variantId = stock(7, 0);
-        productRefs.saveAndFlush(new ProductRef(variantId, "Aurelia 18k"));
+        productRefs.saveAndFlush(new ProductRef(variantId, variantId, "Aurelia 18k"));
 
         mvc.perform(get(PATH).with(jwt().authorities(ROLE_INVENTORY_ADMIN)))
                 .andExpect(status().isOk())

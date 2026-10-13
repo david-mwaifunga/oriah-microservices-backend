@@ -115,6 +115,44 @@ public final class ProductMapper {
     }
 
     /**
+     * The full product for an ADMIN caller: variants and attributes included,
+     * availability left out.
+     *
+     * <p>Sits between the two public mappings for a reason. The list mapping
+     * omits variants because a grid does not render them; the detail mapping
+     * includes them but also carries an inventory-derived availability, which
+     * costs a downstream call. An admin write needs the former's cheapness and
+     * the latter's completeness: after adding a variant or publishing, the
+     * screen has to show the recomputed variant list, price range and
+     * publishability immediately — and asking inventory for stock levels is
+     * not part of that.
+     *
+     * <p>Without this, {@code addVariant} answered with the LIST shape, whose
+     * {@code variants} field is null — so an endpoint documented as returning
+     * the product's new state did not return the variant it had just created,
+     * and a caller had to issue a second request to see its own write.
+     */
+    public static ProductResponse toAdminResponse(Product product) {
+        return new ProductResponse(
+                product.id(),
+                product.title(),
+                product.description().orElse(null),
+                product.tags(),
+                null,
+                product.slug(),
+                product.status().name(),
+                product.productTypeCode(),
+                product.attributes(),
+                toCategories(product),
+                product.primaryCategory().map(ProductMapper::toCategory).orElse(null),
+                product.lowestActivePrice().orElse(null),
+                product.highestActivePrice().orElse(null),
+                product.currency().orElse(null),
+                toVariants(product),
+                toImages(product));
+    }
+
+    /**
      * Every variant, INCLUDING inactive ones.
      *
      * <p>Deliberate: a size that exists but is withdrawn should render as an

@@ -132,4 +132,41 @@ class SearchIntegrationTest {
                 "catalog.product"
         );
     }
+
+    @Test
+    @DisplayName("every hit carries the PRODUCT id in both productId and the deprecated variantId")
+    void bothIdFieldsCarryTheProductId() throws Exception {
+        // The deprecation guard. This index holds one row per PRODUCT; its
+        // column is named variant_id and the wire field was variantId, which
+        // was accurate only while a product had exactly one variant whose id
+        // was the product's own. The VALUE was never wrong -- the NAME stopped
+        // being defensible once catalog grew real variants.
+        //
+        // So productId is the field to use and variantId carries the identical
+        // value until the frontend stops reading it. This assertion is what
+        // keeps that true: if this index ever started holding one row per
+        // variant, variantId would begin carrying something genuinely
+        // different, and a client still reading it would link to the wrong
+        // page with nothing failing anywhere.
+        sendCreated(UUID.randomUUID(), "Aurelia Solitaire Ring",
+                "A solitaire in 18k gold.", List.of("rings"));
+
+        mvc.perform(get("/api/v1/search").param("q", "solitaire"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.count").value(1))
+                .andExpect(jsonPath("$.hits[0].productId").exists())
+                .andExpect(jsonPath("$.hits[0].variantId").exists())
+                // Identical, asserted against each other rather than against a
+                // literal, so the test does not need to know which id was
+                // generated.
+                .andExpect(result -> {
+                    var body = result.getResponse().getContentAsString();
+                    var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+                    var hit = mapper.readTree(body).get("hits").get(0);
+                    org.assertj.core.api.Assertions
+                            .assertThat(hit.get("productId").asText())
+                            .as("variantId is a deprecated alias of productId for this window")
+                            .isEqualTo(hit.get("variantId").asText());
+                });
+    }
 }

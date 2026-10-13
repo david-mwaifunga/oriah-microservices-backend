@@ -18,6 +18,7 @@ import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.events.ProductCreatedEvent;
+import com.oriah.catalog.events.VariantPayload;
 import com.oriah.catalog.events.ProductDeletedEvent;
 import com.oriah.catalog.events.ProductUpdatedEvent;
 import com.oriah.catalog.model.Availability;
@@ -112,6 +113,10 @@ public class ProductService {
     public Optional<ProductResponse> findByIdWithAvailability(UUID id) {
         log.debug("findByIdWithAvailability id={}", id);
         return repository.findById(id)
+                // A deleted product is gone from every read path. The row
+                // survives only so that other services can still resolve the
+                // variant id they hold; it is not catalogue content any more.
+                .filter(product -> !product.isDeleted())
                 // PUBLIC read: an unpublished product is invisible here, not
                 // merely absent from the list. Excluding DRAFT from the list
                 // while serving it by id left every unpublished product page
@@ -227,6 +232,11 @@ public class ProductService {
     public Optional<ProductResponse> findByIdForAdmin(UUID id) {
         log.debug("findByIdForAdmin id={}", id);
         return repository.findById(id)
+                // Hidden from the ADMIN read too. Otherwise "deleted" would
+                // mean only "hidden from customers", and an edit through this
+                // endpoint would resurrect something the audit trail says is
+                // gone.
+                .filter(product -> !product.isDeleted())
                 .map(product -> ProductMapper.toResponse(
                         new ProductWithAvailability(product, lookupAvailability(product.id()))));
     }
@@ -254,7 +264,14 @@ public class ProductService {
             product.addVariant(variant);
             log.info("Added variant sku=\"{}\" to product id={} price={} {}",
                     variant.sku(), productId, variant.unitPrice(), variant.currency());
-            return ProductMapper.toResponse(product);
+            // Emitted so inventory learns about the new variant. Without this,
+            // a variant added after creation would never reach product_index
+            // and the admin inventory screen would show a bare UUID with no
+            // title -- or nothing at all.
+            eventPublisher.publishEvent(productUpdated(product));
+            // The ADMIN projection: the caller needs to see the variant it
+            // just created, which the list mapping omits.
+            return ProductMapper.toAdminResponse(product);
         });
     }
 
@@ -276,7 +293,11 @@ public class ProductService {
         return repository.findById(productId).map(product -> {
             product.publish();
             log.info("Published product id={} slug=\"{}\"", productId, product.slug());
-            return ProductMapper.toResponse(product);
+            // Publication changes `status` on the event, which is how a
+            // consumer can distinguish a live product from a draft without
+            // asking catalog.
+            eventPublisher.publishEvent(productUpdated(product));
+            return ProductMapper.toAdminResponse(product);
         });
     }
 
@@ -303,7 +324,16 @@ public class ProductService {
         eventPublisher.publishEvent(new ProductCreatedEvent(
                 saved.id(),
                 saved.title(),
-                saved.tags() == null ? List.of() : List.copyOf(saved.tags())
+                saved.tags() == null ? List.of() : List.copyOf(saved.tags()),
+                saved.productTypeCode(),
+                saved.status().name(),
+                // Empty on create: a product is created before it has any
+                // variants, so this is genuinely the empty list rather than a
+                // placeholder. Inventory registers nothing for it, which is
+                // correct -- there is nothing purchasable to track stock
+                // against yet. The variants arrive on the first
+                // product.updated after a variant is added.
+                variantPayloads(saved)
         ));
         // Mapped inside the transaction like every other read path here. A
         // freshly constructed product would in fact survive mapping outside
@@ -311,7 +341,7 @@ public class ProductService {
         // which is exactly why doing it consistently matters: create would
         // keep working while update failed, and the difference is invisible
         // at the call site.
-        return ProductMapper.toResponse(saved);
+        return ProductMapper.toAdminResponse(saved);
     }
 
     /**
@@ -386,7 +416,9 @@ public class ProductService {
      */
     @Transactional
     public Optional<ProductResponse> update(UUID id, ProductUpdateRequest request) {
-        Optional<ProductResponse> result = repository.findById(id).map(product -> {
+        Optional<ProductResponse> result = repository.findById(id)
+                .filter(product -> !product.isDeleted())
+                .map(product -> {
             // Track which fields actually changed so the log line is useful
             // when investigating "why did this product's title change?"
             StringBuilder changedFields = new StringBuilder();
@@ -406,22 +438,79 @@ public class ProductService {
             // Snapshot the post-update state into the event. We send the
             // current values for *all* fields (not just changed ones) so
             // consumers don't need a prior read to reconstruct state.
-            eventPublisher.publishEvent(new ProductUpdatedEvent(
-                    product.id(),
-                    product.title(),
-                    product.description().orElse(null),
-                    product.tags() == null ? List.of() : List.copyOf(product.tags())
-            ));
+            eventPublisher.publishEvent(productUpdated(product));
             // Inside the transaction: the entity's categories, variants and
             // images are lazy, and mapping them in the controller threw
             // LazyInitializationException and answered 500.
-            return ProductMapper.toResponse(product);
+            return ProductMapper.toAdminResponse(product);
         });
 
         if (result.isEmpty()) {
             log.debug("Update skipped, product not found id={}", id);
         }
         return result;
+    }
+
+    /**
+     * A full post-change snapshot, not a delta.
+     *
+     * <p>Consumers can then apply an update without having read the previous
+     * state, which matters because there is no ordering guarantee on the
+     * topic: no message key is set, so with more than one partition two
+     * updates for the same product could arrive out of order. A full snapshot
+     * applied twice, or applied in the wrong order and then corrected by the
+     * next one, converges. A delta would not.
+     */
+    private static ProductUpdatedEvent productUpdated(Product product) {
+        return new ProductUpdatedEvent(
+                product.id(),
+                product.title(),
+                product.description().orElse(null),
+                product.tags() == null ? List.of() : List.copyOf(product.tags()),
+                product.productTypeCode(),
+                product.status().name(),
+                variantPayloads(product));
+    }
+
+    /**
+     * Every variant, including inactive ones, each with the title inventory
+     * will display.
+     *
+     * <p>Inactive variants are included deliberately: a consumer that only
+     * ever saw active ones would have to infer a withdrawal from a variant's
+     * ABSENCE, which is indistinguishable from the variant simply not having
+     * been created yet. The {@code active} flag says it outright.
+     */
+    private static List<VariantPayload> variantPayloads(Product product) {
+        return product.variants().stream()
+                .map(variant -> new VariantPayload(
+                        variant.id(),
+                        variant.sku(),
+                        variantTitle(product, variant),
+                        variant.unitPrice(),
+                        variant.currency(),
+                        variant.isActive()))
+                .toList();
+    }
+
+    /**
+     * "Aurelia Solitaire Ring - Ring Size M".
+     *
+     * <p>Composed here rather than left to the consumer: inventory stores it
+     * verbatim, and an admin stock screen listing bare UUIDs or repeating the
+     * same product title across six rows is not something an operator can act
+     * on. Ordered by the product's declared axes so two variants of one
+     * product always read in the same order.
+     */
+    private static String variantTitle(Product product, ProductVariant variant) {
+        if (variant.options().isEmpty()) {
+            return product.title();
+        }
+        String options = product.optionNames().stream()
+                .filter(variant.options()::containsKey)
+                .map(axis -> axis + " " + variant.options().get(axis))
+                .collect(java.util.stream.Collectors.joining(", "));
+        return options.isEmpty() ? product.title() : product.title() + " - " + options;
     }
 
     /**
@@ -433,16 +522,45 @@ public class ProductService {
     @Transactional
     public boolean deleteById(UUID id) {
         boolean removed = repository.findById(id)
+                .filter(product -> !product.isDeleted())
                 .map(product -> {
-                    // Scheduled BEFORE the delete, because it reads the
-                    // storage keys while the product_images rows still exist
-                    // and defers the object removal until after this
-                    // transaction commits. Object storage has no foreign keys,
-                    // so the FK cascade that drops those rows cannot touch the
-                    // objects -- without this every deleted product would
-                    // leave its photographs in storage permanently.
+                    // Image OBJECTS are still reclaimed: nobody will ever
+                    // serve them again, and object storage is the one place
+                    // where keeping the bytes buys nothing. The product_images
+                    // ROWS survive along with the product, which is what lets
+                    // an order's history still describe what was bought.
                     imageService.reclaimStorageFor(id);
-                    repository.delete(product);
+
+                    // SOFT, not hard, and this is the single most consequential
+                    // line in the service.
+                    //
+                    // A hard delete cascaded through product_variants and
+                    // removed the row whose id is a primary key in
+                    // inventory.inventory, inventory.product_index and
+                    // search.search_index, and the line identity in cart_items
+                    // and order_items. None of those has a foreign key into
+                    // catalog, because none shares its database -- so nothing
+                    // stopped it, and two things broke:
+                    //
+                    //   order_items, a deliberately immutable financial
+                    //   record, would point at a variant that no longer
+                    //   existed, so a past order could not be resolved to
+                    //   what was actually sold.
+                    //
+                    //   The pricing endpoint's answer changed from
+                    //   UNPUBLISHED to UNKNOWN, collapsing the distinction it
+                    //   exists to provide: a bag can say "no longer
+                    //   available" for the first and "this line is corrupt"
+                    //   for the second, and after a hard delete it could no
+                    //   longer tell them apart.
+                    //
+                    // Archived as well as flagged. The flag is what every read
+                    // path filters on; the status is what anything reading the
+                    // row directly sees, and leaving a deleted product ACTIVE
+                    // would be a lie told to whoever looks next.
+                    product.archive();
+                    product.markDeleted();
+                    repository.saveAndFlush(product);
                     return true;
                 })
                 .orElse(false);

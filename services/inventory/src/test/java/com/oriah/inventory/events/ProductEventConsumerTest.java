@@ -59,75 +59,200 @@ class ProductEventConsumerTest {
         productRefs.deleteAll();
     }
 
-    @Test
-    @DisplayName("product.created event inserts a ProductRef row")
-    void createdEventInsertsRow() {
-        UUID id = UUID.randomUUID();
-        send(new ProductCreatedEvent(id, "Aurelia", List.of("rings")), ProductCreatedEvent.TYPE);
+    /** A variant payload with the option summary catalog composes. */
+    private static VariantPayload variant(UUID variantId, String title) {
+        return new VariantPayload(variantId, "SKU-" + title, title,
+                new java.math.BigDecimal("4500.00"), "ZMW", true);
+    }
 
-        Optional<ProductRef> stored = productRefs.findById(id);
-        assertThat(stored).isPresent();
-        assertThat(stored.get().title()).isEqualTo("Aurelia");
+    private static ProductCreatedEvent created(UUID productId, String title,
+                                               VariantPayload... variants) {
+        return new ProductCreatedEvent(productId, title, List.of("rings"),
+                "JEWELLERY", "ACTIVE", List.of(variants));
+    }
+
+    private static ProductUpdatedEvent updated(UUID productId, String title,
+                                               VariantPayload... variants) {
+        return new ProductUpdatedEvent(productId, title, null, List.of("rings"),
+                "JEWELLERY", "ACTIVE", List.of(variants));
     }
 
     @Test
-    @DisplayName("replaying the same product.created event is idempotent (no duplicate, no error)")
+    @DisplayName("one ProductRef row is written PER VARIANT, keyed by the variant id")
+    void createdEventInsertsOneRowPerVariant() {
+        UUID productId = UUID.randomUUID();
+        UUID sizeM = UUID.randomUUID();
+        UUID sizeL = UUID.randomUUID();
+
+        send(created(productId, "Aurelia",
+                variant(sizeM, "Aurelia - Ring Size M"),
+                variant(sizeL, "Aurelia - Ring Size L")), ProductCreatedEvent.TYPE);
+
+        // Keyed by VARIANT, not by product. This table's primary key was
+        // previously fed the product id, which was only correct while a
+        // product had exactly one variant whose id was the product's own.
+        assertThat(productRefs.findById(sizeM)).isPresent();
+        assertThat(productRefs.findById(sizeL)).isPresent();
+        assertThat(productRefs.findById(productId)).isEmpty();
+        assertThat(productRefs.count()).isEqualTo(2L);
+
+        // The option summary is what makes two rows of one product
+        // distinguishable on an operator's screen.
+        assertThat(productRefs.findById(sizeM).orElseThrow().title())
+                .isEqualTo("Aurelia - Ring Size M");
+        // And each row records which product it belongs to, which is how
+        // product.deleted finds them.
+        assertThat(productRefs.findById(sizeM).orElseThrow().productId()).isEqualTo(productId);
+    }
+
+    @Test
+    @DisplayName("a product with NO variants registers nothing, because nothing is purchasable yet")
+    void createdWithoutVariantsRegistersNothing() {
+        UUID productId = UUID.randomUUID();
+        send(created(productId, "Freshly Created"), ProductCreatedEvent.TYPE);
+
+        // This is the state of every newly created product: it exists before
+        // it has variants. Writing a row keyed by the product id as a fallback
+        // would reintroduce exactly the confusion this change removes -- an
+        // entry that looks purchasable and is not.
+        assertThat(productRefs.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("an OLD-SHAPE event with no variants field is harmless, not a crash")
+    void oldShapeEventIsHarmless() {
+        UUID productId = UUID.randomUUID();
+        // The topic has no configured retention and there is no outbox, so
+        // pre-upgrade messages can still be redelivered. `variants` is null
+        // rather than empty in that case.
+        send(new ProductCreatedEvent(productId, "Legacy", List.of("rings"), null, null, null),
+                ProductCreatedEvent.TYPE);
+
+        assertThat(productRefs.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("replaying the same event is idempotent")
     void replayedCreatedIsIdempotent() {
-        UUID id = UUID.randomUUID();
-        ProductCreatedEvent event = new ProductCreatedEvent(id, "Aurelia", List.of("rings"));
+        UUID productId = UUID.randomUUID();
+        UUID variantId = UUID.randomUUID();
+        var event = created(productId, "Aurelia", variant(variantId, "Aurelia - M"));
+
         send(event, ProductCreatedEvent.TYPE);
-        send(event, ProductCreatedEvent.TYPE); // replay
+        send(event, ProductCreatedEvent.TYPE);
 
         assertThat(productRefs.count()).isEqualTo(1L);
     }
 
     @Test
-    @DisplayName("product.updated event mutates the cached title")
-    void updatedEventChangesTitle() {
-        UUID id = UUID.randomUUID();
-        send(new ProductCreatedEvent(id, "Aurelia", List.of("rings")), ProductCreatedEvent.TYPE);
-        send(new ProductUpdatedEvent(id, "Aurelia Renamed", "fresh copy", List.of("rings")),
+    @DisplayName("product.updated refreshes each variant's title")
+    void updatedEventChangesTitles() {
+        UUID productId = UUID.randomUUID();
+        UUID variantId = UUID.randomUUID();
+        send(created(productId, "Aurelia", variant(variantId, "Aurelia - M")),
+                ProductCreatedEvent.TYPE);
+
+        send(updated(productId, "Aurelia Renamed", variant(variantId, "Aurelia Renamed - M")),
                 ProductUpdatedEvent.TYPE);
 
-        Optional<ProductRef> stored = productRefs.findById(id);
-        assertThat(stored).isPresent();
-        assertThat(stored.get().title()).isEqualTo("Aurelia Renamed");
+        assertThat(productRefs.findById(variantId).orElseThrow().title())
+                .isEqualTo("Aurelia Renamed - M");
     }
 
     @Test
-    @DisplayName("product.updated for an unknown id is upserted (creates the row)")
+    @DisplayName("product.updated for an unknown variant is upserted")
     void updatedForUnknownIdInserts() {
-        UUID id = UUID.randomUUID();
-        // No prior created event — but the consumer should still record what
-        // it learned. Treating updated-on-unknown as an upsert is the right
-        // call when events can be replayed out of order or the created event
-        // was lost before this consumer subscribed.
-        send(new ProductUpdatedEvent(id, "Aurelia", null, List.of()), ProductUpdatedEvent.TYPE);
+        UUID productId = UUID.randomUUID();
+        UUID variantId = UUID.randomUUID();
+        // No prior created event. Treating updated-on-unknown as an upsert is
+        // the right call when events can arrive out of order -- no message key
+        // is set, so there is no per-product ordering guarantee -- or when the
+        // created event predates this consumer's subscription.
+        send(updated(productId, "Aurelia", variant(variantId, "Aurelia - M")),
+                ProductUpdatedEvent.TYPE);
 
-        Optional<ProductRef> stored = productRefs.findById(id);
-        assertThat(stored).isPresent();
-        assertThat(stored.get().title()).isEqualTo("Aurelia");
+        assertThat(productRefs.findById(variantId)).isPresent();
     }
 
     @Test
-    @DisplayName("product.deleted event removes the row")
-    void deletedEventRemovesRow() {
-        UUID id = UUID.randomUUID();
-        send(new ProductCreatedEvent(id, "Aurelia", List.of("rings")), ProductCreatedEvent.TYPE);
-        send(new ProductDeletedEvent(id), ProductDeletedEvent.TYPE);
+    @DisplayName("a variant ABSENT from a later update is kept, not deleted")
+    void absentVariantsAreKept() {
+        UUID productId = UUID.randomUUID();
+        UUID kept = UUID.randomUUID();
+        UUID removed = UUID.randomUUID();
+        send(created(productId, "Aurelia",
+                variant(kept, "Aurelia - M"), variant(removed, "Aurelia - L")),
+                ProductCreatedEvent.TYPE);
+        assertThat(productRefs.count()).isEqualTo(2L);
 
-        assertThat(productRefs.findById(id)).isEmpty();
+        // The event is a full snapshot, so this variant is gone in catalog.
+        send(updated(productId, "Aurelia", variant(kept, "Aurelia - M")),
+                ProductUpdatedEvent.TYPE);
+
+        // Still here. Its title is the only readable label for stock that
+        // physically exists, and the admin list LEFT JOINs this table exactly
+        // so such a row still appears -- dropping it would leave a bare UUID
+        // beside a quantity.
+        assertThat(productRefs.findById(removed)).isPresent();
+        assertThat(productRefs.count()).isEqualTo(2L);
     }
 
     @Test
-    @DisplayName("product.deleted for an unknown id is a no-op (not an error)")
+    @DisplayName("product.deleted FLAGS every one of the product's variant rows rather than deleting them")
+    void deletedEventFlagsRows() {
+        UUID productId = UUID.randomUUID();
+        UUID sizeM = UUID.randomUUID();
+        UUID sizeL = UUID.randomUUID();
+        send(created(productId, "Aurelia",
+                variant(sizeM, "Aurelia - M"), variant(sizeL, "Aurelia - L")),
+                ProductCreatedEvent.TYPE);
+
+        send(new ProductDeletedEvent(productId), ProductDeletedEvent.TYPE);
+
+        // Both rows survive, flagged. Deleting them would lose the only title
+        // an operator has for stock that still physically exists; leaving them
+        // unflagged would show a live-looking product that is gone.
+        assertThat(productRefs.findById(sizeM)).isPresent();
+        assertThat(productRefs.findById(sizeL)).isPresent();
+        assertThat(productRefs.findById(sizeM).orElseThrow().isProductDeleted()).isTrue();
+        assertThat(productRefs.findById(sizeL).orElseThrow().isProductDeleted()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a stale product.updated arriving AFTER a delete does not resurrect the product")
+    void staleUpdateDoesNotClearTheFlag() {
+        UUID productId = UUID.randomUUID();
+        UUID variantId = UUID.randomUUID();
+        send(created(productId, "Aurelia", variant(variantId, "Aurelia - M")),
+                ProductCreatedEvent.TYPE);
+        send(new ProductDeletedEvent(productId), ProductDeletedEvent.TYPE);
+
+        // Reachable two ways: at-least-once delivery can redeliver an older
+        // update, and no message key is set on the topic so with more than one
+        // partition ordering is not guaranteed at all. A product that has been
+        // deleted cannot subsequently be updated, so a later update for it is
+        // always stale.
+        send(updated(productId, "Aurelia Resurrected", variant(variantId, "Aurelia - M")),
+                ProductUpdatedEvent.TYPE);
+
+        var ref = productRefs.findById(variantId).orElseThrow();
+        assertThat(ref.isProductDeleted())
+                .as("the flag is monotonic, which is what makes this consumer correct "
+                        + "without timestamps to compare")
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("product.deleted for an unknown product is a no-op, not an error")
     void deletedForUnknownIdIsNoOp() {
-        UUID id = UUID.randomUUID();
-        send(new ProductDeletedEvent(id), ProductDeletedEvent.TYPE);
-
-        assertThat(productRefs.findById(id)).isEmpty();
+        send(new ProductDeletedEvent(UUID.randomUUID()), ProductDeletedEvent.TYPE);
+        assertThat(productRefs.count()).isZero();
     }
 
+    /**
+     * Publishes through the test binder, exactly as the Kafka binder would:
+     * the payload plus the `event-type` header the consumer dispatches on.
+     */
     private void send(Object payload, String type) {
         inputDestination.send(
                 MessageBuilder.withPayload(payload)

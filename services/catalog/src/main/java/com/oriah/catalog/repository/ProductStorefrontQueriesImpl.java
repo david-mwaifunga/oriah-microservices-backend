@@ -121,6 +121,13 @@ public class ProductStorefrontQueriesImpl implements ProductStorefrontQueries {
         // left the entire pre-existing catalogue, and ARCHIVED is withdrawn.
         conditions.add("p.status = 'ACTIVE'");
 
+        // A deleted product is archived as well as flagged, so the status
+        // check above already excludes it -- this is belt and braces, and
+        // deliberately so: the flag is the authoritative "not catalogue
+        // content any more" signal, and relying on the status alone would
+        // make this query depend on delete and archive never diverging.
+        conditions.add("NOT p.is_deleted");
+
         // A product with nothing purchasable has no price to render, so it has
         // no card. publish() already refuses to create this state, but direct
         // SQL can, and a priceless card is not something to render.
@@ -198,7 +205,7 @@ public class ProductStorefrontQueriesImpl implements ProductStorefrontQueries {
         List<Product> loaded = entityManager.createQuery("""
                         SELECT DISTINCT p FROM Product p
                         LEFT JOIN FETCH p.variants
-                        WHERE p.id IN :ids
+                        WHERE p.id IN :ids AND p.deleted = false
                         """, Product.class)
                 .setParameter("ids", ids)
                 .getResultList();

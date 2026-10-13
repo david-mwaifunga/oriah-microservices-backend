@@ -100,7 +100,10 @@ class KafkaProductEventBridgeTest {
         assertThat(received).isEqualTo(new ProductCreatedEvent(
                 saved.id(),
                 "Aurelia",
-                List.of("rings", "gold")
+                List.of("rings", "gold"),
+                "JEWELLERY",
+                "DRAFT",
+                List.of()
         ));
     }
 

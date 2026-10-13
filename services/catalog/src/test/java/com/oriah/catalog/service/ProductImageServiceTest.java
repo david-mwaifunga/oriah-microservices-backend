@@ -264,11 +264,30 @@ class ProductImageServiceTest {
 
         products.deleteById(liveProduct);
 
-        // The rows go by FK cascade. The objects do not -- storage has no
-        // foreign keys, so without an explicit sweep every deleted product
-        // leaves its photographs behind forever.
-        assertThat(imageRepository.count()).isZero();
-        assertThat(((InMemoryProductImageStorage) storage).size()).isZero();
+        // The OBJECTS are reclaimed; the ROWS survive. Both halves are
+        // deliberate and they changed together.
+        //
+        // Deleting a product is a soft delete, because the product_variants
+        // row it would otherwise destroy carries an id that is a primary key
+        // in inventory and search and the line identity in cart and order.
+        // The product_images rows survive with it, so an order's history can
+        // still describe what was bought.
+        //
+        // The objects do not survive, and nothing cascades them: object
+        // storage has no foreign keys. Without the explicit sweep, every
+        // deleted product would leave its photographs in storage forever --
+        // and unlike the rows, nobody will ever serve those bytes again, so
+        // keeping them buys nothing.
+        assertThat(((InMemoryProductImageStorage) storage).size())
+                .as("object storage is swept explicitly; nothing cascades into it")
+                .isZero();
+        assertThat(imageRepository.count())
+                .as("image rows survive the soft delete, alongside the product")
+                .isEqualTo(2);
+
+        // And the product is unreachable, which is what "deleted" means here.
+        assertThat(products.findByIdWithAvailability(liveProduct)).isEmpty();
+        assertThat(products.findByIdForAdmin(liveProduct)).isEmpty();
     }
 
     @Test
