@@ -69,7 +69,8 @@ public class CartController {
     public ResponseEntity<CartResponse> addItem(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody AddItemRequest body) {
-        return ResponseEntity.ok(CartResponse.from(service.addItem(jwt.getSubject(), body)));
+        return ResponseEntity.ok(CartResponse.from(service.addPricedItem(
+                jwt.getSubject(), body, service.resolvePricing(body.variantId()))));
     }
 
     @Operation(operationId = "updateQuantity", summary = "Set a line item's quantity")

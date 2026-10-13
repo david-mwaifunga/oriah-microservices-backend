@@ -64,8 +64,14 @@ public interface CatalogPricingClient {
 
     record PricingRequest(List<UUID> variantIds) {
 
-        /** The common case: one variant, on the add-to-cart path. */
-        static PricingRequest of(UUID variantId) {
+        /**
+         * The common case: one variant, on the add-to-cart path.
+         *
+         * <p>Explicitly public: a record nested in an interface is itself
+         * implicitly public, but its MEMBERS are not -- only the interface's
+         * own methods get that treatment.
+         */
+        public static PricingRequest of(UUID variantId) {
             return new PricingRequest(List.of(variantId));
         }
     }

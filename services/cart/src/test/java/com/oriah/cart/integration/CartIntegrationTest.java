@@ -1,5 +1,9 @@
 package com.oriah.cart.integration;
 
+import java.math.BigDecimal;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -17,8 +21,13 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.oriah.cart.TestcontainersConfiguration;
+import com.oriah.cart.client.CatalogPricingClient;
 import com.oriah.cart.repository.CartRepository;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -44,12 +53,48 @@ class CartIntegrationTest {
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
+    /**
+     * Cart now resolves every price from catalog, so these tests have to say
+     * what catalog would answer. The price moved from the request body to this
+     * stub, which is the entire behaviour change: the arithmetic the
+     * assertions below check is unchanged, but the authority for it is not.
+     */
+    @MockitoBean
+    private CatalogPricingClient catalog;
+
+    /** variantId -> what catalog says it costs. Programmed by {@link #addItem}. */
+    private final Map<UUID, BigDecimal> catalogPrices = new HashMap<>();
+    private final Map<UUID, String> catalogTitles = new HashMap<>();
+
     private static final UUID V1 = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID V2 = UUID.fromString("22222222-2222-2222-2222-222222222222");
 
     @BeforeEach
     void clean() {
         repository.deleteAll();
+        catalogPrices.clear();
+        catalogTitles.clear();
+        // Answers from the map rather than with a fixed entry, so a test can
+        // price two variants differently and so an id nobody registered comes
+        // back UNKNOWN -- which is what catalog really does for a variant that
+        // does not exist, and what the refusal paths need.
+        when(catalog.price(any())).thenAnswer(invocation -> {
+            CatalogPricingClient.PricingRequest request = invocation.getArgument(0);
+            List<CatalogPricingClient.Entry> entries = request.variantIds().stream()
+                    .map(id -> {
+                        BigDecimal price = catalogPrices.get(id);
+                        if (price == null) {
+                            return new CatalogPricingClient.Entry(
+                                    id, "UNKNOWN", null, null, null, null, null);
+                        }
+                        return new CatalogPricingClient.Entry(
+                                id, "PRICED", UUID.randomUUID(),
+                                catalogTitles.get(id),
+                                catalogTitles.get(id), price, "ZMW");
+                    })
+                    .toList();
+            return new CatalogPricingClient.PricingResponse(entries);
+        });
     }
 
     @Test
@@ -200,10 +245,18 @@ class CartIntegrationTest {
                         "Cart not found with the given input data customer : 'me'"));
     }
 
+    /**
+     * Adds a line. The {@code price} and {@code title} arguments now program
+     * what CATALOG answers for that variant rather than being sent in the
+     * request -- the request body carries only the variant and the quantity,
+     * because those are the only two things a shopper is allowed to choose.
+     */
     private void addItem(String sub, UUID variantId, int qty, String price, String title) throws Exception {
+        catalogPrices.put(variantId, new BigDecimal(price));
+        catalogTitles.put(variantId, title);
         String body = """
-                {"variantId":"%s","quantity":%d,"unitPrice":%s,"title":"%s"}
-                """.formatted(variantId, qty, price, title);
+                {"variantId":"%s","quantity":%d}
+                """.formatted(variantId, qty);
         mvc.perform(post("/api/v1/carts/me/items").with(jwtForUser(sub))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
@@ -211,6 +264,83 @@ class CartIntegrationTest {
 
     private static org.springframework.test.web.servlet.request.RequestPostProcessor jwtForUser(String sub) {
         return jwt().authorities(ROLE_USER).jwt(j -> j.subject(sub));
+    }
+
+    @Test
+    @DisplayName("a body still sending unitPrice gets the CATALOG price, not the one it sent")
+    void aStaleClientGetsTheCatalogPrice() throws Exception {
+        // NOT the proof that the lookup works -- see AddItemRequest's javadoc.
+        // Cart ignores unknown properties, so this would pass the moment the
+        // field left the record even if no lookup existed.
+        // AddItemPricingTest is what pins the lookup; this pins the end-to-end
+        // behaviour a stale storefront actually gets, which is worth knowing
+        // because it is SILENT: no 400, no warning, just the right price.
+        catalogPrices.put(V1, new BigDecimal("4500.00"));
+        catalogTitles.put(V1, "Aurelia 18k - Ring Size M");
+
+        mvc.perform(post("/api/v1/carts/me/items").with(jwtForUser("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"variantId":"%s","quantity":2,
+                                 "unitPrice":0.01,"title":"Free ring please"}
+                                """.formatted(V1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.subtotal").value(9000.00))
+                .andExpect(jsonPath("$.items[0].unitPrice").value(4500.00))
+                .andExpect(jsonPath("$.items[0].title").value("Aurelia 18k - Ring Size M"));
+    }
+
+    @Test
+    @DisplayName("a quantity above the cap is a 400 with fieldErrors, not a 409 or a 500")
+    void aQuantityAboveTheCapIsRejectedByValidation() throws Exception {
+        catalogPrices.put(V1, new BigDecimal("100.00"));
+        catalogTitles.put(V1, "Aurelia");
+
+        mvc.perform(post("/api/v1/carts/me/items").with(jwtForUser("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"variantId":"%s","quantity":100000}
+                                """.formatted(V1)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors").exists());
+
+        // And the same on the PATCH path, or the cap is one request away from
+        // being useless.
+        addItem("alice", V1, 1, "100.00", "Aurelia");
+        mvc.perform(patch("/api/v1/carts/me/items/" + V1).with(jwtForUser("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"quantity\":100000}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors").exists());
+    }
+
+    @Test
+    @DisplayName("an unreachable catalog is a 503 and leaves the bag exactly as it was")
+    void anUnreachableCatalogLeavesTheBagUntouched() throws Exception {
+        addItem("alice", V1, 1, "100.00", "Aurelia");
+        String before = mvc.perform(get("/api/v1/carts/me").with(jwtForUser("alice")))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        // doThrow, not when(...).thenThrow: price() is already stubbed with an
+        // Answer, and when(mock.price(any())) would CALL it -- with a null
+        // argument -- while setting up the new stub.
+        doThrow(new IllegalStateException("catalog is down")).when(catalog).price(any());
+
+        mvc.perform(post("/api/v1/carts/me/items").with(jwtForUser("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"variantId":"%s","quantity":1}
+                                """.formatted(V2)))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"));
+
+        // The bag must be byte-identical: a failed add that half-wrote a cart
+        // row would show up here.
+        assertThat(mvc.perform(get("/api/v1/carts/me").with(jwtForUser("alice")))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString())
+                .isEqualTo(before);
     }
 
     @Test
@@ -253,13 +383,17 @@ class CartIntegrationTest {
         // unconditionally would be the same bug wearing a different hat:
         // clients would stop seeing a timestamp that genuinely exists.
         String sub = UUID.randomUUID().toString();
+        // This test writes its own request body rather than using the helper,
+        // so it has to program the catalog stub itself.
+        catalogPrices.put(V1, new BigDecimal("100.00"));
+        catalogTitles.put(V1, "Aurelia 18k");
         mvc.perform(post("/api/v1/carts/me/items")
                         .with(jwt().authorities(ROLE_USER)
                                 .jwt(j -> j.subject(sub)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"variantId":"11111111-1111-1111-1111-111111111111",
-                                 "quantity":1,"unitPrice":100.00,"title":"Aurelia 18k"}
+                                 "quantity":1}
                                 """))
                 .andExpect(status().is2xxSuccessful());
 
