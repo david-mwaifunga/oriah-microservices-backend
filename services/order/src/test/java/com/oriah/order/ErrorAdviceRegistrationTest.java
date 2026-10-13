@@ -46,7 +46,22 @@ class ErrorAdviceRegistrationTest {
     /** This service throws only the shared {@code ResourceNotFoundException}, whose
      * 404 mapping lives in {@link OriahExceptionHandlerSupport}, so it has nothing
      * of its own to add and keeps the shared default advice. */
-    private static final Class<?> EXPECTED_ADVICE = ProblemDetailExceptionHandler.class;
+    /**
+     * Changed from {@code ProblemDetailExceptionHandler} when order gained
+     * domain exceptions of its own.
+     *
+     * <p>This test was RED for one commit, which is exactly what it is for.
+     * order had no advice of its own while it made no outbound calls worth
+     * distinguishing; pricing from catalog changed that, because a
+     * {@code FeignException} rendered by the shared default is
+     * "500 An unexpected error occurred" for both "catalog is down, retry" and
+     * "order sent catalog something malformed" -- opposite instructions to a
+     * caller. The four pricing refusals need named problem types for the same
+     * reason: the storefront branches on the type to decide whether a retry
+     * can help.
+     */
+    private static final Class<?> EXPECTED_ADVICE =
+            com.oriah.order.exception.GlobalExceptionHandler.class;
 
     @Autowired
     private ApplicationContext context;

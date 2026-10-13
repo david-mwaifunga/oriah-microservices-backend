@@ -33,6 +33,24 @@ spring:
         # failed call throwing rather than falling back to an invented answer
         # about whether an order was paid. Checkout documents the same trap.
         enabled: false
+      client:
+        config:
+          # catalog is called SYNCHRONOUSLY on the write path, inside a request
+          # checkout makes and cuts off at 15s (checkout application.yaml:44).
+          # feign-core's library defaults are 10s connect / 60s read, so an
+          # unconfigured client can hang for four times checkout's whole
+          # budget -- and the only symptom checkout can report is a downstream
+          # outage for a catalog that is merely slow.
+          #
+          # One pricing call has to fit well inside that budget with room for
+          # the persist that follows, hence 2s/5s. CatalogClientTimeoutTest
+          # asserts these on the NAMED client's own Feign child context, not on
+          # a bean: Spring Cloud builds a context per client name and silently
+          # falls back to the defaults for a name it has no config for, so a
+          # misspelled key here looks exactly like an omitted one.
+          catalog:
+            connect-timeout: 2000
+            read-timeout: 5000
     stream:
       bindings:
         orderEvents-out-0:

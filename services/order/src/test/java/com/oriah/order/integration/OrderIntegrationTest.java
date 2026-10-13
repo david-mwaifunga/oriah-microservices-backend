@@ -22,9 +22,12 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.order.TestcontainersConfiguration;
+import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.client.PaymentClient;
 import com.oriah.order.repository.OrderRepository;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -44,6 +47,29 @@ class OrderIntegrationTest {
 
     private static final SimpleGrantedAuthority ROLE_USER = new SimpleGrantedAuthority("ROLE_USER");
     private static final SimpleGrantedAuthority ROLE_ORDER_ADMIN = new SimpleGrantedAuthority("ROLE_ORDER_ADMIN");
+
+    /**
+     * Catalog, answering 10.00 USD for whatever is asked.
+     *
+     * <p>order prices every line from catalog now, so a test that places an
+     * order needs catalog to answer exactly as it needs Postgres to answer.
+     * Without this the real Feign client tries to reach {@code http://catalog}
+     * and every placement is a 503.
+     *
+     * <p>10.00 USD is what this class's fixture already claimed, so its
+     * arithmetic is untouched and nothing about what it TESTS has changed --
+     * its subject is per-user listing, the FSM and the cross-user 404
+     * property, and it asserts the same things about all three.
+     */
+    @MockitoBean
+    private CatalogPricingClient catalog;
+
+    /**
+     * variantId -> what catalog charges, for the tests that assert a specific
+     * total. Anything not listed is priced at 10.00 USD, which is what the
+     * shared {@code placeOrderAs} fixture claims.
+     */
+    private final java.util.Map<UUID, BigDecimal> catalogPrices = new java.util.HashMap<>();
 
     @Autowired
     private MockMvc mvc;
@@ -67,6 +93,15 @@ class OrderIntegrationTest {
     @BeforeEach
     void clean() {
         repository.deleteAll();
+        catalogPrices.clear();
+        doAnswer(inv -> {
+            CatalogPricingClient.PricingRequest asked = inv.getArgument(0);
+            return new CatalogPricingClient.PricingResponse(asked.variantIds().stream()
+                    .map(id -> new CatalogPricingClient.Entry(
+                            id, "PRICED", UUID.randomUUID(), "X", "X",
+                            catalogPrices.getOrDefault(id, new BigDecimal("10.00")), "USD"))
+                    .toList());
+        }).when(catalog).price(any());
     }
 
     /** A SUCCEEDED intent matching what {@link #placeOrderAs} creates: 10.00 USD. */
@@ -78,6 +113,15 @@ class OrderIntegrationTest {
     @Test
     @DisplayName("POST /orders creates a CREATED order with snapshotted items + correct total")
     void placeOrder() throws Exception {
+        // Declared and registered with the catalog stub, because order prices
+        // lines from catalog now and a claimed price that disagrees is refused.
+        // The figures are the fixture's own, so the 250.00 this test asserts is
+        // unchanged -- the claim is simply now true rather than unexamined.
+        UUID aurelia = UUID.randomUUID();
+        UUID lume = UUID.randomUUID();
+        catalogPrices.put(aurelia, new BigDecimal("100.00"));
+        catalogPrices.put(lume, new BigDecimal("50.00"));
+
         String body = """
                 {
                   "shippingAddressId": "11111111-1111-1111-1111-111111111111",
@@ -87,7 +131,7 @@ class OrderIntegrationTest {
                     {"variantId":"%s","title":"Lume","quantity":1,"unitPrice":50.00}
                   ]
                 }
-                """.formatted(UUID.randomUUID(), UUID.randomUUID());
+                """.formatted(aurelia, lume);
 
         mvc.perform(post("/api/v1/orders").with(jwtFor("alice"))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -194,6 +238,8 @@ class OrderIntegrationTest {
                   ]
                 }
                 """.formatted(UUID.randomUUID());
+        // The claimed 10.00 USD matches what the catalog stub answers, so this
+        // fixture's arithmetic is unchanged -- see the stub in before().
         MvcResult res = mvc.perform(post("/api/v1/orders").with(jwtFor(sub))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated()).andReturn();

@@ -22,14 +22,23 @@ import lombok.extern.slf4j.Slf4j;
 public class OrderService {
 
     private final OrderRepository repository;
+    // Still needed by transition(), which publishes its own status changes.
+    // Placement's publish moved to OrderWriter with the persist it belongs to.
     private final OrderEventPublisher events;
     private final PaymentIntentVerifier paymentVerifier;
+    private final OrderPricingService pricing;
+    private final OrderWriter writer;
 
-    public OrderService(OrderRepository repository, OrderEventPublisher events,
-                        PaymentIntentVerifier paymentVerifier) {
+    public OrderService(OrderRepository repository,
+                        OrderEventPublisher events,
+                        PaymentIntentVerifier paymentVerifier,
+                        OrderPricingService pricing,
+                        OrderWriter writer) {
         this.repository = repository;
         this.events = events;
         this.paymentVerifier = paymentVerifier;
+        this.pricing = pricing;
+        this.writer = writer;
     }
 
     /**
@@ -63,15 +72,44 @@ public class OrderService {
         return own;
     }
 
-    @Transactional
+    /**
+     * Places an order at CATALOG's prices.
+     *
+     * <h2>Deliberately NOT @Transactional</h2>
+     *
+     * It was, and it stored {@code req.items()} verbatim -- the hole this
+     * closes. Pricing now requires an outbound call to catalog, and this
+     * method must not hold a database connection while that happens; the rule
+     * is stated on {@link #verifyPaymentClaim} below and it applies here for
+     * the same reason.
+     *
+     * <p>So the work is split across two other beans and this method only
+     * orders them. Both calls cross a Spring proxy, which is the point:
+     * pricing and persisting as two methods on THIS bean would have been
+     * self-invocation, the {@code @Transactional} would have done nothing, and
+     * the only symptom would have been a transaction that silently was not
+     * one.
+     *
+     * <h2>What the caller still controls, and what they do not</h2>
+     *
+     * They choose the variants and the quantities. They do not choose the
+     * price, the title or the currency: those come from catalog. A price or
+     * currency they STATE is checked against catalog's and refuses on
+     * disagreement -- see {@link OrderPricingService} for why checking beats
+     * ignoring -- so their figure can only ever cause a refusal, never a lower
+     * charge.
+     *
+     * <p>What this does NOT fix: {@code PaymentIntentVerifier} still cannot
+     * compare {@code intent.amount} to {@code order.total}, because the order
+     * still has no discount or shipping while checkout charges
+     * {@code afterDiscount + shipping}. A 0.01 intent therefore still settles
+     * a correctly-priced order. That needs an authoritative-money marker per
+     * row so orders placed before this change stay payable, and it is a
+     * separate change.
+     */
     public Order placeOrder(String keycloakId, PlaceOrderRequest req) {
-        Order order = new Order(keycloakId, req.shippingAddressId(), req.currency());
-        req.items().forEach(li -> order.addItem(li.variantId(), li.title(), li.quantity(), li.unitPrice()));
-        Order saved = repository.save(order);
-        log.info("Placed order id={} keycloakId={} total={} items={}",
-                saved.id(), keycloakId, saved.total(), saved.items().size());
-        events.publish(new OrderEvent(saved.id(), keycloakId, null, OrderStatus.CREATED, saved.total(), saved.currency()));
-        return saved;
+        OrderPricingService.PricedOrder priced = pricing.price(req);
+        return writer.persist(keycloakId, req.shippingAddressId(), priced);
     }
 
     @Transactional

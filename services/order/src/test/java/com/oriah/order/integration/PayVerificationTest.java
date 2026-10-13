@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.order.TestcontainersConfiguration;
+import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.client.PaymentClient;
 import com.oriah.order.model.OrderStatus;
 import com.oriah.order.repository.OrderRepository;
@@ -35,6 +36,7 @@ import feign.Response;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -89,6 +91,30 @@ class PayVerificationTest {
 
     /** 2 x 100.00 + 1 x 50.00, and Order.recomputeTotals adds nothing on top. */
     private static final BigDecimal TOTAL = new BigDecimal("250.00");
+
+    /**
+     * Catalog, answering for whatever this test's fixture asks about.
+     *
+     * <p>order prices every line from catalog now, so a test that places an
+     * order needs catalog to answer exactly as it needs Postgres to answer.
+     * Without this the real Feign client tries to reach {@code http://catalog}
+     * and every placement is a 503.
+     *
+     * <p>This stub prices BY ID from {@link #catalogPrices} rather than
+     * returning one flat figure, so the fixtures keep their exact arithmetic --
+     * this class's narrative depends on the order totalling 250.00, and a
+     * convenient flat price would have quietly rewritten it.
+     *
+     * <p>Nothing about what this class TESTS has changed. Its subject is
+     * authorization and payment verification, and it asserts the same things
+     * about them.
+     */
+    @MockitoBean
+    private CatalogPricingClient catalog;
+
+    /** variantId -> what catalog charges for it, filled by the fixture. */
+    private final java.util.Map<UUID, BigDecimal> catalogPrices = new java.util.HashMap<>();
+
     private static final String CURRENCY = "ZMW";
 
     @Autowired
@@ -109,6 +135,15 @@ class PayVerificationTest {
     @BeforeEach
     void clean() {
         repository.deleteAll();
+        catalogPrices.clear();
+        doAnswer(inv -> {
+            CatalogPricingClient.PricingRequest asked = inv.getArgument(0);
+            return new CatalogPricingClient.PricingResponse(asked.variantIds().stream()
+                    .map(id -> new CatalogPricingClient.Entry(
+                            id, "PRICED", UUID.randomUUID(), "Aurelia 18k",
+                            "Aurelia 18k", catalogPrices.get(id), CURRENCY))
+                    .toList());
+        }).when(catalog).price(any());
     }
 
     private static RequestPostProcessor as(String subject) {
@@ -116,6 +151,13 @@ class PayVerificationTest {
     }
 
     private UUID placeOrderAs(String subject) throws Exception {
+        // Declared rather than inlined, so the stub can price each one at the
+        // figure this fixture's 250.00 total depends on.
+        UUID aurelia = UUID.randomUUID();
+        UUID lume = UUID.randomUUID();
+        catalogPrices.put(aurelia, new BigDecimal("100.00"));
+        catalogPrices.put(lume, new BigDecimal("50.00"));
+
         String body = """
                 {
                   "shippingAddressId": "11111111-1111-1111-1111-111111111111",
@@ -125,7 +167,7 @@ class PayVerificationTest {
                     {"variantId":"%s","title":"Lume","quantity":1,"unitPrice":50.00}
                   ]
                 }
-                """.formatted(CURRENCY, UUID.randomUUID(), UUID.randomUUID());
+                """.formatted(CURRENCY, aurelia, lume);
         String json = mvc.perform(post("/api/v1/orders").with(as(subject))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())

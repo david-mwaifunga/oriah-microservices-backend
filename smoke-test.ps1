@@ -286,6 +286,59 @@ if ([decimal]$cart.subtotal -ne [decimal]200.00) {
     exit 1
 }
 
+Write-Host "[4b/20] Order refuses a price the caller invented..." -ForegroundColor Cyan
+# The direct path, which bypasses cart and checkout entirely.
+# POST /api/v1/orders is ROLE_USER and its items[] carries unitPrice, which
+# order-service stored verbatim -- its own javadoc said "order-service trusts
+# the supplied prices/titles". So a shopper could order a K100 piece for a
+# cent without ever touching a bag. Step 4 above proves cart ignores a stale
+# price; this is the same property one service along.
+#
+# order prices every line from catalog now, and a STATED price that disagrees
+# is REFUSED rather than silently corrected. Refusing matters: overwriting
+# would have given the checkout path TWO independent price reads with nothing
+# reconciling them, so a price moving between them would leave an order whose
+# recorded total exceeded what the card paid -- an invisible under-charge on
+# the cart path, worse than the hole being closed.
+$orderProbe = @{
+    shippingAddressId = $addrId
+    currency = "ZMW"
+    items = @(@{ variantId=$variantId; title="Free ring please"
+                 quantity=1; unitPrice=0.01 })
+}
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
+        -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
+        -Body (ConvertTo-Json $orderProbe) | Out-Null
+    Write-Error "ONE-CENT ORDER HOLE IS OPEN: POST /orders accepted unitPrice=0.01 for a K100 piece"
+    exit 1
+}
+catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+    if ($code -ne 409) {
+        Write-Error "A false price claim should be 409, got $code"
+        exit 1
+    }
+}
+# And the truthful claim still works -- the bound must narrow the input, not
+# the feature. The TITLE is overwritten with catalog's rather than refused,
+# because an admin renaming a product must not refuse a sale.
+$orderProbe.items[0].unitPrice = 100.00
+$honest = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
+    -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
+    -Body (ConvertTo-Json $orderProbe)
+if ($honest.subtotal -ne 100.00 -or $honest.currency -ne "ZMW") {
+    Write-Error "Truthful order came back subtotal=$($honest.subtotal) currency=$($honest.currency), want 100.00 ZMW"
+    exit 1
+}
+$storedTitle = @($honest.items)[0].title
+if ($storedTitle -eq "Free ring please") {
+    Write-Error "order stored the caller's title verbatim; it must store catalog's variantTitle"
+    exit 1
+}
+Write-Host "    unitPrice=0.01 refused 409; truthful 100.00 ZMW accepted; title stored as '$storedTitle'" -ForegroundColor Gray
+
 Write-Host "[5/20] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
@@ -922,14 +975,31 @@ Write-Host "    0 OTLP publish failures, 0 Kafka watermark warnings, lag metric 
 # ---------------------------------------------------------------------------
 Write-Host "[20/20] Money-path authorization holds (live exploit attempts)..." -ForegroundColor Cyan
 
-function New-ProbeOrder($Headers, $Amount) {
+# The probe order's value is QUANTITY x catalog's price, because the price is
+# no longer the caller's to choose.
+#
+# order-service prices every line from catalog and refuses a stated price or
+# currency that disagrees, so this used to post currency="USD" with
+# unitPrice=$Amount against a ZMW variant and now gets a 409. Worse than
+# breaking: had only the currency been fixed, probe (a) below would have gone
+# green for the CURRENCY mismatch instead of for the authorization property it
+# exists to check -- a passing test measuring the wrong thing.
+#
+# So the claim it sends is the true one ($probePrice / $probeCurrency, read
+# from the variant this run created), and the amount is varied through
+# quantity. Distinct quantities give distinct totals, which the gateway
+# charge-count below needs in order to attribute a charge to one probe.
+$probePrice = 100.00
+$probeCurrency = "ZMW"
+
+function New-ProbeOrder($Headers, $Quantity) {
     return Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
         -Headers $Headers -ContentType "application/json" `
         -Body (ConvertTo-Json @{
             shippingAddressId = $addrId
-            currency = "USD"
+            currency = $probeCurrency
             items = @(@{ variantId=$variantId; title="Authz probe"
-                         quantity=1; unitPrice=$Amount })
+                         quantity=$Quantity; unitPrice=$probePrice })
         })
 }
 function Probe-Status($err) {
@@ -949,6 +1019,9 @@ function Charge-Count($Amount) {
     # Discarding stderr inside cmd keeps it out of PowerShell altogether.
     $logs = cmd /c "docker logs oriah-payment 2>nul"
     $hits = @($logs | Select-String -SimpleMatch "FakePaymentGateway.charge amount=$Amount ")
+    # $Amount here is the ORDER's total, which is now catalog's figure rather
+    # than one the probe named. Still distinctive because each probe uses a
+    # different quantity.
     return $hits.Count
 }
 
@@ -957,7 +1030,7 @@ $mayaH  = @{ Authorization = "Bearer $maya" }
 $authzFailures = @()
 
 # (a) A fabricated payment intent id must not pay an order.
-$probe = New-ProbeOrder $aliceH 4500.00
+$probe = New-ProbeOrder $aliceH 45      # 45 x 100.00 = 4500.00
 try {
     Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders/$($probe.id)/pay" `
         -Headers $aliceH -ContentType "application/json" `
@@ -974,11 +1047,13 @@ try {
 # (b) A genuinely settled intent belonging to ANOTHER order must not pay this
 #     one. Without this check, settling one cheap order would pay every order
 #     the shopper owns.
-$victim = New-ProbeOrder $aliceH 4500.00
-$decoy  = New-ProbeOrder $aliceH 1.00
+$victim = New-ProbeOrder $aliceH 45     # 4500.00
+# A quantity of 2 rather than a 1.00 unit price: the decoy only has to be
+# CHEAP AND DISTINCT from the victim, and 1.00 is no longer namable.
+$decoy  = New-ProbeOrder $aliceH 2      # 200.00
 $decoyIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
     -Headers $aliceH -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ orderId=$decoy.id; amount=1.00; currency="USD" })
+    -Body (ConvertTo-Json @{ orderId=$decoy.id; amount=$decoy.total; currency=$decoy.currency })
 $settledDecoy = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/payments/intents/$($decoyIntent.id)/confirm" `
     -Headers $aliceH -ContentType "application/json" `
@@ -1021,11 +1096,15 @@ if ((Charge-Count "1.00") -ne $before) {
 #     else's intent. maya carries ROLE_USER alongside her admin roles, so she
 #     is a second real customer here. The amount is distinctive so the
 #     gateway's charge count is unambiguous.
-$crossAmount = 77.77
-$aliceOrder = New-ProbeOrder $aliceH $crossAmount
+# 7 x 100.00. It used to be 77.77 -- "distinctive so the charge count can be
+# attributed" -- but a unit price is not namable any more, so distinctiveness
+# comes from a quantity no other probe here uses.
+$crossQuantity = 7
+$crossAmount = 700.00
+$aliceOrder = New-ProbeOrder $aliceH $crossQuantity
 $aliceIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
     -Headers $aliceH -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ orderId=$aliceOrder.id; amount=$crossAmount; currency="USD" })
+    -Body (ConvertTo-Json @{ orderId=$aliceOrder.id; amount=$aliceOrder.total; currency=$aliceOrder.currency })
 $chargesBefore = Charge-Count $crossAmount
 try {
     Invoke-RestMethod -Method POST `

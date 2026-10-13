@@ -23,9 +23,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.oriah.order.TestcontainersConfiguration;
+import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.model.Order;
 import com.oriah.order.repository.OrderRepository;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -101,6 +104,18 @@ class PlaceOrderValidationTest {
     @Autowired
     private OrderRepository repository;
 
+    /**
+     * Catalog, answering 100.00 ZMW -- the figure this class's bodies already
+     * claim, so every bound assertion here keeps its exact meaning.
+     *
+     * <p>Needed because order prices from catalog now. Most tests in this class
+     * never reach it: a malformed quantity, title or currency is refused by
+     * Bean Validation before any pricing happens, which is the whole point of
+     * having the bounds in the DTO. Only the two happy paths get this far.
+     */
+    @MockitoBean
+    private CatalogPricingClient catalog;
+
     @MockitoBean
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
@@ -108,6 +123,14 @@ class PlaceOrderValidationTest {
     @BeforeEach
     void reset() {
         repository.deleteAll();
+        doAnswer(inv -> {
+            CatalogPricingClient.PricingRequest asked = inv.getArgument(0);
+            return new CatalogPricingClient.PricingResponse(asked.variantIds().stream()
+                    .map(id -> new CatalogPricingClient.Entry(
+                            id, "PRICED", UUID.randomUUID(), "Aurelia 18k",
+                            "Aurelia 18k", new java.math.BigDecimal("100.00"), "ZMW"))
+                    .toList());
+        }).when(catalog).price(any());
     }
 
     private static RequestPostProcessor alice() {

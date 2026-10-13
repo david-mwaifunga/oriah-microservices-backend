@@ -1,0 +1,24 @@
+-- order_items.title holds CATALOG's composed variant title now, not a client
+-- string, and catalog's composition reaches well past 255 characters.
+--
+-- V1 declared it VARCHAR(255) when the title was whatever the caller sent and
+-- the caller was checkout, passing through a product name. Order-service now
+-- prices its own lines and stores catalog's `variantTitle` -- product title
+-- plus every option value -- which for a product with several axes runs to
+-- ~332 characters today and has no upper bound in catalog at all.
+--
+-- Without this widening, a perfectly good sale of a many-optioned piece fails
+-- on the insert with a value-too-long error, which the advice renders as
+-- "500 An unexpected error occurred" -- the shopper is told the shop is broken
+-- because the product has a long name.
+--
+-- cart met this exact wall one service earlier and widened the same column the
+-- same way (cart V3__line_currency_and_price_floor.sql:66), for the same
+-- reason: "catalog's composed variantTitle already exceeds it".
+--
+-- varchar -> text is binary-coercible in Postgres, so this rewrites the
+-- catalog entry and not the table: no row scan, no long ACCESS EXCLUSIVE hold.
+-- There is no length constraint to replace it, by design -- catalog owns how
+-- long a product's name is, and order should record whatever it was called at
+-- the moment it was sold.
+ALTER TABLE order_items ALTER COLUMN title TYPE TEXT;
