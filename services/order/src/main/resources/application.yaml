@@ -20,6 +20,19 @@ spring:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
   cloud:
+    # Nested under the EXISTING spring.cloud key on purpose. A second
+    # top-level `spring:` document key is rejected by Spring Boot's loader,
+    # and a permissive loader would resolve it by discarding one of the two.
+    openfeign:
+      circuitbreaker:
+        # Stays off. PaymentClient forwards the shopper's JWT from
+        # SecurityContextHolder, which is a ThreadLocal, and Spring Cloud's
+        # OpenFeign+Resilience4j integration dispatches the call to a
+        # ForkJoinPool worker -- the Authorization header would be dropped and
+        # payment would answer 401 for every verification. It also keeps a
+        # failed call throwing rather than falling back to an invented answer
+        # about whether an order was paid. Checkout documents the same trap.
+        enabled: false
     stream:
       bindings:
         orderEvents-out-0:

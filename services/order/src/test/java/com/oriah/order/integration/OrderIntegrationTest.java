@@ -1,5 +1,6 @@
 package com.oriah.order.integration;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -21,8 +22,10 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.order.TestcontainersConfiguration;
+import com.oriah.order.client.PaymentClient;
 import com.oriah.order.repository.OrderRepository;
 
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -52,9 +55,24 @@ class OrderIntegrationTest {
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
+    /**
+     * POST /orders/{id}/pay now verifies the payment claim against
+     * payment-service, so the paying tests below have to stub a real settled
+     * intent. They previously posted {@code UUID.randomUUID()} and passed,
+     * which is exactly the hole {@link PayVerificationTest} was written for.
+     */
+    @MockitoBean
+    private PaymentClient payment;
+
     @BeforeEach
     void clean() {
         repository.deleteAll();
+    }
+
+    /** A SUCCEEDED intent matching what {@link #placeOrderAs} creates: 10.00 USD. */
+    private void stubSettled(String orderId, UUID intentId) {
+        when(payment.findIntent(intentId)).thenReturn(new PaymentClient.IntentResponse(
+                intentId, UUID.fromString(orderId), new BigDecimal("10.00"), "USD", "SUCCEEDED"));
     }
 
     @Test
@@ -100,6 +118,7 @@ class OrderIntegrationTest {
     void payTransitionsToPaid() throws Exception {
         String orderId = placeAliceOrder();
         UUID paymentIntent = UUID.randomUUID();
+        stubSettled(orderId, paymentIntent);
         mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(jwtFor("alice"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"paymentIntentId\":\"" + paymentIntent + "\"}"))
@@ -122,9 +141,11 @@ class OrderIntegrationTest {
     void adminFullPath() throws Exception {
         String orderId = placeAliceOrder();
         // pay first (USER endpoint)
+        UUID paymentIntent = UUID.randomUUID();
+        stubSettled(orderId, paymentIntent);
         mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(jwtFor("alice"))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"paymentIntentId\":\"" + UUID.randomUUID() + "\"}"))
+                        .content("{\"paymentIntentId\":\"" + paymentIntent + "\"}"))
                 .andExpect(status().isOk());
 
         for (String target : new String[]{"FULFILLED", "SHIPPED", "DELIVERED"}) {

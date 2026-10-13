@@ -114,10 +114,21 @@ public class OrderController {
     }
 
     /**
-     * Customer can attach a successful PaymentIntent to their own order
-     * and transition to PAID in one call. Caller responsibility: ensure
-     * the PaymentIntent is actually SUCCEEDED before calling this.
-     * (Future checkout orchestrator validates that.)
+     * Attach a settled PaymentIntent to one of the caller's own orders and
+     * transition it to PAID.
+     *
+     * <p>The claim in the body is verified against payment-service before
+     * anything is attached: the intent must be SUCCEEDED, must name this
+     * order, and must match its total and currency. See
+     * {@link com.oriah.order.service.PaymentIntentVerifier}. This endpoint
+     * previously trusted the body, so any shopper could post a random UUID
+     * against their own order and receive a PAID order having paid nothing.
+     *
+     * <p>Note that the verification is a property of the ENDPOINT, not of the
+     * checkout orchestrator. Checkout reaches this same path forwarding the
+     * shopper's own JWT, so there is no way to tell an orchestrated call from
+     * a hand-rolled one; the only defence is checking the claim, which means
+     * checkout gets no special treatment and needs none.
      */
     @Operation(operationId = "pay", summary = "Attach a settled payment intent and transition to PAID")
     @ApiResponse(responseCode = "200", description = "The order, now PAID")
@@ -127,7 +138,13 @@ public class OrderController {
     @ApiResponse(responseCode = "404", description = "No such resource",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409", description = "The request conflicts with current state",
+    @ApiResponse(responseCode = "409",
+            description = "The request conflicts with current state, or the payment intent "
+                    + "could not be verified as a settled payment for this order",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503",
+            description = "Payment could not be consulted; the order has NOT been marked paid",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{id}/pay")
@@ -135,7 +152,11 @@ public class OrderController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id,
             @Valid @RequestBody AttachPaymentRequest body) {
-        return service.attachPayment(jwt.getSubject(), id, body.paymentIntentId())
+        // Verify first, outside any transaction, and only then attach. Each
+        // call goes through the service proxy so attach and transition keep
+        // their own transactional boundaries.
+        return service.verifyPaymentClaim(jwt.getSubject(), id, body.paymentIntentId())
+                .flatMap(o -> service.attachPayment(jwt.getSubject(), id, body.paymentIntentId()))
                 .flatMap(o -> service.transition(o.id(), OrderStatus.PAID))
                 .map(OrderResponse::from)
                 .orElseThrow(() -> unknownOrder(id));
