@@ -9,6 +9,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.oriah.payment.dto.CreateIntentRequest;
 import com.oriah.payment.gateway.PaymentGateway;
 import com.oriah.payment.model.PaymentIntent;
+import com.oriah.payment.model.PaymentStatus;
 import com.oriah.payment.repository.PaymentIntentRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -86,6 +87,26 @@ public class PaymentService {
         return repository.findById(intentId)
                 .filter(intent -> intent.keycloakId().equals(keycloakId))
                 .map(intent -> {
+            // Terminal check BEFORE the charge. The guard already existed --
+            // markSucceeded() and markFailed() both call requirePending() --
+            // but it ran AFTER gateway.charge() below, so confirming a settled
+            // intent charged the card, threw, and rolled back to a 409: a
+            // second charge with no record of it, because the row that would
+            // have recorded it was rolled back with everything else. Two plain
+            // confirm calls reached it, since Idempotency-Key is optional.
+            //
+            // Same shape as the ownership bug above, and the same fix: decide
+            // first, charge second.
+            //
+            // The message is requirePending()'s verbatim, so the 409 body does
+            // not move. Deliberately still a 409 rather than an idempotent
+            // 200: a shopper retrying WITHOUT an Idempotency-Key must not be
+            // told "fine" about a charge this request did not make. The header
+            // is the mechanism for a safe retry.
+            if (intent.status() != PaymentStatus.PENDING) {
+                throw new IllegalStateException(
+                        "PaymentIntent " + intent.id() + " already in terminal state " + intent.status());
+            }
             var result = gateway.charge(cardNumber, intent.amount(), intent.currency());
             switch (result) {
                 case PaymentGateway.Success s -> {
