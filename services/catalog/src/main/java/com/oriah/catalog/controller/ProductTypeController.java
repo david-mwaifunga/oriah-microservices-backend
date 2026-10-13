@@ -4,9 +4,13 @@ import java.util.Comparator;
 import java.util.List;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
+import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -52,6 +56,17 @@ import lombok.extern.slf4j.Slf4j;
 @RestController
 @RequestMapping("/api/v1/product-types")
 @Tag(name = "Product types", description = "Type-specific attribute definitions")
+@ApiResponses({
+        // Anonymous reads (catalog SecurityConfig: GET permitAll), so no 401 or
+        // 403 -- documenting those would claim responses this endpoint cannot
+        // produce. 500 is declared because every call can fail, which is what
+        // openapi_audit.py means by "the contract claims this call cannot
+        // fail": before this, the collection reads here documented a 200 and
+        // nothing else.
+        @ApiResponse(responseCode = "500", description = "Unexpected server error",
+                content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+})
 @Slf4j
 public class ProductTypeController {
 
