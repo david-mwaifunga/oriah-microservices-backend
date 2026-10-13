@@ -51,8 +51,41 @@ public class PaymentService {
      * is a programming error.
      */
     @Transactional
-    public Optional<PaymentIntent> confirm(UUID intentId, String cardNumber) {
-        return repository.findById(intentId).map(intent -> {
+    /**
+     * Charges the gateway and settles the intent.
+     *
+     * <h2>The owner is a parameter, and that is the fix</h2>
+     *
+     * This method used to take only the id, so it found the intent, called the
+     * gateway and marked the status with no idea who was asking. The caller
+     * checked ownership on the RESULT:
+     *
+     * <pre>
+     *   service.confirm(id, card)                                     // charges
+     *          .filter(i -&gt; i.keycloakId().equals(jwt.getSubject()))  // checks
+     *          .orElseThrow(() -&gt; unknownIntent(id));
+     * </pre>
+     *
+     * which is a check performed after the money has already moved. One
+     * customer confirming another's intent settled it for real and received a
+     * 404: a charge that looks to the caller like nothing happened, and to the
+     * victim like they paid. {@code ConfirmAuthorizationTest} pins that the
+     * victim's intent is still PENDING afterwards, because the status -- not
+     * the response code -- is what was actually broken.
+     *
+     * <p>The filter lives here rather than in the controller deliberately. The
+     * gateway call is the irreversible step, so the authorization decision has
+     * to sit upstream of it inside the same method, where no future caller can
+     * reorder the two.
+     *
+     * @return empty when no such intent exists OR it belongs to someone else.
+     *         The two are deliberately indistinguishable, so a 404 cannot
+     *         confirm that another customer's intent id is real.
+     */
+    public Optional<PaymentIntent> confirm(UUID intentId, String keycloakId, String cardNumber) {
+        return repository.findById(intentId)
+                .filter(intent -> intent.keycloakId().equals(keycloakId))
+                .map(intent -> {
             var result = gateway.charge(cardNumber, intent.amount(), intent.currency());
             switch (result) {
                 case PaymentGateway.Success s -> {
