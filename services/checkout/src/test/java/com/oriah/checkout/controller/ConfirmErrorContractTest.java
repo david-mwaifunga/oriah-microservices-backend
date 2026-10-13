@@ -60,11 +60,20 @@ class ConfirmErrorContractTest {
 
     private static final String PROBLEM_BASE = "https://oriah.dev/problems/";
 
-    /** A valid body: validation fires before the handler, so this must pass it. */
+    /**
+     * A valid body: validation fires before the handler, so this must pass it.
+     *
+     * <p>pricingVersion is REQUIRED now, and omitting it turns every test in
+     * this class into a 400 -- a red bar that reads as a status-mapping
+     * regression when the real cause is a stale fixture. The value itself is
+     * irrelevant here because CheckoutService is mocked; these tests are about
+     * the controller and the advice, not about pricing.
+     */
     private static final String VALID_BODY = """
             {"shippingAddressId":"11111111-1111-1111-1111-111111111111",
              "destinationCountry":"NG",
-             "cardNumber":"4242424242424242"}
+             "cardNumber":"4242424242424242",
+             "pricingVersion":"any-non-blank-token"}
             """;
 
     @Autowired

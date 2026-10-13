@@ -90,3 +90,39 @@ cart|schema property removed|AddItemRequest.unitPrice
 cart|schema property removed|AddItemRequest.title
 cart|schema property type changed|AddItemRequest.quantity: {"format": "int32", "minimum": 1, "type": "integer"} -> {"format": "int32", "maximum": 99, "minimum": 1, "type": "integer"}
 cart|schema property type changed|UpdateItemRequest.quantity: {"format": "int32", "minimum": 1, "type": "integer"} -> {"format": "int32", "maximum": 99, "minimum": 1, "type": "integer"}
+
+# ---------------------------------------------------------------------------
+# Pricing phase: confirm must prove which prices the shopper agreed to.
+# ---------------------------------------------------------------------------
+#
+# ConfirmRequest gains a REQUIRED pricingVersion.
+#
+# Preview quotes a bag and the shopper reads a total; between that and Place
+# order an admin can reprice a variant or withdraw it. The version is a digest
+# of the prices preview used, echoed back on confirm, so the server can tell
+# whether the shopper is agreeing to the numbers it actually showed them --
+# and refuse rather than silently charge different ones.
+#
+# REQUIRED is the whole guarantee, and that is why this break is taken. A
+# nullable version would let any client opt out of the staleness check by
+# omitting the field, which is the one thing the check exists to prevent.
+#
+# The schema NAME stays ConfirmRequest. Renaming it to ConfirmRequestV2 would
+# produce three more findings (schema removed, requestBody schema changed, plus
+# this one) and nothing would be gained: the operationId, the path and every
+# other property are unchanged.
+#
+# The token is only ever COMPARED against a value recomputed server-side from
+# catalog, never used as an input to a price, so a forged value buys nothing --
+# the worst a client can do with a wrong one is refuse its own checkout.
+#
+# Client impact, checked rather than assumed: oriah-web's PreviewResponseSchema
+# had to declare pricingVersion before the storefront could echo it, because
+# Zod strips undeclared keys silently. Without that one line the token arrives,
+# is discarded, confirm sends nothing and EVERY checkout 409s -- so this break
+# is paired with a storefront change in the same phase rather than left for a
+# client to discover.
+#
+# Reviewed and accepted 2026-10-13.
+
+checkout|property became required|ConfirmRequest.pricingVersion

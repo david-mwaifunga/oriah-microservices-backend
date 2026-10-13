@@ -19,7 +19,10 @@ import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.ConfirmResponse;
 import com.oriah.checkout.dto.PreviewRequest;
 import com.oriah.checkout.dto.PreviewResponse;
+import com.oriah.checkout.exception.BagNotPurchasableException;
 import com.oriah.checkout.exception.CartEmptyException;
+import com.oriah.checkout.exception.MixedCurrencyException;
+import com.oriah.checkout.exception.PricingChangedException;
 import com.oriah.checkout.exception.DownstreamRejectedException;
 import com.oriah.checkout.exception.DownstreamUnavailableException;
 import com.oriah.checkout.exception.PaymentCapturedWithoutOrderException;
@@ -171,16 +174,13 @@ public class CheckoutService {
             if (entry == null || !entry.isPriced()) {
                 log.warn("Refusing checkout: variantId={} prices as {}", item.variantId(),
                         entry == null ? "(absent from the pricing response)" : entry.status());
-                throw new IllegalStateException(
-                        "One or more items in your bag are no longer available. "
-                                + "Remove them and try again.");
+                throw new BagNotPurchasableException(List.of(item.variantId()));
             }
             if (currency == null) {
                 currency = entry.currency();
             } else if (!currency.equals(entry.currency())) {
                 log.warn("Refusing checkout: bag mixes {} and {}", currency, entry.currency());
-                throw new IllegalStateException(
-                        "Your bag mixes currencies and cannot be checked out as one order.");
+                throw new MixedCurrencyException(currency, entry.currency());
             }
             int quantity = item.quantity() == null ? 0 : item.quantity();
             subtotal = subtotal.add(entry.unitPrice().multiply(BigDecimal.valueOf(quantity)));
@@ -189,12 +189,19 @@ public class CheckoutService {
             lines.add(new OrderClient.LineItem(
                     item.variantId(), entry.variantTitle(), quantity, entry.unitPrice()));
         }
-        return new RepricedBag(lines, subtotal, currency);
+        // Digested over catalog's ANSWER rather than over the lines built from
+        // it, so the version covers status as well as price -- a variant going
+        // UNPUBLISHED changes the version even though no remaining price moved.
+        return new RepricedBag(lines, subtotal, currency,
+                PricingVersion.of(byVariant.values()));
     }
 
-    /** The bag as catalog prices it: order lines, their sum, and one currency. */
+    /**
+     * The bag as catalog prices it: order lines, their sum, one currency, and
+     * the digest of the prices it was built from.
+     */
     private record RepricedBag(List<OrderClient.LineItem> lines, BigDecimal subtotal,
-                               String currency) {
+                               String currency, String pricingVersion) {
     }
 
     public PreviewResponse preview(PreviewRequest req) {
@@ -205,9 +212,13 @@ public class CheckoutService {
         // same circuit rather than each method tripping independently.
         var myCart = safeCall(cart::getMyCart, "cart");
         if (myCart == null || myCart.items() == null || myCart.items().isEmpty()) {
+            // An empty bag has no prices to version, and confirm refuses it
+            // on its own terms (CartEmptyException) long before the staleness
+            // check -- so a null here cannot strand anyone. The currency is
+            // null for the same reason: there is nothing to denominate.
             return new PreviewResponse(
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
-                    "USD", null, List.of(), null
+                    null, null, List.of(), null, null
             );
         }
         // Repriced here too, not just in confirm. The plan for this phase
@@ -250,7 +261,7 @@ public class CheckoutService {
 
         BigDecimal total = afterDiscount.add(cheapest);
         return new PreviewResponse(subtotal, discount, cheapest, total,
-                priced.currency(), applied, options, zone);
+                priced.currency(), applied, options, zone, priced.pricingVersion());
     }
 
     /**
@@ -285,6 +296,37 @@ public class CheckoutService {
      *
      * <p>A null quote (the outage path) passes through here untouched.
      */
+    /**
+     * Refuses a confirm whose prices are not the ones the shopper was quoted.
+     *
+     * <h2>Placed before the promo call, deliberately</h2>
+     *
+     * Every refusal in this method has to happen before anything is ordered,
+     * charged or redeemed. A promotion redeemed against an order that is then
+     * refused has consumed one of its uses for nothing, which is why this sits
+     * above the promo call rather than next to the payment.
+     *
+     * <p>The token is only ever COMPARED, never used as an input to a price, so
+     * a forged value buys nothing: the worst a client can do with a wrong one
+     * is refuse its own checkout.
+     *
+     * <p>A RETRY after this 409 is safe without a new Idempotency-Key, which is
+     * worth stating because it was not always true. Payment used to replay a
+     * stored response keyed on the key STRING alone, so a retry after a
+     * pricing failure could be handed an earlier success with no charge taken.
+     * That replay is now scoped to the owner and to the intent the key was
+     * bound to, and a key presented against a different intent is refused -- so
+     * the ordinary storefront behaviour of reusing the key is no longer a hole.
+     */
+    private void requireAgreedPrices(String echoed, RepricedBag priced) {
+        if (!priced.pricingVersion().equals(echoed)) {
+            log.info("409 stale pricing: client echoed {}, current is {}",
+                    echoed, priced.pricingVersion());
+            throw new PricingChangedException(
+                    priced.lines().stream().map(OrderClient.LineItem::variantId).toList());
+        }
+    }
+
     private void requireQuotedInBagCurrency(ShippingClient.RateResponse rates, String bagCurrency) {
         if (rates == null || rates.options() == null) {
             return;
@@ -378,6 +420,8 @@ public class CheckoutService {
         //    `BigDecimal subtotal = myCart.subtotal();`, which charged whatever
         //    cart reported.
         RepricedBag priced = reprice(myCart);
+
+        requireAgreedPrices(req.pricingVersion(), priced);
 
         // 1) Promo
         BigDecimal subtotal = priced.subtotal();

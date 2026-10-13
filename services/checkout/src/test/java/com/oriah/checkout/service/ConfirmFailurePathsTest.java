@@ -115,12 +115,26 @@ class ConfirmFailurePathsTest {
     private final CheckoutService service = new CheckoutService(
             cart, catalog, promotion, shipping, payment, order, resilient);
 
+    /**
+     * The version matching what cartHasOneItem() makes catalog answer.
+     *
+     * <p>Computed rather than hardcoded: these tests are about failure paths,
+     * and every one of them would otherwise fail on the staleness check
+     * instead of on the path it means to exercise -- a red bar that looks like
+     * a pricing regression and is really a stale fixture.
+     */
+    private static String version() {
+        return PricingVersion.of(List.of(new CatalogPricingClient.Entry(
+                VARIANT, "PRICED", null, "Aurelia", "Aurelia",
+                new BigDecimal("100.00"), "USD")));
+    }
+
     private ConfirmRequest request() {
-        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null);
+        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null, version());
     }
 
     private ConfirmRequest withPromo(String code) {
-        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", code);
+        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", code, version());
     }
 
     private void cartHasOneItem() {

@@ -18,6 +18,7 @@ import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.PreviewRequest;
 import com.oriah.checkout.dto.PreviewResponse;
+import com.oriah.checkout.exception.PricingChangedException;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
@@ -121,10 +122,36 @@ class ConfirmPricingTest {
         intentSucceeds();
     }
 
+    /** The entry the catalog stub is currently answering with. */
+    private CatalogPricingClient.Entry answer;
+
     private void catalogSays(String status, BigDecimal price, String currency) {
-        when(catalog.price(any())).thenReturn(new CatalogPricingClient.PricingResponse(
-                List.of(new CatalogPricingClient.Entry(VARIANT, status, UUID.randomUUID(),
-                        "Aurelia 18k", "Aurelia 18k - Ring Size M", price, currency))));
+        answer = new CatalogPricingClient.Entry(VARIANT, status, UUID.randomUUID(),
+                "Aurelia 18k", "Aurelia 18k - Ring Size M", price, currency);
+        when(catalog.price(any())).thenReturn(
+                new CatalogPricingClient.PricingResponse(List.of(answer)));
+    }
+
+    /**
+     * The version a client would have been handed by preview.
+     *
+     * <p>Computed the way the server computes it rather than hardcoded -- a
+     * literal digest in a test is a value nobody can check and that has to be
+     * re-pasted every time the canonical form changes.
+     *
+     * <p>Deliberately NOT obtained by calling preview() in every test: preview
+     * also calls shipping, which would double the invocation counts the
+     * shipping assertions rely on. previewChargesWhatItShowed does the real
+     * round trip.
+     */
+    private String currentVersion() {
+        // Null when a test stubs catalog directly rather than through
+        // catalogSays -- the empty-answer case. The value is irrelevant there:
+        // reprice() refuses the bag before the version is ever compared, so a
+        // placeholder keeps the helper from throwing on List.of(null).
+        return answer == null
+                ? "no-version-needed"
+                : PricingVersion.of(List.of(answer));
     }
 
     private void shippingIsFree() {
@@ -148,7 +175,7 @@ class ConfirmPricingTest {
     }
 
     private ConfirmRequest confirmRequest() {
-        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null);
+        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null, currentVersion());
     }
 
     // ------------------------------------------------------------- the fix
@@ -197,7 +224,11 @@ class ConfirmPricingTest {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
 
         PreviewResponse preview = service.preview(new PreviewRequest("NG", null));
-        service.confirm(confirmRequest(), "key-3");
+        // The real round trip: confirm echoes the token preview handed out,
+        // which is what a storefront does and what the staleness check exists
+        // to make meaningful.
+        service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+                preview.pricingVersion()), "key-3");
 
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
                 ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
@@ -227,6 +258,68 @@ class ConfirmPricingTest {
         assertThat(intent.getValue().currency())
                 .as("a ZMW bag must not become a USD intent")
                 .isEqualTo("ZMW");
+    }
+
+    // ----------------------------------------------------- the staleness guard
+
+    @Test
+    @DisplayName("a stale pricing version is refused before anything is ordered, charged or redeemed")
+    void aStaleVersionIsRefusedBeforeAnythingHappens() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+
+        // What a shopper sends after an admin repriced the ring between their
+        // preview and their Place order: a token for prices that no longer
+        // exist.
+        ConfirmRequest stale = new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+                "0000000000000000000000000000000000000000000000000000000000000000");
+
+        assertThatThrownBy(() -> service.confirm(stale, "key-12"))
+                .isInstanceOf(PricingChangedException.class);
+
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+        // AND the promo is untouched. A code redeemed against an order that is
+        // then refused has spent one of its uses for nothing, which is why the
+        // check sits above the promotion call rather than beside the payment.
+        verify(promotion, never()).apply(any(), any());
+    }
+
+    @Test
+    @DisplayName("the version preview handed out is accepted")
+    void theVersionFromPreviewIsAccepted() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+
+        var preview = service.preview(new PreviewRequest("NG", null));
+        var response = service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242",
+                null, preview.pricingVersion()), "key-13");
+
+        assertThat(response.orderId()).isEqualTo(ORDER_ID);
+    }
+
+    @Test
+    @DisplayName("changing a quantity does not invalidate the version")
+    void aQuantityEditDoesNotInvalidateTheVersion() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        var preview = service.preview(new PreviewRequest("NG", null));
+
+        // The shopper nudges the stepper from 1 to 3 after previewing. No price
+        // changed, so their token must still be good: a version that included
+        // quantity would turn the most ordinary interaction in a bag into a
+        // conflict.
+        when(cart.getMyCart()).thenReturn(new CartClient.CartView(
+                UUID.randomUUID(), ONE_CENT,
+                List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT,
+                        "Free ring please", 3, ONE_CENT, ONE_CENT))));
+
+        service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+                preview.pricingVersion()), "key-14");
+
+        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
+                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
+        verify(payment).createIntent(intent.capture());
+        assertThat(intent.getValue().amount())
+                .as("3 x 4500.00 -- the quantity is honoured, the version is not invalidated")
+                .isEqualByComparingTo("13500.00");
     }
 
     // ------------------------------------------------------- refuse, don't guess

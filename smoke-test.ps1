@@ -315,7 +315,11 @@ if ($preview.currency -ne "ZMW") {
     Write-Error "Preview currency should be the bag's ZMW, got $($preview.currency)"
     exit 1
 }
-Write-Host "    subtotal=200, promo=30, ship=125, total=295 ZMW" -ForegroundColor Gray
+if (-not $preview.pricingVersion) {
+    Write-Error "Preview did not return a pricingVersion; confirm cannot echo one"
+    exit 1
+}
+Write-Host "    subtotal=200, promo=30, ship=125, total=295 ZMW, version=$($preview.pricingVersion.Substring(0,12))..." -ForegroundColor Gray
 
 Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up
@@ -337,6 +341,12 @@ $confirm = Invoke-RestMethod -Method POST `
         destinationCountry = "NG"
         cardNumber = "4242424242424242"
         promotionCode = $promoCode
+        # Echoed from step 5, which is the whole mechanism: the server
+        # recomputes this digest from catalog and refuses with a 409 if the
+        # prices moved since the shopper read them. Required, so a client that
+        # forgets this field cannot check out at all -- which is exactly what
+        # would happen if the storefront's Zod schema silently stripped it.
+        pricingVersion = $preview.pricingVersion
     })
 if ($confirm.orderStatus -ne "PAID") {
     Write-Error "Expected order PAID after confirm, got $($confirm.orderStatus); msg=$($confirm.message)"
@@ -344,6 +354,62 @@ if ($confirm.orderStatus -ne "PAID") {
 }
 $orderId = $confirm.orderId
 Write-Host "    order=$orderId PAID" -ForegroundColor Gray
+
+# A stale pricing version must be refused with a TYPED 409, not charged and not
+# mistaken for an empty bag. Run after the successful confirm so the bag is
+# empty; the point is the status and the problem type, which are decided before
+# the bag is even looked at... except that an empty bag answers cart-empty
+# first, so this re-adds one line to make the staleness check reachable.
+Write-Host "[6b/20] A stale pricingVersion is refused with its own problem type..." -ForegroundColor Cyan
+Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/carts/me/items" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
+try {
+    Invoke-RestMethod -Method POST `
+        -Uri "http://localhost:8080/api/v1/checkout/confirm" `
+        -Headers @{ Authorization="Bearer $alice" } `
+        -ContentType "application/json" `
+        -Body (ConvertTo-Json @{
+            shippingAddressId = $addrId
+            destinationCountry = "NG"
+            cardNumber = "4242424242424242"
+            pricingVersion = "0000000000000000000000000000000000000000000000000000000000000000"
+        }) | Out-Null
+    Write-Error "A stale pricingVersion was ACCEPTED; the staleness guard is not wired"
+    exit 1
+}
+catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+    if ($code -ne 409) {
+        Write-Error "Stale pricingVersion should be 409, got $code"
+        exit 1
+    }
+    # The type is the half that matters to a shopper: every 409 used to render
+    # as "Your bag is empty" with retry disabled.
+    $problem = $null
+    try {
+        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+        $problem = $reader.ReadToEnd() | ConvertFrom-Json
+    } catch { }
+    if ($problem -and $problem.type -notlike "*pricing-changed") {
+        Write-Error "Stale pricingVersion should carry the pricing-changed type, got $($problem.type)"
+        exit 1
+    }
+    Write-Host "    refused 409 $($problem.type)" -ForegroundColor Gray
+}
+# Leave the bag as the rest of the script expects: empty.
+try {
+    Invoke-RestMethod -Method DELETE `
+        -Uri "http://localhost:8080/api/v1/carts/me" `
+        -Headers @{ Authorization="Bearer $alice" } | Out-Null
+} catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+    if ($code -ne 404) { throw }
+}
 
 Write-Host "[7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {

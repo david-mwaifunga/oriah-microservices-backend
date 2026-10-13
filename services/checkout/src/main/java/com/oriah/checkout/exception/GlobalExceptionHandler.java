@@ -64,6 +64,12 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
             URI.create("https://oriah.dev/problems/payment-confirmation-failed");
     private static final URI TYPE_CAPTURED_NO_ORDER =
             URI.create("https://oriah.dev/problems/payment-captured-without-order");
+    private static final URI TYPE_PRICING_CHANGED =
+            URI.create("https://oriah.dev/problems/pricing-changed");
+    private static final URI TYPE_BAG_NOT_PURCHASABLE =
+            URI.create("https://oriah.dev/problems/bag-not-purchasable");
+    private static final URI TYPE_MIXED_CURRENCY =
+            URI.create("https://oriah.dev/problems/mixed-currency");
 
     /**
      * 409, with a {@code type} a storefront can branch on.
@@ -77,6 +83,56 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
         log.debug("409 cart empty");
         return ResponseEntity.status(HttpStatus.CONFLICT).body(problem(
                 HttpStatus.CONFLICT, TYPE_CART_EMPTY, HttpStatus.CONFLICT.getReasonPhrase(), ex.getMessage()));
+    }
+
+    /**
+     * 409: the prices moved while the shopper was checking out.
+     *
+     * <h2>Three conflicts that used to be one</h2>
+     *
+     * This, {@link #bagNotPurchasable} below and {@link #mixedCurrency} are all
+     * conflicts, and the shared {@code IllegalStateException} handler would
+     * give all three the same 409 with no {@code type}. The storefront maps
+     * every untyped 409 to "Your bag is empty" with retry disabled, so a
+     * shopper whose ring was repriced by 50 ngwee would be told their bag was
+     * empty while looking at it -- and offered no way forward.
+     *
+     * <p>{@code changedLines} names the variant ids that moved, so the client
+     * can mark those rows rather than the whole bag. It is the caller's own
+     * bag, so naming its contents discloses nothing they did not send.
+     */
+    @ExceptionHandler(PricingChangedException.class)
+    public ResponseEntity<ProblemDetail> pricingChanged(PricingChangedException ex) {
+        log.info("409 pricing changed for {} line(s)", ex.changedLines().size());
+        ProblemDetail body = problem(HttpStatus.CONFLICT, TYPE_PRICING_CHANGED,
+                HttpStatus.CONFLICT.getReasonPhrase(), ex.getMessage());
+        body.setProperty("changedLines", ex.changedLines());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    /** 409: something in the bag cannot be sold at all. */
+    @ExceptionHandler(BagNotPurchasableException.class)
+    public ResponseEntity<ProblemDetail> bagNotPurchasable(BagNotPurchasableException ex) {
+        log.info("409 bag not purchasable: {} line(s)", ex.unavailableLines().size());
+        ProblemDetail body = problem(HttpStatus.CONFLICT, TYPE_BAG_NOT_PURCHASABLE,
+                HttpStatus.CONFLICT.getReasonPhrase(), ex.getMessage());
+        body.setProperty("unavailableLines", ex.unavailableLines());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(body);
+    }
+
+    /**
+     * 409: the bag mixes currencies.
+     *
+     * <p>Separate from {@link #bagNotPurchasable} because the remedy differs --
+     * every line is individually fine and the shopper has to split the order,
+     * not remove something unavailable.
+     */
+    @ExceptionHandler(MixedCurrencyException.class)
+    public ResponseEntity<ProblemDetail> mixedCurrency(MixedCurrencyException ex) {
+        log.warn("409 mixed-currency bag");
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem(
+                HttpStatus.CONFLICT, TYPE_MIXED_CURRENCY,
+                HttpStatus.CONFLICT.getReasonPhrase(), ex.getMessage()));
     }
 
     /**
