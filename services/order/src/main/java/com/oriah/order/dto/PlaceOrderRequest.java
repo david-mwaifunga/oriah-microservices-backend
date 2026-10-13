@@ -4,25 +4,146 @@ import java.util.List;
 import java.util.UUID;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
- * Caller (the checkout flow) submits a snapshot of what to buy.
- * order-service trusts the supplied prices/titles — validation that
- * the prices match the live catalog happens in the checkout
- * orchestrator (Phase 2). Today this service is just the persister.
+ * Caller submits what to buy.
+ *
+ * <h2>The bounds exist so the DATABASE never decides</h2>
+ *
+ * {@code V1__create_orders.sql} carries {@code CHECK (quantity > 0)},
+ * {@code CHECK (unit_price >= 0)} and {@code title VARCHAR(255)}, and this
+ * record carried nothing but {@code @NotNull}. So every malformed line reached
+ * Postgres, violated a constraint or overflowed a column, and came back as
+ * {@code 500 An unexpected error occurred} -- verified live for
+ * {@code quantity: -5}, {@code quantity: 0}, {@code quantity: 2000000000} and
+ * a 5,000-character title.
+ *
+ * <p>That is wrong twice over: the caller is told nothing it can act on, and
+ * an ordinary bad request is recorded as the server fault an operator pages
+ * on. With the bounds here, the CHECK constraints go back to being backstops
+ * that never fire -- and if one ever fires again, a 500 is then the honest
+ * answer, because it means validation has a hole.
+ *
+ * <h2>Prices are still trusted here, and that is still the open hole</h2>
+ *
+ * {@code unitPrice} now has a floor, but a floor is not authority: a shopper
+ * may still name any price above it, and order-service stores what it is
+ * given. {@code PaymentIntentVerifier} documents the consequence at length --
+ * it cannot compare {@code intent.amount} to {@code order.total} because
+ * checkout charges {@code afterDiscount + shipping} while
+ * {@code Order.recomputeTotals} sets {@code total = subtotal}.
+ *
+ * <p>cart has already been through this: {@code AddItemRequest} dropped
+ * {@code unitPrice} and {@code title} outright, because the client may not
+ * name a price and the line label is catalog's composed {@code variantTitle}
+ * rather than a client string. The same removal is coming here, and when it
+ * does these two fields' bounds go with them. Bounding them in the meantime is
+ * not wasted: it closes the 500s today, and the request is reachable today.
  */
 public record PlaceOrderRequest(
         @NotNull UUID shippingAddressId,
-        @Size(min = 3, max = 3) String currency,
-        @NotEmpty @Valid List<LineItem> items
+
+        /**
+         * Required, and exactly three upper-case letters.
+         *
+         * <p>It was {@code @Size(min = 3, max = 3)} and nullable, and
+         * {@code Order}'s constructor turned a missing one into {@code "USD"}
+         * -- on a platform priced in Kwacha. Verified live: a request omitting
+         * currency returned 201 with {@code "currency": "USD"}. It was the
+         * last hardcoded USD in live code; cart and catalog hold
+         * {@code DEFAULT_CURRENCY = "ZMW"}, shipping's is configuration, and
+         * payment's identical default was removed in the same pass.
+         *
+         * <p>Upper-case specifically, because
+         * {@code PaymentIntentVerifier} compares this order's currency to the
+         * intent's with {@code equals}: a lower-case order could never be
+         * settled by an upper-case intent.
+         */
+        @NotBlank
+        @Size(min = 3, max = 3)
+        @Pattern(regexp = "^[A-Z]{3}$",
+                message = "must be a three-letter upper-case currency code")
+        String currency,
+
+        /**
+         * @param items capped at {@link #MAX_LINES}. catalog's pricing
+         *              endpoint enforces {@code @Size(max = 100)} on a batch,
+         *              which is why cart caps a bag at 100 -- and an order is
+         *              the record of a bag, so an order that could not have
+         *              been a bag should not be constructible. Once order
+         *              prices from catalog itself, the batch limit applies to
+         *              it directly.
+         */
+        @NotEmpty @Size(min = 1, max = MAX_LINES) @Valid List<LineItem> items
 ) {
+    /**
+     * <h2>Why every @Size carries an explicit {@code min}</h2>
+     *
+     * springdoc derives {@code minItems}/{@code minLength} from {@code @Size}
+     * and NOT from {@code @NotEmpty}/{@code @NotBlank}. So
+     * {@code @NotEmpty @Size(max = 100)} published
+     * {@code minItems: 0} -- replacing the {@code minItems: 1} the bare
+     * {@code @NotEmpty} used to produce, and telling every generated client
+     * that an empty order is acceptable while the server still refused it. The
+     * same happened to {@code title}: {@code @NotBlank @Size(max = 255)} gave
+     * {@code minLength: 0}.
+     *
+     * <p>A looser published contract beside a stricter server is worse than no
+     * contract, because a client trusts it. The OpenAPI diff gate caught both,
+     * the second time in this phase it has caught exactly this -- payment's
+     * currency lost {@code maxLength} the same way.
+     */
+
+    /**
+     * Mirrors {@code Cart.MAX_LINES}. Declared here rather than imported
+     * because cart is a separate module with its own schema -- the shared
+     * reason is catalog's 100-id pricing batch, not a dependency between the
+     * two services.
+     */
+    public static final int MAX_LINES = 100;
+
+    /** Mirrors {@code Cart.MAX_QUANTITY_PER_LINE}, for the same reason. */
+    public static final int MAX_QUANTITY_PER_LINE = 99;
+
     public record LineItem(
             @NotNull UUID variantId,
-            @NotNull String title,
-            @NotNull Integer quantity,
-            @NotNull java.math.BigDecimal unitPrice
+
+            /**
+             * Bounded to the column it is stored in. {@code VARCHAR(255)}, and
+             * a 256-character title was a 500 straight from Postgres. cart met
+             * the same wall and removed the field; this bound holds until
+             * order does the same.
+             */
+            @NotBlank @Size(min = 1, max = 255) String title,
+
+            /**
+             * @param quantity at least 1 -- {@code CHECK (quantity > 0)} made
+             *                 a zero a 500 -- and at most
+             *                 {@link #MAX_QUANTITY_PER_LINE}. The ceiling is
+             *                 not cosmetic: 2,000,000,000 x 100.00 overflows
+             *                 {@code NUMERIC(12,2)} when the line total is
+             *                 computed, which was also a 500.
+             */
+            @NotNull @Min(1) @Max(MAX_QUANTITY_PER_LINE) Integer quantity,
+
+            /**
+             * @param unitPrice floor only. See the class javadoc: a floor is
+             *                  not authority, and the client still gets to
+             *                  name a price above it. {@code CHECK
+             *                  (unit_price >= 0)} allows zero, so zero is
+             *                  allowed here too -- tightening it to a positive
+             *                  value would be a guess at a rule that belongs
+             *                  with the pricing authority work, and a zero
+             *                  order is visible rather than silent.
+             */
+            @NotNull @DecimalMin("0.00") java.math.BigDecimal unitPrice
     ) {}
 }

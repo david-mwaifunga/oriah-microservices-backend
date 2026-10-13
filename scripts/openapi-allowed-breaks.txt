@@ -185,3 +185,73 @@ checkout|property became required|ConfirmRequest.pricingVersion
 payment|property became required|CreateIntentRequest.currency
 payment|schema property type changed|CreateIntentRequest.amount: {"minimum": 0.01, "type": "number"} -> {"maximum": 9999999999.99, "minimum": 0.01, "type": "number"}
 payment|schema property type changed|CreateIntentRequest.currency: {"maxLength": 3, "minLength": 3, "type": "string"} -> {"maxLength": 3, "minLength": 3, "pattern": "^[A-Z]{3}$", "type": "string"}
+
+# ---------------------------------------------------------------------------
+# Phase 7, step 27: order's place-order input was unbounded too.
+# ---------------------------------------------------------------------------
+#
+# Six deliberate TIGHTENINGS, same reasoning as payment's above. The database
+# was the only line of defence and it answers in 500s. Verified live before and
+# after:
+#
+#   quantity -5 / 0        was 500 from CHECK (quantity > 0)   -> now 400
+#   quantity 2000000000    was 500, NUMERIC(12,2) overflow      -> now 400
+#   title 5000 chars       was 500 from title VARCHAR(255)      -> now 400
+#   unitPrice -100.00      was 500 from CHECK (unit_price >= 0) -> now 400
+#   currency omitted       was 201 with currency "USD"          -> now 400
+#   currency "zmw"         was 201 stored as-is                 -> now 400
+#
+# The caps mirror cart's: MAX_LINES 100 and MAX_QUANTITY_PER_LINE 99. The
+# shared reason is catalog's pricing endpoint enforcing @Size(max = 100) on a
+# batch, which is why cart caps a bag at 100 -- and an order is the record of a
+# bag, so an order that could not have been a bag should not be constructible.
+# Once order prices from catalog itself, that batch limit applies to it
+# directly.
+#
+# The quantity ceiling is not cosmetic. quantity is the one multiplier the
+# client still controls, and it is about to be the only one: an unbounded
+# integer against an AUTHORITATIVE unit price overflows orders.subtotal
+# NUMERIC(12,2) into a 500. All three candidate designs for making order the
+# pricing authority proposed @Positive and no @Max, and all three judges
+# flagged it independently.
+#
+# currency: Order's constructor read
+#   this.currency = currency == null || currency.isBlank() ? "USD" : currency;
+# on a platform priced in Kwacha. It was the LAST hardcoded currency in live
+# code -- cart and catalog hold DEFAULT_CURRENCY = "ZMW", shipping's is
+# configuration, payment's identical default went in the same pass. The
+# constructor now refuses rather than defaulting to ZMW, because an order is
+# the record of a sale: a default, even the right one, produces an order whose
+# currency nobody chose.
+#
+# Taken because no client breaks:
+#
+# * oriah-web never POSTs /orders. It carries a generated PlaceOrderRequest
+#   type (codegen emits the whole spec) but nothing outside
+#   src/lib/api/generated/ references it -- the storefront places orders
+#   through checkout's confirm. Checked, not assumed: the only `placeOrder`
+#   matches in src/ are the `canPlaceOrder` prop in CheckoutClient.
+# * checkout builds its own OrderClient.PlaceOrderRequest record and always
+#   sends priced.currency() -- non-blank and upper-case, guaranteed by
+#   Entry.isPriced() -- with quantities from the bag, which cart caps at 99
+#   per line and 100 lines.
+# * smoke-test.ps1's New-ProbeOrder (:925-934) posts currency "USD",
+#   title "Authz probe", quantity 1 and unitPrice 4500.00, all inside the new
+#   bounds. The live exploit harness keeps working unchanged.
+#
+# Not waived, and the gate's second catch this phase: the first version used
+# @NotEmpty @Size(max = 100) on items and @NotBlank @Size(max = 255) on title.
+# springdoc derives minItems/minLength from @Size and NOT from
+# @NotEmpty/@NotBlank, so the published schema lost minItems: 1 and gained
+# minLength: 0 -- telling every generated client an empty order and a blank
+# title were acceptable while the server still refused them. Explicit mins
+# were added. A looser published contract beside a stricter server is worse
+# than no contract, because a client trusts it.
+#
+# Reviewed and accepted 2026-10-13.
+order|property became required|PlaceOrderRequest.currency
+order|schema property type changed|LineItem.quantity: {"format": "int32", "type": "integer"} -> {"format": "int32", "maximum": 99, "minimum": 1, "type": "integer"}
+order|schema property type changed|LineItem.title: {"type": "string"} -> {"maxLength": 255, "minLength": 1, "type": "string"}
+order|schema property type changed|LineItem.unitPrice: {"type": "number"} -> {"minimum": 0.0, "type": "number"}
+order|schema property type changed|PlaceOrderRequest.currency: {"maxLength": 3, "minLength": 3, "type": "string"} -> {"maxLength": 3, "minLength": 3, "pattern": "^[A-Z]{3}$", "type": "string"}
+order|schema property type changed|PlaceOrderRequest.items: {"items": {"$ref": "#/components/schemas/LineItem"}, "minItems": 1, "type": "array"} -> {"items": {"$ref": "#/components/schemas/LineItem"}, "maxItems": 100, "minItems": 1, "type": "array"}

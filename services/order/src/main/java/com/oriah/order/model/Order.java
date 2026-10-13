@@ -70,7 +70,23 @@ public class Order extends BaseEntity {
         this.id = UUID.randomUUID();
         this.keycloakId = keycloakId;
         this.shippingAddressId = shippingAddressId;
-        this.currency = currency == null || currency.isBlank() ? "USD" : currency;
+        // Fails fast rather than defaulting. The old default was "USD" on a
+        // platform priced in Kwacha, and it was the last hardcoded currency
+        // left in live code -- cart and catalog hold DEFAULT_CURRENCY = "ZMW",
+        // shipping's is configuration, payment's identical default went in the
+        // same pass.
+        //
+        // Refusal rather than ZMW, because an order is the RECORD of a sale:
+        // its currency should be the one the sale was priced in, and a
+        // default -- even the right one -- produces an order whose currency
+        // nobody chose. Whoever supplies it, the caller today or catalog once
+        // order prices orders itself, an order that does not know what unit
+        // its money is in is not an order.
+        if (currency == null || currency.isBlank()) {
+            throw new IllegalArgumentException(
+                    "An order must name its currency; money with no unit is not an amount.");
+        }
+        this.currency = currency;
         this.status = OrderStatus.CREATED;
         this.subtotal = BigDecimal.ZERO;
         this.total = BigDecimal.ZERO;
