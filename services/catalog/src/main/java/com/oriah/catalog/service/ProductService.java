@@ -320,7 +320,7 @@ public class ProductService {
      */
     @Transactional
     public ProductResponse create(String title, String description, List<String> tags) {
-        return create(title, description, tags, null, null);
+        return create(title, description, tags, null, null, null, null);
     }
 
     /**
@@ -346,12 +346,22 @@ public class ProductService {
      */
     @Transactional
     public ProductResponse create(String title, String description, List<String> tags,
-                                  String typeCode, Map<String, Object> attributes) {
+                                  String typeCode, Map<String, Object> attributes,
+                                  List<UUID> categoryIds, UUID primaryCategoryId) {
         // Tag-count logging is friendlier than printing the full list: keeps
         // the line scannable and avoids leaking large payloads at INFO.
         int tagCount = tags == null ? 0 : tags.size();
         Product product = new Product(title, description, tags);
         applyTypeAndAttributes(product, typeCode, attributes);
+        // Applied HERE as well as on update, and the omission was a live bug:
+        // the field was on the DTO and wired only into the update path, so a
+        // create carrying categoryIds was accepted and silently filed the
+        // product nowhere. A field on the wire that means nothing is worse
+        // than no field, because the caller has every reason to believe it
+        // worked.
+        if (categoryIds != null) {
+            applyCategories(product, categoryIds, primaryCategoryId);
+        }
         product.assignSlug(freeSlugFor(product));
         Product saved = saveResolvingSlugCollision(product);
         log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);

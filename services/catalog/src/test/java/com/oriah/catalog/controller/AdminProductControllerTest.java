@@ -111,7 +111,7 @@ class AdminProductControllerTest {
         // the compiler here because Mockito takes matchers, not a signature.
         when(service.create(eq("Aurelia Solitaire Ring"),
                 eq("A single-stone solitaire in 18k recycled gold."),
-                any(), any(), any())).thenReturn(ProductMapper.toResponse(saved));
+                any(), any(), any(), any(), any())).thenReturn(ProductMapper.toResponse(saved));
 
         String body = """
                 {

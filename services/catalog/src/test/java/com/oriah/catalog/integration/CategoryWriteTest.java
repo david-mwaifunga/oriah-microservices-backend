@@ -276,6 +276,46 @@ class CategoryWriteTest {
     }
 
     @Test
+    @DisplayName("a product can be filed at CREATE time, not only by a later patch")
+    void categoriesApplyOnCreate() throws Exception {
+        // Found live: the watch created with categoryIds came back with
+        // categories: []. The field was on the DTO and wired only into the
+        // UPDATE path, so create accepted it and silently did nothing -- a
+        // field on the wire that means nothing is worse than no field, because
+        // the caller has every reason to believe it worked.
+        String rings = createCategory("{\"name\":\"Rings\"}");
+
+        MvcResult res = mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Aurelia 18k\",\"tags\":[],"
+                                + "\"categoryIds\":[\"" + rings + "\"],"
+                                + "\"primaryCategoryId\":\"" + rings + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        org.assertj.core.api.Assertions
+                .assertThat(res.getResponse().getContentAsString())
+                .as("the create response must report the categories it was given")
+                .contains("rings");
+    }
+
+    @Test
+    @DisplayName("a primary that is not among them is refused at CREATE too")
+    void thePrimaryIsCheckedOnCreate() throws Exception {
+        String rings = createCategory("{\"name\":\"Rings\"}");
+        String necklaces = createCategory("{\"name\":\"Necklaces\"}");
+
+        mvc.perform(post("/api/v1/admin/products")
+                        .with(jwt().authorities(CATALOG_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Aurelia 18k\",\"tags\":[],"
+                                + "\"categoryIds\":[\"" + rings + "\"],"
+                                + "\"primaryCategoryId\":\"" + necklaces + "\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     @DisplayName("a primary category the product is not in is refused")
     void thePrimaryMustBeOneOfThem() throws Exception {
         // The breadcrumb invariant: a trail pointing somewhere the product
