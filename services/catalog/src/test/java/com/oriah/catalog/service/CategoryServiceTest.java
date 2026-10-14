@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import com.oriah.catalog.model.Category;
 import com.oriah.catalog.repository.CategoryRepository;
+import com.oriah.catalog.repository.ProductRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -34,10 +35,17 @@ class CategoryServiceTest {
     private Category necklaces;
     private Category watches;
 
+    private ProductRepository products;
+
     @BeforeEach
     void setUp() {
         repository = mock(CategoryRepository.class);
-        service = new DefaultCategoryService(repository);
+        // The second dependency is for DELETE: it clears the breadcrumb from
+        // any product that used the category as its primary, because
+        // product_categories cascades while products.primary_category_id is a
+        // plain reference. These tests are about the tree, so it finds none.
+        products = mock(ProductRepository.class);
+        service = new DefaultCategoryService(repository, products);
 
         jewellery = new Category("Jewellery", "Fine pieces.", null);
         rings = new Category("Rings", null, jewellery);

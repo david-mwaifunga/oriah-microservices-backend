@@ -4,7 +4,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import com.oriah.catalog.dto.CategoryCreateRequest;
 import com.oriah.catalog.dto.CategoryResponse;
+import com.oriah.catalog.dto.CategoryUpdateRequest;
 
 /**
  * Reads over the category tree.
@@ -30,4 +32,38 @@ public interface CategoryService {
      *         a category with no descendants still matches itself.
      */
     Optional<List<UUID>> descendantIdsOf(String slug);
+
+    /**
+     * Creates a category, deriving its slug from its name.
+     *
+     * @throws IllegalArgumentException the name is blank, or the parent id
+     *         names no category -- 400 rather than a foreign key violation
+     *         rendered as a 500
+     */
+    CategoryResponse create(CategoryCreateRequest request);
+
+    /**
+     * Applies a partial edit. Null fields are left alone.
+     *
+     * <p>Renaming does NOT re-derive the slug: it is in storefront URLs and in
+     * anyone's bookmarks, so the label and the address are deliberately
+     * separate concerns.
+     *
+     * @throws IllegalArgumentException the move would create a cycle, or the
+     *         parent id names no category
+     */
+    Optional<CategoryResponse> update(UUID id, CategoryUpdateRequest request);
+
+    /**
+     * Removes a category.
+     *
+     * <p>{@code product_categories} cascades, so this removes the LINKS and
+     * never a product: a taxonomy edit must not be able to delete something
+     * sellable. Child categories are re-parented to this one's parent rather
+     * than deleted, for the same reason -- removing "Rings" should not silently
+     * remove "Signet" and everything filed under it.
+     *
+     * @return false when there is no such category
+     */
+    boolean delete(UUID id);
 }

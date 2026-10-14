@@ -1,6 +1,7 @@
 package com.oriah.catalog.service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -22,6 +23,10 @@ import com.oriah.catalog.events.VariantPayload;
 import com.oriah.catalog.events.ProductDeletedEvent;
 import com.oriah.catalog.events.ProductUpdatedEvent;
 import com.oriah.catalog.model.Availability;
+import com.oriah.catalog.model.ProductTypeRegistry;
+import com.oriah.catalog.model.AttributeValidationException;
+import com.oriah.catalog.model.Category;
+import com.oriah.catalog.repository.CategoryRepository;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.model.ProductSort;
 import com.oriah.catalog.model.ProductStatus;
@@ -60,6 +65,10 @@ public class ProductService {
     private final ApplicationEventPublisher eventPublisher;
     private final CatalogProperties props;
     private final CategoryService categoryService;
+    // Resolving ids to entities is a read the CategoryService interface does
+    // not expose -- it answers in response DTOs, which cannot be attached to a
+    // product.
+    private final CategoryRepository categoryRepository;
     private final ProductImageService imageService;
 
     /**
@@ -75,12 +84,14 @@ public class ProductService {
             ApplicationEventPublisher eventPublisher,
             CatalogProperties props,
             CategoryService categoryService,
+            CategoryRepository categoryRepository,
             ProductImageService imageService) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
         this.eventPublisher = eventPublisher;
         this.props = props;
         this.categoryService = categoryService;
+        this.categoryRepository = categoryRepository;
         this.imageService = imageService;
     }
 
@@ -309,10 +320,38 @@ public class ProductService {
      */
     @Transactional
     public ProductResponse create(String title, String description, List<String> tags) {
+        return create(title, description, tags, null, null);
+    }
+
+    /**
+     * Creates a product of a given TYPE, with that type's specification.
+     *
+     * <p>Everything this needs already existed and had no way in:
+     * {@link ProductTypeRegistry} declares JEWELLERY and WATCH with their
+     * attributes and validates them, {@link Product#applyType} applies the
+     * result, {@code products.attributes} is a JSONB column, and
+     * {@code ProductTypeConsistencyVerifier} refuses to start the service if
+     * the table and the registry disagree. {@code ProductCreateRequest} simply
+     * did not carry the two fields, so every product created through the API
+     * was a JEWELLERY with an empty spec, and the WATCH type -- defined,
+     * seeded, validated and verified at startup -- was unreachable.
+     *
+     * @param typeCode   null means JEWELLERY; see the DTO for why that default
+     *                   is preserved rather than made explicit
+     * @param attributes validated against what the TYPE declares, so a carat
+     *                   weight on a watch is refused rather than stored
+     * @throws com.oriah.catalog.model.AttributeValidationException
+     *         the type is unknown, or one or more attributes are wrong -- 400,
+     *         with every problem reported at once
+     */
+    @Transactional
+    public ProductResponse create(String title, String description, List<String> tags,
+                                  String typeCode, Map<String, Object> attributes) {
         // Tag-count logging is friendlier than printing the full list: keeps
         // the line scannable and avoids leaking large payloads at INFO.
         int tagCount = tags == null ? 0 : tags.size();
         Product product = new Product(title, description, tags);
+        applyTypeAndAttributes(product, typeCode, attributes);
         product.assignSlug(freeSlugFor(product));
         Product saved = saveResolvingSlugCollision(product);
         log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);
@@ -434,6 +473,27 @@ public class ProductService {
                 product.updateTags(request.tags());
                 changedFields.append("tags ");
             }
+            // PATCH is partial, so a request mentioning NEITHER leaves both
+            // alone -- a title edit that silently blanked a watch's spec would
+            // be the kind of data loss nobody notices until a listing goes
+            // thin. Mentioning EITHER re-validates the pair together, because
+            // attributes are only meaningful against a type: changing the type
+            // alone still has to re-check the spec already stored against it.
+            if (request.categoryIds() != null) {
+                applyCategories(product, request.categoryIds(), request.primaryCategoryId());
+                changedFields.append("categories ");
+            }
+            if (request.productType() != null || request.attributes() != null) {
+                applyTypeAndAttributes(
+                        product,
+                        request.productType() != null
+                                ? request.productType()
+                                : product.productTypeCode(),
+                        request.attributes() != null
+                                ? request.attributes()
+                                : product.attributes());
+                changedFields.append("type/attributes ");
+            }
             log.info("Updated product id={} changedFields=[{}]", product.id(), changedFields.toString().trim());
             // Snapshot the post-update state into the event. We send the
             // current values for *all* fields (not just changed ones) so
@@ -449,6 +509,55 @@ public class ProductService {
             log.debug("Update skipped, product not found id={}", id);
         }
         return result;
+    }
+
+    /**
+     * Puts a product in categories, replacing whatever it was in.
+     *
+     * <p>Ids are resolved before anything is applied, so a request naming one
+     * unknown category changes nothing rather than half-filing the product.
+     * {@code Product.assignCategories} then enforces that the primary is one
+     * of them.
+     */
+    private void applyCategories(Product product, List<UUID> categoryIds, UUID primaryId) {
+        var resolved = new java.util.LinkedHashSet<Category>();
+        for (UUID categoryId : categoryIds) {
+            resolved.add(categoryRepository.findById(categoryId).orElseThrow(() ->
+                    new IllegalArgumentException("no category with id " + categoryId)));
+        }
+        Category primary = primaryId == null
+                ? null
+                : categoryRepository.findById(primaryId).orElseThrow(() ->
+                        new IllegalArgumentException("no category with id " + primaryId));
+        product.assignCategories(resolved, primary);
+    }
+
+    /**
+     * Validates a type and its specification together, and applies them.
+     *
+     * <p>The type is checked against the registry rather than left to the
+     * database: {@code products.product_type_code} carries a foreign key to
+     * {@code product_types}, so an unknown value would reach Postgres and come
+     * back as a constraint violation rendered 500, when it is plainly a bad
+     * request. The message names the types this build knows, because an
+     * operator who mistyped one can act on that.
+     */
+    private void applyTypeAndAttributes(Product product, String typeCode,
+                                        Map<String, Object> attributes) {
+        String code = typeCode == null || typeCode.isBlank()
+                ? ProductTypeRegistry.JEWELLERY
+                : typeCode.trim().toUpperCase();
+
+        if (!ProductTypeRegistry.knownCodes().contains(code)) {
+            throw new AttributeValidationException(List.of(Map.entry(
+                    "productType",
+                    "unknown product type. Known types: "
+                            + new java.util.TreeSet<>(ProductTypeRegistry.knownCodes()))));
+        }
+
+        // Throws AttributeValidationException listing EVERY problem, so an
+        // operator filling six spec fields learns about all six at once.
+        product.applyType(code, ProductTypeRegistry.validate(code, attributes));
     }
 
     /**

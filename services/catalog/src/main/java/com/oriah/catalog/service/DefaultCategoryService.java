@@ -7,7 +7,11 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.oriah.catalog.dto.CategoryCreateRequest;
+import com.oriah.catalog.dto.CategoryUpdateRequest;
 import com.oriah.catalog.dto.CategoryResponse;
+import com.oriah.catalog.model.Product;
+import com.oriah.catalog.repository.ProductRepository;
 import com.oriah.catalog.model.Category;
 import com.oriah.catalog.repository.CategoryRepository;
 
@@ -39,8 +43,10 @@ public class DefaultCategoryService implements CategoryService {
     private static final int MAX_DEPTH = 10;
 
     private final CategoryRepository categories;
+    private final ProductRepository products;
 
-    public DefaultCategoryService(CategoryRepository categories) {
+    public DefaultCategoryService(CategoryRepository categories, ProductRepository products) {
+        this.products = products;
         this.categories = categories;
     }
 
@@ -96,5 +102,113 @@ public class DefaultCategoryService implements CategoryService {
     public Optional<List<UUID>> descendantIdsOf(String slug) {
         return categories.findBySlug(slug)
                 .map(category -> categories.findDescendantIds(category.id()));
+    }
+
+    @Override
+    @Transactional
+    public CategoryResponse create(CategoryCreateRequest request) {
+        Category parent = resolveParent(request.parentId());
+        // The entity derives the slug and refuses a blank name, so neither is
+        // re-implemented here.
+        Category created = new Category(request.name(), request.description(), parent);
+        Category saved = categories.save(created);
+        log.info("Created category id={} slug={} parent={}",
+                saved.id(), saved.slug(), parent == null ? "(root)" : parent.slug());
+        return toResponseWithoutChildren(saved);
+    }
+
+    @Override
+    @Transactional
+    public Optional<CategoryResponse> update(UUID id, CategoryUpdateRequest request) {
+        return categories.findById(id).map(category -> {
+            if (request.name() != null) {
+                // Renames the LABEL only. See CategoryUpdateRequest for why the
+                // slug is deliberately left alone.
+                category.rename(request.name());
+            }
+            if (request.description() != null) {
+                category.updateDescription(request.description());
+            }
+            if (request.position() != null) {
+                category.setPosition(request.position());
+            }
+            if (request.parentId() != null) {
+                // reparent() walks the prospective ancestry and throws on a
+                // cycle: the database CHECK only catches a category parented
+                // directly to itself.
+                category.reparent(resolveParent(request.parentId()));
+            }
+            log.info("Updated category id={} slug={}", category.id(), category.slug());
+            return toResponseWithoutChildren(category);
+        });
+    }
+
+    @Override
+    @Transactional
+    public boolean delete(UUID id) {
+        return categories.findById(id).map(category -> {
+            // Children move up rather than disappearing. product_categories
+            // cascades, so the product LINKS go and the products do not --
+            // a taxonomy edit must never remove something sellable.
+            // Optional, because a root category has none.
+            Category newParent = category.parent().orElse(null);
+            List<Category> children = categories.findChildren(id);
+            for (Category child : children) {
+                child.reparent(newParent);
+            }
+            if (!children.isEmpty()) {
+                log.info("Re-parented {} child categor{} of {} before deleting it",
+                        children.size(), children.size() == 1 ? "y" : "ies", category.slug());
+            }
+            // Clear the breadcrumb from any product that used this category
+            // as its primary. product_categories cascades on its own, but
+            // products.primary_category_id is a plain reference: without this
+            // the delete violates it and the operator sees a 409 for a
+            // taxonomy edit that should simply have worked -- or, worse, we
+            // would be tempted to cascade it and take sellable products with
+            // it. assignCategories re-checks the invariant, with the remaining
+            // memberships minus this one.
+            for (Product affected : products.findByPrimaryCategoryId(id)) {
+                var remaining = new java.util.LinkedHashSet<>(affected.categories());
+                remaining.remove(category);
+                affected.assignCategories(remaining, null);
+                log.info("Cleared primary category {} from product {}", category.slug(), affected.id());
+            }
+            categories.delete(category);
+            log.info("Deleted category id={} slug={}", id, category.slug());
+            return true;
+        }).orElse(false);
+    }
+
+    /**
+     * Resolves a parent id, or null for a root.
+     *
+     * <p>Checked here rather than left to the foreign key: an unknown id would
+     * otherwise reach Postgres and come back as a constraint violation
+     * rendered 500, when it is plainly a bad request.
+     */
+    private Category resolveParent(UUID parentId) {
+        if (parentId == null) {
+            return null;
+        }
+        return categories.findById(parentId).orElseThrow(() ->
+                new IllegalArgumentException("no category with id " + parentId));
+    }
+
+    /**
+     * A single category, without walking its children.
+     *
+     * <p>The write endpoints answer with the node that changed. Returning its
+     * subtree would mean a recursive read on every edit for information the
+     * caller already has from {@code tree()}.
+     */
+    private static CategoryResponse toResponseWithoutChildren(Category category) {
+        return new CategoryResponse(
+                category.id(),
+                category.slug(),
+                category.name(),
+                category.description().orElse(null),
+                category.position(),
+                List.of());
     }
 }

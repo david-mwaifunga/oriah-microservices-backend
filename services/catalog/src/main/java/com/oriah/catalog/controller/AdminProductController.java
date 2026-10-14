@@ -123,7 +123,8 @@ public class AdminProductController {
                         schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<ProductResponse> create(@Valid @RequestBody ProductCreateRequest request) {
         log.debug("POST /api/v1/admin/products title=\"{}\"", request.title());
-        ProductResponse saved = service.create(request.title(), request.description(), request.tags());
+        ProductResponse saved = service.create(request.title(), request.description(),
+                request.tags(), request.productType(), request.attributes());
         // Location points at the public read endpoint, not the admin path.
         URI location = URI.create("/api/v1/products/" + saved.id());
         return ResponseEntity.created(location).body(saved);

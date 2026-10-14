@@ -113,7 +113,10 @@ class KafkaProductEventBridgeTest {
         var saved = service.create("Aurelia", "18k", List.of("rings"));
         outputDestination.receive(2_000, "catalog.product"); // drain create event
 
-        service.update(saved.id(), new ProductUpdateRequest("Aurelia Renamed", null, null));
+        // A descriptive edit: this test is about the event a RENAME publishes,
+        // so it deliberately touches neither the type nor the spec.
+        service.update(saved.id(),
+                ProductUpdateRequest.describing("Aurelia Renamed", null, null));
 
         Message<byte[]> message = outputDestination.receive(2_000, "catalog.product");
         assertThat(message).isNotNull();
@@ -146,7 +149,7 @@ class KafkaProductEventBridgeTest {
     @DisplayName("an update() on an unknown id produces no message")
     void unknownUpdatePublishesNothing() {
         UUID unknown = UUID.randomUUID();
-        service.update(unknown, new ProductUpdateRequest("anything", null, null));
+        service.update(unknown, ProductUpdateRequest.describing("anything", null, null));
 
         Message<byte[]> message = outputDestination.receive(500, "catalog.product");
         assertThat(message).as("expected no message for an unknown-id update").isNull();

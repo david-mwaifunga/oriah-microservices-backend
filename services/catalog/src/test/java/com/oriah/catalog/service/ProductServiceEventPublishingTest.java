@@ -64,6 +64,10 @@ class ProductServiceEventPublishingTest {
         service = new ProductService(repository, inventoryClient, eventPublisher,
                 new com.oriah.catalog.config.CatalogProperties(),
                 mock(CategoryService.class),
+                // Resolving category ids to entities needs the repository: the
+                // CategoryService interface answers in response DTOs, which
+                // cannot be attached to a product.
+                mock(com.oriah.catalog.repository.CategoryRepository.class),
                 // Image storage reclamation is mocked: these tests assert
                 // which EVENT is published, and deleteById now also schedules
                 // object cleanup, which has its own coverage in
@@ -113,11 +117,10 @@ class ProductServiceEventPublishingTest {
         // assertion we use whatever id existing happens to have.
         when(repository.findById(existing.id())).thenReturn(Optional.of(existing));
 
-        ProductUpdateRequest patch = new ProductUpdateRequest(
-                "Aurelia Renamed",
-                "new copy",
-                List.of("rings", "gold")
-        );
+        // A descriptive edit: this asserts the event such a change publishes,
+        // and PATCH leaves an unmentioned type, spec and categories alone.
+        ProductUpdateRequest patch = ProductUpdateRequest.describing(
+                "Aurelia Renamed", "new copy", List.of("rings", "gold"));
         service.update(existing.id(), patch);
 
         ProductUpdatedEvent expected = new ProductUpdatedEvent(
@@ -138,7 +141,7 @@ class ProductServiceEventPublishingTest {
         UUID id = UUID.randomUUID();
         when(repository.findById(id)).thenReturn(Optional.empty());
 
-        service.update(id, new ProductUpdateRequest("X", null, null));
+        service.update(id, ProductUpdateRequest.describing("X", null, null));
 
         verify(eventPublisher, never()).publishEvent(any());
     }

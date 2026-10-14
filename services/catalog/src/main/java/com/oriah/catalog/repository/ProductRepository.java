@@ -1,5 +1,6 @@
 package com.oriah.catalog.repository;
 
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -7,6 +8,17 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import com.oriah.catalog.model.Product;
 
 public interface ProductRepository extends JpaRepository<Product, UUID>, ProductStorefrontQueries {
+
+    /**
+     * Products whose breadcrumb trail points at this category.
+     *
+     * <p>Needed when a category is deleted. {@code product_categories} is
+     * {@code ON DELETE CASCADE} so the MEMBERSHIP rows go on their own, but
+     * {@code products.primary_category_id} is a plain reference -- deleting a
+     * category some product uses as its primary violates it, and the operator
+     * sees a 409 for a taxonomy edit that should simply have worked.
+     */
+    List<Product> findByPrimaryCategoryId(UUID categoryId);
 
     /**
      * Used to resolve a slug collision before insert.

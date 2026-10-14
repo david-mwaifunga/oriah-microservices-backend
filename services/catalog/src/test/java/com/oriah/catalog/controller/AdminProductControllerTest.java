@@ -104,9 +104,14 @@ class AdminProductControllerTest {
                 "A single-stone solitaire in 18k recycled gold.",
                 List.of("rings", "engagement"));
 
+        // The five-argument overload, which is the one the controller calls
+        // now that a product carries a TYPE and that type's specification.
+        // Stubbing the three-argument one left the real call unstubbed,
+        // returning null and rendering 500 -- the arity change is invisible to
+        // the compiler here because Mockito takes matchers, not a signature.
         when(service.create(eq("Aurelia Solitaire Ring"),
                 eq("A single-stone solitaire in 18k recycled gold."),
-                any())).thenReturn(ProductMapper.toResponse(saved));
+                any(), any(), any())).thenReturn(ProductMapper.toResponse(saved));
 
         String body = """
                 {
