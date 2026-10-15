@@ -21,6 +21,7 @@ import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.ProductCreateRequest;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
+import com.oriah.catalog.dto.VariantUpdateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.observability.ResourceNotFoundException;
 import java.io.IOException;
@@ -201,6 +202,53 @@ public class AdminProductController {
         ProductResponse updated = service.addVariant(id, request)
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
         return ResponseEntity.status(HttpStatus.CREATED).body(updated);
+    }
+
+    /**
+     * Reprice an existing variant.
+     *
+     * <p>PATCH rather than PUT because it changes one attribute of a variant
+     * and leaves the rest -- SKU, options, active flag -- alone. Omitting
+     * {@code currency} keeps the variant's own, which matters: catalog reads
+     * an absent currency as ZMW everywhere else, and a dollar-priced piece
+     * must not be redenominated by a request that never mentioned currency.
+     *
+     * <p>404 for an unknown VARIANT as well as an unknown product. The
+     * aggregate reports a missing variant as IllegalArgumentException, which
+     * the shared advice renders 400 -- telling an operator their request was
+     * malformed when what is actually wrong is the id they addressed.
+     *
+     * <p>409 when the variant is the last purchasable one on a published
+     * product and the new price is zero: the request is well formed and the
+     * product's state is what refuses it. A storefront list filters on
+     * {@code unit_price > 0}, so allowing it would drop a live piece out of
+     * the grid while it still answered on its own URL.
+     */
+    @PatchMapping("/{id}/variants/{variantId}")
+    @Operation(operationId = "repriceVariant", summary = "Change an existing variant's price")
+    @ApiResponse(responseCode = "200", description = "The product, with the new price")
+    @ApiResponse(responseCode = "400",
+            description = "Validation failure: a missing, negative or implausibly large "
+                    + "price, or a currency differing from the product's other variants",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such product, or no such variant on it",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409",
+            description = "The variant is the last purchasable one on a published product "
+                    + "and the new price is zero",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ProductResponse repriceVariant(
+            @PathVariable("id") UUID id,
+            @PathVariable("variantId") UUID variantId,
+            @Valid @RequestBody VariantUpdateRequest request) {
+        log.debug("PATCH /api/v1/admin/products/{}/variants/{} price={}",
+                id, variantId, request.unitPrice());
+        return service.repriceVariant(id, variantId, request)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Variant", "id", variantId.toString()));
     }
 
     /**

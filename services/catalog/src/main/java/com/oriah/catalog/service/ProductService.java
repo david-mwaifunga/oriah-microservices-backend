@@ -1,5 +1,6 @@
 package com.oriah.catalog.service;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -17,6 +18,7 @@ import com.oriah.catalog.client.InventoryDto;
 import com.oriah.catalog.config.CatalogProperties;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
+import com.oriah.catalog.dto.VariantUpdateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.events.ProductCreatedEvent;
 import com.oriah.catalog.events.VariantPayload;
@@ -284,6 +286,58 @@ public class ProductService {
             // just created, which the list mapping omits.
             return ProductMapper.toAdminResponse(product);
         });
+    }
+
+    /**
+     * Reprices one of a product's existing variants.
+     *
+     * <h2>Why this routes through the aggregate</h2>
+     *
+     * {@code ProductVariant.reprice} is public and would do the job, and would
+     * bypass both rules that live on {@link Product} because a variant cannot
+     * see its siblings: one currency per product, so a card never shows two,
+     * and the refusal to leave a published product with nothing purchasable.
+     *
+     * <h2>Why an absent currency is resolved HERE</h2>
+     *
+     * {@code ProductVariant.normaliseCurrency} reads a null as ZMW, so passing
+     * the absent value through would redenominate a dollar piece to Kwacha at
+     * the same number -- or, on a multi-variant product, be refused by the
+     * uniformity rule against its own siblings, with no currency control on
+     * the admin form to correct it with. A PATCH that omits a field leaves it
+     * alone, so the variant's current currency is what gets passed.
+     *
+     * @return empty when the product does not exist OR carries no such
+     *         variant, so the caller can answer 404 for both. The aggregate
+     *         reports an unknown variant as IllegalArgumentException, which
+     *         the shared advice renders 400 -- the wrong thing to tell someone
+     *         who addressed a variant that is not there.
+     */
+    @Transactional
+    public Optional<ProductResponse> repriceVariant(
+            UUID productId, UUID variantId, VariantUpdateRequest request) {
+        return repository.findById(productId).flatMap(product -> product.variants().stream()
+                .filter(v -> v.id().equals(variantId))
+                .findFirst()
+                .map(variant -> {
+                    String currency = request.currency() == null || request.currency().isBlank()
+                            ? variant.currency()
+                            : request.currency();
+                    BigDecimal was = variant.unitPrice();
+
+                    product.repriceVariant(variantId, request.unitPrice(), currency);
+
+                    log.info("Repriced variant id={} sku=\"{}\" on product id={} from {} to {} {}",
+                            variantId, variant.sku(), productId, was,
+                            variant.unitPrice(), variant.currency());
+                    // The same event addVariant publishes. Its VariantPayload
+                    // already carries unitPrice and currency, so a consumer
+                    // that reads a price sees the new one; inventory and
+                    // search ignore it today, which makes this a trap left
+                    // unarmed rather than a live need.
+                    eventPublisher.publishEvent(productUpdated(product));
+                    return ProductMapper.toAdminResponse(product);
+                }));
     }
 
     /**
