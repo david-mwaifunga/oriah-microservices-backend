@@ -245,7 +245,20 @@ class GatewaySecurityConfigTest {
             // PAYMENT_ADMIN's first use. The realm has declared it since the
             // beginning and nothing guarded on it, because the endpoint it
             // was minted for did not exist until now.
-            "/api/v1/admin/payments,    ROLE_PAYMENT_ADMIN"
+            "/api/v1/admin/payments,    ROLE_PAYMENT_ADMIN",
+            // Phase 0, item 6: where each new capability's work lives, fixed
+            // before the endpoints exist. Each building phase adds the route
+            // and the service's own method-level check.
+            "/api/v1/admin/procurement/consignments,                                    ROLE_PROCUREMENT_ADMIN",
+            "/api/v1/admin/shipping/towns,                                               ROLE_SHIPPING_ADMIN",
+            "/api/v1/admin/finance/expenses,                                             ROLE_FINANCE_ADMIN",
+            "/api/v1/admin/costs/lots,                                                   ROLE_COST_VIEWER",
+            "/api/v1/admin/inventory/write-offs,                                         ROLE_STOCK_WRITE_OFF",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch,         ROLE_FULFILMENT_AGENT",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver,  ROLE_DELIVERY_WAIVER",
+            "/api/v1/admin/orders/recorded,                                              ROLE_SALES_AGENT",
+            "/api/v1/admin/orders/late-recorded,                                         ROLE_BACKDATE_SALE",
+            "/api/v1/admin/payments/confirmations,                                       ROLE_SALES_AGENT"
     })
     void adminPathsRequireTheCorrectRole(String path, String requiredAuthority) {
         assertAdmitted(client
@@ -262,13 +275,135 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/orders",
             "/api/v1/admin/promotions",
             "/api/v1/admin/payments",
-            "/api/v1/admin/categories"
+            "/api/v1/admin/categories",
+            "/api/v1/admin/procurement/consignments",
+            "/api/v1/admin/shipping/towns",
+            "/api/v1/admin/finance/expenses",
+            "/api/v1/admin/costs/lots",
+            "/api/v1/admin/inventory/write-offs",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver",
+            "/api/v1/admin/orders/recorded",
+            "/api/v1/admin/orders/late-recorded",
+            "/api/v1/admin/payments/confirmations"
     })
     void adminPathsRejectNonAdmins(String path) {
         client.mutateWith(mockJwt().authorities(authority("ROLE_USER")))
                 .get().uri(path)
                 .exchange()
                 .expectStatus().isForbidden();
+    }
+
+    // ------------------------------------------------------------------
+    // Capabilities and job roles (MVP_PLAN Phase 0, item 6)
+    // ------------------------------------------------------------------
+
+    private static final String AN_ORDER = "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001";
+
+    /**
+     * A token as Keycloak issues it to a person holding this job role: the
+     * job role's capabilities, composites expanded, each as ROLE_X. Built from
+     * the same map RealmRolesTest pins against the realm file, so the two
+     * cannot drift apart.
+     */
+    private WebTestClient as(String jobRole) {
+        SimpleGrantedAuthority[] authorities = RealmRolesTest.JOB_ROLES.get(jobRole).stream()
+                .map(capability -> authority("ROLE_" + capability))
+                .toArray(SimpleGrantedAuthority[]::new);
+        return client.mutateWith(mockJwt().authorities(authorities));
+    }
+
+    @ParameterizedTest(name = "{0} is not opened by {1} alone")
+    @DisplayName("a narrower capability's path is not opened by the broader role of the area it sits in")
+    @CsvSource({
+            // Each of these sits under a prefix a broader role guards. Without
+            // a matcher BEFORE that prefix's, the broader role would be
+            // admitted -- a manager writing off stock, an order admin
+            // back-dating a sale.
+            "/api/v1/admin/inventory/write-offs,                                         ROLE_INVENTORY_ADMIN",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch,         ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver,  ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/recorded,                                              ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/late-recorded,                                         ROLE_ORDER_ADMIN",
+            // A sale recorded late is the owner's call (section 8.2), not every
+            // sales assistant's.
+            "/api/v1/admin/orders/late-recorded,                                         ROLE_SALES_AGENT",
+            "/api/v1/admin/payments/confirmations,                                       ROLE_PAYMENT_ADMIN"
+    })
+    void aNarrowerPathIsNotOpenedByTheBroaderRole(String path, String broaderAuthority) {
+        client.mutateWith(mockJwt().authorities(authority(broaderAuthority.trim())))
+                .get().uri(path.trim())
+                .exchange()
+                .expectStatus().isForbidden();
+    }
+
+    @ParameterizedTest(name = "{0} may not drive an order's status")
+    @DisplayName("SALES and DISPATCH get 403 on the generic order transition -- the plan's Phase 0 test")
+    @ValueSource(strings = {"SALES", "DISPATCH"})
+    void salesAndDispatchCannotDriveTheGenericTransition(String jobRole) {
+        // The generic transition stays ORDER_ADMIN. Dispatch and payment
+        // confirmation get endpoints of their own, so a packer can dispatch
+        // without being able to mark any order paid or cancelled.
+        as(jobRole).post().uri(AN_ORDER + "/transition")
+                .exchange()
+                .expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("MANAGER runs the shop, but cannot write off stock or record a sale late")
+    void aManagerCannotWriteOffOrBackdate() {
+        as("MANAGER").get().uri("/api/v1/admin/inventory/write-offs").exchange().expectStatus().isForbidden();
+        as("MANAGER").get().uri("/api/v1/admin/orders/late-recorded").exchange().expectStatus().isForbidden();
+        as("MANAGER").get().uri("/api/v1/admin/finance/expenses").exchange().expectStatus().isForbidden();
+
+        assertAdmitted(as("MANAGER").post().uri(AN_ORDER + "/transition"));
+        assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/procurement/consignments"));
+        assertAdmitted(as("MANAGER").get().uri(AN_ORDER + "/dispatch"));
+        assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/costs/lots"));
+    }
+
+    @Test
+    @DisplayName("BOOKKEEPER sees the books and costs, and nothing that changes stock, prices or orders")
+    void aBookkeeperSeesTheBooksOnly() {
+        assertAdmitted(as("BOOKKEEPER").get().uri("/api/v1/admin/finance/expenses"));
+        assertAdmitted(as("BOOKKEEPER").get().uri("/api/v1/admin/costs/lots"));
+
+        as("BOOKKEEPER").get().uri("/api/v1/admin/products").exchange().expectStatus().isForbidden();
+        as("BOOKKEEPER").get().uri("/api/v1/admin/inventory").exchange().expectStatus().isForbidden();
+        as("BOOKKEEPER").post().uri(AN_ORDER + "/transition").exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("SALES records sales and confirms payments, and sees no cost or margin (Q29)")
+    void salesRecordsAndConfirmsButSeesNoCost() {
+        assertAdmitted(as("SALES").get().uri("/api/v1/admin/orders/recorded"));
+        assertAdmitted(as("SALES").get().uri("/api/v1/admin/payments/confirmations"));
+
+        as("SALES").get().uri("/api/v1/admin/costs/lots").exchange().expectStatus().isForbidden();
+        as("SALES").get().uri("/api/v1/admin/payments").exchange().expectStatus().isForbidden();
+    }
+
+    @ParameterizedTest(name = "OWNER reaches {0}")
+    @DisplayName("OWNER reaches every capability's work")
+    @ValueSource(strings = {
+            "/api/v1/admin/products", "/api/v1/admin/inventory", "/api/v1/admin/inventory/write-offs",
+            "/api/v1/admin/customers", "/api/v1/admin/orders/recorded", "/api/v1/admin/orders/late-recorded",
+            "/api/v1/admin/payments", "/api/v1/admin/payments/confirmations", "/api/v1/admin/procurement/consignments",
+            "/api/v1/admin/shipping/towns", "/api/v1/admin/finance/expenses", "/api/v1/admin/costs/lots"
+    })
+    void theOwnerReachesEverything(String path) {
+        assertAdmitted(as("OWNER").get().uri(path));
+    }
+
+    @ParameterizedTest(name = "{0} is denied even to OWNER")
+    @DisplayName("an admin path with no matcher of its own is DENIED, not admitted to any signed-in user")
+    @ValueSource(strings = {"/api/v1/admin/refunds", "/api/v1/admin/something-new/x", "/api/v1/admin"})
+    void anUnmappedAdminPathIsDenied(String path) {
+        // Before item 6 the chain ended in anyExchange().authenticated(), so a
+        // new admin prefix without a matcher was open to every shopper -- which
+        // happened once, to categories. Now a forgotten matcher fails CLOSED:
+        // nobody gets in until the phase that builds it says who may.
+        as("OWNER").get().uri(path).exchange().expectStatus().isForbidden();
     }
 
     @Test

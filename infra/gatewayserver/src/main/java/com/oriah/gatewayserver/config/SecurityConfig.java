@@ -163,6 +163,34 @@ public class SecurityConfig {
                         // authorities, so these must NOT be spelled ROLE_X
                         // here. Mixing hasRole and hasAuthority conventions is
                         // the easiest way to 403 every authenticated call.
+                        //
+                        // Where each capability's work lives (MVP_PLAN Phase
+                        // 0, item 6), fixed before the endpoints exist so no
+                        // phase can open one by forgetting its matcher. The
+                        // FIRST matching rule wins, so a narrower capability's
+                        // path comes BEFORE the broader area it sits in:
+                        // without that, INVENTORY_ADMIN -- which MANAGER holds
+                        // -- would reach the write-offs that are owner-only
+                        // (Q8), and ORDER_ADMIN would back-date a sale. Each
+                        // building phase adds the route, and the service keeps
+                        // its own method-level check behind this one.
+                        .pathMatchers("/api/v1/admin/inventory/write-offs/**").hasRole("STOCK_WRITE_OFF")
+                        .pathMatchers("/api/v1/admin/orders/*/dispatch/**").hasRole("FULFILMENT_AGENT")
+                        .pathMatchers("/api/v1/admin/orders/*/delivery-waiver/**").hasRole("DELIVERY_WAIVER")
+                        // A sale recorded more than 72 hours after it was paid
+                        // is the owner's call (section 8.2), so it is its own
+                        // path, before the sales assistants' one.
+                        .pathMatchers("/api/v1/admin/orders/late-recorded/**").hasRole("BACKDATE_SALE")
+                        .pathMatchers("/api/v1/admin/orders/recorded/**").hasRole("SALES_AGENT")
+                        .pathMatchers("/api/v1/admin/payments/confirmations/**").hasRole("SALES_AGENT")
+                        .pathMatchers("/api/v1/admin/procurement/**").hasRole("PROCUREMENT_ADMIN")
+                        .pathMatchers("/api/v1/admin/shipping/**").hasRole("SHIPPING_ADMIN")
+                        .pathMatchers("/api/v1/admin/finance/**").hasRole("FINANCE_ADMIN")
+                        // Cost and margin reads have a prefix of their own:
+                        // BOOKKEEPER holds COST_VIEWER but not INVENTORY_ADMIN,
+                        // and SALES must see neither (Q29).
+                        .pathMatchers("/api/v1/admin/costs/**").hasRole("COST_VIEWER")
+
                         .pathMatchers("/api/v1/admin/products/**").hasRole("CATALOG_ADMIN")
                         .pathMatchers("/api/v1/admin/inventory/**").hasRole("INVENTORY_ADMIN")
                         .pathMatchers("/api/v1/admin/customers/**").hasRole("CUSTOMER_ADMIN")
@@ -192,7 +220,17 @@ public class SecurityConfig {
                         // thing standing between a USER token and the list.
                         .pathMatchers("/api/v1/admin/payments/**").hasRole("PAYMENT_ADMIN")
 
-                        // Deny by default.
+                        // Any OTHER admin path is denied, to everyone. The
+                        // chain used to end at anyExchange().authenticated()
+                        // alone, so an admin prefix added without a matcher was
+                        // open to every signed-in shopper -- which happened
+                        // once, to categories. Now a forgotten matcher fails
+                        // CLOSED, and nobody gets in until the phase that
+                        // builds the endpoint says who may.
+                        .pathMatchers("/api/v1/admin/**").denyAll()
+
+                        // Everything else needs a token; each service checks
+                        // its own roles.
                         .anyExchange().authenticated())
                 // Finding #16: without these, 401 and 403 go out with
                 // content-length: 0. Spring Security's default entry point and
