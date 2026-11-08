@@ -125,7 +125,10 @@ cart|schema property type changed|UpdateItemRequest.quantity: {"format": "int32"
 #
 # Reviewed and accepted 2026-10-13.
 
-checkout|property became required|ConfirmRequest.pricingVersion
+# Retired 2026-11-08: pricingVersion was replaced by quoteDigest (Phase 0,
+# item 4.4, below), so this waiver no longer matches anything and is kept only
+# as history.
+# checkout|property became required|ConfirmRequest.pricingVersion
 
 # ---------------------------------------------------------------------------
 # Phase 7, step 27: payment's create-intent input surface was unbounded.
@@ -268,9 +271,68 @@ order|schema property type changed|PlaceOrderRequest.items: {"items": {"$ref": "
 # shippingZone from its preview schema in the same change; nothing else read
 # either field.
 #
-# Predicted from the code; to be confirmed line for line against a gateway
-# running the new images before Phase 0 is closed.
+# Predicted from the code, then confirmed line for line against a gateway
+# running the new images on 2026-11-08.
 #
 # Reviewed and accepted 2026-11-08.
 shipping|schema property removed|RateResponse.zone
 checkout|schema property removed|PreviewResponse.shippingZone
+
+# ---------------------------------------------------------------------------
+# Owed since 2026-10-13: cart's accidental "purchasable" field.
+# ---------------------------------------------------------------------------
+#
+# Commit 06884de stopped CartItemResponse.isPurchasable() from being published:
+# Jackson serialised the record's isX() method as an undeclared property that
+# duplicated pricingStatus. Removing it was the fix, but this waiver was never
+# written, so the gate has reported it as breaking ever since. Nothing reads
+# it: oriah-web's cart schema never declared it (Zod strips undeclared keys),
+# and no service consumes cart's response.
+#
+# Reviewed and accepted 2026-11-08.
+cart|schema property removed|CartItemResponse.purchasable
+
+# ---------------------------------------------------------------------------
+# Phase 0, items 2 and 4: quote, then commit.
+# ---------------------------------------------------------------------------
+#
+# Q24: "before we commit, we all know the price". Preview returns a quote
+# digest -- a hash of the whole payable quote: each line's variant, quantity,
+# price and discount, the delivery option and its charge, the currency, the
+# total. Confirm sends it back, checkout and then order recompute it, and a
+# quote that moved (a basket changed in another tab, a price or delivery price
+# changed) is refused with 409 pricing-changed before anything is ordered or
+# charged.
+#
+# * ConfirmRequest.quoteDigest REPLACES pricingVersion, which left quantity
+#   and delivery out on purpose -- so both could change unseen. Required, for
+#   the reason pricingVersion was: a nullable digest would let any client opt
+#   out of the check. PreviewResponse.pricingVersion goes with it.
+# * ConfirmRequest.deliveryOption is required: confirm charges the option the
+#   shopper NAMED. It took the cheapest offered, so a K0 option would have made
+#   every delivery free.
+# * ConfirmRequest.destinationCountry is removed: the address's own country
+#   decides where delivery is quoted for, and a self-collect order (no address)
+#   is quoted for Zambia. It was already ignored whenever an address was sent.
+# * PreviewResponse.appliedPromotion is removed: promotion codes are retired
+#   until Phase 7's scoped promotions, which apply by themselves, and a code is
+#   refused with 422 promotion-codes-not-accepted.
+# * order's PlaceOrderRequest gains the same required deliveryOption and
+#   quoteDigest: order prices delivery itself and checks the digest before it
+#   saves anything. Its only caller is checkout's OrderClient, changed in step.
+#
+# Client impact, checked: oriah-web sends deliveryOption and quoteDigest and no
+# longer declares pricingVersion or appliedPromotion (src/lib/checkout/quote.ts,
+# src/lib/api/schemas/checkout.ts); smoke-test.ps1 and the e2e helper were
+# changed in the same commit. Confirmed line for line against a gateway running
+# the new images on 2026-11-08.
+#
+# Reviewed and accepted 2026-11-08.
+checkout|property became required|ConfirmRequest.deliveryOption
+checkout|property became required|ConfirmRequest.quoteDigest
+checkout|schema property removed|ConfirmRequest.destinationCountry
+checkout|schema property removed|ConfirmRequest.pricingVersion
+checkout|schema property removed|PreviewResponse.appliedPromotion
+checkout|schema property removed|PreviewResponse.pricingVersion
+order|property became required|PlaceOrderRequest.deliveryOption
+order|property became required|PlaceOrderRequest.quoteDigest

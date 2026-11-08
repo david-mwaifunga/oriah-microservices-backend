@@ -11,23 +11,28 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import com.oriah.checkout.exception.DownstreamUnavailableException;
-import com.oriah.checkout.exception.OutsideDeliveryAreaException;
 import com.oriah.checkout.client.CartClient;
 import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
-import com.oriah.checkout.client.PromotionClient;
 import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
+import com.oriah.checkout.dto.ConfirmResponse;
 import com.oriah.checkout.dto.PreviewRequest;
 import com.oriah.checkout.dto.PreviewResponse;
 import com.oriah.checkout.exception.BagNotPurchasableException;
 import com.oriah.checkout.exception.DownstreamRejectedException;
+import com.oriah.checkout.exception.DownstreamUnavailableException;
 import com.oriah.checkout.exception.MixedCurrencyException;
+import com.oriah.checkout.exception.OutsideDeliveryAreaException;
 import com.oriah.checkout.exception.PricingChangedException;
+import com.oriah.checkout.exception.PromotionCodesNotAcceptedException;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
+import com.oriah.quote.Quote;
+import com.oriah.quote.QuoteDigest;
+import com.oriah.quote.QuoteLine;
+
 import feign.FeignException;
 import feign.Request;
 import feign.RequestTemplate;
@@ -47,54 +52,47 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
  * What checkout charges, and where that number comes from.
  *
- * <h2>The defect at the centre of this phase</h2>
+ * <h2>The defect at the centre of the pricing phase</h2>
  *
  * {@code confirm} never computed a subtotal. It read {@code myCart.subtotal()}
  * and that single field was the sole input to the charged total, so whatever
- * cart reported was what the card was debited. Cart used to store the price the
- * shopper sent, which is how a K4,500 ring could be bought for one cent.
+ * cart reported was what the card was debited. Checkout prices the bag itself,
+ * from catalog, and charges that -- and a line catalog will not price is
+ * refused outright, so nothing is ordered and nothing is charged.
  *
- * <p>Fixing cart alone is not enough, and this is the trap worth naming: cart
- * is now the authority for what it shows a shopper, but checkout taking cart's
- * arithmetic on trust means a bug or a compromise in ONE service decides what
- * the card is charged. Checkout prices the bag itself, from catalog, and
- * charges that.
+ * <h2>Quote, then commit (MVP_PLAN Phase 0, items 2 and 4.4)</h2>
  *
- * <h2>A worse bug that the cart fix created, and this closes</h2>
+ * Q24: "before we commit, we all know the price". Preview prices the bag AND
+ * the delivery option the shopper chose, and hands back a digest of that whole
+ * quote. Confirm prices everything again and refuses with 409 pricing-changed
+ * -- before anything is ordered or charged -- when its digest differs. The
+ * old {@code pricingVersion} left quantity and delivery out, so a basket
+ * edited in another tab, or a delivery price published in between, was
+ * charged unseen; the digest binds both.
  *
- * Cart's subtotal now EXCLUDES a line it cannot sell, while
- * {@code myCart.items()} still lists it. Checkout placed an order from every
- * item and charged cart's subtotal -- so a withdrawn line would have been
- * ORDERED AND NOT CHARGED. A free item, produced by the two services each
- * being individually correct. Pricing the bag in checkout removes the
- * disagreement: a line catalog will not price is refused outright, so nothing
- * is ordered and nothing is charged.
+ * <p>Confirm charges the option the shopper NAMED. It used to take the
+ * cheapest offered, so a K0 option would have made every delivery free.
  *
- * <h2>Preview and confirm must agree</h2>
- *
- * {@link #previewChargesWhatItShowed} is the one the plan for this phase
- * missed. It replaced only the subtotal in {@code confirm}; with
- * {@code preview} still reading cart's field, a 0.01 bag previewed 0.01 and
- * confirmed at 100.00 -- charging a number the server never showed the
- * shopper, and in the reverse case showing more than it charged. Both paths go
- * through the same repricing now.
- *
- * <p>Deliberately NOT asserted here: that cart's own {@code pricingStatus} is
- * read. Checkout's own pricing call is strictly stronger than cart's opinion --
- * it is first-hand, it is current, and it cannot be stale relative to what is
- * about to be charged.
+ * <p>order checks the same digest again before it saves anything, and
+ * checkout passes order's refusal on as its own pricing-changed. The intent is
+ * created for the total ORDER recorded -- never for a figure only checkout
+ * computed -- and only when the two agree.
  */
 class ConfirmPricingTest {
 
     private static final UUID ADDRESS = UUID.randomUUID();
     private static final UUID VARIANT = UUID.randomUUID();
+    private static final UUID SECOND = UUID.randomUUID();
     private static final UUID ORDER_ID = UUID.randomUUID();
     private static final UUID INTENT_ID = UUID.randomUUID();
+    private static final String CARD = "4242424242424242";
+    private static final BigDecimal ZERO = new BigDecimal("0.00");
 
     /** What a tampered-with bag claims. */
     private static final BigDecimal ONE_CENT = new BigDecimal("0.01");
@@ -103,7 +101,6 @@ class ConfirmPricingTest {
 
     private CartClient cart;
     private CatalogPricingClient catalog;
-    private PromotionClient promotion;
     private ShippingClient shipping;
     private PaymentClient payment;
     private OrderClient order;
@@ -114,7 +111,6 @@ class ConfirmPricingTest {
     void setUp() {
         cart = mock(CartClient.class);
         catalog = mock(CatalogPricingClient.class);
-        promotion = mock(PromotionClient.class);
         shipping = mock(ShippingClient.class);
         payment = mock(PaymentClient.class);
         order = mock(OrderClient.class);
@@ -124,64 +120,64 @@ class ConfirmPricingTest {
                 CircuitBreakerRegistry.ofDefaults(),
                 RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
                 RateLimiterRegistry.of(RateLimiterConfig.ofDefaults()));
-        service = new CheckoutService(cart, catalog, promotion, shipping, payment, order,
-                customer, resilient);
+        service = new CheckoutService(cart, catalog, shipping, payment, order, customer, resilient);
 
         // A bag whose stored line and subtotal both claim one cent. This is
         // what a pre-fix cart would have handed over, and what a compromised or
         // buggy cart could still hand over.
-        when(cart.getMyCart()).thenReturn(new CartClient.CartView(
-                UUID.randomUUID(), ONE_CENT,
-                List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT,
-                        "Free ring please", 1, ONE_CENT, ONE_CENT))));
-        shippingIsFree();
-        orderIsPlaced();
+        bagHolds(1);
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        shippingOffers(option("SELF_COLLECT", "0.00"));
+        orderRecordsTotal("4500.00");
         intentSucceeds();
-        // By default the address agrees with the request body, so the other
-        // tests in this class exercise their own subject rather than this one.
         addressIsIn("ZM");
     }
 
-    /** The entry the catalog stub is currently answering with. */
-    private CatalogPricingClient.Entry answer;
+    // ------------------------------------------------------------- fixtures
+
+    private void bagHolds(int quantity) {
+        when(cart.getMyCart()).thenReturn(new CartClient.CartView(
+                UUID.randomUUID(), ONE_CENT,
+                List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT,
+                        "Free ring please", quantity, ONE_CENT, ONE_CENT))));
+    }
 
     private void catalogSays(String status, BigDecimal price, String currency) {
-        answer = new CatalogPricingClient.Entry(VARIANT, status, UUID.randomUUID(),
-                "Aurelia 18k", "Aurelia 18k - Ring Size M", price, currency);
-        when(catalog.price(any())).thenReturn(
-                new CatalogPricingClient.PricingResponse(List.of(answer)));
+        doReturn(new CatalogPricingClient.PricingResponse(List.of(new CatalogPricingClient.Entry(
+                VARIANT, status, UUID.randomUUID(), "Aurelia 18k", "Aurelia 18k - Ring Size M",
+                price, currency))))
+                .when(catalog).price(any());
     }
 
-    /**
-     * The version a client would have been handed by preview.
-     *
-     * <p>Computed the way the server computes it rather than hardcoded -- a
-     * literal digest in a test is a value nobody can check and that has to be
-     * re-pasted every time the canonical form changes.
-     *
-     * <p>Deliberately NOT obtained by calling preview() in every test: preview
-     * also calls shipping, which would double the invocation counts the
-     * shipping assertions rely on. previewChargesWhatItShowed does the real
-     * round trip.
-     */
-    private String currentVersion() {
-        // Null when a test stubs catalog directly rather than through
-        // catalogSays -- the empty-answer case. The value is irrelevant there:
-        // reprice() refuses the bag before the version is ever compared, so a
-        // placeholder keeps the helper from throwing on List.of(null).
-        return answer == null
-                ? "no-version-needed"
-                : PricingVersion.of(List.of(answer));
+    private static ShippingClient.ShippingOption option(String code, String cost) {
+        return new ShippingClient.ShippingOption(code, "Oriah Jewelry", code, new BigDecimal(cost), "ZMW", 0, 2);
     }
 
-    /** A shipping quote at a real cost, in the bag's currency. */
-    private void shippingCosts(String cost) {
+    private void shippingOffers(ShippingClient.ShippingOption... options) {
         // doReturn, not when(...): rates() may already be stubbed to throw, and
         // when(mock.rates(any())) would CALL it while setting up the new stub.
-        doReturn(new ShippingClient.RateResponse(
-                "ZM", List.of(new ShippingClient.ShippingOption(
-                        "SELF_COLLECT", "Local Courier", "Standard", new BigDecimal(cost), "ZMW", 2, 4))))
-                .when(shipping).rates(any());
+        doReturn(new ShippingClient.RateResponse("ZM", List.of(options))).when(shipping).rates(any());
+    }
+
+    /** order answering as the real one does: CREATED, then PAID, at the total IT priced. */
+    private void orderRecordsTotal(String total) {
+        BigDecimal recorded = new BigDecimal(total);
+        doReturn(new OrderClient.OrderResponse(ORDER_ID, "kc-alice", "CREATED",
+                REAL_PRICE, recorded, "ZMW", null)).when(order).place(any());
+        doReturn(new OrderClient.OrderResponse(ORDER_ID, "kc-alice", "PAID",
+                REAL_PRICE, recorded, "ZMW", INTENT_ID)).when(order).pay(any(), any());
+    }
+
+    private void intentSucceeds() {
+        when(payment.createIntent(any())).thenReturn(new PaymentClient.IntentResponse(
+                INTENT_ID, ORDER_ID, REAL_PRICE, "ZMW", "PENDING", null));
+        when(payment.confirm(any(), any(), any())).thenReturn(new PaymentClient.IntentResponse(
+                INTENT_ID, ORDER_ID, REAL_PRICE, "ZMW", "SUCCEEDED", null));
+    }
+
+    /** The caller's one address, in the given country. */
+    private void addressIsIn(String country) {
+        doReturn(List.of(new CustomerClient.Address(ADDRESS, country))).when(customer).myAddresses();
     }
 
     /** A FeignException carrying a real status, as the client would throw. */
@@ -194,129 +190,404 @@ class ConfirmPricingTest {
                         .request(request).headers(Map.of()).build());
     }
 
-    /** A FeignException carrying a problem+json body of the given type, as shipping answers. */
-    private static FeignException feignProblem(int status, String type) {
-        Request request = Request.create(Request.HttpMethod.POST,
-                "http://shipping/api/v1/shipping/rates", Map.of(),
+    /** A FeignException carrying a problem+json body of the given type. */
+    private static FeignException feignProblem(String method, int status, String type) {
+        Request request = Request.create(Request.HttpMethod.POST, "http://downstream/x", Map.of(),
                 new byte[0], StandardCharsets.UTF_8, new RequestTemplate());
         byte[] body = ("{\"type\":\"" + type + "\",\"status\":" + status + ",\"detail\":\"refused\"}")
                 .getBytes(StandardCharsets.UTF_8);
-        return FeignException.errorStatus("ShippingClient#rates(RateRequest)",
+        return FeignException.errorStatus(method,
                 Response.builder().status(status).reason("refused").request(request)
                         .headers(Map.of("Content-Type", List.of("application/problem+json")))
                         .body(body).build());
     }
 
-    /** The caller's one address, in the given country. */
-    private void addressIsIn(String country) {
-        doReturn(List.of(new CustomerClient.Address(ADDRESS, country)))
-                .when(customer).myAddresses();
+    /**
+     * The digest of the quote the shopper SAW -- computed with the shared rule
+     * rather than pasted, so a fixture cannot drift from it.
+     */
+    private static String saw(String option, String delivery, QuoteLine... lines) {
+        return QuoteDigest.of(new Quote(List.of(lines), "ZMW", option, new BigDecimal(delivery)));
     }
 
-    private void shippingIsFree() {
-        when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
-                "ZM", List.of(new ShippingClient.ShippingOption(
-                        "SELF_COLLECT", "Local Courier", "Standard", BigDecimal.ZERO, "ZMW", 2, 4))));
+    private static QuoteLine line(UUID variant, int quantity, String price) {
+        return new QuoteLine(variant, quantity, new BigDecimal(price), ZERO);
     }
 
-    private void orderIsPlaced() {
-        when(order.place(any())).thenReturn(new OrderClient.OrderResponse(
-                ORDER_ID, "kc-alice", "CREATED", REAL_PRICE, REAL_PRICE, "ZMW", null));
-        when(order.pay(any(), any())).thenReturn(new OrderClient.OrderResponse(
-                ORDER_ID, "kc-alice", "PAID", REAL_PRICE, REAL_PRICE, "ZMW", INTENT_ID));
+    /** What the shopper saw for this fixture's default bag: one ring, self-collected. */
+    private static String sawOneRing() {
+        return saw("SELF_COLLECT", "0.00", line(VARIANT, 1, "4500.00"));
     }
 
-    private void intentSucceeds() {
-        when(payment.createIntent(any())).thenReturn(new PaymentClient.IntentResponse(
-                INTENT_ID, ORDER_ID, REAL_PRICE, "ZMW", "PENDING", null));
-        when(payment.confirm(any(), any(), any())).thenReturn(new PaymentClient.IntentResponse(
-                INTENT_ID, ORDER_ID, REAL_PRICE, "ZMW", "SUCCEEDED", null));
+    private static ConfirmRequest confirm(String option, String quoteDigest) {
+        return new ConfirmRequest(ADDRESS, option, CARD, null, quoteDigest);
     }
 
-    private ConfirmRequest confirmRequest() {
-        return new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null, currentVersion());
+    private PreviewResponse previewFor(String option) {
+        return service.preview(new PreviewRequest(null, null, ADDRESS, option));
     }
 
-    // ------------------------------------------------------------- the fix
+    private BigDecimal chargedAmount() {
+        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
+                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
+        verify(payment).createIntent(intent.capture());
+        return intent.getValue().amount();
+    }
+
+    private OrderClient.PlaceOrderRequest placement() {
+        ArgumentCaptor<OrderClient.PlaceOrderRequest> placed =
+                ArgumentCaptor.forClass(OrderClient.PlaceOrderRequest.class);
+        verify(order).place(placed.capture());
+        return placed.getValue();
+    }
+
+    private void nothingWasOrderedOrCharged() {
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+    }
+
+    // ------------------------------------------------------------- the price
 
     @Test
     @DisplayName("the amount sent to payment is catalog's price, not the cart's subtotal")
     void theChargedAmountIsCatalogsNotTheCartsSubtotal() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-1");
 
-        service.confirm(confirmRequest(), "key-1");
-
-        // THE assertion of this phase. Nothing else in the suite pins the
-        // number that reaches payment: the older tests stub CartView.subtotal
-        // directly and assert statuses.
-        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
-                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
-        assertThat(intent.getValue().amount())
-                .as("the bag said 0.01; catalog said 4500.00")
-                .isEqualByComparingTo(REAL_PRICE);
+        assertThat(chargedAmount()).as("the bag said 0.01; catalog said 4500.00").isEqualByComparingTo(REAL_PRICE);
     }
 
     @Test
-    @DisplayName("the order snapshot carries catalog's price too, not the cart's")
+    @DisplayName("the order snapshot carries catalog's price and label, not the cart's")
     void theOrderSnapshotCarriesCatalogsPrice() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-2");
 
-        service.confirm(confirmRequest(), "key-2");
-
-        // The order is the financial record. A correct charge against an order
-        // whose lines say 0.01 would be unreconcilable, and the 'what did we
-        // sell and for how much' question would have two answers.
-        ArgumentCaptor<OrderClient.PlaceOrderRequest> placed =
-                ArgumentCaptor.forClass(OrderClient.PlaceOrderRequest.class);
-        verify(order).place(placed.capture());
-        assertThat(placed.getValue().items().getFirst().unitPrice())
-                .isEqualByComparingTo(REAL_PRICE);
-        assertThat(placed.getValue().items().getFirst().title())
+        OrderClient.PlaceOrderRequest placed = placement();
+        assertThat(placed.items().getFirst().unitPrice()).isEqualByComparingTo(REAL_PRICE);
+        assertThat(placed.items().getFirst().title())
                 .as("catalog's composed label, not the client's string")
                 .isEqualTo("Aurelia 18k - Ring Size M");
     }
 
     @Test
-    @DisplayName("preview charges what it showed")
-    void previewChargesWhatItShowed() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
+    @DisplayName("the currency comes from catalog, not from a hardcoded USD")
+    void theCurrencyIsCatalogsNotHardcoded() {
+        service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-4");
 
-        PreviewResponse preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
-        // The real round trip: confirm echoes the token preview handed out,
-        // which is what a storefront does and what the staleness check exists
-        // to make meaningful.
-        service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
-                preview.pricingVersion()), "key-3");
-
+        assertThat(placement().currency()).isEqualTo("ZMW");
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
                 ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
         verify(payment).createIntent(intent.capture());
+        assertThat(intent.getValue().currency()).as("a ZMW bag must not become a USD intent").isEqualTo("ZMW");
+    }
 
-        // With preview still reading cart's subtotal, this bag previewed 0.01
-        // and confirmed at 4500.00 -- a number the shopper was never shown.
+    // --------------------------------------------- preview: the quote it shows
+
+    @Test
+    @DisplayName("preview without a chosen option lists the options but quotes no total and no digest")
+    void previewWithoutAnOptionQuotesNoTotal() {
+        shippingOffers(option("SELF_COLLECT", "0.00"), option("OWN_DELIVERY", "125.00"));
+
+        PreviewResponse preview = previewFor(null);
+
+        // There is no total to agree to until the shopper has chosen how the
+        // piece reaches them -- showing the cheapest as "the" total is how a
+        // K0 option used to make every delivery free.
+        assertThat(preview.shippingOptions())
+                .extracting(PreviewResponse.ShippingOptionDto::code)
+                .containsExactly("SELF_COLLECT", "OWN_DELIVERY");
         assertThat(preview.subtotal()).isEqualByComparingTo(REAL_PRICE);
-        assertThat(preview.total()).isEqualByComparingTo(intent.getValue().amount());
+        assertThat(preview.shippingCost()).isNull();
+        assertThat(preview.total()).isNull();
+        assertThat(preview.deliveryOption()).isNull();
+        assertThat(preview.quoteDigest()).isNull();
     }
 
     @Test
-    @DisplayName("the currency comes from catalog, not from a hardcoded USD")
-    void theCurrencyIsCatalogsNotHardcoded() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
+    @DisplayName("preview for a chosen option shows its delivery, its total, and the digest of exactly that")
+    void previewForAnOptionShowsItsTotalAndDigest() {
+        shippingOffers(option("SELF_COLLECT", "0.00"), option("OWN_DELIVERY", "125.00"));
 
-        service.confirm(confirmRequest(), "key-4");
+        PreviewResponse preview = previewFor("OWN_DELIVERY");
 
-        ArgumentCaptor<OrderClient.PlaceOrderRequest> placed =
-                ArgumentCaptor.forClass(OrderClient.PlaceOrderRequest.class);
-        verify(order).place(placed.capture());
-        assertThat(placed.getValue().currency()).isEqualTo("ZMW");
+        assertThat(preview.shippingCost()).isEqualByComparingTo("125.00");
+        assertThat(preview.discount()).isEqualByComparingTo("0.00");
+        assertThat(preview.total()).isEqualByComparingTo("4625.00");
+        assertThat(preview.deliveryOption()).isEqualTo("OWN_DELIVERY");
+        assertThat(preview.quoteDigest())
+                .isEqualTo(saw("OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")));
+    }
 
-        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
-                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
-        assertThat(intent.getValue().currency())
-                .as("a ZMW bag must not become a USD intent")
-                .isEqualTo("ZMW");
+    @Test
+    @DisplayName("preview for an option no longer offered quotes nothing, so nothing unseen can be confirmed")
+    void previewForAnOptionNotOfferedQuotesNoTotal() {
+        PreviewResponse preview = previewFor("OWN_DELIVERY");
+
+        assertThat(preview.total()).isNull();
+        assertThat(preview.deliveryOption()).isNull();
+        assertThat(preview.quoteDigest()).isNull();
+    }
+
+    @Test
+    @DisplayName("preview with no address quotes delivery within Zambia")
+    void previewWithoutAnAddressQuotesZambia() {
+        service.preview(new PreviewRequest(null, null, null, "SELF_COLLECT"));
+
+        ArgumentCaptor<ShippingClient.RateRequest> rates = ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        verify(shipping).rates(rates.capture());
+        assertThat(rates.getValue().destinationCountry()).isEqualTo("ZM");
+        verifyNoInteractions(customer);
+    }
+
+    @Test
+    @DisplayName("preview echoes each option's code, so the shopper's choice can be sent back")
+    void previewEchoesEachOptionsCode() {
+        assertThat(previewFor(null).shippingOptions())
+                .extracting(PreviewResponse.ShippingOptionDto::code)
+                .containsExactly("SELF_COLLECT");
+    }
+
+    @Test
+    @DisplayName("a delivery cost finer than a ngwee is OUR fault: 500, never a quote")
+    void aDeliveryCostFinerThanANgweeIsRefused() {
+        shippingOffers(option("SELF_COLLECT", "0.005"));
+
+        assertThatThrownBy(() -> previewFor("SELF_COLLECT")).isInstanceOf(DownstreamRejectedException.class);
+    }
+
+    // --------------------------------------------- confirm: the option charged
+
+    @Test
+    @DisplayName("confirm charges the option the shopper NAMED, not the cheapest one offered")
+    void theNamedOptionIsCharged() {
+        shippingOffers(option("SELF_COLLECT", "0.00"), option("OWN_DELIVERY", "125.00"));
+        orderRecordsTotal("4625.00");
+
+        service.confirm(confirm("OWN_DELIVERY", saw("OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00"))), "k");
+
+        assertThat(chargedAmount()).as("4500 + 125, not 4500 + the cheapest 0").isEqualByComparingTo("4625.00");
+        assertThat(placement().deliveryOption()).isEqualTo("OWN_DELIVERY");
+    }
+
+    @Test
+    @DisplayName("an option not offered at confirm is pricing-changed: the shopper re-reviews, nothing is placed")
+    void anOptionNotOfferedIsRefused() {
+        // Withdrawn since preview, or never offered: checkout cannot tell which,
+        // and either way there is no price to charge for it. 409, the same
+        // answer order gives, so the storefront re-previews and shows what IS
+        // offered rather than a field error the shopper cannot fix.
+        assertThatThrownBy(() -> service.confirm(
+                confirm("OWN_DELIVERY", saw("OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00"))), "k"))
+                .isInstanceOf(PricingChangedException.class);
+
+        nothingWasOrderedOrCharged();
+    }
+
+    @Test
+    @DisplayName("self-collect needs no address: nothing is looked up, and delivery is quoted for Zambia")
+    void selfCollectNeedsNoAddress() {
+        service.confirm(new ConfirmRequest(null, "SELF_COLLECT", CARD, null, sawOneRing()), "k");
+
+        ArgumentCaptor<ShippingClient.RateRequest> rates = ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        verify(shipping).rates(rates.capture());
+        assertThat(rates.getValue().destinationCountry()).isEqualTo("ZM");
+        verifyNoInteractions(customer);
+        assertThat(placement().shippingAddressId()).isNull();
+    }
+
+    // --------------------------------------------- quote, then commit (4.4)
+
+    @Test
+    @DisplayName("preview charges what it showed: the digest it hands out confirms, at its total")
+    void previewChargesWhatItShowed() {
+        PreviewResponse preview = previewFor("SELF_COLLECT");
+
+        service.confirm(confirm("SELF_COLLECT", preview.quoteDigest()), "key-3");
+
+        assertThat(preview.subtotal()).isEqualByComparingTo(REAL_PRICE);
+        assertThat(preview.total()).isEqualByComparingTo(chargedAmount());
+    }
+
+    @Test
+    @DisplayName("order is told the option and the digest the shopper agreed to")
+    void theOrderIsToldTheOptionAndTheDigest() {
+        service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k");
+
+        assertThat(placement().deliveryOption()).isEqualTo("SELF_COLLECT");
+        assertThat(placement().quoteDigest()).isEqualTo(sawOneRing());
+    }
+
+    @Test
+    @DisplayName("a quantity changed after preview -- a bag edited in another tab -- is refused before anything happens")
+    void aQuantityChangedAfterPreviewIsRefused() {
+        // This used to be ACCEPTED, deliberately: pricingVersion left quantity
+        // out so a stepper nudge would not conflict. But the shopper agreed to
+        // one ring at 4,500, not three at 13,500 -- the total they saw is the
+        // only one that may be charged (Q24).
+        String sawOne = previewFor("SELF_COLLECT").quoteDigest();
+        bagHolds(3);
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOne), "k"))
+                .isInstanceOf(PricingChangedException.class);
+        nothingWasOrderedOrCharged();
+    }
+
+    @Test
+    @DisplayName("two quantities swapped between lines is refused even though the total is unchanged")
+    void anEqualTotalSwapIsRefused() {
+        doReturn(new CatalogPricingClient.PricingResponse(List.of(
+                new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(), "A", "A", REAL_PRICE, "ZMW"),
+                new CatalogPricingClient.Entry(SECOND, "PRICED", UUID.randomUUID(), "B", "B", REAL_PRICE, "ZMW"))))
+                .when(catalog).price(any());
+        when(cart.getMyCart()).thenReturn(new CartClient.CartView(UUID.randomUUID(), ONE_CENT, List.of(
+                new CartClient.CartItem(UUID.randomUUID(), VARIANT, "A", 2, ONE_CENT, ONE_CENT),
+                new CartClient.CartItem(UUID.randomUUID(), SECOND, "B", 1, ONE_CENT, ONE_CENT))));
+        String sawOneAndTwo = saw("SELF_COLLECT", "0.00",
+                line(VARIANT, 1, "4500.00"), line(SECOND, 2, "4500.00"));
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneAndTwo), "k"))
+                .isInstanceOf(PricingChangedException.class);
+        nothingWasOrderedOrCharged();
+    }
+
+    @Test
+    @DisplayName("a price changed after preview is refused before anything is ordered or charged")
+    void aPriceChangedAfterPreviewIsRefused() {
+        String sawAt4500 = previewFor("SELF_COLLECT").quoteDigest();
+        catalogSays("PRICED", new BigDecimal("4600.00"), "ZMW");
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawAt4500), "k"))
+                .isInstanceOf(PricingChangedException.class);
+        nothingWasOrderedOrCharged();
+    }
+
+    @Test
+    @DisplayName("a delivery price changed after preview is refused -- a price published in between")
+    void aDeliveryPriceChangedAfterPreviewIsRefused() {
+        shippingOffers(option("OWN_DELIVERY", "100.00"));
+        String sawAt100 = previewFor("OWN_DELIVERY").quoteDigest();
+        shippingOffers(option("OWN_DELIVERY", "125.00"));
+
+        assertThatThrownBy(() -> service.confirm(confirm("OWN_DELIVERY", sawAt100), "k"))
+                .isInstanceOf(PricingChangedException.class);
+        nothingWasOrderedOrCharged();
+    }
+
+    @Test
+    @DisplayName("a stable delivery price is fine: items plus the delivery the shopper was shown")
+    void aStableDeliveryPriceIsCharged() {
+        shippingOffers(option("OWN_DELIVERY", "125.00"));
+        orderRecordsTotal("4625.00");
+        PreviewResponse preview = previewFor("OWN_DELIVERY");
+
+        service.confirm(confirm("OWN_DELIVERY", preview.quoteDigest()), "key-24");
+
+        assertThat(chargedAmount()).isEqualByComparingTo("4625.00");
+    }
+
+    // --------------------------------------------- order's answer (B12)
+
+    @Test
+    @DisplayName("order finding the quote changed is passed on as checkout's own pricing-changed, and nothing is charged")
+    void ordersPricingChangedIsPassedThrough() {
+        // order prices everything again before it saves; a price moving in the
+        // instant between checkout's check and order's is order's to catch.
+        // It used to become a generic 500 -- "the shop is broken" -- for an
+        // answer the shopper can act on by reviewing their bag.
+        doThrow(feignProblem("OrderClient#place(PlaceOrderRequest)", 409,
+                "https://oriah.dev/problems/pricing-changed")).when(order).place(any());
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
+                .isInstanceOf(PricingChangedException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("a 409 from order of a type checkout does not know is not mistaken for pricing-changed")
+    void anUnknownOrderConflictIsNotPricingChanged() {
+        doThrow(feignProblem("OrderClient#place(PlaceOrderRequest)", 409,
+                "https://oriah.dev/problems/something-new")).when(order).place(any());
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
+                .isInstanceOf(DownstreamRejectedException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("order finding a piece no longer sellable is checkout's own bag-not-purchasable, never a 500")
+    void ordersBagNotPurchasableIsPassedThrough() {
+        // An admin unpublishes a piece in the seconds between checkout's
+        // pricing and order's. The shopper can act on that -- remove the piece
+        // -- so it is passed on by type, as pricing-changed is.
+        doThrow(feignProblem("OrderClient#place(PlaceOrderRequest)", 409,
+                "https://oriah.dev/problems/bag-not-purchasable")).when(order).place(any());
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
+                .isInstanceOf(BagNotPurchasableException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("order finding the bag mixes currencies is checkout's own mixed-currency, never a 500")
+    void ordersMixedCurrencyIsPassedThrough() {
+        doThrow(feignProblem("OrderClient#place(PlaceOrderRequest)", 409,
+                "https://oriah.dev/problems/mixed-currency")).when(order).place(any());
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
+                .isInstanceOf(MixedCurrencyException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("an order total that disagrees with the agreed quote is never charged")
+    void anOrderTotalThatDisagreesIsNeverCharged() {
+        // The digests matched, so this should be impossible -- which is exactly
+        // when charging anyway would be a mistake nobody notices.
+        orderRecordsTotal("4600.00");
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
+                .isInstanceOf(DownstreamRejectedException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("the response reports the total the PAID order records")
+    void theResponseCarriesThePaidTotal() {
+        // A distinct figure from the placed and quoted 4,500, so this can only
+        // pass when the response is read from the PAID order.
+        doReturn(new OrderClient.OrderResponse(ORDER_ID, "kc-alice", "PAID",
+                REAL_PRICE, new BigDecimal("4501.00"), "ZMW", INTENT_ID)).when(order).pay(any(), any());
+
+        ConfirmResponse response = service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k");
+
+        assertThat(response.orderId()).isEqualTo(ORDER_ID);
+        assertThat(response.total()).isEqualByComparingTo("4501.00");
+    }
+
+    // --------------------------------------------- promotion codes (B9)
+
+    @Test
+    @DisplayName("a promotion code at preview is refused: codes are retired until Phase 7's scoped promotions")
+    void aPromotionCodeIsRefusedAtPreview() {
+        assertThatThrownBy(() -> service.preview(new PreviewRequest(null, "SPRING10", ADDRESS, "SELF_COLLECT")))
+                .isInstanceOf(PromotionCodesNotAcceptedException.class);
+        verifyNoInteractions(cart, catalog, shipping);
+    }
+
+    @Test
+    @DisplayName("a promotion code at confirm is refused before anything is ordered or charged")
+    void aPromotionCodeIsRefusedAtConfirm() {
+        assertThatThrownBy(() -> service.confirm(
+                new ConfirmRequest(ADDRESS, "SELF_COLLECT", CARD, "SPRING10", sawOneRing()), "k"))
+                .isInstanceOf(PromotionCodesNotAcceptedException.class);
+        nothingWasOrderedOrCharged();
+    }
+
+    @Test
+    @DisplayName("a blank promotion code is no code at all")
+    void aBlankPromotionCodeIsIgnored() {
+        service.confirm(new ConfirmRequest(ADDRESS, "SELF_COLLECT", CARD, "  ", sawOneRing()), "k");
+
+        assertThat(chargedAmount()).isEqualByComparingTo(REAL_PRICE);
     }
 
     // ---------------------------------- the zone is not the client's to choose
@@ -324,252 +595,118 @@ class ConfirmPricingTest {
     @Test
     @DisplayName("an address outside Zambia is refused with a reason the shopper can act on, and nothing is placed")
     void anAddressOutsideZambiaIsRefusedWithAReasonTheShopperCanActOn() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // The body claims ZM; the address is in the United States. The address
-        // wins, as it always has -- and shipping now refuses it, because Oriah
-        // delivers within Zambia only (Phase 0, item 1).
         addressIsIn("US");
-        doThrow(feignProblem(422, "https://oriah.dev/problems/outside-delivery-area")).when(shipping).rates(any());
+        doThrow(feignProblem("ShippingClient#rates(RateRequest)", 422,
+                "https://oriah.dev/problems/outside-delivery-area")).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-30"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-30"))
                 .isInstanceOf(OutsideDeliveryAreaException.class)
                 .hasMessage("We deliver within Zambia only.");
 
-        ArgumentCaptor<ShippingClient.RateRequest> rates =
-                ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        ArgumentCaptor<ShippingClient.RateRequest> rates = ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
         verify(shipping).rates(rates.capture());
-        assertThat(rates.getValue().destinationCountry())
-                .as("the country of the address, not the one the caller typed")
-                .isEqualTo("US");
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        assertThat(rates.getValue().destinationCountry()).as("the country of the address").isEqualTo("US");
+        nothingWasOrderedOrCharged();
     }
 
     @Test
     @DisplayName("shipping answering 422 of ANOTHER type is not mistaken for 'outside Zambia'")
     void aShipping422OfAnotherTypeIsNotMistakenForOutsideZambia() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // The pass-through is keyed on the problem type, not the status: a 422
-        // checkout does not recognise is still our request being refused.
-        doThrow(feignProblem(422, "https://oriah.dev/problems/validation")).when(shipping).rates(any());
+        doThrow(feignProblem("ShippingClient#rates(RateRequest)", 422,
+                "https://oriah.dev/problems/validation")).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-35"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-35"))
                 .isInstanceOf(DownstreamRejectedException.class);
         verify(order, never()).place(any());
     }
+
     @Test
     @DisplayName("an address that is not the shopper's is refused, and nothing is ordered")
     void anAddressThatIsNotTheShoppersIsRefused() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // customer-service lists the CALLER's addresses only, so an id that is
-        // not in that list is either somebody else's or does not exist. The two
-        // are deliberately indistinguishable in the response.
         doReturn(List.of()).when(customer).myAddresses();
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-31"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-31"))
                 .isInstanceOf(IllegalArgumentException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
 
     @Test
     @DisplayName("customer-service being unreachable fails closed before anything is charged")
     void customerUnreachableFailsClosed() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // The zone decides the shipping charge, so a checkout that cannot
-        // establish it must not guess. Nothing has been charged at this point,
-        // so this is safe to report as transient.
         doThrow(feign(503)).when(customer).myAddresses();
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-32"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-32"))
                 .isInstanceOf(RuntimeException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
 
     @Test
     @DisplayName("preview refuses an address outside Zambia exactly as confirm does")
     void previewOutsideZambiaIsRefusedLikeConfirm() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
         addressIsIn("US");
-        doThrow(feignProblem(422, "https://oriah.dev/problems/outside-delivery-area")).when(shipping).rates(any());
+        doThrow(feignProblem("ShippingClient#rates(RateRequest)", 422,
+                "https://oriah.dev/problems/outside-delivery-area")).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.preview(new PreviewRequest("ZM", null, ADDRESS)))
-                .isInstanceOf(OutsideDeliveryAreaException.class);
+        assertThatThrownBy(() -> previewFor("SELF_COLLECT")).isInstanceOf(OutsideDeliveryAreaException.class);
 
-        ArgumentCaptor<ShippingClient.RateRequest> rates =
-                ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        ArgumentCaptor<ShippingClient.RateRequest> rates = ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
         verify(shipping).rates(rates.capture());
         assertThat(rates.getValue().destinationCountry()).isEqualTo("US");
     }
 
-    @Test
-    @DisplayName("preview echoes each option's code, so the shopper's choice can be sent back")
-    void previewEchoesEachOptionsCode() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-
-        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
-
-        assertThat(preview.shippingOptions())
-                .extracting(PreviewResponse.ShippingOptionDto::code)
-                .containsExactly("SELF_COLLECT");
-    }
     // ------------------------------------- what the review found, as tests
 
     @Test
     @DisplayName("a bag mixing currencies is refused with its OWN type, not as unpurchasable")
     void aMixedCurrencyBagIsRefusedWithItsOwnType() {
-        // Nothing exercised this path at the checkout layer: the only
-        // mixed-currency test in the platform was cart's checkoutEnabled flag.
-        // The type matters because the storefront words the three conflicts
-        // differently -- this one tells the shopper to split the order, which
-        // is useless advice for an unavailable item and vice versa.
-        UUID second = UUID.randomUUID();
-        when(cart.getMyCart()).thenReturn(new CartClient.CartView(
-                UUID.randomUUID(), ONE_CENT,
-                List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT, "Ring", 1,
-                                ONE_CENT, ONE_CENT),
-                        new CartClient.CartItem(UUID.randomUUID(), second, "Cuff", 1,
-                                ONE_CENT, ONE_CENT))));
-        when(catalog.price(any())).thenReturn(new CatalogPricingClient.PricingResponse(List.of(
-                new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(),
-                        "Ring", "Ring", REAL_PRICE, "ZMW"),
-                new CatalogPricingClient.Entry(second, "PRICED", UUID.randomUUID(),
-                        "Cuff", "Cuff", new BigDecimal("250.00"), "USD"))));
+        when(cart.getMyCart()).thenReturn(new CartClient.CartView(UUID.randomUUID(), ONE_CENT, List.of(
+                new CartClient.CartItem(UUID.randomUUID(), VARIANT, "Ring", 1, ONE_CENT, ONE_CENT),
+                new CartClient.CartItem(UUID.randomUUID(), SECOND, "Cuff", 1, ONE_CENT, ONE_CENT))));
+        doReturn(new CatalogPricingClient.PricingResponse(List.of(
+                new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(), "Ring", "Ring", REAL_PRICE, "ZMW"),
+                new CatalogPricingClient.Entry(SECOND, "PRICED", UUID.randomUUID(), "Cuff", "Cuff",
+                        new BigDecimal("250.00"), "USD"))))
+                .when(catalog).price(any());
 
-        assertThatThrownBy(() -> service.confirm(
-                new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null, "any"), "key-20"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-20"))
                 .isInstanceOf(MixedCurrencyException.class);
-
         verify(order, never()).place(any());
     }
 
     @Test
     @DisplayName("shipping ANSWERING 400 is loud, not free shipping")
     void aShippingFourHundredIsLoudNotFreeShipping() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // shipping-service refuses to quote a currency its rate card is not
-        // written in -- an IllegalArgumentException rendered as 400. Treating
-        // that as an outage ships every such bag FREE, consistently, so
-        // nothing looks wrong to anyone: the currency guard this service
-        // already has cannot fire, because a refusing shipping-service never
-        // returns an option in the wrong currency for it to inspect.
         doThrow(feign(400)).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-21"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-21"))
                 .isInstanceOf(DownstreamRejectedException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
 
     @Test
     @DisplayName("shipping being UNREACHABLE refuses to confirm: never a sale with delivery charged at zero")
     void aShippingOutageRefusesToConfirm() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // This used to degrade to free delivery. The owner prices delivery and
-        // a quote is agreed before anything is charged (Q24), so an outage now
-        // means "try again", never a sale at a delivery price nobody agreed.
         doThrow(feign(503)).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-22"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-22"))
                 .isInstanceOf(DownstreamUnavailableException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
+
     @Test
     @DisplayName("a shipping outage at PREVIEW gives no quote at all, so nothing unseen can be confirmed")
-    void aPreviewDuringAShippingOutageIssuesNoToken() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // It used to answer with an items-only quote and a token; confirm then
-        // needed a second guard so it could not charge more once shipping
-        // returned. With no quote and no token, there is nothing to confirm.
+    void aPreviewDuringAShippingOutageIssuesNoQuote() {
         doThrow(feign(503)).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.preview(new PreviewRequest("ZM", null, ADDRESS)))
-                .isInstanceOf(DownstreamUnavailableException.class);
-    }
-    @Test
-    @DisplayName("a shipping quote appearing between preview and confirm is fine if it was quoted at both")
-    void aStableShippingQuoteDoesNotInvalidateTheVersion() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        shippingCosts("125.00");
-
-        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
-        service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
-                preview.pricingVersion()), "key-24");
-
-        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
-                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
-        assertThat(intent.getValue().amount())
-                .as("items plus the shipping the shopper was shown")
-                .isEqualByComparingTo("4625.00");
+        assertThatThrownBy(() -> previewFor("SELF_COLLECT")).isInstanceOf(DownstreamUnavailableException.class);
     }
 
-    // ----------------------------------------------------- the staleness guard
-
     @Test
-    @DisplayName("a stale pricing version is refused before anything is ordered, charged or redeemed")
-    void aStaleVersionIsRefusedBeforeAnythingHappens() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-
-        // What a shopper sends after an admin repriced the ring between their
-        // preview and their Place order: a token for prices that no longer
-        // exist.
-        ConfirmRequest stale = new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
-                "0000000000000000000000000000000000000000000000000000000000000000");
-
-        assertThatThrownBy(() -> service.confirm(stale, "key-12"))
+    @DisplayName("a stale digest is refused before anything is ordered or charged")
+    void aStaleDigestIsRefusedBeforeAnythingHappens() {
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", "0".repeat(64)), "key-12"))
                 .isInstanceOf(PricingChangedException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
-        // AND the promo is untouched. A code redeemed against an order that is
-        // then refused has spent one of its uses for nothing, which is why the
-        // check sits above the promotion call rather than beside the payment.
-        verify(promotion, never()).apply(any(), any());
-    }
-
-    @Test
-    @DisplayName("the version preview handed out is accepted")
-    void theVersionFromPreviewIsAccepted() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-
-        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
-        var response = service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242",
-                null, preview.pricingVersion()), "key-13");
-
-        assertThat(response.orderId()).isEqualTo(ORDER_ID);
-    }
-
-    @Test
-    @DisplayName("changing a quantity does not invalidate the version")
-    void aQuantityEditDoesNotInvalidateTheVersion() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
-
-        // The shopper nudges the stepper from 1 to 3 after previewing. No price
-        // changed, so their token must still be good: a version that included
-        // quantity would turn the most ordinary interaction in a bag into a
-        // conflict.
-        when(cart.getMyCart()).thenReturn(new CartClient.CartView(
-                UUID.randomUUID(), ONE_CENT,
-                List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT,
-                        "Free ring please", 3, ONE_CENT, ONE_CENT))));
-
-        service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
-                preview.pricingVersion()), "key-14");
-
-        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
-                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
-        assertThat(intent.getValue().amount())
-                .as("3 x 4500.00 -- the quantity is honoured, the version is not invalidated")
-                .isEqualByComparingTo("13500.00");
+        nothingWasOrderedOrCharged();
     }
 
     // ------------------------------------------------------- refuse, don't guess
@@ -577,68 +714,74 @@ class ConfirmPricingTest {
     @Test
     @DisplayName("the bag's currency is sent to shipping, so it can refuse to quote in it")
     void theBagCurrencyIsSentToShipping() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-9");
 
-        service.confirm(confirmRequest(), "key-9");
-
-        ArgumentCaptor<ShippingClient.RateRequest> rates =
-                ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        ArgumentCaptor<ShippingClient.RateRequest> rates = ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
         verify(shipping).rates(rates.capture());
-        assertThat(rates.getValue().currency())
-                .as("shipping cannot refuse a currency it is never told about")
-                .isEqualTo("ZMW");
+        assertThat(rates.getValue().currency()).isEqualTo("ZMW");
+    }
+
+    /**
+     * A delivery charge quoted in USD for a ZMW bag. Priced at 0.00 on purpose:
+     * then the digest of the quote matches what the shopper "saw" whether or
+     * not the currency is checked, so only the currency check can refuse it --
+     * a 45.00 charge would be refused by the digest instead and hide a missing
+     * check.
+     */
+    private void shippingQuotesInDollars() {
+        doReturn(new ShippingClient.RateResponse("ZM", List.of(new ShippingClient.ShippingOption(
+                "SELF_COLLECT", "DHL", "International", new BigDecimal("0.00"), "USD", 7, 14))))
+                .when(shipping).rates(any());
     }
 
     @Test
-    @DisplayName("a shipping quote in another currency is refused, not added to the total")
+    @DisplayName("a shipping quote in another currency is refused at confirm, not added to the total")
     void aShippingQuoteInAnotherCurrencyIsRefused() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // shipping-service minted every option in USD until this phase, and
-        // checkout discarded the currency field entirely -- so a 45-dollar
-        // courier charge landed on a Kwacha order as though it were 45 Kwacha.
-        // Unlike an outage, this is a configuration mismatch: paper over it
-        // with free shipping and the mistake is permanent and invisible.
-        when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
-                "ZM", List.of(new ShippingClient.ShippingOption(
-                        "SELF_COLLECT", "DHL", "International", new BigDecimal("45.00"), "USD", 7, 14))));
+        shippingQuotesInDollars();
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-10"))
-                .isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-10"))
+                .isInstanceOf(DownstreamRejectedException.class);
+        nothingWasOrderedOrCharged();
+    }
 
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+    @Test
+    @DisplayName("a shipping quote in another currency is refused at preview, before the shopper is shown it")
+    void aShippingQuoteInAnotherCurrencyIsRefusedAtPreview() {
+        // 45 dollars shown as 45 Kwacha is a wrong total on the screen, and the
+        // digest of it would then be handed out as the quote to agree to.
+        shippingQuotesInDollars();
+
+        assertThatThrownBy(() -> previewFor("SELF_COLLECT")).isInstanceOf(DownstreamRejectedException.class);
+    }
+
+    @Test
+    @DisplayName("shipping answering 500 is its own failure: our 500, not a 503 'try again shortly'")
+    void aShippingInternalServerErrorIsNotRetryable() {
+        doThrow(feign(500)).when(shipping).rates(any());
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-36"))
+                .isInstanceOf(DownstreamRejectedException.class);
+        nothingWasOrderedOrCharged();
     }
 
     @Test
     @DisplayName("shipping failing with no answer at all is a 503 too, before anything is ordered")
     void anUnreachableShippingServiceIsServiceUnavailable() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-        when(shipping.rates(any())).thenThrow(new IllegalStateException("shipping is down"));
+        doThrow(new IllegalStateException("shipping is down")).when(shipping).rates(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-11"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-11"))
                 .isInstanceOf(DownstreamUnavailableException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
+
     @Test
     @DisplayName("a line catalog will not price is never ordered and never charged")
     void anUnpublishedLineIsRefusedEntirely() {
         catalogSays("UNPUBLISHED", null, null);
 
-        // The TYPE, not just IllegalStateException: BagNotPurchasableException,
-        // PricingChangedException and MixedCurrencyException all extend it, so
-        // asserting the supertype would stay green if this throw were swapped
-        // for the "prices changed" one -- telling the shopper to retry a bag
-        // that will be refused forever.
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-5"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-5"))
                 .isInstanceOf(BagNotPurchasableException.class);
-
-        // Cart excludes such a line from its subtotal while still listing it,
-        // so an order placed from items() and charged from subtotal() would
-        // have shipped this one FREE.
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
 
     @Test
@@ -646,7 +789,7 @@ class ConfirmPricingTest {
     void anUnknownLineIsRefused() {
         catalogSays("UNKNOWN", null, null);
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-6"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-6"))
                 .isInstanceOf(BagNotPurchasableException.class);
         verify(order, never()).place(any());
     }
@@ -654,10 +797,9 @@ class ConfirmPricingTest {
     @Test
     @DisplayName("an empty pricing answer is refused rather than read as free")
     void anEmptyPricingAnswerIsRefused() {
-        when(catalog.price(any())).thenReturn(
-                new CatalogPricingClient.PricingResponse(List.of()));
+        doReturn(new CatalogPricingClient.PricingResponse(List.of())).when(catalog).price(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-7"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-7"))
                 .isInstanceOf(BagNotPurchasableException.class);
         verify(payment, never()).createIntent(any());
     }
@@ -665,14 +807,10 @@ class ConfirmPricingTest {
     @Test
     @DisplayName("an unreachable catalog fails before anything is ordered or charged")
     void anUnreachableCatalogFailsClosed() {
-        when(catalog.price(any())).thenThrow(new IllegalStateException("catalog is down"));
+        doThrow(new IllegalStateException("catalog is down")).when(catalog).price(any());
 
-        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-8"))
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-8"))
                 .isInstanceOf(RuntimeException.class);
-
-        // Nothing has been charged at this point in the saga, so the failure is
-        // safe to report as transient -- but it must not proceed on a guess.
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        nothingWasOrderedOrCharged();
     }
 }

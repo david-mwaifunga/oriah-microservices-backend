@@ -1,5 +1,8 @@
 package com.oriah.order.service;
 
+import com.oriah.quote.QuoteLine;
+import com.oriah.quote.Quote;
+import com.oriah.quote.QuoteDigest;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -15,6 +18,7 @@ import com.oriah.order.dto.PlaceOrderRequest;
 import com.oriah.order.exception.BagNotPurchasableException;
 import com.oriah.order.exception.MixedCurrencyException;
 import com.oriah.order.exception.PriceClaimRejectedException;
+import com.oriah.order.exception.QuoteChangedException;
 import com.oriah.order.exception.TotalTooLargeException;
 
 import lombok.extern.slf4j.Slf4j;
@@ -66,17 +70,31 @@ public class OrderPricingService {
     private static final int MONEY_SCALE = 2;
 
     private final CatalogPricingClient catalog;
+    private final ShippingQuotes shipping;
 
-    public OrderPricingService(CatalogPricingClient catalog) {
+    public OrderPricingService(CatalogPricingClient catalog, ShippingQuotes shipping) {
         this.catalog = catalog;
+        this.shipping = shipping;
     }
 
     /** One line as catalog prices it, with the caller's quantity. */
     public record PricedLine(UUID variantId, String title, int quantity, BigDecimal unitPrice) {
     }
 
-    /** The order as catalog prices it: its lines, their sum, and one currency. */
-    public record PricedOrder(List<PricedLine> lines, BigDecimal subtotal, String currency) {
+    /**
+     * The order as order itself prices it: catalog's prices for the lines, and
+     * shipping's price for the option the shopper chose, held as the shared
+     * {@link Quote} whose {@code total()} is the one formula the digest binds.
+     */
+    public record PricedOrder(List<PricedLine> lines, BigDecimal subtotal, String currency, Quote quote) {
+
+        public String deliveryOption() {
+            return quote.deliveryOption();
+        }
+
+        public BigDecimal shippingAmount() {
+            return quote.deliveryAmount();
+        }
     }
 
     /**
@@ -162,7 +180,31 @@ public class OrderPricingService {
             throw new TotalTooLargeException();
         }
 
-        return new PricedOrder(List.copyOf(lines), subtotal, currency);
+        // Delivery is priced by order itself, from the option the shopper
+        // chose -- outside any transaction, like the catalog call above.
+        BigDecimal delivery = shipping.costOf(req.deliveryOption(), subtotal, currency);
+        Quote quote = new Quote(lines.stream()
+                .map(l -> new QuoteLine(l.variantId(), l.quantity(), l.unitPrice(), BigDecimal.ZERO))
+                .toList(), currency, req.deliveryOption(), delivery);
+
+        // The bound is on what is CHARGED, delivery included: a subtotal just
+        // under the column's capacity plus delivery would overflow orders.total.
+        if (quote.total().compareTo(MAX_TOTAL) > 0) {
+            log.error("Refusing order: total {} exceeds the {} the column holds", quote.total(), MAX_TOTAL);
+            throw new TotalTooLargeException();
+        }
+
+        // Quote, then commit: only the quote the shopper saw can be charged.
+        // order has priced every line and the delivery itself; if the digest
+        // of THAT differs from the one preview showed, something moved in
+        // between -- a quantity, a price, the delivery price -- and nothing is
+        // saved. Logged without either digest: they identify nothing useful.
+        if (!QuoteDigest.of(quote).equals(req.quoteDigest())) {
+            log.warn("Refusing order: the quote changed since the shopper saw it");
+            throw new QuoteChangedException();
+        }
+
+        return new PricedOrder(List.copyOf(lines), subtotal, currency, quote);
     }
 
     /**

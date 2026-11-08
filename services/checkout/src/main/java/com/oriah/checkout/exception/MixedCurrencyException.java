@@ -14,8 +14,16 @@ package com.oriah.checkout.exception;
  */
 public class MixedCurrencyException extends IllegalStateException {
 
+    /** The problem type, shared with order, which raises the same refusal and checkout passes on. */
+    public static final java.net.URI TYPE = java.net.URI.create("https://oriah.dev/problems/mixed-currency");
+
     public MixedCurrencyException(String first, String second) {
         super("Your bag mixes " + first + " and " + second
                 + ", so it cannot be checked out as one order.");
+    }
+
+    /** order's refusal, passed on: order's answer does not say which currencies. */
+    public MixedCurrencyException() {
+        super("Your bag mixes currencies, so it cannot be checked out as one order.");
     }
 }

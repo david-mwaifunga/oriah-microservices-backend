@@ -19,6 +19,9 @@ package com.oriah.checkout.exception;
  */
 public class BagNotPurchasableException extends IllegalStateException {
 
+    /** The problem type, shared with order, which raises the same refusal and checkout passes on. */
+    public static final java.net.URI TYPE = java.net.URI.create("https://oriah.dev/problems/bag-not-purchasable");
+
     private final java.util.List<java.util.UUID> unavailableLines;
 
     public BagNotPurchasableException(java.util.List<java.util.UUID> unavailableLines) {

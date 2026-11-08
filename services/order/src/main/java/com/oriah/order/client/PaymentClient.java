@@ -42,7 +42,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * Authorization header would be dropped and every call would 401. Checkout
  * documents the same trap in its own config.
  */
-@FeignClient(name = "payment")
+// The SHOPPER's token, forwarded: payment's owner check needs who is paying.
+// Attached to this client alone (FeignTokenForwarder is not a global
+// @Configuration any more), so shipping never receives it.
+@FeignClient(name = "payment", configuration = com.oriah.order.config.FeignTokenForwarder.class)
 public interface PaymentClient {
 
     /**

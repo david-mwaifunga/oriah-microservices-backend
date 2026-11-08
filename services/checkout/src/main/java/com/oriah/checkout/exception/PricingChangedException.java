@@ -23,7 +23,7 @@ public class PricingChangedException extends IllegalStateException {
     private final java.util.List<java.util.UUID> changedLines;
 
     public PricingChangedException(java.util.List<java.util.UUID> changedLines) {
-        super("Prices in your bag changed while you were checking out. "
+        super("Your bag or its prices changed while you were checking out. "
                 + "Review the updated total and try again.");
         this.changedLines = java.util.List.copyOf(changedLines);
     }

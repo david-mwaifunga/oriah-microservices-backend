@@ -11,6 +11,12 @@ spring:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
           jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+      # Inside the network Keycloak is keycloak:8080. The token's iss stays
+      # http://localhost:7080/... because Keycloak runs with KC_HOSTNAME set.
+      client:
+        provider:
+          keycloak:
+            token-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/token
 
 spring.cloud.stream.kafka.binder.brokers: kafka:9092
 

@@ -1,5 +1,6 @@
 package com.oriah.order.exception;
 
+import com.oriah.observability.ProblemTypes;
 import java.net.URI;
 
 import org.springframework.http.HttpStatus;
@@ -53,8 +54,8 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
             URI.create("https://oriah.dev/problems/bag-not-purchasable");
     private static final URI TYPE_MIXED_CURRENCY =
             URI.create("https://oriah.dev/problems/mixed-currency");
-    private static final URI TYPE_PRICE_CLAIM_REJECTED =
-            URI.create("https://oriah.dev/problems/pricing-changed");
+    /** Shared with checkout, which passes it on to the shopper (ProblemTypes). */
+    private static final URI TYPE_PRICE_CLAIM_REJECTED = ProblemTypes.PRICING_CHANGED;
     private static final URI TYPE_TOTAL_TOO_LARGE =
             URI.create("https://oriah.dev/problems/total-too-large");
     private static final URI TYPE_UPSTREAM_UNAVAILABLE =
@@ -99,6 +100,41 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
     }
 
     /** 422: well-formed, not in conflict, simply larger than we can represent. */
+    /**
+     * 409 pricing-changed, raised before anything is saved: the option the
+     * shopper chose is no longer offered, or (item 4.4) the quote moved. Its
+     * own detail, distinct from a price-claim refusal of the same type.
+     */
+    @ExceptionHandler(QuoteChangedException.class)
+    public ResponseEntity<ProblemDetail> quoteChanged(QuoteChangedException ex) {
+        log.info("409 quote changed: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem(
+                HttpStatus.CONFLICT, ProblemTypes.PRICING_CHANGED,
+                HttpStatus.CONFLICT.getReasonPhrase(), ex.getMessage()));
+    }
+
+    /** 503: a service needed to price the order did not answer. Nothing placed; retry is safe. */
+    @ExceptionHandler(UpstreamUnavailableException.class)
+    public ResponseEntity<ProblemDetail> upstreamUnavailable(UpstreamUnavailableException ex) {
+        log.warn("503 {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "5")
+                .body(problem(HttpStatus.SERVICE_UNAVAILABLE, TYPE_UPSTREAM_UNAVAILABLE,
+                        HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
+                        "We could not price your order just now. Nothing has been ordered "
+                                + "or charged; please try again."));
+    }
+
+    /** 500: a dependency refused order's own request, or answered with unusable data. Our fault. */
+    @ExceptionHandler(UpstreamRejectedException.class)
+    public ResponseEntity<ProblemDetail> upstreamRejected(UpstreamRejectedException ex) {
+        log.error("500 {}", ex.getMessage(), ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem(
+                HttpStatus.INTERNAL_SERVER_ERROR, TYPE_INTERNAL,
+                HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase(),
+                "An unexpected error occurred. Use the traceId to correlate with logs and traces."));
+    }
+
     @ExceptionHandler(TotalTooLargeException.class)
     public ResponseEntity<ProblemDetail> totalTooLarge(TotalTooLargeException ex) {
         log.error("422 order total exceeds the money column: {}", ex.getMessage());

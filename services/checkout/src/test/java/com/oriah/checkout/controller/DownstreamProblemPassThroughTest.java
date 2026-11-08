@@ -25,7 +25,6 @@ import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
-import com.oriah.checkout.client.PromotionClient;
 import com.oriah.checkout.client.ShippingClient;
 
 import feign.FeignException;
@@ -79,7 +78,6 @@ class DownstreamProblemPassThroughTest {
     @MockitoBean private CartClient cart;
     @MockitoBean private CatalogPricingClient catalog;
     @MockitoBean private CustomerClient customer;
-    @MockitoBean private PromotionClient promotion;
     @MockitoBean private ShippingClient shipping;
     @MockitoBean private OrderClient order;
     @MockitoBean private PaymentClient payment;
@@ -124,6 +122,14 @@ class DownstreamProblemPassThroughTest {
                         .body(body).build());
     }
 
+    /** The digest a preview to {@code address}, self-collected, hands the shopper. */
+    private String quoteFor(UUID address) throws Exception {
+        return com.jayway.jsonpath.JsonPath.read(post("/api/v1/checkout/preview",
+                        "{\"shippingAddressId\":\"" + address + "\",\"deliveryOption\":\"SELF_COLLECT\"}")
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString(), "$.quoteDigest");
+    }
+
     private ResultActions post(String path, String body) throws Exception {
         return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path)
                 .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")).jwt(j -> j.subject("kc-alice")))
@@ -135,7 +141,7 @@ class DownstreamProblemPassThroughTest {
     @DisplayName("preview with an address abroad: 422 outside-delivery-area, in checkout's own words")
     void previewOutsideZambiaIsUnprocessable() throws Exception {
         post("/api/v1/checkout/preview",
-                "{\"destinationCountry\":\"ZM\",\"shippingAddressId\":\"" + ADDRESS + "\"}")
+                "{\"shippingAddressId\":\"" + ADDRESS + "\",\"deliveryOption\":\"SELF_COLLECT\"}")
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/outside-delivery-area"))
@@ -147,20 +153,69 @@ class DownstreamProblemPassThroughTest {
     @Test
     @DisplayName("confirm with an address abroad: 422, and nothing is ordered or charged")
     void confirmOutsideZambiaIsUnprocessableAndNothingIsPlaced() throws Exception {
-        // A real token, from a preview to the shopper's Lusaka address, so the
-        // confirm gets past the price check and reaches shipping.
-        String token = com.jayway.jsonpath.JsonPath.read(post("/api/v1/checkout/preview",
-                        "{\"destinationCountry\":\"ZM\",\"shippingAddressId\":\"" + LUSAKA + "\"}")
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString(), "$.pricingVersion");
+        // A real digest, from a preview to the shopper's Lusaka address, so
+        // the confirm reaches shipping for the address abroad.
+        String digest = quoteFor(LUSAKA);
 
         post("/api/v1/checkout/confirm",
-                "{\"shippingAddressId\":\"" + ADDRESS + "\",\"destinationCountry\":\"ZM\","
-                        + "\"cardNumber\":\"4242424242424242\",\"pricingVersion\":\"" + token + "\"}")
+                "{\"shippingAddressId\":\"" + ADDRESS + "\",\"deliveryOption\":\"SELF_COLLECT\","
+                        + "\"cardNumber\":\"4242424242424242\",\"quoteDigest\":\"" + digest + "\"}")
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/outside-delivery-area"));
 
         verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("order finding the quote changed is checkout's 409 pricing-changed, and the card is never touched")
+    void ordersPricingChangedReachesTheShopperAsA409() throws Exception {
+        // order prices everything again before saving and refuses a quote that
+        // moved. That answer used to become a generic 500 here; the shopper
+        // can act on it by reviewing their bag, so it is passed on by TYPE.
+        String digest = quoteFor(LUSAKA);
+        Request request = Request.create(Request.HttpMethod.POST, "http://order/api/v1/orders",
+                Map.of(), new byte[0], StandardCharsets.UTF_8, new RequestTemplate());
+        doThrow(FeignException.errorStatus("OrderClient#place(PlaceOrderRequest)",
+                Response.builder().status(409).reason("Conflict").request(request)
+                        .headers(Map.of("Content-Type", List.of("application/problem+json")))
+                        .body(("{\"type\":\"https://oriah.dev/problems/pricing-changed\",\"status\":409,"
+                                + "\"detail\":\"Your basket or its price changed -- please review it before paying.\"}")
+                                .getBytes(StandardCharsets.UTF_8)).build()))
+                .when(order).place(any());
+
+        post("/api/v1/checkout/confirm",
+                "{\"shippingAddressId\":\"" + LUSAKA + "\",\"deliveryOption\":\"SELF_COLLECT\","
+                        + "\"cardNumber\":\"4242424242424242\",\"quoteDigest\":\"" + digest + "\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/pricing-changed"))
+                .andExpect(content().string(not(containsString("/api/v1/orders"))));
+
+        verify(payment, never()).createIntent(any());
+        verify(payment, never()).confirm(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("order finding a piece no longer sellable is checkout's 409 bag-not-purchasable, not a generic 500")
+    void ordersBagNotPurchasableReachesTheShopperAsA409() throws Exception {
+        // An admin unpublished a piece between checkout's pricing and order's.
+        // The shopper can act on that -- remove it -- so it keeps its type.
+        String digest = quoteFor(LUSAKA);
+        Request request = Request.create(Request.HttpMethod.POST, "http://order/api/v1/orders",
+                Map.of(), new byte[0], StandardCharsets.UTF_8, new RequestTemplate());
+        doThrow(FeignException.errorStatus("OrderClient#place(PlaceOrderRequest)",
+                Response.builder().status(409).reason("Conflict").request(request)
+                        .headers(Map.of("Content-Type", List.of("application/problem+json")))
+                        .body(("{\"type\":\"https://oriah.dev/problems/bag-not-purchasable\",\"status\":409,"
+                                + "\"detail\":\"not sellable\"}").getBytes(StandardCharsets.UTF_8)).build()))
+                .when(order).place(any());
+
+        post("/api/v1/checkout/confirm",
+                "{\"shippingAddressId\":\"" + LUSAKA + "\",\"deliveryOption\":\"SELF_COLLECT\","
+                        + "\"cardNumber\":\"4242424242424242\",\"quoteDigest\":\"" + digest + "\"}")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/bag-not-purchasable"));
+
         verify(payment, never()).createIntent(any());
     }
 }

@@ -26,6 +26,8 @@ import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.client.PaymentClient;
 import com.oriah.order.repository.OrderRepository;
 
+import com.oriah.order.QuoteFixtures;
+
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
@@ -90,8 +92,17 @@ class OrderIntegrationTest {
     @MockitoBean
     private PaymentClient payment;
 
+    /** Shipping as it is until Phase 7: self-collect at no charge, in the order's currency. */
+    @MockitoBean
+    private com.oriah.order.client.ShippingClient shipping;
     @BeforeEach
     void clean() {
+        org.mockito.Mockito.doAnswer(inv -> {
+            com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
+            return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(
+                    new com.oriah.order.client.ShippingClient.ShippingOption(
+                            "SELF_COLLECT", new java.math.BigDecimal("0.00"), asked.currency())));
+        }).when(shipping).rates(org.mockito.ArgumentMatchers.any());
         repository.deleteAll();
         catalogPrices.clear();
         doAnswer(inv -> {
@@ -125,13 +136,16 @@ class OrderIntegrationTest {
         String body = """
                 {
                   "shippingAddressId": "11111111-1111-1111-1111-111111111111",
+                  "deliveryOption": "SELF_COLLECT",
                   "currency": "USD",
+                  "quoteDigest": "%s",
                   "items": [
                     {"variantId":"%s","title":"Aurelia","quantity":2,"unitPrice":100.00},
                     {"variantId":"%s","title":"Lume","quantity":1,"unitPrice":50.00}
                   ]
                 }
-                """.formatted(aurelia, lume);
+                """.formatted(QuoteFixtures.selfCollect("USD",
+                        QuoteFixtures.line(aurelia, 2, "100.00"), QuoteFixtures.line(lume, 1, "50.00")), aurelia, lume);
 
         mvc.perform(post("/api/v1/orders").with(jwtFor("alice"))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -229,15 +243,18 @@ class OrderIntegrationTest {
     }
 
     private String placeOrderAs(String sub) throws Exception {
+        UUID variant = UUID.randomUUID();
         String body = """
                 {
                   "shippingAddressId": "11111111-1111-1111-1111-111111111111",
+                  "deliveryOption": "SELF_COLLECT",
                   "currency": "USD",
+                  "quoteDigest": "%s",
                   "items": [
                     {"variantId":"%s","title":"X","quantity":1,"unitPrice":10.00}
                   ]
                 }
-                """.formatted(UUID.randomUUID());
+                """.formatted(QuoteFixtures.selfCollect("USD", QuoteFixtures.line(variant, 1, "10.00")), variant);
         // The claimed 10.00 USD matches what the catalog stub answers, so this
         // fixture's arithmetic is unchanged -- see the stub in before().
         MvcResult res = mvc.perform(post("/api/v1/orders").with(jwtFor(sub))

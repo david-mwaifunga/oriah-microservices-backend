@@ -56,20 +56,18 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
 
     private static final URI TYPE_CART_EMPTY =
             URI.create("https://oriah.dev/problems/cart-empty");
-    private static final URI TYPE_PROMO_INVALID =
-            URI.create("https://oriah.dev/problems/promotion-code-invalid");
+    private static final URI TYPE_PROMO_NOT_ACCEPTED =
+            URI.create("https://oriah.dev/problems/promotion-codes-not-accepted");
     private static final URI TYPE_PAYMENT_DECLINED =
             URI.create("https://oriah.dev/problems/payment-declined");
     private static final URI TYPE_PAYMENT_UNCONFIRMED =
             URI.create("https://oriah.dev/problems/payment-confirmation-failed");
     private static final URI TYPE_CAPTURED_NO_ORDER =
             URI.create("https://oriah.dev/problems/payment-captured-without-order");
-    private static final URI TYPE_PRICING_CHANGED =
-            URI.create("https://oriah.dev/problems/pricing-changed");
-    private static final URI TYPE_BAG_NOT_PURCHASABLE =
-            URI.create("https://oriah.dev/problems/bag-not-purchasable");
-    private static final URI TYPE_MIXED_CURRENCY =
-            URI.create("https://oriah.dev/problems/mixed-currency");
+    /** Shared with order, which raises the same refusal and checkout passes on by this type. */
+    private static final URI TYPE_PRICING_CHANGED = com.oriah.observability.ProblemTypes.PRICING_CHANGED;
+    private static final URI TYPE_BAG_NOT_PURCHASABLE = BagNotPurchasableException.TYPE;
+    private static final URI TYPE_MIXED_CURRENCY = MixedCurrencyException.TYPE;
 
     /**
      * 409, with a {@code type} a storefront can branch on.
@@ -136,15 +134,6 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
     }
 
     /**
-     * 422: the request is well-formed, but one value in it cannot be used.
-     *
-     * <p>The code is logged and not echoed. promotion-service answers a single
-     * 404 for unknown, expired, disabled and exhausted codes so the response
-     * cannot be used to probe which guard failed; repeating the code or the
-     * reason here would hand back the signal that single 404 exists to
-     * withhold.
-     */
-    /**
      * 422, shipping's refusal of an address abroad, passed on rather than
      * flattened into a 500 (Phase 0, item 1). The same problem type shipping
      * uses, from the shared {@code ProblemTypes}, so the storefront keys on one
@@ -157,12 +146,15 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
                 "Outside our delivery area", ex.getMessage());
     }
 
-    @ExceptionHandler(PromotionCodeInvalidException.class)
-    public ResponseEntity<ProblemDetail> promotionInvalid(PromotionCodeInvalidException ex) {
-        log.info("422 promotion code refused code={}", ex.code());
-        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(problem(
-                HttpStatus.UNPROCESSABLE_ENTITY, TYPE_PROMO_INVALID,
-                HttpStatus.UNPROCESSABLE_ENTITY.getReasonPhrase(), ex.getMessage()));
+    /**
+     * A promotion code was sent: 422, in words the shopper can act on -- remove
+     * the code. Codes are retired until Phase 7's scoped promotions.
+     */
+    @ExceptionHandler(PromotionCodesNotAcceptedException.class)
+    public ProblemDetail promotionCodesNotAccepted(PromotionCodesNotAcceptedException ex) {
+        log.info("422 promotion code refused: codes are not accepted until Phase 7");
+        return problem(HttpStatus.UNPROCESSABLE_CONTENT, TYPE_PROMO_NOT_ACCEPTED,
+                "Promotion codes not accepted", ex.getMessage());
     }
 
     /**

@@ -68,15 +68,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <h2>What a settled payment has to satisfy</h2>
  *
- * Three conditions, each with its own test below: SUCCEEDED, names THIS order,
- * matches the currency. Ownership of the intent is absent on purpose -- it is
- * enforced by payment's own owner-scoped read, reached with the shopper's
- * forwarded token.
+ * Four conditions, each with its own tests below: SUCCEEDED, names THIS order,
+ * matches the currency -- and matches the order's total EXACTLY, once that total
+ * is authoritative (V4). An order placed before V4 is not held to the amount:
+ * its total left out delivery, so the charge legitimately differed from it.
  *
- * <p>The amount is NOT compared, and
- * {@link #underpaymentIsAcceptedUntilTotalsAreAuthoritative} characterises
- * what that leaves open and why an equality check would break the real
- * checkout flow today.
+ * <p>Ownership of the intent is absent on purpose -- it is enforced by
+ * payment's own owner-scoped read, reached with the shopper's forwarded token.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -89,7 +87,7 @@ class PayVerificationTest {
 
     private static final SimpleGrantedAuthority ROLE_USER = new SimpleGrantedAuthority("ROLE_USER");
 
-    /** 2 x 100.00 + 1 x 50.00, and Order.recomputeTotals adds nothing on top. */
+    /** 2 x 100.00 + 1 x 50.00, self-collected: no delivery charge on top. */
     private static final BigDecimal TOTAL = new BigDecimal("250.00");
 
     /**
@@ -132,8 +130,21 @@ class PayVerificationTest {
     @MockitoBean
     private PaymentClient payment;
 
+    /** Shipping as it is until Phase 7: self-collect at no charge, in the order's currency. */
+    @MockitoBean
+    private com.oriah.order.client.ShippingClient shipping;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
     @BeforeEach
     void clean() {
+        org.mockito.Mockito.doAnswer(inv -> {
+            com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
+            return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(
+                    new com.oriah.order.client.ShippingClient.ShippingOption(
+                            "SELF_COLLECT", new java.math.BigDecimal("0.00"), asked.currency())));
+        }).when(shipping).rates(org.mockito.ArgumentMatchers.any());
         repository.deleteAll();
         catalogPrices.clear();
         doAnswer(inv -> {
@@ -161,13 +172,17 @@ class PayVerificationTest {
         String body = """
                 {
                   "shippingAddressId": "11111111-1111-1111-1111-111111111111",
+                  "deliveryOption": "SELF_COLLECT",
                   "currency": "%s",
+                  "quoteDigest": "%s",
                   "items": [
                     {"variantId":"%s","title":"Aurelia","quantity":2,"unitPrice":100.00},
                     {"variantId":"%s","title":"Lume","quantity":1,"unitPrice":50.00}
                   ]
                 }
-                """.formatted(CURRENCY, aurelia, lume);
+                """.formatted(CURRENCY, com.oriah.order.QuoteFixtures.selfCollect(CURRENCY,
+                        com.oriah.order.QuoteFixtures.line(aurelia, 2, "100.00"),
+                        com.oriah.order.QuoteFixtures.line(lume, 1, "50.00")), aurelia, lume);
         String json = mvc.perform(post("/api/v1/orders").with(as(subject))
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
@@ -264,45 +279,82 @@ class PayVerificationTest {
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CREATED);
     }
 
-    /**
-     * CHARACTERISATION TEST -- this pins a gap that is still open, not a
-     * behaviour that is wanted.
-     *
-     * <p>An intent for 1.00 against a 250.00 order is accepted, because the
-     * verifier does not compare amounts. It cannot yet: CheckoutService
-     * charges {@code afterDiscount + shippingCost} while
-     * {@code Order.recomputeTotals} sets {@code total = subtotal} ("no
-     * shipping/discount yet"), so the two legitimately differ and an equality
-     * check would reject real checkouts <em>after the card was charged</em> --
-     * checkout turns a 409 here into PaymentCapturedWithoutOrderException.
-     *
-     * <p>Exploiting this needs a shopper to mint their own cheap intent
-     * (payment's {@code POST /intents} is ROLE_USER with the amount only
-     * {@code @DecimalMin("0.01")}) and confirm it. That is strictly harder than
-     * the hole the rest of this class closes, which needed one request and no
-     * payment at all -- but it is the same hole wearing a smaller number.
-     *
-     * <p>When the pricing phase makes the order total authoritative, add the
-     * amount comparison and this test must flip to expecting 409 and CREATED.
-     * It is written this way so that fix turns a test red here instead of
-     * passing silently and leaving the gap undocumented.
-     */
-    @Test
-    @DisplayName("GAP: underpayment is accepted until order totals are authoritative")
-    void underpaymentIsAcceptedUntilTotalsAreAuthoritative() throws Exception {
-        UUID orderId = placeOrderAs("alice");
+    // ------------------------------------------------- the amount (item 4.5)
+
+    /** Pays {@code orderId} with a settled intent for {@code amount}, and returns the response. */
+    private org.springframework.test.web.servlet.ResultActions payWith(UUID orderId, BigDecimal amount)
+            throws Exception {
         UUID intentId = UUID.randomUUID();
         when(payment.findIntent(intentId))
-                .thenReturn(intent(intentId, orderId, new BigDecimal("1.00"), CURRENCY, "SUCCEEDED"));
+                .thenReturn(intent(intentId, orderId, amount, CURRENCY, "SUCCEEDED"));
+        return mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(as("alice"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(payBody(intentId)));
+    }
 
-        mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(as("alice"))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(payBody(intentId)))
-                .andExpect(status().isOk());
+    /**
+     * The gap this class used to document, closed. A shopper could mint a
+     * 1.00 intent naming their own 250.00 order and have it accepted, because
+     * the order's total left out delivery and so could not be compared with
+     * what checkout charged. The total is now authoritative (V4), so it is.
+     */
+    @Test
+    @DisplayName("an underpayment is refused: a 1.00 intent no longer pays a 250.00 order")
+    void anUnderpaymentIsRefused() throws Exception {
+        UUID orderId = placeOrderAs("alice");
 
-        assertThat(statusOf(orderId))
-                .as("documents the open gap: a 1.00 intent still pays a 250.00 order")
-                .isEqualTo(OrderStatus.PAID);
+        payWith(orderId, new BigDecimal("1.00"))
+                .andExpect(status().isConflict())
+                // The same words as every other refusal: the amount is not an oracle.
+                .andExpect(jsonPath("$.detail").value(
+                        "The payment intent could not be verified as a settled payment for this order."));
+
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CREATED);
+    }
+
+    @Test
+    @DisplayName("an overpayment is refused too: money the order does not record is a mismatch, not a bonus")
+    void anOverpaymentIsRefused() throws Exception {
+        UUID orderId = placeOrderAs("alice");
+
+        payWith(orderId, new BigDecimal("250.01")).andExpect(status().isConflict());
+
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CREATED);
+    }
+
+    @Test
+    @DisplayName("an intent with no amount is refused, never read as a match")
+    void anIntentWithNoAmountIsRefused() throws Exception {
+        UUID orderId = placeOrderAs("alice");
+
+        payWith(orderId, null).andExpect(status().isConflict());
+
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CREATED);
+    }
+
+    @Test
+    @DisplayName("250 and 250.00 are one amount: a difference of scale is not a mismatch")
+    void aScaleDifferenceIsNotAMismatch() throws Exception {
+        UUID orderId = placeOrderAs("alice");
+
+        payWith(orderId, new BigDecimal("250")).andExpect(status().isOk());
+
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.PAID);
+    }
+
+    @Test
+    @DisplayName("an order placed before V4 stays payable: its total was never authoritative")
+    void aLegacyOrderStaysPayable() throws Exception {
+        // Its total left out delivery, so what checkout charged legitimately
+        // differs from it. Comparing would refuse a real payment after the
+        // money was taken -- the reason the comparison waited for V4.
+        UUID orderId = UUID.randomUUID();
+        jdbc.update("INSERT INTO orders (id, keycloak_id, status, subtotal, total, currency) "
+                + "VALUES (?, 'alice', 'CREATED', 250.00, 250.00, ?)", orderId, CURRENCY);
+
+        payWith(orderId, new BigDecimal("375.00")).andExpect(status().isOk());
+
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.PAID);
     }
 
     @Test

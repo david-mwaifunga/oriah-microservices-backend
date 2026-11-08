@@ -14,7 +14,6 @@ import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
-import com.oriah.checkout.client.PromotionClient;
 import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.exception.CartEmptyException;
@@ -23,8 +22,10 @@ import com.oriah.checkout.exception.DownstreamUnavailableException;
 import com.oriah.checkout.exception.PaymentCapturedWithoutOrderException;
 import com.oriah.checkout.exception.PaymentConfirmationFailedException;
 import com.oriah.checkout.exception.PaymentDeclinedException;
-import com.oriah.checkout.exception.PromotionCodeInvalidException;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
+import com.oriah.quote.Quote;
+import com.oriah.quote.QuoteDigest;
+import com.oriah.quote.QuoteLine;
 
 import feign.FeignException;
 import feign.Request;
@@ -39,7 +40,6 @@ import io.github.resilience4j.retry.RetryRegistry;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -90,7 +90,6 @@ class ConfirmFailurePathsTest {
     private static final String KEY = "idem-key-for-this-submission";
 
     private final CartClient cart = mock(CartClient.class);
-    private final PromotionClient promotion = mock(PromotionClient.class);
     private final ShippingClient shipping = mock(ShippingClient.class);
     private final OrderClient order = mock(OrderClient.class);
     private final PaymentClient payment = mock(PaymentClient.class);
@@ -99,8 +98,10 @@ class ConfirmFailurePathsTest {
      * Real Resilience4j registries with retry disabled, so a failing stub fails
      * once instead of three times and the test reads as one call.
      */
+    private final CircuitBreakerRegistry breakers = CircuitBreakerRegistry.ofDefaults();
+
     private final ResilientFeignCaller resilient = new ResilientFeignCaller(
-            CircuitBreakerRegistry.ofDefaults(),
+            breakers,
             RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
             RateLimiterRegistry.of(RateLimiterConfig.ofDefaults()));
 
@@ -122,33 +123,29 @@ class ConfirmFailurePathsTest {
     private final CustomerClient customer = mock(CustomerClient.class);
 
     private final CheckoutService service = new CheckoutService(
-            cart, catalog, promotion, shipping, payment, order, customer, resilient);
+            cart, catalog, shipping, payment, order, customer, resilient);
 
     /**
-     * The version matching what cartHasOneItem() makes catalog answer.
+     * The quote digest matching what cartHasOneItem() makes catalog answer,
+     * self-collected.
      *
      * <p>Computed rather than hardcoded: these tests are about failure paths,
      * and every one of them would otherwise fail on the staleness check
      * instead of on the path it means to exercise -- a red bar that looks like
      * a pricing regression and is really a stale fixture.
      */
-    private static String version() {
-        return PricingVersion.of(List.of(new CatalogPricingClient.Entry(
-                VARIANT, "PRICED", null, "Aurelia", "Aurelia",
-                new BigDecimal("100.00"), "USD")));
+    private static String seen() {
+        return QuoteDigest.of(new Quote(List.of(new QuoteLine(VARIANT, 1, new BigDecimal("100.00"),
+                BigDecimal.ZERO)), "USD", "SELF_COLLECT", BigDecimal.ZERO));
     }
 
     private ConfirmRequest request() {
-        return new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null, version());
-    }
-
-    private ConfirmRequest withPromo(String code) {
-        return new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", code, version());
+        return new ConfirmRequest(ADDRESS, "SELF_COLLECT", "4242424242424242", null, seen());
     }
 
     private void addressAgreesWithTheBody() {
         when(customer.myAddresses()).thenReturn(
-                List.of(new CustomerClient.Address(ADDRESS, "NG")));
+                List.of(new CustomerClient.Address(ADDRESS, "ZM")));
     }
 
     private void cartHasOneItem() {
@@ -310,10 +307,9 @@ class ConfirmFailurePathsTest {
                     assertThat(e.orderId()).isEqualTo(ORDER_ID);
                 });
 
-        // The cart is deliberately NOT cleared and the promo NOT redeemed: the
-        // order is still CREATED, so the state has to stay recoverable.
+        // The cart is deliberately NOT cleared: the order is still CREATED, so
+        // the state has to stay recoverable.
         verify(cart, never()).clearMyCart();
-        verify(promotion, never()).redeem(anyString());
     }
 
 
@@ -331,43 +327,6 @@ class ConfirmFailurePathsTest {
         return FeignException.errorStatus("Client#call()", Response.builder()
                 .status(status).reason("from the test").request(request)
                 .headers(Map.of()).build());
-    }
-
-    // ------------------------------------------------------------------
-    // 422 vs 503 -- "your code is bad" and "we cannot check your code"
-    // are not the same answer
-    // ------------------------------------------------------------------
-
-    @Test
-    @DisplayName("an unknown promotion code is 422, and no order is placed")
-    void invalidPromotionCodeIsUnprocessable() {
-        cartHasOneItem();
-        // promotion-service answers 404 for unknown/expired/disabled/exhausted
-        // -- one status on purpose, so the response cannot be used to probe
-        // which guard failed. Checkout must preserve that: 422 says only
-        // "this code cannot be used".
-        when(promotion.apply(anyString(), any())).thenThrow(answeredWith(404));
-
-        assertThatThrownBy(() -> service.confirm(withPromo("SPRING10"), KEY))
-                .isInstanceOf(PromotionCodeInvalidException.class);
-
-        verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
-    }
-
-    @Test
-    @DisplayName("promotion-service being down is 503, NOT a claim that the code is invalid")
-    void promotionServiceDownIsServiceUnavailable() {
-        // The distinction that matters to a shopper: 422 tells them to fix
-        // their code, which is wrong and unfixable when the truth is that we
-        // could not reach the service. Before this tier both were one 200.
-        cartHasOneItem();
-        when(promotion.apply(anyString(), any()))
-                .thenThrow(new RuntimeException("connection refused"));
-
-        assertThatThrownBy(() -> service.confirm(withPromo("SPRING10"), KEY))
-                .isInstanceOf(DownstreamUnavailableException.class)
-                .isNotInstanceOf(PromotionCodeInvalidException.class);
     }
 
     // ------------------------------------------------------------------
@@ -391,6 +350,62 @@ class ConfirmFailurePathsTest {
         verify(payment, never()).createIntent(any());
     }
 
+
+    @Test
+    @DisplayName("order answering 500 is final: checkout's own 500, not a 503 'try again shortly'")
+    void anOrderInternalServerErrorIsNotRetryable() {
+        // order answers 500 deliberately for its own misconfiguration -- a
+        // wrong client secret, shipping refusing order's request. Retrying
+        // cannot fix that, and telling the shopper "try again shortly" would
+        // invite them to, for ever.
+        cartHasOneItem();
+        shippingIsFree();
+        when(order.place(any())).thenThrow(answeredWith(500));
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(DownstreamRejectedException.class)
+                .isNotInstanceOf(DownstreamUnavailableException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("order answering 503 is still an outage: 503, safe to try again")
+    void anOrderServiceUnavailableIsRetryable() {
+        cartHasOneItem();
+        shippingIsFree();
+        when(order.place(any())).thenThrow(answeredWith(503));
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(DownstreamUnavailableException.class);
+        verify(payment, never()).createIntent(any());
+    }
+
+    @Test
+    @DisplayName("a burst of placement failures cannot stop a CHARGED order from being marked paid")
+    void placementFailuresDoNotBlockMarkingAChargedOrderPaid() {
+        // Placement and the post-payment "mark paid" call used to share one
+        // circuit breaker. Other shoppers' placements failing -- Keycloak or
+        // shipping briefly down -- could open it while this shopper was inside
+        // payment.confirm, and then marking their CHARGED order paid failed
+        // fast: money taken, order unpaid, a manual reconciliation.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        intentIsCreated();
+        when(payment.confirm(any(), any(), any())).thenAnswer(inv -> {
+            breakers.circuitBreaker("order").transitionToOpenState();
+            return new PaymentClient.IntentResponse(
+                    INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD", "SUCCEEDED", null);
+        });
+        when(order.pay(any(), any())).thenReturn(new OrderClient.OrderResponse(
+                ORDER_ID, "kc-alice", "PAID", new BigDecimal("100.00"),
+                new BigDecimal("100.00"), "USD", INTENT_ID));
+
+        var response = service.confirm(request(), KEY);
+
+        assertThat(response.orderStatus()).isEqualTo("PAID");
+        verify(order).pay(eq(ORDER_ID), any());
+    }
 
     @Test
     @DisplayName("a downstream answering 200 with no body is 500, not a silent NPE")

@@ -22,7 +22,7 @@ import com.oriah.checkout.exception.DownstreamUnavailableException;
 import com.oriah.checkout.exception.PaymentCapturedWithoutOrderException;
 import com.oriah.checkout.exception.PaymentConfirmationFailedException;
 import com.oriah.checkout.exception.PaymentDeclinedException;
-import com.oriah.checkout.exception.PromotionCodeInvalidException;
+import com.oriah.checkout.exception.PromotionCodesNotAcceptedException;
 import com.oriah.checkout.service.CheckoutService;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -63,17 +63,17 @@ class ConfirmErrorContractTest {
     /**
      * A valid body: validation fires before the handler, so this must pass it.
      *
-     * <p>pricingVersion is REQUIRED now, and omitting it turns every test in
-     * this class into a 400 -- a red bar that reads as a status-mapping
-     * regression when the real cause is a stale fixture. The value itself is
-     * irrelevant here because CheckoutService is mocked; these tests are about
-     * the controller and the advice, not about pricing.
+     * <p>deliveryOption and quoteDigest are REQUIRED, and omitting either turns
+     * every test in this class into a 400 -- a red bar that reads as a
+     * status-mapping regression when the real cause is a stale fixture. The
+     * digest's value is irrelevant here because CheckoutService is mocked;
+     * these tests are about the controller and the advice, not about pricing.
      */
     private static final String VALID_BODY = """
             {"shippingAddressId":"11111111-1111-1111-1111-111111111111",
-             "destinationCountry":"NG",
+             "deliveryOption":"SELF_COLLECT",
              "cardNumber":"4242424242424242",
-             "pricingVersion":"any-non-blank-token"}
+             "quoteDigest":"0000000000000000000000000000000000000000000000000000000000000000"}
             """;
 
     @Autowired
@@ -98,20 +98,90 @@ class ConfirmErrorContractTest {
     }
 
     @Test
-    @DisplayName("an unusable promotion code is 422 and does not say why it was refused")
-    void invalidPromoIsUnprocessable() throws Exception {
-        when(service.confirm(any(), any())).thenThrow(new PromotionCodeInvalidException("SPRING10"));
+    @DisplayName("a promotion code is 422 promotion-codes-not-accepted, in words the shopper can act on")
+    void aPromotionCodeIsUnprocessable() throws Exception {
+        // Codes are retired until Phase 7's scoped promotions. Refused out
+        // loud, never silently ignored: a shopper whose code was dropped
+        // without a word would believe the discount was applied.
+        when(service.confirm(any(), any())).thenThrow(new PromotionCodesNotAcceptedException());
 
-        confirm().andExpect(status().isUnprocessableEntity())
-                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "promotion-code-invalid"))
-                // promotion-service answers one 404 for unknown / expired /
-                // disabled / exhausted so the response cannot be used to probe
-                // which guard failed, nor to confirm a guessed code exists.
-                // Translating the status must not undo that.
+        confirm().andExpect(status().isUnprocessableContent())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "promotion-codes-not-accepted"))
                 .andExpect(jsonPath("$.detail").value(
-                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("expired"))))
-                .andExpect(jsonPath("$.detail").value(
-                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SPRING10"))));
+                        "Promotion codes are not accepted at the moment. Remove the code to continue."));
+    }
+
+    // ------------------------------------------- what confirm accepts (item 2, 4.4)
+
+    private org.springframework.test.web.servlet.ResultActions confirmWith(String body) throws Exception {
+        return mvc.perform(post("/api/v1/checkout/confirm")
+                .with(authenticated())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    private static final String DIGEST = "\"quoteDigest\":\"" + "0".repeat(64) + "\"";
+
+    @Test
+    @DisplayName("the delivery option is required: confirm charges the option the shopper named")
+    void theDeliveryOptionIsRequired() throws Exception {
+        confirmWith("{\"cardNumber\":\"4242424242424242\"," + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItem("deliveryOption")));
+    }
+
+    @Test
+    @DisplayName("a delivery option that is not an option code is a 400")
+    void aMalformedDeliveryOptionIsRefused() throws Exception {
+        confirmWith("{\"deliveryOption\":\"self collect\",\"cardNumber\":\"4242424242424242\"," + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItem("deliveryOption")));
+    }
+
+    @Test
+    @DisplayName("a quote digest that is not 64 lower-case hex characters is a 400")
+    void aMalformedQuoteDigestIsRefused() throws Exception {
+        confirmWith("{\"deliveryOption\":\"SELF_COLLECT\",\"cardNumber\":\"4242424242424242\","
+                + "\"quoteDigest\":\"any-non-blank-token\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItem("quoteDigest")));
+    }
+
+    @Test
+    @DisplayName("self-collect needs no address")
+    void selfCollectNeedsNoAddress() throws Exception {
+        confirmWith("{\"deliveryOption\":\"SELF_COLLECT\",\"cardNumber\":\"4242424242424242\"," + DIGEST + "}")
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("any other option still needs somewhere to deliver to")
+    void aDeliveryNeedsAnAddress() throws Exception {
+        confirmWith("{\"deliveryOption\":\"OWN_DELIVERY\",\"cardNumber\":\"4242424242424242\"," + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItem("shippingAddressId")));
+    }
+
+    @Test
+    @DisplayName("a preview for an option that is not an option code is a 400")
+    void aMalformedPreviewOptionIsRefused() throws Exception {
+        mvc.perform(post("/api/v1/checkout/preview")
+                        .with(authenticated())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"deliveryOption\":\"self collect\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItem("deliveryOption")));
+    }
+
+    @Test
+    @DisplayName("a preview needs no country: delivery is within Zambia")
+    void aPreviewNeedsNoCountry() throws Exception {
+        mvc.perform(post("/api/v1/checkout/preview")
+                        .with(authenticated())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk());
     }
 
     @Test

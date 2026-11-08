@@ -25,5 +25,6 @@
         <module>oriah-observability-starter</module>
         <module>oriah-jpa-base</module>
         <module>oriah-money</module>
+        <module>oriah-quote</module>
     </modules>
 </project>

@@ -3,14 +3,17 @@
 # Run AFTER `docker compose up -d` and after every container is healthy.
 #
 # Drives the full backend through the gateway:
-#   1. Admin (maya) creates product, seeds inventory, creates promo code.
+#   1. Admin (maya) creates product, seeds inventory. (No promo code: codes
+#      are retired until Phase 7's scoped promotions, and refused with 422.)
 #   2. Customer (alice) self-provisions profile + a Lusaka address. Oriah
 #      delivers within Zambia only, and until Phase 7 offers one option:
 #      self-collect at K0 (MVP_PLAN Phase 0, item 1).
 #   3. Customer adds product to cart.
-#   4. Customer POSTs /checkout/preview to see total with promo + shipping.
-#   5. Customer POSTs /checkout/confirm with test card 4242... -> SUCCESS:
-#      order placed + paid in one call, promo redeemed, cart cleared.
+#   4. Customer POSTs /checkout/preview for the self-collect option: the
+#      total and the quoteDigest of that whole quote (quote, then commit).
+#   5. Customer POSTs /checkout/confirm with the digest and test card 4242...
+#      -> SUCCESS: order placed + paid in one call, cart cleared. A quantity
+#      changed after preview is refused 409 pricing-changed.
 #   6. Admin drives admin transitions FULFILLED -> SHIPPED -> DELIVERED.
 #   7. Search via /search?q=aurelia (Kafka-driven index, async).
 #   8. Customer posts a product review; public listing + aggregate.
@@ -72,6 +75,82 @@ function Get-Jwt($Username) {
     return $r.access_token
 }
 
+# The quote digest, computed HERE, independently of the Java that serves it
+# (MVP_PLAN Phase 0, item 4.4): SHA-256 over
+#   "oriah-quote/1" RS currency RS option US delivery RS total RS
+#   then each line "variant US qty US price US discount RS", sorted ordinally,
+# with every amount trailing-zero-stripped. Checked against the golden vector
+# shared/oriah-quote pins (532785fb...), so a match at the edge proves the
+# storefront, checkout and order agree on one rule -- not merely on each other.
+function Get-QuoteDigest($Currency, $Option, $Delivery, $Lines) {
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $US = [string][char]0x1f; $RS = [string][char]0x1e
+    $n = { param($x) ([decimal]$x).ToString("0.##########", $inv) }
+    $total = [decimal]$Delivery
+    $records = [string[]]@(foreach ($l in $Lines) {
+        $total += [decimal]$l.Quantity * [decimal]$l.Price
+        "$($l.VariantId)$US$($l.Quantity)$US$(& $n $l.Price)$US$(& $n 0)$RS"
+    })
+    [Array]::Sort($records, [StringComparer]::Ordinal)
+    $canonical = "oriah-quote/1$RS$Currency$RS$Option$US$(& $n $Delivery)$RS$(& $n $total)$RS" + ($records -join "")
+    $bytes = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical))
+    return -join ($bytes | ForEach-Object { $_.ToString("x2") })
+}
+# The problem+json body of a refused request. Windows PowerShell 5.1 leaves
+# ErrorDetails EMPTY for a chunked error body -- which is how every service
+# answers -- so the response stream is read when it is. Reading only
+# ErrorDetails made every problem-type assertion fail on a correct refusal.
+function Read-Problem($err) {
+    $text = $err.ErrorDetails.Message
+    if (-not $text) {
+        try {
+            $reader = New-Object System.IO.StreamReader($err.Exception.Response.GetResponseStream())
+            $text = $reader.ReadToEnd()
+        } catch { $text = $null }
+    }
+    if (-not $text) { return $null }
+    try { return $text | ConvertFrom-Json } catch { return $null }
+}
+
+# POSTs $Body as alice and requires a refusal with $Status and, when given, a
+# problem type ending in $TypeSuffix. "Accepted" is reported AFTER the try:
+# raised inside it, the catch below would swallow it and report a misleading
+# status instead of the acceptance.
+function Expect-Refusal($Uri, $Body, $Status, $TypeSuffix, $What) {
+    $accepted = $false
+    $code = $null
+    $problem = $null
+    try {
+        Invoke-RestMethod -Method POST -Uri $Uri `
+            -Headers @{ Authorization="Bearer $alice" } `
+            -ContentType "application/json" -Body (ConvertTo-Json $Body -Depth 6) | Out-Null
+        $accepted = $true
+    }
+    catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+        $problem = Read-Problem $_
+    }
+    if ($accepted) {
+        Write-Error "$What was ACCEPTED; expected $Status"
+        exit 1
+    }
+    if ($code -ne $Status) {
+        Write-Error "$What should be $Status, got $code"
+        exit 1
+    }
+    if ($TypeSuffix -and -not "$($problem.type)".EndsWith($TypeSuffix)) {
+        Write-Error "$What should carry problem type $TypeSuffix, got '$($problem.type)'"
+        exit 1
+    }
+}
+
+$golden = Get-QuoteDigest "ZMW" "SELF_COLLECT" 0 @(@{ VariantId="00000000-0000-0000-0000-00000000000a"; Quantity=1; Price=100.00 })
+if ($golden -ne "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802c") {
+    Write-Error "Get-QuoteDigest disagrees with the pinned golden vector: $golden"
+    exit 1
+}
+
 # ---------------------------------------------------------------------------
 # PRE-FLIGHT: wait until the gateway can actually ROUTE to every service.
 #
@@ -131,20 +210,18 @@ if ($unresolved.Count -gt 0) {
 }
 Write-Host "    all 12 services resolvable through the gateway" -ForegroundColor Gray
 
-# Unique-per-run promo code so re-runs don't collide on the UNIQUE constraint.
-$promoCode = "WELCOME-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 # Variant SKUs are globally UNIQUE (V3: `sku TEXT NOT NULL UNIQUE`), so a
 # fixed one makes this script runnable exactly once -- the second run gets a
-# 409 from catalog's integrity handler. Randomised for the same reason as the
-# promo code above: this test has to be re-runnable against a live stack that
-# still holds everything previous runs created.
+# 409 from catalog's integrity handler. Randomised because this test has to be
+# re-runnable against a live stack that still holds everything previous runs
+# created.
 $sku = "AUR-18K-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
 Write-Host "[1/20] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/20] Admin: product + inventory + promo code..." -ForegroundColor Cyan
+Write-Host "[2/20] Admin: product + inventory..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
@@ -184,12 +261,7 @@ Invoke-RestMethod -Method POST `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ variantId=$variantId; onHand=10 }) | Out-Null
-Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/admin/promotions" `
-    -Headers @{ Authorization="Bearer $maya" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ code=$promoCode; type="PERCENTAGE"; amount=15; maxRedemptions=0 }) | Out-Null
-Write-Host "    product=$productId, variant=$variantId, published, inventory=10, promo=$promoCode" -ForegroundColor Gray
+Write-Host "    product=$productId, variant=$variantId, published, inventory=10" -ForegroundColor Gray
 
 Write-Host "[3/20] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
@@ -282,7 +354,7 @@ if (@($cart.items).Count -ne 1 -or $cartUnits -ne 2) {
 }
 # 2 x catalog's 100.00. Coupled on purpose to the variant price set in step 2:
 # if that price changes and this does not, the mismatch surfaces here rather
-# than as a confusing promo arithmetic failure in step 5.
+# than as a confusing quote failure in step 5.
 if ([decimal]$cart.subtotal -ne [decimal]200.00) {
     Write-Error "Cart subtotal should be 2 x catalog's 100.00 = 200.00; got $($cart.subtotal)"
     exit 1
@@ -302,27 +374,21 @@ Write-Host "[4b/20] Order refuses a price the caller invented..." -ForegroundCol
 # reconciling them, so a price moving between them would leave an order whose
 # recorded total exceeded what the card paid -- an invisible under-charge on
 # the cart path, worse than the hole being closed.
+# Both bodies carry the digest of the TRUE quote -- one ring at catalog's
+# K100, self-collected -- so the false price claim is the only fault in the
+# first, and the second is exactly what order prices for itself.
 $orderProbe = @{
     shippingAddressId = $addrId
     currency = "ZMW"
+    deliveryOption = "SELF_COLLECT"
+    quoteDigest = (Get-QuoteDigest "ZMW" "SELF_COLLECT" 0 @(@{ VariantId=$variantId; Quantity=1; Price=100.00 }))
     items = @(@{ variantId=$variantId; title="Free ring please"
                  quantity=1; unitPrice=0.01 })
 }
-try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
-        -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
-        -Body (ConvertTo-Json $orderProbe) | Out-Null
-    Write-Error "ONE-CENT ORDER HOLE IS OPEN: POST /orders accepted unitPrice=0.01 for a K100 piece"
-    exit 1
-}
-catch {
-    $code = $_.Exception.Response.StatusCode.value__
-    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
-    if ($code -ne 409) {
-        Write-Error "A false price claim should be 409, got $code"
-        exit 1
-    }
-}
+# A false price claim is refused as pricing-changed: the ONE-CENT ORDER HOLE
+# would show here as "ACCEPTED".
+Expect-Refusal "http://localhost:8080/api/v1/orders" $orderProbe 409 "pricing-changed" `
+    "POST /orders claiming unitPrice=0.01 for a K100 piece"
 # And the truthful claim still works -- the bound must narrow the input, not
 # the feature. The TITLE is overwritten with catalog's rather than refused,
 # because an admin renaming a product must not refuse a sale.
@@ -334,39 +400,66 @@ if ($honest.subtotal -ne 100.00 -or $honest.currency -ne "ZMW") {
     Write-Error "Truthful order came back subtotal=$($honest.subtotal) currency=$($honest.currency), want 100.00 ZMW"
     exit 1
 }
+# The order's own total is authoritative now (V4): subtotal + delivery -
+# discount, with each part on the record -- it used to be the subtotal alone.
+if ($honest.total -ne 100.00 -or $honest.shippingAmount -ne 0 -or $honest.discountAmount -ne 0 -or
+    $honest.deliveryOption -ne "SELF_COLLECT") {
+    Write-Error ("Order should record total=100 = 100 + delivery 0 - discount 0 for SELF_COLLECT; got " +
+                 "total=$($honest.total) shipping=$($honest.shippingAmount) discount=$($honest.discountAmount) " +
+                 "option=$($honest.deliveryOption)")
+    exit 1
+}
+# And a quote the shopper did not see is refused before anything is saved:
+# the same body with TWO rings against the one-ring digest.
+$orderProbe.items[0].quantity = 2
+Expect-Refusal "http://localhost:8080/api/v1/orders" $orderProbe 409 "pricing-changed" `
+    "order placing TWO rings against the ONE-ring digest"
+$orderProbe.items[0].quantity = 1
 $storedTitle = @($honest.items)[0].title
 if ($storedTitle -eq "Free ring please") {
     Write-Error "order stored the caller's title verbatim; it must store catalog's variantTitle"
     exit 1
 }
-Write-Host "    unitPrice=0.01 refused 409; truthful 100.00 ZMW accepted; title stored as '$storedTitle'" -ForegroundColor Gray
+Write-Host "    unitPrice=0.01 refused 409; truthful 100.00 ZMW accepted (total 100 = 100 + 0 - 0); a changed quantity refused 409 pricing-changed; title stored as '$storedTitle'" -ForegroundColor Gray
 
-Write-Host "[5/20] Customer: /checkout/preview with promo..." -ForegroundColor Cyan
+Write-Host "[5/20] Customer: /checkout/preview -- quote, then commit..." -ForegroundColor Cyan
+# No option chosen yet: the options, but no total and no digest -- there is
+# nothing to agree to until the shopper has chosen how the piece reaches them.
+$options = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/checkout/preview" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" -Body "{}"
+if ($null -ne $options.total -or $null -ne $options.quoteDigest -or @($options.shippingOptions).Count -lt 1) {
+    Write-Error "A preview with no option should list options with no total and no digest; got total=$($options.total) digest=$($options.quoteDigest)"
+    exit 1
+}
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="ZM"; promotionCode=$promoCode; shippingAddressId=$addrId })
-# 2 x K100 = K200, less 15% = K30, plus self-collect at K0.
+    -Body (ConvertTo-Json @{ deliveryOption="SELF_COLLECT" })
+# 2 x K100 = K200, plus self-collect at K0, and no discount until Phase 7's
+# scoped promotions.
 #
 # Until Phase 7 prices delivery per town, the only option is self-collect at
 # no charge (MVP_PLAN Phase 0, item 1); the old K125 came from a USD card
 # multiplied by 25 whose "domestic" zone was Nigeria. A shipping outage no
 # longer degrades to zero either -- it is a 503 -- so a zero here is the
 # quoted option, not a failure in disguise; the option code below proves it.
-$expectedShip = 0.00
-$expectedTotal = 170.00
-if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or
-    $preview.shippingCost -ne $expectedShip -or $preview.total -ne $expectedTotal) {
-    Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total)"
+if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 0 -or
+    $preview.shippingCost -ne 0 -or $preview.total -ne 200.00 -or $preview.deliveryOption -ne "SELF_COLLECT") {
+    Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total) option=$($preview.deliveryOption)"
     exit 1
 }
 if ($preview.currency -ne "ZMW") {
     Write-Error "Preview currency should be the bag's ZMW, got $($preview.currency)"
     exit 1
 }
-if (-not $preview.pricingVersion) {
-    Write-Error "Preview did not return a pricingVersion; confirm cannot echo one"
+# The digest the server hands out must be the one this script computes on its
+# own from the same quote -- two implementations, one rule.
+$expectedDigest = Get-QuoteDigest "ZMW" "SELF_COLLECT" 0 @(@{ VariantId=$variantId; Quantity=2; Price=100.00 })
+if ($preview.quoteDigest -ne $expectedDigest) {
+    Write-Error "Preview quoteDigest $($preview.quoteDigest) is not the digest of 2 x 100 ZMW self-collect ($expectedDigest)"
     exit 1
 }
 if (@($preview.shippingOptions).Count -ne 1 -or $preview.shippingOptions[0].code -ne "SELF_COLLECT") {
@@ -377,7 +470,7 @@ if ($preview.PSObject.Properties.Name -contains "shippingZone") {
     Write-Error "Preview still carries shippingZone; zones were removed in Phase 0 item 1"
     exit 1
 }
-Write-Host "    subtotal=200, promo=30, ship=0 (SELF_COLLECT), total=170 ZMW, version=$($preview.pricingVersion.Substring(0,12))..." -ForegroundColor Gray
+Write-Host "    no option -> no total, no digest; SELF_COLLECT -> subtotal=200, ship=0, total=200 ZMW, digest=$($preview.quoteDigest.Substring(0,12))... (matches this script's own)" -ForegroundColor Gray
 
 Write-Host "[5b/20] Zambia only, and the ADDRESS decides the destination..." -ForegroundColor Cyan
 # Oriah delivers within Zambia only (MVP_PLAN Phase 0, item 1). The destination
@@ -394,31 +487,6 @@ $usAddr = Invoke-RestMethod -Method POST `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ label="Overseas"; line1="1 Fifth Avenue"; city="New York"; postalCode="10003"; country="US"; isDefault=$false })
 
-function Expect-Refusal($Uri, $Body, $Status, $TypeSuffix, $What) {
-    try {
-        Invoke-RestMethod -Method POST -Uri $Uri `
-            -Headers @{ Authorization="Bearer $alice" } `
-            -ContentType "application/json" -Body (ConvertTo-Json $Body) | Out-Null
-        Write-Error "$What was ACCEPTED; expected $Status"
-        exit 1
-    }
-    catch {
-        $code = $_.Exception.Response.StatusCode.value__
-        if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
-        if ($code -ne $Status) {
-            Write-Error "$What should be $Status, got $code"
-            exit 1
-        }
-        if ($TypeSuffix) {
-            $type = ($_.ErrorDetails.Message | ConvertFrom-Json).type
-            if (-not "$type".EndsWith($TypeSuffix)) {
-                Write-Error "$What should carry problem type $TypeSuffix, got $type"
-                exit 1
-            }
-        }
-    }
-}
-
 Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
     @{ destinationCountry="ZM"; shippingAddressId=$usAddr.id } 422 "outside-delivery-area" `
     "A preview to a US address (body claiming ZM)"
@@ -427,7 +495,7 @@ $crossed = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="US"; shippingAddressId=$addrId })
+    -Body (ConvertTo-Json @{ destinationCountry="US"; shippingAddressId=$addrId; deliveryOption="SELF_COLLECT" })
 if ($crossed.shippingCost -ne 0.00 -or $crossed.shippingOptions[0].code -ne "SELF_COLLECT") {
     Write-Error ("Crossed probe: body US + Lusaka address should quote SELF_COLLECT at 0.00, " +
                  "got $($crossed.shippingOptions[0].code) $($crossed.shippingCost). Together with " +
@@ -456,7 +524,12 @@ if (@($rates.options).Count -ne 1 -or $rates.options[0].code -ne "SELF_COLLECT" 
     Write-Error "Shipping should offer Zambia exactly SELF_COLLECT at 0, got $(ConvertTo-Json $rates.options -Compress)"
     exit 1
 }
-Write-Host "    US address -> 422 outside-delivery-area; US body + Lusaka address -> SELF_COLLECT K0; foreign address 400; rates ZM -> SELF_COLLECT only" -ForegroundColor Gray
+# Promotion codes are retired until Phase 7's scoped promotions -- refused out
+# loud, never silently dropped, so nobody believes a discount was applied.
+Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
+    @{ deliveryOption="SELF_COLLECT"; promotionCode="WELCOME-10" } 422 "promotion-codes-not-accepted" `
+    "A preview with a promotion code"
+Write-Host "    US address -> 422 outside-delivery-area; US body + Lusaka address -> SELF_COLLECT K0; foreign address 400; rates ZM -> SELF_COLLECT only; promo code -> 422" -ForegroundColor Gray
 Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up
 # front instead of being recovered afterwards by scraping the backend for
@@ -473,69 +546,62 @@ $confirm = Invoke-RestMethod -Method POST `
     -Headers @{ Authorization="Bearer $alice"; traceparent=$sagaTraceparent } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{
-        shippingAddressId = $addrId
-        destinationCountry = "ZM"
+        # Self-collect: no address, as the storefront sends it.
+        deliveryOption = "SELF_COLLECT"
         cardNumber = "4242424242424242"
-        promotionCode = $promoCode
-        # Echoed from step 5, which is the whole mechanism: the server
-        # recomputes this digest from catalog and refuses with a 409 if the
-        # prices moved since the shopper read them. Required, so a client that
-        # forgets this field cannot check out at all -- which is exactly what
-        # would happen if the storefront's Zod schema silently stripped it.
-        pricingVersion = $preview.pricingVersion
+        # Echoed from step 5, which is the whole mechanism: checkout -- and
+        # order after it -- recompute this digest and refuse with a 409 if
+        # anything moved since the shopper read the quote. Required, so a
+        # client that forgets it cannot check out at all -- which is exactly
+        # what would happen if the storefront's Zod schema silently stripped it.
+        quoteDigest = $preview.quoteDigest
     })
 if ($confirm.orderStatus -ne "PAID") {
     Write-Error "Expected order PAID after confirm, got $($confirm.orderStatus); msg=$($confirm.message)"
     exit 1
 }
+if ($confirm.total -ne 200.00) {
+    Write-Error "Confirm should charge exactly the quote the shopper saw (200.00), got $($confirm.total)"
+    exit 1
+}
 $orderId = $confirm.orderId
 Write-Host "    order=$orderId PAID" -ForegroundColor Gray
 
-# A stale pricing version must be refused with a TYPED 409, not charged and not
-# mistaken for an empty bag. Run after the successful confirm so the bag is
-# empty; the point is the status and the problem type, which are decided before
-# the bag is even looked at... except that an empty bag answers cart-empty
-# first, so this re-adds one line to make the staleness check reachable.
-Write-Host "[6b/20] A stale pricingVersion is refused with its own problem type..." -ForegroundColor Cyan
+# Quote, then commit, against the live stack: a bag edited AFTER its preview
+# -- another tab, say -- must be refused with a TYPED 409 before anything is
+# ordered or charged, never charged at a total the shopper did not see. The
+# old pricingVersion left quantity out on purpose and would have charged this.
+Write-Host "[6b/20] A quantity changed after preview is refused 409 pricing-changed..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
-try {
-    Invoke-RestMethod -Method POST `
-        -Uri "http://localhost:8080/api/v1/checkout/confirm" `
-        -Headers @{ Authorization="Bearer $alice" } `
-        -ContentType "application/json" `
-        -Body (ConvertTo-Json @{
-            shippingAddressId = $addrId
-            destinationCountry = "ZM"
-            cardNumber = "4242424242424242"
-            pricingVersion = "0000000000000000000000000000000000000000000000000000000000000000"
-        }) | Out-Null
-    Write-Error "A stale pricingVersion was ACCEPTED; the staleness guard is not wired"
+$sawOne = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/checkout/preview" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption="SELF_COLLECT" })
+Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/carts/me/items" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
+$ordersBefore = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
+    -Headers @{ Authorization="Bearer $alice" }).totalElements
+Expect-Refusal "http://localhost:8080/api/v1/checkout/confirm" `
+    @{ deliveryOption="SELF_COLLECT"; cardNumber="4242424242424242"; quoteDigest=$sawOne.quoteDigest } `
+    409 "pricing-changed" "A confirm for 2 rings with the digest of 1"
+$ordersAfter = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
+    -Headers @{ Authorization="Bearer $alice" }).totalElements
+if ($ordersAfter -ne $ordersBefore) {
+    Write-Error "A refused quote still placed an order ($ordersBefore -> $ordersAfter)"
     exit 1
 }
-catch {
-    $code = $_.Exception.Response.StatusCode.value__
-    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
-    if ($code -ne 409) {
-        Write-Error "Stale pricingVersion should be 409, got $code"
-        exit 1
-    }
-    # The type is the half that matters to a shopper: every 409 used to render
-    # as "Your bag is empty" with retry disabled.
-    $problem = $null
-    try {
-        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-        $problem = $reader.ReadToEnd() | ConvertFrom-Json
-    } catch { }
-    if ($problem -and $problem.type -notlike "*pricing-changed") {
-        Write-Error "Stale pricingVersion should carry the pricing-changed type, got $($problem.type)"
-        exit 1
-    }
-    Write-Host "    refused 409 $($problem.type)" -ForegroundColor Gray
-}
+# And a promotion code at confirm: 422, nothing placed.
+Expect-Refusal "http://localhost:8080/api/v1/checkout/confirm" `
+    @{ deliveryOption="SELF_COLLECT"; cardNumber="4242424242424242"; quoteDigest=$sawOne.quoteDigest; promotionCode="WELCOME-10" } `
+    422 "promotion-codes-not-accepted" "A confirm with a promotion code"
+Write-Host "    1 ring previewed, 2 in the bag -> 409 pricing-changed, no order placed; promo code -> 422" -ForegroundColor Gray
 # Leave the bag as the rest of the script expects: empty.
 try {
     Invoke-RestMethod -Method DELETE `
@@ -999,11 +1065,16 @@ $probePrice = 100.00
 $probeCurrency = "ZMW"
 
 function New-ProbeOrder($Headers, $Quantity) {
+    # Self-collect, with the digest of exactly this quote: order refuses any
+    # placement whose digest differs from its own pricing (quote, then commit).
     return Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
         -Headers $Headers -ContentType "application/json" `
         -Body (ConvertTo-Json @{
             shippingAddressId = $addrId
             currency = $probeCurrency
+            deliveryOption = "SELF_COLLECT"
+            quoteDigest = (Get-QuoteDigest $probeCurrency "SELF_COLLECT" 0 `
+                @(@{ VariantId=$variantId; Quantity=$Quantity; Price=$probePrice }))
             items = @(@{ variantId=$variantId; title="Authz probe"
                          quantity=$Quantity; unitPrice=$probePrice })
         })
@@ -1024,7 +1095,13 @@ function Charge-Count($Amount) {
     # JAVA_TOOL_OPTIONS" banner on stderr is enough to abort the script.
     # Discarding stderr inside cmd keeps it out of PowerShell altogether.
     $logs = cmd /c "docker logs oriah-payment 2>nul"
-    $hits = @($logs | Select-String -SimpleMatch "FakePaymentGateway.charge amount=$Amount ")
+    # The gateway logs the amount at scale 2 ("amount=700.00 ZMW"), so the
+    # pattern is formatted the same way. Interpolating $Amount as it stood made
+    # "amount=700 " -- a [double] loses its trailing zeros -- which matched
+    # nothing, so the checks counting it compared zero with zero and passed
+    # whatever the gateway did (D10).
+    $scaled = ([decimal]$Amount).ToString("F2", [Globalization.CultureInfo]::InvariantCulture)
+    $hits = @($logs | Select-String -SimpleMatch "FakePaymentGateway.charge amount=$scaled ")
     # $Amount here is the ORDER's total, which is now catalog's figure rather
     # than one the probe named. Still distinctive because each probe uses a
     # different quantity.
@@ -1083,7 +1160,13 @@ try {
 # (c) Re-confirming a settled intent must not reach the gateway a second time.
 #     The guard existed but ran AFTER the charge, so this used to be a second
 #     real charge that the caller was told had failed.
-$before = Charge-Count "1.00"
+# Counted at the DECOY's own total. This counted "1.00" -- the decoy's price
+# before prices stopped being namable -- so it matched nothing and the check
+# could not fail (D10).
+$before = Charge-Count $decoy.total
+if ($before -lt 1) {
+    $authzFailures += "probe setup: the decoy's own charge ($($decoy.total)) is not in the gateway log, so (c) would check nothing"
+}
 try {
     Invoke-RestMethod -Method POST `
         -Uri "http://localhost:8080/api/v1/payments/intents/$($decoyIntent.id)/confirm" `
@@ -1094,7 +1177,7 @@ try {
     $code = Probe-Status $_
     if ($code -ne 409) { $authzFailures += "double confirm: code=$code (want 409)" }
 }
-if ((Charge-Count "1.00") -ne $before) {
+if ((Charge-Count $decoy.total) -ne $before) {
     $authzFailures += "double confirm reached the gateway (charge count moved)"
 }
 

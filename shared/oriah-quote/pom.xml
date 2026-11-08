@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>shared</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>oriah-quote</artifactId>
+    <packaging>jar</packaging>
+
+    <name>oriah-quote</name>
+    <description>
+        The payable quote and its digest (MVP_PLAN Phase 0, item 4.4): quote,
+        then commit. Checkout's preview and order's placement must compute
+        byte-identical digests over the same quote -- each line's variant,
+        quantity, unit price and per-piece discount, the delivery option and
+        its amount, the currency and the total -- so there is exactly one
+        implementation, here, and both services use it. Two copies would
+        drift, and then every confirm would answer 409.
+
+        Only the JDK and oriah-money (the ngwee rule) on the classpath, so
+        depending on it cannot change either service's wiring.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-money</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

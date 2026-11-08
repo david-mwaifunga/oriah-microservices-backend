@@ -28,6 +28,25 @@
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
         <!-- Cross-cutting observability: see shared/oriah-observability-starter. -->
         <dependency><groupId>com.oriah</groupId><artifactId>oriah-observability-starter</artifactId><version>${project.version}</version></dependency>
+        <!-- Order's own identity for calls made on the shop's behalf, not the shopper's:
+             a client-credentials token for shipping (Phase 0, item 4.2). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security-oauth2-client</artifactId>
+        </dependency>
+        <!-- A real HTTP server in tests, to see the exact Authorization header each
+             downstream receives. Version from spring-cloud-contract-dependencies. -->
+        <dependency>
+            <groupId>org.wiremock</groupId>
+            <artifactId>wiremock-standalone</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The payable quote and its digest (shared/oriah-quote): one implementation, shared with checkout. -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-quote</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- The ngwee rule for money (shared/oriah-money), and its edge guard for tests. -->
         <dependency>
             <groupId>com.oriah</groupId>

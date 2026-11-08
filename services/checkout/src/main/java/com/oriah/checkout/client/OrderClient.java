@@ -18,7 +18,8 @@ public interface OrderClient {
     @PostMapping("/api/v1/orders/{id}/pay")
     OrderResponse pay(@PathVariable("id") UUID id, @RequestBody AttachPaymentRequest body);
 
-    record PlaceOrderRequest(UUID shippingAddressId, String currency, List<LineItem> items) {}
+    record PlaceOrderRequest(UUID shippingAddressId, String currency, List<LineItem> items,
+                             String deliveryOption, String quoteDigest) {}
     record LineItem(UUID variantId, String title, Integer quantity, BigDecimal unitPrice) {}
     record AttachPaymentRequest(UUID paymentIntentId) {}
     record OrderResponse(UUID id, String keycloakId, String status, BigDecimal subtotal, BigDecimal total, String currency, UUID paymentIntentId) {}

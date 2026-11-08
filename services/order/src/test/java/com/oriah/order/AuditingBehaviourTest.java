@@ -93,7 +93,7 @@ class AuditingBehaviourTest {
     private JwtDecoder jwtDecoder;
 
     private Order saveOrder() {
-        Order o = new Order("kc-audit-" + UUID.randomUUID(), UUID.randomUUID(), "USD");
+        Order o = new Order("kc-audit-" + UUID.randomUUID(), UUID.randomUUID(), "USD", "SELF_COLLECT", java.math.BigDecimal.ZERO);
         o.addItem(UUID.randomUUID(), "Aurelia", 1, new java.math.BigDecimal("100.00"));
         return repository.saveAndFlush(o);
     }

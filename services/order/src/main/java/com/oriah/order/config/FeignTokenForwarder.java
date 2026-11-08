@@ -1,7 +1,6 @@
 package com.oriah.order.config;
 
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
@@ -25,7 +24,9 @@ import feign.RequestInterceptor;
  * running on the request thread, which is why the circuit breaker stays
  * disabled -- see {@link com.oriah.order.client.PaymentClient}.
  */
-@Configuration
+// Deliberately NOT @Configuration: a component-scanned configuration makes its
+// interceptor GLOBAL, and it then reached catalog and shipping too. It is now
+// attached to PaymentClient alone (@FeignClient(configuration = ...)).
 public class FeignTokenForwarder {
 
     @Bean

@@ -19,6 +19,28 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
+      # Order's own identity, for calls it makes on the shop's behalf rather
+      # than the shopper's: a client-credentials token for
+      # service-account-oriah-admin, sent to shipping to price delivery
+      # (MVP_PLAN Phase 0, item 4.2). Only ShippingClient uses it
+      # (ShippingClientIdentity); payment keeps the shopper's token.
+      #
+      # token-uri, never issuer-uri: an issuer triggers discovery at start-up,
+      # which fails offline and inside the container. The secret is never
+      # committed for production: it comes from ORIAH_SERVICE_CLIENT_SECRET,
+      # with the development value only in application-local.yaml and the
+      # development compose file.
+      client:
+        registration:
+          oriah-admin:
+            provider: keycloak
+            client-id: oriah-admin
+            client-secret: ${ORIAH_SERVICE_CLIENT_SECRET:}
+            authorization-grant-type: client_credentials
+            client-authentication-method: client_secret_basic
+        provider:
+          keycloak:
+            token-uri: http://localhost:7080/realms/oriah/protocol/openid-connect/token
   cloud:
     # Nested under the EXISTING spring.cloud key on purpose. A second
     # top-level `spring:` document key is rejected by Spring Boot's loader,
@@ -51,6 +73,13 @@ spring:
           catalog:
             connect-timeout: 2000
             read-timeout: 5000
+          # shipping prices the delivery on the same write path, after catalog
+          # and after order's machine token (also 1s/3s, MachineIdentityConfig):
+          # catalog 2+5 + token 1+3 + shipping 1+3 = 15s worst case, inside
+          # checkout's 15s. OutboundIdentityTest.aHangingShippingTimesOut pins it.
+          shipping:
+            connect-timeout: 1000
+            read-timeout: 3000
     stream:
       bindings:
         orderEvents-out-0:

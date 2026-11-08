@@ -17,6 +17,15 @@ public final class ProblemTypes {
     public static final URI OUTSIDE_DELIVERY_AREA =
             URI.create("https://oriah.dev/problems/outside-delivery-area");
 
+    /**
+     * 409: what the shopper agreed to is no longer what would be charged --
+     * the basket, a price, or a delivery price changed since the quote. Order
+     * raises it before saving anything; checkout passes it on, so the
+     * storefront re-quotes and asks the shopper to look again.
+     */
+    public static final URI PRICING_CHANGED =
+            URI.create("https://oriah.dev/problems/pricing-changed");
+
     private ProblemTypes() {
     }
 }

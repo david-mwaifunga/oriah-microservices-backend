@@ -21,6 +21,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.oriah.order.client.ShippingClient;
 import com.oriah.order.TestcontainersConfiguration;
 import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.model.Order;
@@ -30,6 +32,10 @@ import feign.FeignException;
 import feign.Request;
 import feign.RequestTemplate;
 
+import static com.oriah.order.QuoteFixtures.ANY_DIGEST;
+import static com.oriah.order.QuoteFixtures.digest;
+import static com.oriah.order.QuoteFixtures.line;
+import static com.oriah.order.QuoteFixtures.selfCollect;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -108,6 +114,12 @@ class PlaceOrderPricingTest {
     private CatalogPricingClient catalog;
 
     @MockitoBean
+    private ShippingClient shipping;
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @MockitoBean
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
@@ -115,6 +127,43 @@ class PlaceOrderPricingTest {
     void reset() {
         repository.deleteAll();
         pricesAt(VARIANT, REAL_PRICE, "ZMW", CATALOG_TITLE);
+        // Shipping as it is until Phase 7: self-collect at no charge. Every
+        // placement now asks it; a missing stub would read as an outage.
+        shippingOffers("SELF_COLLECT", "0.00", "ZMW");
+    }
+
+    /** Shipping answering with exactly this option. */
+    private void shippingOffers(String code, String cost, String currency) {
+        doReturn(new ShippingClient.RateResponse("ZM", List.of(
+                new ShippingClient.ShippingOption(code, new BigDecimal(cost), currency))))
+                .when(shipping).rates(any());
+    }
+
+    /**
+     * One line, sent with the option the shopper chose and the digest of the
+     * quote they saw for it -- {@code delivery} is what preview showed.
+     */
+    private static String bodyWithOption(UUID variantId, int quantity, String claimedPrice,
+                                         String option, String delivery) {
+        return withDigest(variantId, quantity, claimedPrice, option,
+                digest("ZMW", option, delivery, line(variantId, quantity, claimedPrice)));
+    }
+
+    /** One self-collect line carrying exactly the digest given. */
+    private static String withDigest(UUID variantId, int quantity, String claimedPrice,
+                                     String option, String quoteDigest) {
+        return "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"" + option + "\","
+                + "\"quoteDigest\":\"" + quoteDigest + "\","
+                + "\"items\":[{\"variantId\":\"" + variantId + "\",\"title\":\"x\",\"quantity\":" + quantity
+                + ",\"unitPrice\":" + claimedPrice + "}]}";
+    }
+
+    private static FeignException shippingFailed(int status) {
+        Request request = Request.create(Request.HttpMethod.POST, "/api/v1/shipping/rates",
+                java.util.Map.of(), null, new RequestTemplate());
+        return FeignException.errorStatus("ShippingClient#rates(RateRequest)",
+                feign.Response.builder().status(status).reason("x").request(request)
+                        .headers(java.util.Map.of()).build());
     }
 
     private static RequestPostProcessor alice() {
@@ -138,9 +187,13 @@ class PlaceOrderPricingTest {
                 "Aurelia 18k", title, price, currency);
     }
 
-    /** One line, with whatever price and title the caller cares to claim. */
+    /**
+     * One line, with whatever price and title the caller cares to claim -- and
+     * the digest of that same line, as preview would have shown it.
+     */
     private static String body(UUID variantId, String title, int quantity, String claimedPrice) {
-        return "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+        return "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"SELF_COLLECT\","
+                + "\"quoteDigest\":\"" + selfCollect("ZMW", line(variantId, quantity, claimedPrice)) + "\","
                 + "\"items\":[{\"variantId\":\"" + variantId + "\",\"title\":\"" + title
                 + "\",\"quantity\":" + quantity + ",\"unitPrice\":" + claimedPrice + "}]}";
     }
@@ -192,7 +245,8 @@ class PlaceOrderPricingTest {
     void aCurrencyClaimIsCheckedToo() throws Exception {
         // A currency mismatch is a money mismatch: 4500 of a stronger unit is
         // not 4500 of a weaker one, and comparing numbers alone accepts it.
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"USD\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"USD\","
+                + "\"quoteDigest\":\"" + selfCollect("USD", line(VARIANT, 1, "4500.00")) + "\","
                 + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\","
                 + "\"quantity\":1,\"unitPrice\":4500.00}]}", 409);
     }
@@ -219,7 +273,9 @@ class PlaceOrderPricingTest {
         // line and undercharge by its whole value; mapping BY ID keeps both.
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+                        .content("{\"deliveryOption\":\"SELF_COLLECT\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+                                + "\"quoteDigest\":\"" + selfCollect("ZMW",
+                                        line(VARIANT, 2, "4500.00"), line(VARIANT, 3, "4500.00")) + "\","
                                 + "\"items\":["
                                 + "{\"variantId\":\"" + VARIANT + "\",\"title\":\"a\",\"quantity\":2,\"unitPrice\":4500.00},"
                                 + "{\"variantId\":\"" + VARIANT + "\",\"title\":\"b\",\"quantity\":3,\"unitPrice\":4500.00}"
@@ -304,7 +360,8 @@ class PlaceOrderPricingTest {
                 entry(VARIANT, "PRICED", REAL_PRICE, "ZMW", CATALOG_TITLE),
                 entry(OTHER, "PRICED", REAL_PRICE, "USD", CATALOG_TITLE))));
 
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+                + "\"quoteDigest\":\"" + ANY_DIGEST + "\","
                 + "\"items\":["
                 + "{\"variantId\":\"" + VARIANT + "\",\"title\":\"a\",\"quantity\":1,\"unitPrice\":4500.00},"
                 + "{\"variantId\":\"" + OTHER + "\",\"title\":\"b\",\"quantity\":1,\"unitPrice\":4500.00}"
@@ -392,6 +449,14 @@ class PlaceOrderPricingTest {
         // finding against the first version of this plan.
         boolean[] called = {false};
         boolean[] insideTransaction = {false};
+        boolean[] shippingCalled = {false};
+        boolean[] shippingInsideTransaction = {false};
+        doAnswer(inv -> {
+            shippingCalled[0] = true;
+            shippingInsideTransaction[0] = TransactionSynchronizationManager.isActualTransactionActive();
+            return new ShippingClient.RateResponse("ZM", List.of(
+                    new ShippingClient.ShippingOption("SELF_COLLECT", new BigDecimal("0.00"), "ZMW")));
+        }).when(shipping).rates(any());
         doAnswer(inv -> {
             called[0] = true;
             insideTransaction[0] = TransactionSynchronizationManager.isActualTransactionActive();
@@ -412,6 +477,11 @@ class PlaceOrderPricingTest {
                 .isTrue();
         assertThat(insideTransaction[0])
                 .as("the catalog call held a database connection open")
+                .isFalse();
+        // Shipping is the second outbound call placement makes; same rule.
+        assertThat(shippingCalled[0]).as("shipping was never asked").isTrue();
+        assertThat(shippingInsideTransaction[0])
+                .as("the shipping call held a database connection open")
                 .isFalse();
     }
 
@@ -448,24 +518,266 @@ class PlaceOrderPricingTest {
     // ----------------------------------------- the aggregate, as the model sees it
 
     @Test
-    @DisplayName("the stored order's own totals agree with what was repriced")
+    @DisplayName("the stored order carries its delivery, and its total is subtotal + shipping - discount")
     void theStoredTotalsAgree() throws Exception {
+        shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
+
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(VARIANT, "x", 2, "4500.00")))
+                        .content(bodyWithOption(VARIANT, 2, "4500.00", "OWN_DELIVERY", "125.00")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.items[0].unitPrice").value(4500.00));
 
-        // Only the aggregate off the entity: items is lazy and findAll has no
-        // @EntityGraph, so touching it here throws outside the session. The
-        // line price is asserted through the response, which is also where a
-        // shopper would see it.
-        Order stored = repository.findAll().getFirst();
-        assertThat(stored.subtotal()).isEqualByComparingTo("9000.00");
-        assertThat(stored.total())
-                .as("total is still subtotal -- discount and shipping are a "
-                        + "separate change, and PaymentIntentVerifier still "
-                        + "cannot compare amounts because of it")
-                .isEqualByComparingTo("9000.00");
+        // Read from the row itself: the database is what V4's check guards.
+        var row = jdbc.queryForMap("SELECT subtotal, shipping_amount, discount_amount, total, "
+                + "delivery_option, totals_authoritative FROM orders");
+        assertThat((BigDecimal) row.get("subtotal")).isEqualByComparingTo("9000.00");
+        assertThat((BigDecimal) row.get("shipping_amount")).isEqualByComparingTo("125.00");
+        assertThat((BigDecimal) row.get("discount_amount")).isEqualByComparingTo("0.00");
+        assertThat((BigDecimal) row.get("total"))
+                .as("total used to be the subtotal alone, so the order disagreed with the charge")
+                .isEqualByComparingTo("9125.00");
+        assertThat(row.get("delivery_option")).isEqualTo("OWN_DELIVERY");
+        assertThat(row.get("totals_authoritative")).isEqualTo(true);
+    }
+
+    @Test
+    @DisplayName("order asks shipping for Zambia, its OWN subtotal, the currency and the chosen option")
+    void orderAsksShippingWhatTheChosenOptionCosts() throws Exception {
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyWithOption(VARIANT, 2, "4500.00", "SELF_COLLECT", "0.00")))
+                .andExpect(status().isCreated());
+
+        var asked = org.mockito.ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
+        org.mockito.Mockito.verify(shipping).rates(asked.capture());
+        assertThat(asked.getValue().destinationCountry()).isEqualTo("ZM");
+        assertThat(asked.getValue().subtotal()).isEqualByComparingTo("9000.00");
+        assertThat(asked.getValue().currency()).isEqualTo("ZMW");
+        assertThat(asked.getValue().deliveryOption()).isEqualTo("SELF_COLLECT");
+    }
+
+    @Test
+    @DisplayName("the caller cannot name the shipping amount or the total: order prices them itself")
+    void theCallerCannotNameTheShippingAmount() throws Exception {
+        shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
+        String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+                + "\"deliveryOption\":\"OWN_DELIVERY\",\"shippingAmount\":0,\"total\":1.00,"
+                + "\"quoteDigest\":\"" + digest("ZMW", "OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")) + "\","
+                + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.total").value(4625.00));
+
+        var row = jdbc.queryForMap("SELECT shipping_amount, total FROM orders");
+        assertThat((BigDecimal) row.get("shipping_amount")).isEqualByComparingTo("125.00");
+        assertThat((BigDecimal) row.get("total")).isEqualByComparingTo("4625.00");
+    }
+
+    @Test
+    @DisplayName("shipping unreachable: 503, nothing placed -- never an order with delivery at zero")
+    void aShippingOutageRefusesToPlace() throws Exception {
+        doThrow(new feign.RetryableException(-1, "connect timed out", Request.HttpMethod.POST,
+                (Long) null, Request.create(Request.HttpMethod.POST, "/api/v1/shipping/rates",
+                        java.util.Map.of(), null, new RequestTemplate())))
+                .when(shipping).rates(any());
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(VARIANT, "x", 1, "4500.00")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/upstream-unavailable"));
+        assertThat(repository.count()).isZero();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest(name = "shipping answering {0}")
+    @org.junit.jupiter.params.provider.ValueSource(ints = {500, 502, 503, 504})
+    @DisplayName("shipping answering 5xx -- the usual form of 'down' in the stack -- is a 503, nothing placed")
+    void aShippingServerErrorRefusesToPlace(int status) throws Exception {
+        // order treats a dependency's 5xx as "could not get a price", as it does
+        // for catalog: nothing is saved, and the shopper may try again. Never
+        // a 500 "our bug", and never an order with delivery at zero.
+        doThrow(shippingFailed(status)).when(shipping).rates(any());
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(VARIANT, "x", 1, "4500.00")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/upstream-unavailable"));
+        assertThat(repository.count()).isZero();
+    }
+    @Test
+    @DisplayName("shipping refusing order's request is OUR bug: 500, not free delivery and not the shopper's fault")
+    void aShippingRefusalIsLoudNotFree() throws Exception {
+        doThrow(shippingFailed(403)).when(shipping).rates(any());
+
+        refused(body(VARIANT, "x", 1, "4500.00"), 500);
+    }
+
+    @Test
+    @DisplayName("an option shipping no longer offers is a 409 pricing-changed: the shopper re-quotes")
+    void anOptionShippingDoesNotOfferIsAConflict() throws Exception {
+        doReturn(new ShippingClient.RateResponse("ZM", List.of())).when(shipping).rates(any());
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(VARIANT, "x", 1, "4500.00")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/pricing-changed"))
+                .andExpect(jsonPath("$.detail").value("Your basket or its price changed -- please review it before paying."));
+        assertThat(repository.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("a delivery cost finer than a ngwee from shipping is OUR fault: 500, never the shopper's 400")
+    void aShippingCostFinerThanANgweeIsOurFault() throws Exception {
+        shippingOffers("SELF_COLLECT", "125.005", "ZMW");
+
+        refused(body(VARIANT, "x", 1, "4500.00"), 500);
+    }
+
+    @Test
+    @DisplayName("a delivery cost in another currency is refused, never added to a Kwacha order")
+    void aShippingQuoteInAnotherCurrencyIsRefused() throws Exception {
+        shippingOffers("SELF_COLLECT", "0.00", "USD");
+
+        refused(body(VARIANT, "x", 1, "4500.00"), 500);
+    }
+
+    @Test
+    @DisplayName("the size bound applies to the TOTAL, delivery included, not just the subtotal")
+    void theBoundAppliesToTheTotalNotJustTheSubtotal() throws Exception {
+        catalogAnswers(new CatalogPricingClient.PricingResponse(List.of(
+                entry(VARIANT, "PRICED", new BigDecimal("9999999899.99"), "ZMW", CATALOG_TITLE))));
+        shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyWithOption(VARIANT, 1, "9999999899.99", "OWN_DELIVERY", "125.00")))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/total-too-large"));
+        assertThat(repository.count()).isZero();
+    }
+
+    // ----------------------------------------- what the response shows
+
+    @Test
+    @DisplayName("the response shows what the total is made of: subtotal, delivery, discount, and the option")
+    void theResponseShowsWhatTheTotalIsMadeOf() throws Exception {
+        // A total the shopper cannot reconcile is a total they cannot check.
+        // The order is the record of the sale, so it carries every part of it.
+        shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyWithOption(VARIANT, 2, "4500.00", "OWN_DELIVERY", "125.00")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subtotal").value(9000.00))
+                .andExpect(jsonPath("$.shippingAmount").value(125.00))
+                .andExpect(jsonPath("$.discountAmount").value(0.00))
+                .andExpect(jsonPath("$.total").value(9125.00))
+                .andExpect(jsonPath("$.deliveryOption").value("OWN_DELIVERY"));
+    }
+
+    @Test
+    @DisplayName("an order placed before V4 shows its delivery and discount as unknown -- absent, never zero")
+    void aLegacyOrderShowsItsUnknownsAsAbsent() throws Exception {
+        // V4 left these NULL on older rows on purpose: NULL means "not
+        // recorded", and printing 0.00 would claim a free delivery nobody gave.
+        UUID id = UUID.randomUUID();
+        jdbc.update("INSERT INTO orders (id, keycloak_id, status, subtotal, total, currency) "
+                + "VALUES (?, 'kc-alice', 'CREATED', 250.00, 250.00, 'ZMW')", id);
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/api/v1/orders/{id}", id).with(alice()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(250.00))
+                .andExpect(jsonPath("$.shippingAmount").doesNotExist())
+                .andExpect(jsonPath("$.discountAmount").doesNotExist())
+                .andExpect(jsonPath("$.deliveryOption").doesNotExist());
+    }
+
+    // ----------------------------------------- quote, then commit (item 4.4)
+
+    /**
+     * The shopper saw one quote and is being charged for another: 409
+     * pricing-changed, and not a row written. Each case below is a change the
+     * old {@code PricingVersion} could not see, or one only the digest catches.
+     */
+    private void quoteChanged(String body) throws Exception {
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/pricing-changed"))
+                .andExpect(jsonPath("$.detail").value("Your basket or its price changed -- please review it before paying."));
+        assertThat(repository.count())
+                .as("a quote the shopper did not see must never be saved")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("a quantity changed after preview -- a basket edited in another tab -- is refused")
+    void aQuantityChangedAfterPreviewIsRefused() throws Exception {
+        String saw = selfCollect("ZMW", line(VARIANT, 1, "4500.00"));
+
+        quoteChanged(withDigest(VARIANT, 2, "4500.00", "SELF_COLLECT", saw));
+    }
+
+    @Test
+    @DisplayName("two quantities swapped between lines is refused even though the total is the same")
+    void anEqualTotalSwapOfQuantitiesIsRefused() throws Exception {
+        catalogAnswers(new CatalogPricingClient.PricingResponse(List.of(
+                entry(VARIANT, "PRICED", REAL_PRICE, "ZMW", CATALOG_TITLE),
+                entry(OTHER, "PRICED", REAL_PRICE, "ZMW", CATALOG_TITLE))));
+        String saw = selfCollect("ZMW", line(VARIANT, 1, "4500.00"), line(OTHER, 2, "4500.00"));
+
+        quoteChanged("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+                + "\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + saw + "\","
+                + "\"items\":["
+                + "{\"variantId\":\"" + VARIANT + "\",\"title\":\"a\",\"quantity\":2,\"unitPrice\":4500.00},"
+                + "{\"variantId\":\"" + OTHER + "\",\"title\":\"b\",\"quantity\":1,\"unitPrice\":4500.00}"
+                + "]}");
+    }
+
+    @Test
+    @DisplayName("a price changed after preview is refused, even when the claim is the new price")
+    void aPriceChangedAfterPreviewIsRefused() throws Exception {
+        // checkout reprices at confirm, so its claim is catalog's NEW price and
+        // passes the claim check. Only the digest remembers the price the
+        // shopper actually agreed to.
+        pricesAt(VARIANT, new BigDecimal("4600.00"), "ZMW", CATALOG_TITLE);
+        String saw = selfCollect("ZMW", line(VARIANT, 1, "4500.00"));
+
+        quoteChanged(withDigest(VARIANT, 1, "4600.00", "SELF_COLLECT", saw));
+    }
+
+    @Test
+    @DisplayName("a delivery price changed after preview is refused -- a price published in between")
+    void aDeliveryPriceChangedAfterPreviewIsRefused() throws Exception {
+        shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
+        String saw = digest("ZMW", "OWN_DELIVERY", "100.00", line(VARIANT, 1, "4500.00"));
+
+        quoteChanged(withDigest(VARIANT, 1, "4500.00", "OWN_DELIVERY", saw));
+    }
+
+    @Test
+    @DisplayName("the golden digest, pinned in the shared module, is accepted by the real service")
+    void theGoldenDigestIsAccepted() throws Exception {
+        // QuoteDigestTest pins this value, computed independently with
+        // sha256sum. Accepting it here proves order hashes the quote IT priced
+        // -- catalog's lower-case "zmw" included -- exactly as the shared rule
+        // does, and not some neighbouring form of it.
+        UUID a = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+        catalogAnswers(new CatalogPricingClient.PricingResponse(List.of(
+                entry(a, "PRICED", new BigDecimal("100.00"), "zmw", CATALOG_TITLE))));
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(withDigest(a, 1, "100.00", "SELF_COLLECT",
+                                "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802c")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.total").value(100.00));
     }
 }

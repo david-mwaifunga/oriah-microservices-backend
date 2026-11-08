@@ -52,7 +52,13 @@ public class CheckoutController {
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "422", description = "The address is outside Zambia (outside-delivery-area): we deliver within Zambia only",
+    @ApiResponse(responseCode = "409", description = "A line cannot be sold (bag-not-purchasable), or the bag mixes currencies (mixed-currency)",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "422", description = "The address is outside Zambia (outside-delivery-area): we deliver within Zambia only; or a promotion code was sent (promotion-codes-not-accepted)",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503", description = "catalog, customer or shipping is temporarily unavailable, so no quote can be given. Carries Retry-After",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/preview")
@@ -80,10 +86,10 @@ public class CheckoutController {
     @ApiResponse(responseCode = "402", description = "The card was declined. Final: the detail carries the processor's reason, and retrying the same card will fail again",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409", description = "The cart is empty, so there is nothing to check out",
+    @ApiResponse(responseCode = "409", description = "The cart is empty (cart-empty); or the bag, a price, the delivery option or its price changed since preview (pricing-changed) -- preview again, show the shopper the new quote, and confirm with its quoteDigest. Nothing was ordered or charged",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "422", description = "The promotion code cannot be used (promotion-code-invalid), or the address is outside Zambia (outside-delivery-area)",
+    @ApiResponse(responseCode = "422", description = "A promotion code was sent (promotion-codes-not-accepted), or the address is outside Zambia (outside-delivery-area)",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "502", description = "The payment could not be confirmed, so whether the card was charged is unknown. The order stays unplaced and the cart intact; confirmation is idempotent, so a retry is safe",

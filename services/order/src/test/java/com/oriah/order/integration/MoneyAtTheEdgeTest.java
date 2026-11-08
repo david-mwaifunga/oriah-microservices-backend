@@ -75,6 +75,7 @@ class MoneyAtTheEdgeTest {
                         .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")).jwt(j -> j.subject("kc-alice")))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"shippingAddressId\":\"" + UUID.randomUUID() + "\",\"currency\":\"ZMW\","
+                                + "\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + com.oriah.order.QuoteFixtures.ANY_DIGEST + "\","
                                 + "\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\",\"title\":\"Aurelia\","
                                 + "\"quantity\":1,\"unitPrice\":100.005}]}"))
                 .andExpect(status().isBadRequest())
@@ -86,7 +87,7 @@ class MoneyAtTheEdgeTest {
     @Test
     @DisplayName("an order line cannot be added at a fraction of a ngwee")
     void theAggregateRefusesItToo() {
-        Order order = new Order("kc-alice", UUID.randomUUID(), "ZMW");
+        Order order = new Order("kc-alice", UUID.randomUUID(), "ZMW", "SELF_COLLECT", java.math.BigDecimal.ZERO);
         assertThatThrownBy(() -> order.addItem(UUID.randomUUID(), "Aurelia", 1, new BigDecimal("100.005")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("100.005");

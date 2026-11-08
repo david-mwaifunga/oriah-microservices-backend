@@ -58,7 +58,7 @@ class ResilienceConfigResolutionTest {
 
     /** Every Feign client checkout orchestrates. */
     private static final String[] CLIENTS =
-            {"cart", "catalog", "customer", "promotion", "shipping", "payment", "order"};
+            {"cart", "catalog", "customer", "shipping", "payment", "order", "order-pay"};
 
     @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
@@ -68,6 +68,9 @@ class ResilienceConfigResolutionTest {
 
     @Autowired
     private RateLimiterRegistry rateLimiterRegistry;
+
+    @Autowired
+    private org.springframework.core.env.Environment environment;
 
     @Test
     @DisplayName("the context starts at all without the Config Server")
@@ -81,7 +84,7 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0} has a circuit breaker")
     @DisplayName("every Feign client still gets its own breaker instance")
-    @ValueSource(strings = {"cart", "catalog", "customer", "promotion", "shipping", "payment", "order"})
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "payment", "order", "order-pay"})
     void everyClientHasItsOwnBreaker(String client) {
         // One instance per client, not per method: when a downstream is
         // unhealthy every call from this orchestrator to it should trip the
@@ -91,6 +94,52 @@ class ResilienceConfigResolutionTest {
         assertThat(rateLimiterRegistry.rateLimiter(client)).isNotNull();
     }
 
+    @ParameterizedTest(name = "{0} is registered in all three blocks")
+    @DisplayName("every instance checkout calls is REGISTERED at startup, not created on first use")
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "payment", "order", "order-pay"})
+    void everyInstanceIsRegistered(String instance) {
+        // Read from the CONFIGURATION, not the registries: a registry hands out
+        // an instance for any name it is asked for, so "the registry has it"
+        // is satisfied by the other tests in this class asking first -- this
+        // assertion passed with order-pay deleted from the yaml. What matters
+        // is that application.yaml names the instance in all three blocks.
+        for (String block : new String[] {"circuitbreaker", "retry", "ratelimiter"}) {
+            assertThat(environment.getProperty("resilience4j." + block + ".instances." + instance + ".base-config"))
+                    .as("resilience4j.%s.instances.%s is not configured", block, instance)
+                    .isEqualTo("default");
+        }
+    }
+
+    @ParameterizedTest(name = "HTTP {0} is retried")
+    @DisplayName("an outage is retried: no answer, 502, 503 and 504")
+    @ValueSource(ints = {502, 503, 504})
+    void anOutageIsRetried(int status) {
+        var config = retryRegistry.retry("order").getRetryConfig();
+
+        assertThat(config.getExceptionPredicate().test(serverError(status))).isTrue();
+        assertThat(config.getExceptionPredicate().test(new java.net.SocketTimeoutException("read timed out")))
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("a 500 is NOT retried: it is the downstream's own failure, and order.place is a POST")
+    void anInternalServerErrorIsNotRetried() {
+        // order answers 500 on purpose for its own misconfiguration (a wrong
+        // client secret, shipping refusing it), and a 500 can come AFTER the
+        // order was saved -- so retrying order.place risks a second order, and
+        // three attempts with backoff only delay the same answer.
+        var config = retryRegistry.retry("order").getRetryConfig();
+
+        assertThat(config.getExceptionPredicate().test(serverError(500))).isFalse();
+    }
+
+    private static feign.FeignException serverError(int status) {
+        return feign.FeignException.errorStatus("OrderClient#place(PlaceOrderRequest)",
+                feign.Response.builder().status(status).reason("x")
+                        .request(feign.Request.create(feign.Request.HttpMethod.POST, "http://order/api/v1/orders",
+                                java.util.Map.of(), null, null, null))
+                        .headers(java.util.Map.of()).build());
+    }
     @Test
     @DisplayName("breakers are not silently left on Resilience4j's built-in defaults")
     void breakersDoNotSilentlyFallBackToLibraryDefaults() {
@@ -144,7 +193,7 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0}: a run of client errors leaves the breaker closed")
     @DisplayName("a 4xx is an answer, not an outage: it never opens a breaker")
-    @ValueSource(strings = {"cart", "catalog", "customer", "promotion", "shipping", "payment", "order"})
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "payment", "order", "order-pay"})
     void aRunOfClientErrorsLeavesTheBreakerClosed(String client) {
         // After Phase 0 item 1, shipping answers 422 for an address abroad --
         // an ordinary answer. Counted as failures, ten of them in a window

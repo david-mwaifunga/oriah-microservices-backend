@@ -27,6 +27,9 @@ import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.model.Order;
 import com.oriah.order.repository.OrderRepository;
 
+import static com.oriah.order.QuoteFixtures.ANY_DIGEST;
+import static com.oriah.order.QuoteFixtures.line;
+import static com.oriah.order.QuoteFixtures.selfCollect;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,8 +123,18 @@ class PlaceOrderValidationTest {
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
+    /** Shipping as it is until Phase 7: self-collect at no charge, in the order's currency. */
+    @MockitoBean
+    private com.oriah.order.client.ShippingClient shipping;
+
     @BeforeEach
     void reset() {
+        org.mockito.Mockito.doAnswer(inv -> {
+            com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
+            return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(
+                    new com.oriah.order.client.ShippingClient.ShippingOption(
+                            "SELF_COLLECT", new java.math.BigDecimal("0.00"), asked.currency())));
+        }).when(shipping).rates(org.mockito.ArgumentMatchers.any());
         repository.deleteAll();
         doAnswer(inv -> {
             CatalogPricingClient.PricingRequest asked = inv.getArgument(0);
@@ -137,9 +150,31 @@ class PlaceOrderValidationTest {
         return jwt().authorities(ROLE_USER).jwt(j -> j.subject("kc-alice"));
     }
 
+    private static final String ADDRESS_FIELD = "\"shippingAddressId\":\"" + ADDRESS + "\",";
+    private static final String SELF_COLLECT_FIELD = "\"deliveryOption\":\"SELF_COLLECT\",";
+    private static final String ANY_DIGEST_FIELD = "\"quoteDigest\":\"" + ANY_DIGEST + "\",";
+
+    /**
+     * One line that order will actually place: catalog's 100.00, and the
+     * digest of exactly that line, as preview would have shown it.
+     */
+    private static String placeable(String addressField, int quantity) {
+        UUID variant = UUID.randomUUID();
+        return "{" + addressField + SELF_COLLECT_FIELD + "\"currency\":\"ZMW\","
+                + "\"quoteDigest\":\"" + selfCollect("ZMW", line(variant, quantity, "100.00")) + "\","
+                + "\"items\":[{\"variantId\":\"" + variant + "\",\"title\":\"Aurelia 18k\","
+                + "\"quantity\":" + quantity + ",\"unitPrice\":100.00}]}";
+    }
+
+    /** One otherwise-valid line, with the top-level fields given verbatim. */
+    private static String bodyWithFields(String fields) {
+        return "{" + fields + "\"currency\":\"ZMW\",\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\","
+                + "\"title\":\"Aurelia 18k\",\"quantity\":1,\"unitPrice\":100.00}]}";
+    }
+
     /** One line, with whatever quantity the caller asked for. */
     private static String bodyWithQuantity(Object quantity) {
-        return "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+        return "{\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + ANY_DIGEST + "\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
                 + "\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\","
                 + "\"title\":\"Aurelia 18k\",\"quantity\":" + quantity + ","
                 + "\"unitPrice\":100.00}]}";
@@ -184,7 +219,7 @@ class PlaceOrderValidationTest {
         mvc.perform(post("/api/v1/orders")
                         .with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(bodyWithQuantity(99)))
+                        .content(placeable(ADDRESS_FIELD, 99)))
                 .andExpect(status().isCreated());
     }
 
@@ -198,7 +233,7 @@ class PlaceOrderValidationTest {
                 .mapToObj(i -> "{\"variantId\":\"" + UUID.randomUUID() + "\","
                         + "\"title\":\"L" + i + "\",\"quantity\":1,\"unitPrice\":1.00}")
                 .collect(Collectors.joining(","));
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + ANY_DIGEST + "\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
                 + "\"items\":[" + lines + "]}", "items");
     }
 
@@ -208,7 +243,7 @@ class PlaceOrderValidationTest {
         // VARCHAR(255). cart hit this same wall and removed the field; order
         // still carries it, so until it does the same the bound has to be here.
         String title = "A".repeat(256);
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + ANY_DIGEST + "\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
                 + "\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\","
                 + "\"title\":\"" + title + "\",\"quantity\":1,\"unitPrice\":100.00}]}",
                 "title");
@@ -217,7 +252,7 @@ class PlaceOrderValidationTest {
     @Test
     @DisplayName("a negative unit price is a 400, not a 500 from CHECK (unit_price >= 0)")
     void negativeUnitPriceIsRefused() throws Exception {
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + ANY_DIGEST + "\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
                 + "\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\","
                 + "\"title\":\"t\",\"quantity\":1,\"unitPrice\":-100.00}]}",
                 "unitPrice");
@@ -226,7 +261,7 @@ class PlaceOrderValidationTest {
     @Test
     @DisplayName("a missing currency is refused rather than defaulted to USD")
     void missingCurrencyIsRefused() throws Exception {
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + ANY_DIGEST + "\",\"shippingAddressId\":\"" + ADDRESS + "\","
                 + "\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\","
                 + "\"title\":\"t\",\"quantity\":1,\"unitPrice\":100.00}]}",
                 "currency");
@@ -239,7 +274,7 @@ class PlaceOrderValidationTest {
         // Upper-case specifically: PaymentIntentVerifier compares this order's
         // currency to the intent's with equals(), so a lower-case order could
         // never be settled by an upper-case intent.
-        refused("{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"" + currency + "\","
+        refused("{\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + ANY_DIGEST + "\",\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"" + currency + "\","
                 + "\"items\":[{\"variantId\":\"" + UUID.randomUUID() + "\","
                 + "\"title\":\"t\",\"quantity\":1,\"unitPrice\":100.00}]}",
                 "currency");
@@ -251,9 +286,9 @@ class PlaceOrderValidationTest {
         // The backstop behind the DTO. Whoever ends up supplying the currency
         // -- the caller today, catalog once order prices orders itself -- an
         // order that does not know what unit its money is in is not an order.
-        assertThatThrownBy(() -> new Order("kc-alice", UUID.randomUUID(), null))
+        assertThatThrownBy(() -> new Order("kc-alice", UUID.randomUUID(), null, "SELF_COLLECT", java.math.BigDecimal.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new Order("kc-alice", UUID.randomUUID(), "  "))
+        assertThatThrownBy(() -> new Order("kc-alice", UUID.randomUUID(), "  ", "SELF_COLLECT", java.math.BigDecimal.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -263,10 +298,61 @@ class PlaceOrderValidationTest {
         mvc.perform(post("/api/v1/orders")
                         .with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(bodyWithQuantity(2)))
+                        .content(placeable(ADDRESS_FIELD, 2)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.currency").value("ZMW"))
                 .andExpect(jsonPath("$.subtotal").value(200.00))
                 .andExpect(jsonPath("$.status").value("CREATED"));
+    }
+
+    // ----------------------------------------- the quote the shopper saw (item 4.4)
+
+    @Test
+    @DisplayName("the delivery option is required: order prices delivery itself, from the shopper's choice")
+    void theDeliveryOptionIsRequired() throws Exception {
+        refused(bodyWithFields(ADDRESS_FIELD + ANY_DIGEST_FIELD), "deliveryOption");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"self collect", "Self_Collect", "SELF-COLLECT", "9LIVES"})
+    @DisplayName("a delivery option that is not an option code is a 400, not a 500 from the V4 check")
+    void aMalformedDeliveryOptionIsRefused(String option) throws Exception {
+        refused(bodyWithFields(ADDRESS_FIELD + "\"deliveryOption\":\"" + option + "\"," + ANY_DIGEST_FIELD),
+                "deliveryOption");
+    }
+
+    @Test
+    @DisplayName("the quote digest is required: only the quote the shopper saw can be placed")
+    void theQuoteDigestIsRequired() throws Exception {
+        refused(bodyWithFields(ADDRESS_FIELD + SELF_COLLECT_FIELD), "quoteDigest");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "532785FB7C7C7C121F8FFD3528D7DFFAE0DB3163403314BC51216C38CA96802C",
+            "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802",
+            "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802cc",
+            "g32785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802c"})
+    @DisplayName("a digest that is not 64 lower-case hex characters is a 400")
+    void aMalformedQuoteDigestIsRefused(String quoteDigest) throws Exception {
+        refused(bodyWithFields(ADDRESS_FIELD + SELF_COLLECT_FIELD + "\"quoteDigest\":\"" + quoteDigest + "\","),
+                "quoteDigest");
+    }
+
+    @Test
+    @DisplayName("self-collect needs no delivery address")
+    void noAddressIsNeededForSelfCollect() throws Exception {
+        mvc.perform(post("/api/v1/orders")
+                        .with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(placeable("", 1)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.shippingAddressId").doesNotExist());
+    }
+
+    @Test
+    @DisplayName("any option other than self-collect still needs somewhere to deliver to")
+    void aDeliveryNeedsAnAddress() throws Exception {
+        refused(bodyWithFields("\"deliveryOption\":\"OWN_DELIVERY\"," + ANY_DIGEST_FIELD), "shippingAddressId");
     }
 }

@@ -74,7 +74,8 @@ public class OrderWriter {
     @Transactional
     public Order persist(String keycloakId, UUID shippingAddressId,
                          OrderPricingService.PricedOrder priced) {
-        Order order = new Order(keycloakId, shippingAddressId, priced.currency());
+        Order order = new Order(keycloakId, shippingAddressId, priced.currency(),
+                priced.deliveryOption(), priced.shippingAmount());
         priced.lines().forEach(line ->
                 order.addItem(line.variantId(), line.title(), line.quantity(), line.unitPrice()));
 

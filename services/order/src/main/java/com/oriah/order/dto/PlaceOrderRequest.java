@@ -1,6 +1,8 @@
 package com.oriah.order.dto;
 
 import com.oriah.money.NgweeAmount;
+import com.oriah.quote.Quote;
+import com.oriah.quote.QuoteDigest;
 import java.util.List;
 import java.util.UUID;
 
@@ -33,24 +35,27 @@ import jakarta.validation.constraints.Size;
  * that never fire -- and if one ever fires again, a 500 is then the honest
  * answer, because it means validation has a hole.
  *
- * <h2>Prices are still trusted here, and that is still the open hole</h2>
+ * <h2>No money in this request is trusted</h2>
  *
- * {@code unitPrice} now has a floor, but a floor is not authority: a shopper
- * may still name any price above it, and order-service stores what it is
- * given. {@code PaymentIntentVerifier} documents the consequence at length --
- * it cannot compare {@code intent.amount} to {@code order.total} because
- * checkout charges {@code afterDiscount + shipping} while
- * {@code Order.recomputeTotals} sets {@code total = subtotal}.
+ * order prices every line from catalog and the delivery from shipping, and
+ * stores those figures. {@code unitPrice} is a CLAIM: one that disagrees with
+ * catalog refuses the placement, and it can never lower what is charged. The
+ * {@code title} is overwritten with catalog's. And {@link #quoteDigest()} binds
+ * the whole quote the shopper saw -- every line's quantity and price, the
+ * delivery option and its amount, the currency -- so anything that moved since
+ * preview is refused rather than charged unseen.
  *
- * <p>cart has already been through this: {@code AddItemRequest} dropped
- * {@code unitPrice} and {@code title} outright, because the client may not
- * name a price and the line label is catalog's composed {@code variantTitle}
- * rather than a client string. The same removal is coming here, and when it
- * does these two fields' bounds go with them. Bounding them in the meantime is
- * not wasted: it closes the 500s today, and the request is reachable today.
+ * <p>cart has already dropped {@code unitPrice} and {@code title} from its own
+ * request. Removing them here too is a contract change for checkout and is not
+ * part of this one; until then their bounds keep a malformed line a 400.
  */
+@AddressUnlessSelfCollect
 public record PlaceOrderRequest(
-        @NotNull UUID shippingAddressId,
+        /**
+         * Where to deliver. Not needed when the shopper collects
+         * ({@link AddressUnlessSelfCollect}); required for every other option.
+         */
+        UUID shippingAddressId,
 
         /**
          * Required, and exactly three upper-case letters.
@@ -83,7 +88,30 @@ public record PlaceOrderRequest(
          *              prices from catalog itself, the batch limit applies to
          *              it directly.
          */
-        @NotEmpty @Size(min = 1, max = MAX_LINES) @Valid List<LineItem> items
+        @NotEmpty @Size(min = 1, max = MAX_LINES) @Valid List<LineItem> items,
+
+        /**
+         * The delivery option the shopper chose: {@code SELF_COLLECT} now, a
+         * code per town and option from Phase 7. order asks shipping what it
+         * costs -- the caller never names the amount.
+         */
+        @NotBlank
+        @Size(min = 1, max = 64)
+        @Pattern(regexp = Quote.DELIVERY_OPTION_PATTERN,
+                message = "must be a delivery option code such as SELF_COLLECT")
+        String deliveryOption,
+
+        /**
+         * The digest of the quote the shopper saw at preview -- quote, then
+         * commit (MVP_PLAN Phase 0, item 4.4). order prices everything itself
+         * and refuses with 409 pricing-changed, saving nothing, when its own
+         * digest differs: a basket edited in another tab, a price or delivery
+         * price changed since, is never charged unseen.
+         */
+        @NotBlank
+        @Size(min = 64, max = 64)
+        @Pattern(regexp = QuoteDigest.PATTERN, message = "must be 64 lower-case hex characters")
+        String quoteDigest
 ) {
     /**
      * <h2>Why every @Size carries an explicit {@code min}</h2>

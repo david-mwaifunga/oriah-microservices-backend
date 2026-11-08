@@ -132,20 +132,29 @@ resilience4j:
       # customer answers "which addresses are yours", which decides the
       # shipping zone and therefore the charge.
       customer:  { base-config: default }
-      promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
       order:     { base-config: default }
+      # Marking a CHARGED order paid has its own instance: placement failures
+      # must never open the breaker in front of it (CheckoutService.confirm).
+      order-pay: { base-config: default }
   retry:
     configs:
       default:
         # 3 attempts total: 1 initial + 2 retries, 500ms apart.
         max-attempts: 3
         wait-duration: 500ms
-        # Retry ONLY transport faults and downstream 5xx.
+        # Retry ONLY an outage: a transport fault, 502, 503 or 504 -- the same
+        # statuses CheckoutService.isOutage reports as 503. Never a 500: that
+        # is the downstream's own failure, the same on every attempt, and
+        # order.place is a POST, so a 500 that came after the order was saved
+        # must not be retried into a second order. Pinned by
+        # ResilienceConfigResolutionTest.
         retry-exceptions:
           - java.io.IOException
-          - feign.FeignException$FeignServerException
+          - feign.FeignException$BadGateway
+          - feign.FeignException$ServiceUnavailable
+          - feign.FeignException$GatewayTimeout
         # Never retry a 4xx: a bad request body or a failed auth check will not
         # improve on the second attempt, and retrying turns one client mistake
         # into three requests with backoff. The same property is enforced at the
@@ -163,10 +172,12 @@ resilience4j:
       # customer answers "which addresses are yours", which decides the
       # shipping zone and therefore the charge.
       customer:  { base-config: default }
-      promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
       order:     { base-config: default }
+      # Marking a CHARGED order paid has its own instance: placement failures
+      # must never open the breaker in front of it (CheckoutService.confirm).
+      order-pay: { base-config: default }
   ratelimiter:
     configs:
       default:
@@ -187,10 +198,12 @@ resilience4j:
       # customer answers "which addresses are yours", which decides the
       # shipping zone and therefore the charge.
       customer:  { base-config: default }
-      promotion: { base-config: default }
       shipping:  { base-config: default }
       payment:   { base-config: default }
       order:     { base-config: default }
+      # Marking a CHARGED order paid has its own instance: placement failures
+      # must never open the breaker in front of it (CheckoutService.confirm).
+      order-pay: { base-config: default }
 
 # ---------------------------------------------------------------------------
 # Local fallback for GET /api/v1/checkout/contact-info.

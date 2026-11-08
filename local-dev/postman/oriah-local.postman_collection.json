@@ -2382,7 +2382,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"currency\": \"\",\n  \"items\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"title\": \"\",\n      \"quantity\": 1,\n      \"unitPrice\": 0.0\n    }\n  ]\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"currency\": \"\",\n  \"items\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"title\": \"\",\n      \"quantity\": 1,\n      \"unitPrice\": 0.0\n    }\n  ],\n  \"deliveryOption\": \"\",\n  \"quoteDigest\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2798,7 +2798,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"destinationCountry\": \"\",\n  \"subtotal\": 0.0,\n  \"currency\": \"\"\n}",
+              "raw": "{\n  \"destinationCountry\": \"\",\n  \"subtotal\": 0.0,\n  \"currency\": \"\",\n  \"deliveryOption\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2841,7 +2841,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"destinationCountry\": \"\",\n  \"cardNumber\": \"\",\n  \"promotionCode\": \"\",\n  \"pricingVersion\": \"\"\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\",\n  \"cardNumber\": \"\",\n  \"promotionCode\": \"\",\n  \"quoteDigest\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2894,7 +2894,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"destinationCountry\": \"\",\n  \"promotionCode\": \"\",\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "raw": "{\n  \"destinationCountry\": \"\",\n  \"promotionCode\": \"\",\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

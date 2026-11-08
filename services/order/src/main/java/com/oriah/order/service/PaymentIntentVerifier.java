@@ -42,37 +42,23 @@ import lombok.extern.slf4j.Slf4j;
  * made with the shopper's own forwarded token against payment's owner-scoped
  * endpoint, which answers 404 for another customer's intent.
  *
- * <h2>The AMOUNT is deliberately not compared, and that is a known gap</h2>
+ * <h2>The AMOUNT must equal the order's total -- once that total is authoritative</h2>
  *
- * The obvious fourth condition -- {@code intent.amount == order.total} -- is
- * absent because it is currently false in the legitimate flow, and shipping it
- * would reject real checkouts after the card had already been charged.
+ * {@code intent.amount == order.total}, compared with {@code compareTo} so
+ * {@code 250} and {@code 250.00} are one amount. A missing amount is a refusal,
+ * never a match. Over and under are both refused: an underpayment is money
+ * missing, and an overpayment is money taken that the order does not record.
  *
- * <p>CheckoutService charges {@code afterDiscount + shippingCost} while
- * {@code Order.recomputeTotals} sets {@code total = subtotal} and says so in a
- * comment: "no shipping/discount yet". The two therefore differ for any order
- * with a discount or a shipping cost. An equality check would turn those into
- * a 409 from this endpoint, which checkout converts into
- * {@code PaymentCapturedWithoutOrderException} -- money taken, order unpaid,
- * manual reconciliation. A tolerance band was considered and rejected: a fudge
- * factor on a money comparison is not a security control.
- *
- * <p>What remains open as a result: payment's {@code POST /intents} is a
- * ROLE_USER endpoint whose amount is {@code @DecimalMin("0.01")} and otherwise
- * unconstrained, so a shopper can mint a 0.01 intent naming their own order,
- * confirm it, and have it accepted here. That is strictly harder than the hole
- * being closed -- which needed one request and no payment at all -- but it is
- * the same money hole wearing a smaller number.
- *
- * <p>Closing it needs the order total to become authoritative, which means
- * pricing authority moving server-side: order cannot simply accept a total
- * from its caller, because a client-supplied total is the identical bug. That
- * is the pricing phase's job and it is already the top hazard on its map;
- * {@code PayVerificationTest.underpaymentIsAcceptedUntilTotalsAreAuthoritative}
- * characterises the gap so that closing it turns a test red here rather than
- * silently.
- *
- * <p>Every refusal raises the SAME message. Reporting which condition failed
+ * <p>This waited for V4. The order's total used to be its subtotal alone
+ * ("no shipping/discount yet") while checkout charged delivery on top, so an
+ * equality check would have refused real payments after the card was charged.
+ * Without it a shopper could mint a 1.00 intent naming their own 250.00 order
+ * and have it accepted. Order now prices delivery itself and records
+ * {@code total = subtotal + shipping - discount}, marked
+ * {@code totals_authoritative} -- and only a marked order is held to the
+ * amount. An order placed before V4 keeps its old total, which left delivery
+ * out, so the charge legitimately differs from it; it stays payable as before.
+ * * <p>Every refusal raises the SAME message. Reporting which condition failed
  * would turn this into an oracle over other customers' payments -- "wrong
  * order" confirms an intent exists and is settled, while "not found" does not.
  * The amount and order are things the caller already knows about their own
@@ -134,12 +120,11 @@ public class PaymentIntentVerifier {
             throw unavailable(e);
         }
 
-        // No amount comparison -- see "The AMOUNT is deliberately not compared"
-        // in the class javadoc. It is false in the legitimate flow today.
         if (intent == null
                 || intent.status() == null || !"SUCCEEDED".equals(intent.status())
                 || intent.orderId() == null || !intent.orderId().equals(order.id())
-                || intent.currency() == null || !intent.currency().equals(order.currency())) {
+                || intent.currency() == null || !intent.currency().equals(order.currency())
+                || !amountMatches(order, intent)) {
             // Logged with the detail that the RESPONSE withholds, so an
             // operator can tell a fraud attempt from a mismatched total.
             log.warn("Refusing order={} pay: intent={} status={} orderId={} amount={} {} "
@@ -155,6 +140,17 @@ public class PaymentIntentVerifier {
 
         log.info("Verified intent={} as a settled {} {} payment for order={}",
                 paymentIntentId, intent.amount(), intent.currency(), order.id());
+    }
+
+    /**
+     * Exactly the order's total, for an order whose total is authoritative.
+     * An order placed before V4 is not held to it -- see the class javadoc.
+     */
+    private static boolean amountMatches(Order order, PaymentClient.IntentResponse intent) {
+        if (!order.totalsAuthoritative()) {
+            return true;
+        }
+        return intent.amount() != null && intent.amount().compareTo(order.total()) == 0;
     }
 
     private static ResponseStatusException unavailable(Exception cause) {

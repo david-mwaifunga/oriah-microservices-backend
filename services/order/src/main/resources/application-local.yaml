@@ -34,3 +34,8 @@ management:
 # Where traces go when export is on: Tempo's published port. The Config
 # Server's value names the container (tempo:4318), which this PC cannot resolve.
 ORIAH_OTLP_ENDPOINT: http://localhost:4318/v1/traces
+
+# Order's own client-credentials secret for its calls to shipping -- the
+# DEVELOPMENT value from the dev realm. Production's is generated at go-live
+# and injected as ORIAH_SERVICE_CLIENT_SECRET; it is never committed.
+ORIAH_SERVICE_CLIENT_SECRET: oriah-admin-secret

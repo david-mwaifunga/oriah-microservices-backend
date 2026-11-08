@@ -923,6 +923,10 @@ services:
     environment:
       SPRING_DATASOURCE_USERNAME: orders
       SPRING_DATASOURCE_PASSWORD: orders
+      # Order's own client-credentials secret for its calls to shipping (Phase 0,
+      # item 4.2). The DEVELOPMENT value of the dev realm; production's is
+      # generated at go-live and injected from outside Git.
+      ORIAH_SERVICE_CLIENT_SECRET: oriah-admin-secret
     ports:
       - "127.0.0.1:8086:8086"
     depends_on:

@@ -63,6 +63,17 @@ public class OrderController {
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The basket or its price changed since the shopper saw "
+            + "the quote (pricing-changed), or a line cannot be sold; nothing was saved",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "422", description = "The total is larger than an order can hold",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503", description = "catalog, shipping or the token server is unreachable; "
+            + "nothing was saved -- retry after Retry-After",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping
     public ResponseEntity<OrderResponse> place(
             @AuthenticationPrincipal Jwt jwt,
