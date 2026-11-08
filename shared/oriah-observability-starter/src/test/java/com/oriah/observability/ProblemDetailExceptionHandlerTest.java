@@ -148,6 +148,25 @@ class ProblemDetailExceptionHandlerTest {
     }
 
     @Test
+    void lostOptimisticRace_maps_to_409_concurrent_update() throws Exception {
+        // Two people change the same record at the same moment: both read
+        // version 7, the first save makes it 8, and the second save -- still
+        // claiming 7 -- is refused by the database. That refusal must reach the
+        // caller as "someone else changed this, reload and try again" (409), not
+        // as a server fault (500): nothing is broken, and the caller can recover.
+        // Red before the handler existed: it fell to the Exception.class
+        // catch-all and rendered 500.
+        mockMvc.perform(get("/throw/optimistic-lock"))
+                .andExpect(status().isConflict())
+                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.status", equalTo(409)))
+                .andExpect(jsonPath("$.title", equalTo("Conflict")))
+                .andExpect(jsonPath("$.type", equalTo("https://oriah.dev/problems/concurrent-update")))
+                .andExpect(jsonPath("$.detail", equalTo(
+                        "Someone else changed this at the same moment. Reload it and try again.")));
+    }
+
+    @Test
     void missing_traceId_omits_property() throws Exception {
         MDC.remove("traceId");
         mockMvc.perform(get("/throw/illegal-argument"))
@@ -182,6 +201,14 @@ class ProblemDetailExceptionHandlerTest {
         void resourceNotFound() {
             throw new ResourceNotFoundException(
                     "Product", "id", "22222222-2222-2222-2222-222222222222");
+        }
+
+        @org.springframework.web.bind.annotation.GetMapping("/optimistic-lock")
+        void optimisticLock() {
+            // The Spring type every store raises for a lost version check; JPA's
+            // ObjectOptimisticLockingFailureException is a subclass of it.
+            throw new org.springframework.dao.OptimisticLockingFailureException(
+                    "Row was updated or deleted by another transaction");
         }
 
         @org.springframework.web.bind.annotation.GetMapping("/runtime")

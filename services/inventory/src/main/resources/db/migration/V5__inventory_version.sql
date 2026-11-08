@@ -1,0 +1,12 @@
+-- A version number on every stock row (MVP_PLAN Phase 0, item 3).
+--
+-- reserve, release, confirm and restock are read-modify-write: load the row,
+-- change the counts, save on commit. Two changes that both read before either
+-- saves would both commit, and the second would overwrite the first -- for the
+-- last unit, the same piece reserved twice. With this column Hibernate saves
+-- with "... SET version = version + 1 WHERE variant_id = ? AND version = ?", so
+-- the second save matches no row and is refused; the caller gets 409 and can
+-- reload and retry. Existing rows start at 0.
+--
+-- V5, not V6: the plan moved Phase 5's cost_lot table to V6 to make room.
+ALTER TABLE inventory ADD COLUMN version BIGINT NOT NULL DEFAULT 0;

@@ -148,6 +148,18 @@
             <groupId>jakarta.persistence</groupId>
             <artifactId>jakarta.persistence-api</artifactId>
         </dependency>
+        <!--
+            spring-tx holds OptimisticLockingFailureException, the type every
+            store raises when a save loses a version check (@Version). The
+            shared advice maps it to 409, so it must exist in every service,
+            checkout and shipping included (they have no database), for the
+            advice class to load at all. Same reasoning as jakarta.persistence-api
+            above.
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
 
         <!--
             jakarta.servlet-api is needed to COMPILE the framework-exception

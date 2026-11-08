@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 
 import org.springframework.http.HttpHeaders;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -124,6 +125,7 @@ public abstract class OriahExceptionHandlerSupport {
     protected static final URI TYPE_VALIDATION  = URI.create("https://oriah.dev/problems/validation");
     protected static final URI TYPE_NOT_FOUND   = URI.create("https://oriah.dev/problems/not-found");
     protected static final URI TYPE_CONFLICT    = URI.create("https://oriah.dev/problems/conflict");
+    protected static final URI TYPE_CONCURRENT_UPDATE = URI.create("https://oriah.dev/problems/concurrent-update");
     protected static final URI TYPE_FORBIDDEN   = URI.create("https://oriah.dev/problems/forbidden");
     protected static final URI TYPE_INTERNAL    = URI.create("https://oriah.dev/problems/internal-server-error");
     protected static final URI TYPE_METHOD      = URI.create("https://oriah.dev/problems/method-not-allowed");
@@ -194,6 +196,27 @@ public abstract class OriahExceptionHandlerSupport {
     public ProblemDetail conflict(IllegalStateException ex) {
         log.debug("409 IllegalStateException: {}", ex.getMessage());
         return problem(HttpStatus.CONFLICT, TYPE_CONFLICT, "Conflict", ex.getMessage());
+    }
+
+    /**
+     * A save that lost a version check ({@code @Version}): two requests read
+     * the same row, the first one's save bumped its version, and the second
+     * one's save -- still carrying the old version -- was refused, so nothing
+     * it changed was written. That is the database protecting the data, not a
+     * server fault: the caller can reload and try again, so 409 with its own
+     * {@code type}, distinct from a business-rule conflict such as "not
+     * enough stock", which retrying cannot fix.
+     *
+     * <p>{@link OptimisticLockingFailureException} is Spring's store-neutral
+     * type; JPA's {@code ObjectOptimisticLockingFailureException}, raised at
+     * commit, is a subclass. Logged at INFO rather than DEBUG: one is normal,
+     * a stream of them means two writers keep colliding.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ProblemDetail concurrentUpdate(OptimisticLockingFailureException ex) {
+        log.info("409 lost an optimistic-lock race: {}", ex.getMessage());
+        return problem(HttpStatus.CONFLICT, TYPE_CONCURRENT_UPDATE, "Conflict",
+                "Someone else changed this at the same moment. Reload it and try again.");
     }
 
     // ------------------------------------------------------------------

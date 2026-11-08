@@ -8,6 +8,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import com.oriah.jpa.BaseEntity;
 
@@ -40,6 +41,17 @@ public class Inventory extends BaseEntity {
 
     @Column(name = "reserved", nullable = false)
     private int reserved;
+
+    /**
+     * Optimistic lock. Each save checks that the row still has the version
+     * this copy was read with, and bumps it; a save from a stale read is
+     * refused at commit (409 to the caller), so two concurrent stock changes
+     * can never both apply. A wrapper type, so a new row (null) is inserted
+     * rather than merged. Never set by application code.
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
 
     protected Inventory() {
         // For JPA hydration only — do not call from application code.
