@@ -644,6 +644,13 @@ no step here needs an interim business arrangement.
    rule in `shared/`, applied to today's DTOs now and to each new one (delivery
    prices, costs, fees, expenses, refunds) as it is built. Test: `0.001` is
    refused with 400, never rounded.
+   **Built 2026-11-08** as `shared/oriah-money`: `@NgweeAmount` on request fields
+   and `Ngwee.require` in the aggregates (catalog's variant, promotion, payment
+   intent, order line), one check behind both. It applies `@Digits(integer = 10,
+   fraction = 2)`'s limits **by value**: Hibernate's `@Digits` counts decimals as
+   written and would refuse `1.500` (K1.50 exactly) while the domain accepts it.
+   Each service that takes money runs `MoneyEdgeGuard` (the module's test-jar),
+   which fails when a request record has a money field without the rule.
 
 ### Phase 1 — The event log convention
 

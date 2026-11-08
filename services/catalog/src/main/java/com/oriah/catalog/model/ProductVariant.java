@@ -1,5 +1,6 @@
 package com.oriah.catalog.model;
 
+import com.oriah.money.Ngwee;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -117,6 +118,7 @@ public class ProductVariant extends BaseEntity {
         if (unitPrice == null || unitPrice.signum() < 0) {
             throw new IllegalArgumentException("unitPrice must not be negative");
         }
+        Ngwee.require(unitPrice, "unitPrice");
         this.id = id;
         this.product = product;
         this.sku = sku.trim();
@@ -185,6 +187,7 @@ public class ProductVariant extends BaseEntity {
         if (newPrice == null || newPrice.signum() < 0) {
             throw new IllegalArgumentException("unitPrice must not be negative");
         }
+        Ngwee.require(newPrice, "unitPrice");
         this.unitPrice = newPrice;
         this.currency = normaliseCurrency(newCurrency);
     }

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>shared</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>oriah-money</artifactId>
+    <packaging>jar</packaging>
+
+    <name>oriah-money</name>
+    <description>
+        The one rule for money every service shares (MVP_PLAN Phase 0, item 7):
+        an amount is a whole number of ngwee -- at most 2 decimal places and 10
+        whole digits, the shape of the NUMERIC(12,2) columns that store it.
+        Postgres would silently round 0.001 to 0.00; this refuses it instead,
+        at the API edge (@NgweeAmount) and in every domain constructor
+        (Ngwee.require).
+
+        The test-jar carries MoneyEdgeGuard, which each service's tests use to
+        prove that every money field in its request DTOs carries the rule, so
+        a new DTO cannot forget it.
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
+        <!-- Test deps. spring-context is for MoneyEdgeGuard's class scanning;
+             every consumer already has it. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

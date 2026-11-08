@@ -1,5 +1,6 @@
 package com.oriah.catalog.dto;
 
+import com.oriah.money.NgweeAmount;
 import java.math.BigDecimal;
 
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -45,6 +46,7 @@ public record VariantUpdateRequest(
         @NotNull(message = "unitPrice is required")
         @DecimalMin(value = "0.0", message = "unitPrice must not be negative")
         @DecimalMax(value = "9999999999.99", message = "unitPrice is implausibly large")
+        @NgweeAmount
         BigDecimal unitPrice,
 
         @Schema(description = "ISO 4217 code. Omit to keep the variant's current currency.",

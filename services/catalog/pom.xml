@@ -41,6 +41,19 @@
             <artifactId>oriah-observability-starter</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- The ngwee rule for money (shared/oriah-money), and its edge guard for tests. -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-money</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-money</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
 
         <!--
             Shared JPA base: AuditableEntity (@MappedSuperclass with

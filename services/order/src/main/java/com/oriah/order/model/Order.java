@@ -1,5 +1,6 @@
 package com.oriah.order.model;
 
+import com.oriah.money.Ngwee;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -107,6 +108,7 @@ public class Order extends BaseEntity {
     public List<OrderItem> items() { return Collections.unmodifiableList(items); }
 
     public OrderItem addItem(UUID variantId, String title, int quantity, BigDecimal unitPrice) {
+        Ngwee.require(unitPrice, "unitPrice");
         OrderItem item = new OrderItem(this, variantId, title, quantity, unitPrice);
         items.add(item);
         recomputeTotals();

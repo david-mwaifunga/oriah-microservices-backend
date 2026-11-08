@@ -1,5 +1,6 @@
 package com.oriah.order.dto;
 
+import com.oriah.money.NgweeAmount;
 import java.util.List;
 import java.util.UUID;
 
@@ -144,6 +145,6 @@ public record PlaceOrderRequest(
              *                  with the pricing authority work, and a zero
              *                  order is visible rather than silent.
              */
-            @NotNull @DecimalMin("0.00") java.math.BigDecimal unitPrice
+            @NotNull @DecimalMin("0.00") @NgweeAmount java.math.BigDecimal unitPrice
     ) {}
 }

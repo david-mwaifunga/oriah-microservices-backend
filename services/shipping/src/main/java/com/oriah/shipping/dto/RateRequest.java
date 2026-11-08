@@ -1,5 +1,6 @@
 package com.oriah.shipping.dto;
 
+import com.oriah.money.NgweeAmount;
 import java.math.BigDecimal;
 
 import jakarta.validation.constraints.DecimalMin;
@@ -9,7 +10,7 @@ import jakarta.validation.constraints.Size;
 
 public record RateRequest(
         @NotBlank @Size(min = 2, max = 2) String destinationCountry,
-        @NotNull @DecimalMin("0.00") BigDecimal subtotal,
+        @NotNull @DecimalMin("0.00") @NgweeAmount BigDecimal subtotal,
 
         /**
          * What {@code subtotal} is denominated in, and what the caller needs

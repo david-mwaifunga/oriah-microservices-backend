@@ -1,5 +1,6 @@
 package com.oriah.promotion.dto;
 
+import com.oriah.money.NgweeAmount;
 import java.math.BigDecimal;
 import java.time.Instant;
 
@@ -13,7 +14,7 @@ import jakarta.validation.constraints.Size;
 public record CreatePromotionRequest(
         @NotBlank @Size(max = 40) String code,
         @NotNull PromotionType type,
-        @NotNull @DecimalMin("0.01") BigDecimal amount,
+        @NotNull @DecimalMin("0.01") @NgweeAmount BigDecimal amount,
         @Size(max = 255) String description,
         Instant validUntil,
         Integer maxRedemptions

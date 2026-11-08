@@ -1,5 +1,6 @@
 package com.oriah.promotion.model;
 
+import com.oriah.money.Ngwee;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -57,6 +58,7 @@ public class Promotion extends BaseEntity {
         if (amount == null || amount.signum() <= 0) {
             throw new IllegalArgumentException("amount must be > 0");
         }
+        Ngwee.require(amount, "amount");
         if (type == PromotionType.PERCENTAGE && amount.compareTo(BigDecimal.valueOf(100)) > 0) {
             throw new IllegalArgumentException("percentage discount cannot exceed 100");
         }

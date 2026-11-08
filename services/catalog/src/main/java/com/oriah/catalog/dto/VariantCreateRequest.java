@@ -1,5 +1,6 @@
 package com.oriah.catalog.dto;
 
+import com.oriah.money.NgweeAmount;
 import java.math.BigDecimal;
 import java.util.Map;
 
@@ -44,6 +45,7 @@ public record VariantCreateRequest(
 
         @NotNull(message = "unitPrice is required")
         @DecimalMin(value = "0.0", message = "unitPrice must not be negative")
+        @NgweeAmount
         BigDecimal unitPrice,
 
         @Size(max = 3, message = "currency must be a 3-letter ISO 4217 code")

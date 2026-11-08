@@ -1,5 +1,6 @@
 package com.oriah.payment.dto;
 
+import com.oriah.money.NgweeAmount;
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -37,6 +38,7 @@ public record CreateIntentRequest(
         @NotNull
         @DecimalMin("0.01")
         @DecimalMax("9999999999.99")
+        @NgweeAmount
         BigDecimal amount,
 
         /**

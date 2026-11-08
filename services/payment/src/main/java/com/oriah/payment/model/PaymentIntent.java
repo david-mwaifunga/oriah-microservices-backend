@@ -1,5 +1,6 @@
 package com.oriah.payment.model;
 
+import com.oriah.money.Ngwee;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -49,6 +50,7 @@ public class PaymentIntent extends BaseEntity {
         if (amount == null || amount.signum() <= 0) {
             throw new IllegalArgumentException("amount must be > 0");
         }
+        Ngwee.require(amount, "amount");
         this.id = UUID.randomUUID();
         this.orderId = orderId;
         this.keycloakId = keycloakId;
