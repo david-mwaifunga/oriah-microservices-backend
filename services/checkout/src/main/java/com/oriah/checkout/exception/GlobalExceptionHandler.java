@@ -144,6 +144,19 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
      * reason here would hand back the signal that single 404 exists to
      * withhold.
      */
+    /**
+     * 422, shipping's refusal of an address abroad, passed on rather than
+     * flattened into a 500 (Phase 0, item 1). The same problem type shipping
+     * uses, from the shared {@code ProblemTypes}, so the storefront keys on one
+     * value. Logged at INFO: an ordinary answer, not a fault.
+     */
+    @ExceptionHandler(OutsideDeliveryAreaException.class)
+    public ProblemDetail outsideDeliveryArea(OutsideDeliveryAreaException ex) {
+        log.info("422 outside the delivery area");
+        return problem(HttpStatus.UNPROCESSABLE_CONTENT, com.oriah.observability.ProblemTypes.OUTSIDE_DELIVERY_AREA,
+                "Outside our delivery area", ex.getMessage());
+    }
+
     @ExceptionHandler(PromotionCodeInvalidException.class)
     public ResponseEntity<ProblemDetail> promotionInvalid(PromotionCodeInvalidException ex) {
         log.info("422 promotion code refused code={}", ex.code());

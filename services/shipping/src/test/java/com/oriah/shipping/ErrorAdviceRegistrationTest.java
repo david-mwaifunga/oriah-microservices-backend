@@ -11,20 +11,18 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 
 import com.oriah.observability.OriahExceptionHandlerSupport;
-import com.oriah.observability.ProblemDetailExceptionHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Shipping has exactly one advice carrying the Oriah error contract, and it is
- * the shared default.
+ * shipping's own.
  *
- * <p>The per-service guard described in the Tier 5 checklist. Shipping throws
- * nothing and has no 404s, so it declares no
- * {@code exception/GlobalExceptionHandler} and keeps
- * {@link ProblemDetailExceptionHandler} — which makes this the module where a
- * back-off regression would show up first, since here the shared advice is the
- * <em>only</em> source of RFC 7807.
+ * <p>The per-service guard described in the Tier 5 checklist. Until Phase 0
+ * item 1 shipping threw nothing and kept the shared default advice. It now
+ * refuses a destination outside Zambia with a 422 of its own problem type, so
+ * it declares {@code exception/GlobalExceptionHandler}, extending the shared
+ * support; the starter's default must then back off, leaving exactly one.
  *
  * <p>Asserts on beans assignable to {@link OriahExceptionHandlerSupport} rather
  * than counting {@code @ControllerAdvice} beans. The count is already ≥2 in
@@ -40,8 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class ErrorAdviceRegistrationTest {
 
-    /** Shipping has no domain exceptions, so the shared default is correct here. */
-    private static final Class<?> EXPECTED_ADVICE = ProblemDetailExceptionHandler.class;
+    /** Shipping's own advice: the shared contract plus the 422 for outside Zambia. */
+    private static final Class<?> EXPECTED_ADVICE = com.oriah.shipping.exception.GlobalExceptionHandler.class;
 
     @Autowired
     private ApplicationContext context;

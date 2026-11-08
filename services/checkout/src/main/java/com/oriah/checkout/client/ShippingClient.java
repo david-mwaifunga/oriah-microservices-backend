@@ -23,6 +23,8 @@ public interface ShippingClient {
      *                 currency.
      */
     record RateRequest(String destinationCountry, BigDecimal subtotal, String currency) {}
-    record RateResponse(String destinationCountry, String zone, List<ShippingOption> options) {}
-    record ShippingOption(String carrier, String service, BigDecimal cost, String currency, Integer etaDaysMin, Integer etaDaysMax) {}
+    /** No zone: shipping delivers within Zambia only, so a zone would be a type with one value. */
+    record RateResponse(String destinationCountry, List<ShippingOption> options) {}
+    /** {@code code} identifies the option the shopper chooses, e.g. SELF_COLLECT. */
+    record ShippingOption(String code, String carrier, String service, BigDecimal cost, String currency, Integer etaDaysMin, Integer etaDaysMax) {}
 }

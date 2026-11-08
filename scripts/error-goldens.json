@@ -264,5 +264,25 @@
     },
     "request": "POST /api/v1/admin/products  (as admin)",
     "status": 415
+  },
+  "422-outside-delivery-area": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "We deliver within Zambia only.",
+      "instance": "/api/v1/shipping/rates",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 422,
+      "title": "Outside our delivery area",
+      "type": "https://oriah.dev/problems/outside-delivery-area"
+    },
+    "request": "POST /api/v1/shipping/rates  (as user)",
+    "status": 422
   }
 }

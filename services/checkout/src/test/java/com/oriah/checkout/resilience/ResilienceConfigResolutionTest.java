@@ -141,4 +141,28 @@ class ResilienceConfigResolutionTest {
                         + "ignore-exceptions did not resolve or someone removed it")
                 .isFalse();
     }
+
+    @ParameterizedTest(name = "{0}: a run of client errors leaves the breaker closed")
+    @DisplayName("a 4xx is an answer, not an outage: it never opens a breaker")
+    @ValueSource(strings = {"cart", "catalog", "customer", "promotion", "shipping", "payment", "order"})
+    void aRunOfClientErrorsLeavesTheBreakerClosed(String client) {
+        // After Phase 0 item 1, shipping answers 422 for an address abroad --
+        // an ordinary answer. Counted as failures, ten of them in a window
+        // would open the breaker for 30s and give EVERY shopper a 503.
+        var breaker = circuitBreakerRegistry.circuitBreaker(client);
+        breaker.reset();
+        var clientError = new feign.FeignException.FeignClientException(
+                422, "outside the delivery area", feign.Request.create(
+                        feign.Request.HttpMethod.POST, "http://" + client + "/x",
+                        java.util.Map.of(), null, null, null),
+                null, java.util.Map.of());
+
+        for (int i = 0; i < 20; i++) {
+            breaker.onError(0, java.util.concurrent.TimeUnit.NANOSECONDS, clientError);
+        }
+
+        assertThat(breaker.getState())
+                .isEqualTo(io.github.resilience4j.circuitbreaker.CircuitBreaker.State.CLOSED);
+        breaker.reset();
+    }
 }

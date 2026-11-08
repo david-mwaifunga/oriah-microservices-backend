@@ -139,11 +139,11 @@ class ConfirmFailurePathsTest {
     }
 
     private ConfirmRequest request() {
-        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null, version());
+        return new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null, version());
     }
 
     private ConfirmRequest withPromo(String code) {
-        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", code, version());
+        return new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", code, version());
     }
 
     private void addressAgreesWithTheBody() {
@@ -167,8 +167,8 @@ class ConfirmFailurePathsTest {
 
     private void shippingIsFree() {
         when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
-                "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
-                        "Local Courier", "Standard", BigDecimal.ZERO, "USD", 2, 4))));
+                "ZM", List.of(new ShippingClient.ShippingOption(
+                        "SELF_COLLECT", "Local Courier", "Standard", BigDecimal.ZERO, "USD", 2, 4))));
     }
 
     private void orderIsPlaced() {

@@ -98,6 +98,11 @@ CASES = [
     ("405-wrong-method", "DELETE", "/api/v1/products", "admin", None),
     ("415-wrong-content-type", "POST", "/api/v1/admin/products", "admin", "RAW:not json"),
 
+    # --- 422: well-formed, but something Oriah does not do ----------------
+    # Phase 0 item 1: shipping delivers within Zambia only. Creates no state.
+    ("422-outside-delivery-area", "POST", "/api/v1/shipping/rates", "user",
+     {"destinationCountry": "US", "subtotal": 100.00, "currency": "ZMW"}),
+
     # NOTE: no 409 case. Reproducing inventory's over-reserve needs a stock row
     # to exist first, and this script must not create state. That status is
     # covered by InventoryIntegrationTest.overReserveIsAConflict.

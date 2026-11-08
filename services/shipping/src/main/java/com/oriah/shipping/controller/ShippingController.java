@@ -23,7 +23,7 @@ import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/api/v1/shipping")
-@Tag(name = "Shipping", description = "Shipping rates by destination zone")
+@Tag(name = "Shipping", description = "Delivery options and their prices. Zambia only; self-collect until Phase 7")
 @ApiResponses({
         @ApiResponse(responseCode = "401", description = "No or invalid bearer token",
                 content = @Content(mediaType = "application/problem+json",
@@ -49,8 +49,12 @@ public class ShippingController {
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "422", description = "The destination is outside Zambia: we deliver within Zambia only",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/rates")
     public ResponseEntity<RateResponse> rates(@Valid @RequestBody RateRequest body) {
-        return ResponseEntity.ok(service.quote(body.destinationCountry(), body.subtotal(), body.currency()));
+        return ResponseEntity.ok(service.quote(body.destinationCountry(), body.subtotal(), body.currency(),
+                body.deliveryOption()));
     }
 }

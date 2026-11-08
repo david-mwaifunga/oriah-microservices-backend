@@ -52,6 +52,9 @@ public class CheckoutController {
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "422", description = "The address is outside Zambia (outside-delivery-area): we deliver within Zambia only",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/preview")
     public ResponseEntity<PreviewResponse> preview(@Valid @RequestBody PreviewRequest body) {
         return ResponseEntity.ok(service.preview(body));
@@ -80,7 +83,7 @@ public class CheckoutController {
     @ApiResponse(responseCode = "409", description = "The cart is empty, so there is nothing to check out",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "422", description = "The promotion code cannot be used. Remove it and retry",
+    @ApiResponse(responseCode = "422", description = "The promotion code cannot be used (promotion-code-invalid), or the address is outside Zambia (outside-delivery-area)",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "502", description = "The payment could not be confirmed, so whether the card was charged is unknown. The order stays unplaced and the cart intact; confirmation is idempotent, so a retry is safe",

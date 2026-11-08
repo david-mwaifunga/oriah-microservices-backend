@@ -4,7 +4,9 @@
 #
 # Drives the full backend through the gateway:
 #   1. Admin (maya) creates product, seeds inventory, creates promo code.
-#   2. Customer (alice) self-provisions profile + shipping address.
+#   2. Customer (alice) self-provisions profile + a Lusaka address. Oriah
+#      delivers within Zambia only, and until Phase 7 offers one option:
+#      self-collect at K0 (MVP_PLAN Phase 0, item 1).
 #   3. Customer adds product to cart.
 #   4. Customer POSTs /checkout/preview to see total with promo + shipping.
 #   5. Customer POSTs /checkout/confirm with test card 4242... -> SUCCESS:
@@ -197,7 +199,7 @@ $addr = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me/addresses" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ label="Home"; line1="1 Aurelia Lane"; city="Lagos"; postalCode="100001"; country="NG"; isDefault=$true })
+    -Body (ConvertTo-Json @{ label="Home"; line1="Plot 1, Cairo Road"; city="Lusaka"; postalCode="10101"; country="ZM"; isDefault=$true })
 $addrId = $addr.id
 
 Write-Host "[4/20] Customer: add 2 units to cart..." -ForegroundColor Cyan
@@ -344,21 +346,16 @@ $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="NG"; promotionCode=$promoCode; shippingAddressId=$addrId })
-# 2 x K100 = K200, less 15% = K30, plus K125 domestic standard shipping.
+    -Body (ConvertTo-Json @{ destinationCountry="ZM"; promotionCode=$promoCode; shippingAddressId=$addrId })
+# 2 x K100 = K200, less 15% = K30, plus self-collect at K0.
 #
-# Shipping is no longer FREE here, and that is the correct answer rather than a
-# regression. The old assertion expected 170.00 because 200 USD cleared a
-# 150 USD free-shipping threshold; the rate card is published in Kwacha now and
-# K200 is nowhere near the K3,750 threshold. A K200 order earning free delivery
-# was only ever true because the card was silently denominated in dollars.
-#
-# Asserting the shipping line explicitly is stronger than the old version too:
-# it proves the cost is applied in the bag's currency rather than quietly
-# degrading to zero -- which is what an unreachable shipping-service does, and
-# what a currency mismatch used to do.
-$expectedShip = 125.00
-$expectedTotal = 295.00
+# Until Phase 7 prices delivery per town, the only option is self-collect at
+# no charge (MVP_PLAN Phase 0, item 1); the old K125 came from a USD card
+# multiplied by 25 whose "domestic" zone was Nigeria. A shipping outage no
+# longer degrades to zero either -- it is a 503 -- so a zero here is the
+# quoted option, not a failure in disguise; the option code below proves it.
+$expectedShip = 0.00
+$expectedTotal = 170.00
 if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 30.00 -or
     $preview.shippingCost -ne $expectedShip -or $preview.total -ne $expectedTotal) {
     Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total)"
@@ -372,85 +369,94 @@ if (-not $preview.pricingVersion) {
     Write-Error "Preview did not return a pricingVersion; confirm cannot echo one"
     exit 1
 }
-Write-Host "    subtotal=200, promo=30, ship=125, total=295 ZMW, version=$($preview.pricingVersion.Substring(0,12))..." -ForegroundColor Gray
+if (@($preview.shippingOptions).Count -ne 1 -or $preview.shippingOptions[0].code -ne "SELF_COLLECT") {
+    Write-Error "Zambia should be offered exactly SELF_COLLECT, got $(@($preview.shippingOptions | ForEach-Object { $_.code }) -join ',')"
+    exit 1
+}
+if ($preview.PSObject.Properties.Name -contains "shippingZone") {
+    Write-Error "Preview still carries shippingZone; zones were removed in Phase 0 item 1"
+    exit 1
+}
+Write-Host "    subtotal=200, promo=30, ship=0 (SELF_COLLECT), total=170 ZMW, version=$($preview.pricingVersion.Substring(0,12))..." -ForegroundColor Gray
 
-Write-Host "[5b/20] The shipping zone comes from the ADDRESS, not the request body..." -ForegroundColor Cyan
-# destinationCountry used to decide the zone, and the zone decides both the
-# shipping charge and the free-shipping threshold. Nothing reconciled it with
-# the address being shipped to, so a caller could declare "NG" (DOMESTIC:
-# K125, free over K3,750) while shipping to America (INTERNATIONAL: K1,125,
-# free over K12,500) -- and the order recorded only the address, so fulfilment
-# shipped to the real one and nothing in the order showed the discrepancy.
-#
-# This probe sends exactly that mismatch and asserts the EXPENSIVE zone comes
-# back. 125.00 here would mean the body is still being believed.
+Write-Host "[5b/20] Zambia only, and the ADDRESS decides the destination..." -ForegroundColor Cyan
+# Oriah delivers within Zambia only (MVP_PLAN Phase 0, item 1). The destination
+# is taken from the ADDRESS being delivered to, never from the request body --
+# a caller once declared "NG" while shipping to America, and only the address
+# reached the order. Two crossed probes pin both halves:
+#   - body ZM + a US address    -> 422 outside-delivery-area: the address
+#     decides, and abroad is refused -- never quoted, never charged zero;
+#   - body US + the Lusaka one  -> 200, self-collect at K0: the body is ignored.
+# If the body decided, the first would pass and the second would be refused.
 $usAddr = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me/addresses" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ label="Overseas"; line1="1 Fifth Avenue"; city="New York"; postalCode="10003"; country="US"; isDefault=$false })
 
-$lie = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/checkout/preview" `
-    -Headers @{ Authorization="Bearer $alice" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="NG"; shippingAddressId=$usAddr.id })
-if ($lie.shippingCost -ne 1125.00) {
-    Write-Error ("Zone taken from the request body: shipping quoted $($lie.shippingCost) " +
-                 "for a US address while the body claimed NG. Expected 1125.00 " +
-                 "(INTERNATIONAL); 125.00 means the client still picks the zone.")
-    exit 1
-}
-if ($lie.shippingZone -ne "INTERNATIONAL") {
-    Write-Error "Quote should name the INTERNATIONAL zone, got $($lie.shippingZone)"
-    exit 1
-}
-# K200 bag, no promo code: the whole K1,125 lands on the total. The old
-# behaviour billed K325 for the same shipment.
-if ($lie.total -ne 1325.00) {
-    Write-Error "Total should be 200 + 1125 = 1325.00, got $($lie.total)"
-    exit 1
+function Expect-Refusal($Uri, $Body, $Status, $TypeSuffix, $What) {
+    try {
+        Invoke-RestMethod -Method POST -Uri $Uri `
+            -Headers @{ Authorization="Bearer $alice" } `
+            -ContentType "application/json" -Body (ConvertTo-Json $Body) | Out-Null
+        Write-Error "$What was ACCEPTED; expected $Status"
+        exit 1
+    }
+    catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+        if ($code -ne $Status) {
+            Write-Error "$What should be $Status, got $code"
+            exit 1
+        }
+        if ($TypeSuffix) {
+            $type = ($_.ErrorDetails.Message | ConvertFrom-Json).type
+            if (-not "$type".EndsWith($TypeSuffix)) {
+                Write-Error "$What should carry problem type $TypeSuffix, got $type"
+                exit 1
+            }
+        }
+    }
 }
 
-# The crossed direction, which is what gives the pair its teeth: the SAME two
-# fields, swapped. Body says US (INTERNATIONAL, K1,125), address says NG
-# (DOMESTIC, K125). If the body still decided, this would quote K1,125; if
-# checkout ignored both and fell back to a fixed zone, one of the two probes
-# would fail. Only "the address decides" satisfies both.
+Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
+    @{ destinationCountry="ZM"; shippingAddressId=$usAddr.id } 422 "outside-delivery-area" `
+    "A preview to a US address (body claiming ZM)"
+
 $crossed = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ destinationCountry="US"; shippingAddressId=$addrId })
-if ($crossed.shippingCost -ne 125.00 -or $crossed.shippingZone -ne "DOMESTIC") {
-    Write-Error ("Crossed probe: body US + address NG should quote DOMESTIC 125.00, " +
-                 "got $($crossed.shippingZone) $($crossed.shippingCost). Together with " +
-                 "the probe above this pins the zone to the address in both directions.")
+if ($crossed.shippingCost -ne 0.00 -or $crossed.shippingOptions[0].code -ne "SELF_COLLECT") {
+    Write-Error ("Crossed probe: body US + Lusaka address should quote SELF_COLLECT at 0.00, " +
+                 "got $($crossed.shippingOptions[0].code) $($crossed.shippingCost). Together with " +
+                 "the probe above this pins the destination to the address in both directions.")
     exit 1
 }
 
 # An address that is not the caller's is refused outright, and the refusal
 # names neither "not yours" nor "does not exist" -- customer-service lists only
 # the caller's own, so checkout genuinely cannot tell which it was.
-try {
-    Invoke-RestMethod -Method POST `
-        -Uri "http://localhost:8080/api/v1/checkout/preview" `
-        -Headers @{ Authorization="Bearer $alice" } `
-        -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ destinationCountry="NG"; shippingAddressId="11111111-2222-3333-4444-555555555555" }) | Out-Null
-    Write-Error "An address belonging to nobody was ACCEPTED for a shipping quote"
+Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
+    @{ destinationCountry="ZM"; shippingAddressId="11111111-2222-3333-4444-555555555555" } 400 $null `
+    "A preview to an address belonging to nobody"
+
+# Shipping itself, through the gateway: abroad is a 422 of the shared type,
+# Zambia is exactly one option.
+Expect-Refusal "http://localhost:8080/api/v1/shipping/rates" `
+    @{ destinationCountry="US"; subtotal=100.00; currency="ZMW" } 422 "outside-delivery-area" `
+    "A shipping quote for the US"
+$rates = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/shipping/rates" `
+    -Headers @{ Authorization="Bearer $alice" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ destinationCountry="ZM"; subtotal=100.00; currency="ZMW" })
+if (@($rates.options).Count -ne 1 -or $rates.options[0].code -ne "SELF_COLLECT" -or $rates.options[0].cost -ne 0) {
+    Write-Error "Shipping should offer Zambia exactly SELF_COLLECT at 0, got $(ConvertTo-Json $rates.options -Compress)"
     exit 1
 }
-catch {
-    $code = $_.Exception.Response.StatusCode.value__
-    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
-    if ($code -ne 400) {
-        Write-Error "A foreign address id should be 400, got $code"
-        exit 1
-    }
-}
-Write-Host "    NG body + US address -> INTERNATIONAL K1,125; US body + NG address -> DOMESTIC K125; foreign address 400" -ForegroundColor Gray
-
+Write-Host "    US address -> 422 outside-delivery-area; US body + Lusaka address -> SELF_COLLECT K0; foreign address 400; rates ZM -> SELF_COLLECT only" -ForegroundColor Gray
 Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
 # Drive the saga under a traceparent WE generate, so the trace id is known up
 # front instead of being recovered afterwards by scraping the backend for
@@ -468,7 +474,7 @@ $confirm = Invoke-RestMethod -Method POST `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{
         shippingAddressId = $addrId
-        destinationCountry = "NG"
+        destinationCountry = "ZM"
         cardNumber = "4242424242424242"
         promotionCode = $promoCode
         # Echoed from step 5, which is the whole mechanism: the server
@@ -503,7 +509,7 @@ try {
         -ContentType "application/json" `
         -Body (ConvertTo-Json @{
             shippingAddressId = $addrId
-            destinationCountry = "NG"
+            destinationCountry = "ZM"
             cardNumber = "4242424242424242"
             pricingVersion = "0000000000000000000000000000000000000000000000000000000000000000"
         }) | Out-Null
@@ -601,7 +607,7 @@ if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index 
 try {
     Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/checkout/preview" `
         -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ destinationCountry="NG" }) | Out-Null
+        -Body (ConvertTo-Json @{ destinationCountry="ZM" }) | Out-Null
     Write-Error "Expected 401 without JWT"
     exit 1
 } catch {

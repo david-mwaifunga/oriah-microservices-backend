@@ -2,38 +2,42 @@ package com.oriah.shipping.service;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Locale;
 
 import org.springframework.stereotype.Service;
 
 import com.oriah.shipping.config.ShippingTariff;
 import com.oriah.shipping.dto.RateResponse;
+import com.oriah.shipping.exception.OutsideDeliveryAreaException;
 import com.oriah.shipping.model.ShippingOption;
-import com.oriah.shipping.model.Zone;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Flat-rate calculator. Free standard shipping above a per-zone threshold (a
- * cheap promo encoded directly into the carrier). A real implementation would
- * call FedEx/DHL APIs and account for weight + dimensions.
+ * What delivery Oriah offers, and at what price.
  *
- * <h2>The rate card is configuration, and it is denominated</h2>
+ * <h2>Until Phase 7: Zambia only, self-collect only</h2>
  *
- * Every cost, threshold and currency used to be compiled into the switch
- * below, with the literal {@code "USD"} on each option. The brand prices in
- * Kwacha, and a currency is not a label on a price -- it decides what the
- * number means. Relabelling the USD card would have started free shipping at
- * roughly six dollars and charged about twenty cents to deliver a ring. The
- * card now comes from {@link ShippingTariff}.
+ * The old rate card (express, regional, international, a K125 "domestic"
+ * standard and a K3,750 free-delivery threshold) was a USD list multiplied by
+ * 25 that nobody chose, and its "domestic" zone was Nigeria -- a Lusaka
+ * customer was charged the international K1,125. The owner prices delivery
+ * per town (Phase 7), and chose self-collect only until then (2026-11-08). So
+ * Zambia is offered exactly one option, {@link ShippingOption#SELF_COLLECT}
+ * at K0, and any other country is refused (MVP_PLAN Phase 0, item 1).
  *
- * <p>Asked to quote in a currency the card is not written in, this service
- * refuses. Converting needs an exchange rate, and a rate invented inside a
- * shipping calculator misprices every order silently, where a refusal is
- * visible on the first request.
+ * <h2>The currency is still checked</h2>
+ *
+ * Asked to quote in a currency this service does not publish, it refuses
+ * (400). Converting needs an exchange rate, and a rate invented inside a
+ * shipping calculator misprices every order silently.
  */
 @Service
 @Slf4j
 public class ShippingService {
+
+    /** The only country Oriah delivers to. */
+    static final String ZAMBIA = "ZM";
 
     private final ShippingTariff tariff;
 
@@ -43,21 +47,31 @@ public class ShippingService {
 
     /**
      * @param requestedCurrency what the caller's money is denominated in, or
-     *                          null to accept this service's own currency.
-     *                          Optional so that adding it stayed an ADDITIVE
-     *                          change to shipping's published contract; the
-     *                          only caller (checkout) always sends it, and
-     *                          checks the answer again on its side.
-     * @throws IllegalArgumentException the caller asked for a currency this
-     *                                  rate card is not written in -- 400, and
-     *                                  deliberately not a silent conversion
+     *                          null to accept this service's own currency
+     * @param deliveryOption    null for every offered option, or one code to
+     *                          quote only that option (empty when not offered)
+     * @throws IllegalArgumentException     a currency this service does not quote in (400)
+     * @throws OutsideDeliveryAreaException any country but Zambia (422)
      */
-    public RateResponse quote(String countryCode, BigDecimal subtotal, String requestedCurrency) {
+    public RateResponse quote(String countryCode, BigDecimal subtotal, String requestedCurrency,
+                              String deliveryOption) {
         requireQuotableCurrency(requestedCurrency);
-        Zone zone = Zone.classify(countryCode);
-        log.debug("quote country={} zone={} subtotal={} {}",
-                countryCode, zone, subtotal, tariff.currency());
-        return new RateResponse(countryCode.toUpperCase(), zone, optionsFor(zone, subtotal));
+        String country = countryCode == null ? "" : countryCode.trim().toUpperCase(Locale.ROOT);
+        if (!ZAMBIA.equals(country)) {
+            throw new OutsideDeliveryAreaException();
+        }
+        List<ShippingOption> offered = List.of(selfCollect()).stream()
+                .filter(o -> deliveryOption == null || o.code().equals(deliveryOption))
+                .toList();
+        log.debug("quote country={} subtotal={} {} option={} offered={}",
+                country, subtotal, tariff.currency(), deliveryOption, offered.size());
+        return new RateResponse(country, offered);
+    }
+
+    /** The customer collects from Oriah, at no charge; nobody has promised a time. */
+    private ShippingOption selfCollect() {
+        return new ShippingOption(ShippingOption.SELF_COLLECT, "Oriah Jewelry", "Self-collect",
+                new BigDecimal("0.00"), tariff.currency(), null, null);
     }
 
     private void requireQuotableCurrency(String requested) {
@@ -71,47 +85,5 @@ public class ShippingService {
             throw new IllegalArgumentException("Shipping rates are published in "
                     + tariff.currency() + "; cannot quote in " + requested.trim());
         }
-    }
-
-    private List<ShippingOption> optionsFor(Zone zone, BigDecimal subtotal) {
-        ShippingTariff.ZoneTariff rates = switch (zone) {
-            case DOMESTIC -> tariff.domestic();
-            case REGIONAL -> tariff.regional();
-            case INTERNATIONAL -> tariff.international();
-        };
-        return switch (zone) {
-            case DOMESTIC -> List.of(
-                    standard("Local Courier", "Standard", rates, 2, 4, subtotal),
-                    express("Local Courier", "Express", rates, 1, 2)
-            );
-            case REGIONAL -> List.of(
-                    standard("Pan-African", "Standard", rates, 5, 10, subtotal),
-                    express("Pan-African", "Express", rates, 2, 4)
-            );
-            case INTERNATIONAL -> List.of(
-                    standard("DHL", "International", rates, 7, 14, subtotal),
-                    express("DHL", "Express International", rates, 3, 6)
-            );
-        };
-    }
-
-    /** Standard option, free when the subtotal reaches the zone's threshold. */
-    private ShippingOption standard(String carrier, String service,
-                                    ShippingTariff.ZoneTariff rates,
-                                    int etaMin, int etaMax, BigDecimal subtotal) {
-        BigDecimal cost = subtotal.compareTo(rates.freeOver()) >= 0
-                ? BigDecimal.ZERO
-                : rates.standardCost();
-        return new ShippingOption(carrier, service, cost, tariff.currency(), etaMin, etaMax);
-    }
-
-    /**
-     * Express is never free. A shopper paying for speed is buying something
-     * the free-over-threshold promo does not cover.
-     */
-    private ShippingOption express(String carrier, String service,
-                                   ShippingTariff.ZoneTariff rates, int etaMin, int etaMax) {
-        return new ShippingOption(carrier, service, rates.expressCost(),
-                tariff.currency(), etaMin, etaMax);
     }
 }

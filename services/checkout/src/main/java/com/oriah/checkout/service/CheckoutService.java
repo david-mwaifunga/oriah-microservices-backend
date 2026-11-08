@@ -1,5 +1,7 @@
 package com.oriah.checkout.service;
 
+import com.oriah.observability.ProblemTypes;
+import com.oriah.checkout.exception.OutsideDeliveryAreaException;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -222,7 +224,7 @@ public class CheckoutService {
             // null for the same reason: there is nothing to denominate.
             return new PreviewResponse(
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
-                    null, null, List.of(), null, null
+                    null, null, List.of(), null
             );
         }
         // Repriced here too, not just in confirm. The plan for this phase
@@ -245,22 +247,19 @@ public class CheckoutService {
         }
 
         BigDecimal afterDiscount = subtotal.subtract(discount);
-        // Derived here as well as in confirm, and not only for tidiness: if
-        // only confirm derived it, a mismatched body would make preview quote
-        // the cheap zone and confirm the dear one -- and the shipping half of
-        // the pricing version would then refuse every attempt while preview
-        // kept showing the wrong zone. An unbreakable loop.
+        // Derived here as well as in confirm: the destination is the ADDRESS's
+        // country, never the body's, so preview and confirm quote the same place
+        // -- and an address abroad is refused at preview, before the shopper
+        // has typed a card.
         String destination = resolveDestination(req.shippingAddressId(), req.destinationCountry());
         var rates = quoteShipping(destination, afterDiscount, priced.currency());
         requireQuotedInBagCurrency(rates, priced.currency());
         List<PreviewResponse.ShippingOptionDto> options = new ArrayList<>();
         BigDecimal cheapest = BigDecimal.ZERO;
-        String zone = null;
-        if (rates != null && rates.options() != null) {
-            zone = rates.zone();
+        if (rates.options() != null) {
             for (var o : rates.options()) {
                 options.add(new PreviewResponse.ShippingOptionDto(
-                        o.carrier(), o.service(), o.cost(), o.etaDaysMin(), o.etaDaysMax()));
+                        o.code(), o.carrier(), o.service(), o.cost(), o.etaDaysMin(), o.etaDaysMax()));
             }
             cheapest = rates.options().stream()
                     .map(ShippingClient.ShippingOption::cost)
@@ -269,13 +268,12 @@ public class CheckoutService {
         }
 
         BigDecimal total = afterDiscount.add(cheapest);
-        // The token covers the shipping component as well as the prices: an
-        // items-only quote shown during a shipping outage must not validate a
-        // confirm that can now add shipping to it.
+        // The token needs no shipping half any more: preview never shows an
+        // items-only quote, because quoteShipping refuses rather than
+        // returning nothing (Phase 0, item 1), so there is no quote without
+        // shipping in it for a later confirm to add shipping to.
         return new PreviewResponse(subtotal, discount, cheapest, total,
-                priced.currency(), applied, options, zone,
-                PricingVersion.compose(priced.pricingVersion(),
-                        PricingVersion.shippingComponent(zone, rates != null)));
+                priced.currency(), applied, options, priced.pricingVersion());
     }
 
     /**
@@ -338,30 +336,6 @@ public class CheckoutService {
                     echoed, priced.pricingVersion());
             throw new PricingChangedException(
                     priced.lines().stream().map(OrderClient.LineItem::variantId).toList());
-        }
-    }
-
-    /**
-     * Refuses a confirm whose SHIPPING component has moved since the quote.
-     *
-     * <p>The case that matters is a shipping outage during preview: the shopper
-     * reads an items-only total, shipping recovers, and confirm would charge
-     * more than the screen said. The catalog prices are identical, so the
-     * price half validates -- this is the half that notices.
-     *
-     * <p>Tolerant of a token with no shipping half, so an older client (or the
-     * contract's own additive window) is not locked out; such a token simply
-     * does not get this protection.
-     */
-    private void requireAgreedShipping(String echoed, String zone, boolean quoted) {
-        String agreed = PricingVersion.shippingHalfOf(echoed);
-        if (agreed.isEmpty()) {
-            return;
-        }
-        String current = PricingVersion.shippingComponent(zone, quoted);
-        if (!agreed.equals(current)) {
-            log.info("409 shipping moved since the quote: agreed {}, current {}", agreed, current);
-            throw new PricingChangedException(List.of());
         }
     }
 
@@ -435,22 +409,45 @@ public class CheckoutService {
                 });
     }
 
+    /**
+     * The delivery options for a destination. Never null, and never a quiet
+     * zero (Phase 0, item 1):
+     *
+     * <ul>
+     *   <li>shipping refuses with {@code outside-delivery-area} -- an address
+     *       abroad -> {@link OutsideDeliveryAreaException}, 422, in checkout's
+     *       own words; the shopper can act on it;</li>
+     *   <li>shipping refuses with any other 4xx -> we sent something wrong:
+     *       {@link DownstreamRejectedException}, 500;</li>
+     *   <li>shipping does not answer, or answers 5xx -> 503, nothing charged.
+     *       This used to degrade to free delivery; a price the shopper never
+     *       agreed is not a safe direction to be wrong in.</li>
+     * </ul>
+     */
     private ShippingClient.RateResponse quoteShipping(String country, BigDecimal afterDiscount,
                                                       String currency) {
+        ShippingClient.RateResponse rates;
         try {
-            return resilient.callOrThrow("shipping", () -> shipping.rates(
+            rates = resilient.callOrThrow("shipping", () -> shipping.rates(
                     new ShippingClient.RateRequest(country, afterDiscount, currency)));
         } catch (RuntimeException e) {
             int answered = ResilientFeignCaller.answeredStatus(e);
             if (answered >= 400 && answered < 500) {
+                if (ResilientFeignCaller.answeredProblemType(e)
+                        .filter(ProblemTypes.OUTSIDE_DELIVERY_AREA::equals).isPresent()) {
+                    log.info("422 no delivery to {}: outside Zambia", country);
+                    throw new OutsideDeliveryAreaException();
+                }
                 log.error("shipping REFUSED a {} quote for {} with {} -- configuration "
                                 + "mismatch, not an outage", currency, country, answered, e);
-                throw new DownstreamRejectedException("shipping");
+                throw new DownstreamRejectedException("shipping", answered, e);
             }
-            log.warn("No shipping quote for country={} ({}); charging zero shipping",
-                    country, answered < 0 ? "no response" : answered);
-            return null;
+            throw new DownstreamUnavailableException("shipping", e);
         }
+        if (rates == null) {
+            throw new DownstreamRejectedException("shipping");
+        }
+        return rates;
     }
 
     private void requireQuotedInBagCurrency(ShippingClient.RateResponse rates, String bagCurrency) {
@@ -561,21 +558,16 @@ public class CheckoutService {
         }
         BigDecimal afterDiscount = subtotal.subtract(discount);
 
-        // 2) Shipping (cheapest). Still degrades to free rather than failing
-        // the order: an unreachable rate service should not stop a sale, and
-        // under-charging ourselves is the safe direction to be wrong in.
+        // 2) Shipping (cheapest). An unreachable rate service is a 503 and an
+        // address abroad a 422 -- never a sale with delivery charged at zero
+        // (Phase 0, item 1): the delivery price is agreed before anything is
+        // charged (Q24).
         BigDecimal shippingCost = BigDecimal.ZERO;
         // confirm ALWAYS has an address, so the body's country is always
         // ignored here. This is the call that decides the charge.
         String destination = resolveDestination(req.shippingAddressId(), req.destinationCountry());
         var rates = quoteShipping(destination, afterDiscount, priced.currency());
         requireQuotedInBagCurrency(rates, priced.currency());
-        // The second half of the agreement, checked as soon as it is knowable:
-        // the quote depends on the discounted subtotal, so it cannot be known
-        // before the promo has been applied. Still before anything is ordered,
-        // charged or redeemed.
-        requireAgreedShipping(req.pricingVersion(),
-                rates == null ? null : rates.zone(), rates != null);
         if (rates != null && rates.options() != null && !rates.options().isEmpty()) {
             shippingCost = rates.options().stream()
                     .map(ShippingClient.ShippingOption::cost)

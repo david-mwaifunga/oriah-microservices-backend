@@ -148,4 +148,34 @@ class ResilientFeignCallerTest {
                 .hasSize(3)
                 .allSatisfy(seen -> assertThat(seen).isSameAs(authentication));
     }
+
+    // ------------------------------------------- what a refusing service said
+
+    private static feign.FeignException refusal(int status, byte[] body) {
+        feign.Request request = feign.Request.create(feign.Request.HttpMethod.POST,
+                "http://shipping/api/v1/shipping/rates", java.util.Map.of(), new byte[0],
+                java.nio.charset.StandardCharsets.UTF_8, new feign.RequestTemplate());
+        return feign.FeignException.errorStatus("ShippingClient#rates(RateRequest)",
+                feign.Response.builder().status(status).reason("refused").request(request)
+                        .headers(java.util.Map.of()).body(body).build());
+    }
+
+    @Test
+    void answeredProblemTypeReadsTheProblemBody() {
+        byte[] body = "{\"type\":\"https://oriah.dev/problems/outside-delivery-area\",\"status\":422}"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        // Wrapped, as a decorator would: the type is read off the cause chain.
+        RuntimeException wrapped = new RuntimeException("decorated", refusal(422, body));
+
+        assertThat(ResilientFeignCaller.answeredProblemType(wrapped))
+                .contains(java.net.URI.create("https://oriah.dev/problems/outside-delivery-area"));
+    }
+
+    @Test
+    void answeredProblemTypeIsEmptyForANonProblemBody() {
+        assertThat(ResilientFeignCaller.answeredProblemType(refusal(422, new byte[0]))).isEmpty();
+        assertThat(ResilientFeignCaller.answeredProblemType(
+                refusal(500, "<html>gateway</html>".getBytes(java.nio.charset.StandardCharsets.UTF_8)))).isEmpty();
+        assertThat(ResilientFeignCaller.answeredProblemType(new IllegalStateException("no answer at all"))).isEmpty();
+    }
 }

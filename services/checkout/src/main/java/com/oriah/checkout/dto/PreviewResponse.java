@@ -11,7 +11,6 @@ public record PreviewResponse(
         String currency,
         String appliedPromotion,
         List<ShippingOptionDto> shippingOptions,
-        String shippingZone,
 
         /**
          * The prices this quote was built from, as an opaque token.
@@ -25,6 +24,7 @@ public record PreviewResponse(
          */
         String pricingVersion
 ) {
-    public record ShippingOptionDto(String carrier, String service, BigDecimal cost,
+    /** {@code code} is what the shopper picks and sends back, e.g. SELF_COLLECT. */
+    public record ShippingOptionDto(String code, String carrier, String service, BigDecimal cost,
                                     Integer etaDaysMin, Integer etaDaysMax) {}
 }

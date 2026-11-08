@@ -11,6 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import com.oriah.checkout.exception.DownstreamUnavailableException;
+import com.oriah.checkout.exception.OutsideDeliveryAreaException;
 import com.oriah.checkout.client.CartClient;
 import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
@@ -137,7 +139,7 @@ class ConfirmPricingTest {
         intentSucceeds();
         // By default the address agrees with the request body, so the other
         // tests in this class exercise their own subject rather than this one.
-        addressIsIn("NG");
+        addressIsIn("ZM");
     }
 
     /** The entry the catalog stub is currently answering with. */
@@ -177,8 +179,8 @@ class ConfirmPricingTest {
         // doReturn, not when(...): rates() may already be stubbed to throw, and
         // when(mock.rates(any())) would CALL it while setting up the new stub.
         doReturn(new ShippingClient.RateResponse(
-                "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
-                        "Local Courier", "Standard", new BigDecimal(cost), "ZMW", 2, 4))))
+                "ZM", List.of(new ShippingClient.ShippingOption(
+                        "SELF_COLLECT", "Local Courier", "Standard", new BigDecimal(cost), "ZMW", 2, 4))))
                 .when(shipping).rates(any());
     }
 
@@ -192,6 +194,19 @@ class ConfirmPricingTest {
                         .request(request).headers(Map.of()).build());
     }
 
+    /** A FeignException carrying a problem+json body of the given type, as shipping answers. */
+    private static FeignException feignProblem(int status, String type) {
+        Request request = Request.create(Request.HttpMethod.POST,
+                "http://shipping/api/v1/shipping/rates", Map.of(),
+                new byte[0], StandardCharsets.UTF_8, new RequestTemplate());
+        byte[] body = ("{\"type\":\"" + type + "\",\"status\":" + status + ",\"detail\":\"refused\"}")
+                .getBytes(StandardCharsets.UTF_8);
+        return FeignException.errorStatus("ShippingClient#rates(RateRequest)",
+                Response.builder().status(status).reason("refused").request(request)
+                        .headers(Map.of("Content-Type", List.of("application/problem+json")))
+                        .body(body).build());
+    }
+
     /** The caller's one address, in the given country. */
     private void addressIsIn(String country) {
         doReturn(List.of(new CustomerClient.Address(ADDRESS, country)))
@@ -200,8 +215,8 @@ class ConfirmPricingTest {
 
     private void shippingIsFree() {
         when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
-                "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
-                        "Local Courier", "Standard", BigDecimal.ZERO, "ZMW", 2, 4))));
+                "ZM", List.of(new ShippingClient.ShippingOption(
+                        "SELF_COLLECT", "Local Courier", "Standard", BigDecimal.ZERO, "ZMW", 2, 4))));
     }
 
     private void orderIsPlaced() {
@@ -219,7 +234,7 @@ class ConfirmPricingTest {
     }
 
     private ConfirmRequest confirmRequest() {
-        return new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null, currentVersion());
+        return new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null, currentVersion());
     }
 
     // ------------------------------------------------------------- the fix
@@ -267,11 +282,11 @@ class ConfirmPricingTest {
     void previewChargesWhatItShowed() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
 
-        PreviewResponse preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
+        PreviewResponse preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
         // The real round trip: confirm echoes the token preview handed out,
         // which is what a storefront does and what the staleness check exists
         // to make meaningful.
-        service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+        service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
                 preview.pricingVersion()), "key-3");
 
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
@@ -307,28 +322,41 @@ class ConfirmPricingTest {
     // ---------------------------------- the zone is not the client's to choose
 
     @Test
-    @DisplayName("the shipping zone comes from the ADDRESS, not from the request body")
-    void theZoneComesFromTheAddressNotTheRequest() {
+    @DisplayName("an address outside Zambia is refused with a reason the shopper can act on, and nothing is placed")
+    void anAddressOutsideZambiaIsRefusedWithAReasonTheShopperCanActOn() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // The shopper's address is in the United States, which is
-        // INTERNATIONAL -- 1,125.00 standard, free only over 12,500.00. The
-        // request claims NG, which is DOMESTIC: 125.00 standard, free over
-        // 3,750.00. A K4,000 bag shipped internationally would be charged
-        // 0.00 instead of 1,125.00.
+        // The body claims ZM; the address is in the United States. The address
+        // wins, as it always has -- and shipping now refuses it, because Oriah
+        // delivers within Zambia only (Phase 0, item 1).
         addressIsIn("US");
+        doThrow(feignProblem(422, "https://oriah.dev/problems/outside-delivery-area")).when(shipping).rates(any());
 
-        service.confirm(confirmRequest(), "key-30");
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-30"))
+                .isInstanceOf(OutsideDeliveryAreaException.class)
+                .hasMessage("We deliver within Zambia only.");
 
         ArgumentCaptor<ShippingClient.RateRequest> rates =
                 ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
         verify(shipping).rates(rates.capture());
         assertThat(rates.getValue().destinationCountry())
-                .as("the country of the address being shipped to, not the one the "
-                        + "caller typed -- this is the same defect the phase fixed for "
-                        + "prices, one leg over")
+                .as("the country of the address, not the one the caller typed")
                 .isEqualTo("US");
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
     }
 
+    @Test
+    @DisplayName("shipping answering 422 of ANOTHER type is not mistaken for 'outside Zambia'")
+    void aShipping422OfAnotherTypeIsNotMistakenForOutsideZambia() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // The pass-through is keyed on the problem type, not the status: a 422
+        // checkout does not recognise is still our request being refused.
+        doThrow(feignProblem(422, "https://oriah.dev/problems/validation")).when(shipping).rates(any());
+
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-35"))
+                .isInstanceOf(DownstreamRejectedException.class);
+        verify(order, never()).place(any());
+    }
     @Test
     @DisplayName("an address that is not the shopper's is refused, and nothing is ordered")
     void anAddressThatIsNotTheShoppersIsRefused() {
@@ -362,23 +390,32 @@ class ConfirmPricingTest {
     }
 
     @Test
-    @DisplayName("preview quotes the address's zone too, so its total matches what confirm charges")
-    void previewUsesTheAddressZoneAsWell() {
+    @DisplayName("preview refuses an address outside Zambia exactly as confirm does")
+    void previewOutsideZambiaIsRefusedLikeConfirm() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
         addressIsIn("US");
+        doThrow(feignProblem(422, "https://oriah.dev/problems/outside-delivery-area")).when(shipping).rates(any());
 
-        service.preview(new PreviewRequest("NG", null, ADDRESS));
+        assertThatThrownBy(() -> service.preview(new PreviewRequest("ZM", null, ADDRESS)))
+                .isInstanceOf(OutsideDeliveryAreaException.class);
 
         ArgumentCaptor<ShippingClient.RateRequest> rates =
                 ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
         verify(shipping).rates(rates.capture());
-        // If only confirm derived the country, a mismatched request would make
-        // preview quote the cheap zone and confirm the dear one -- and the
-        // shipping half of the pricing version would then 409 every attempt,
-        // with preview still showing the wrong zone. An unbreakable loop.
         assertThat(rates.getValue().destinationCountry()).isEqualTo("US");
     }
 
+    @Test
+    @DisplayName("preview echoes each option's code, so the shopper's choice can be sent back")
+    void previewEchoesEachOptionsCode() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+
+        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
+
+        assertThat(preview.shippingOptions())
+                .extracting(PreviewResponse.ShippingOptionDto::code)
+                .containsExactly("SELF_COLLECT");
+    }
     // ------------------------------------- what the review found, as tests
 
     @Test
@@ -403,7 +440,7 @@ class ConfirmPricingTest {
                         "Cuff", "Cuff", new BigDecimal("250.00"), "USD"))));
 
         assertThatThrownBy(() -> service.confirm(
-                new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null, "any"), "key-20"))
+                new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null, "any"), "key-20"))
                 .isInstanceOf(MixedCurrencyException.class);
 
         verify(order, never()).place(any());
@@ -429,57 +466,40 @@ class ConfirmPricingTest {
     }
 
     @Test
-    @DisplayName("shipping being UNREACHABLE is still free shipping, not an error")
-    void aShippingOutageIsStillFree() {
+    @DisplayName("shipping being UNREACHABLE refuses to confirm: never a sale with delivery charged at zero")
+    void aShippingOutageRefusesToConfirm() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // The documented degrade must survive the fix above: a courier outage
-        // (no response at all) must not stop a sale. 503 and a connection
-        // failure both land here.
+        // This used to degrade to free delivery. The owner prices delivery and
+        // a quote is agreed before anything is charged (Q24), so an outage now
+        // means "try again", never a sale at a delivery price nobody agreed.
         doThrow(feign(503)).when(shipping).rates(any());
 
-        service.confirm(confirmRequest(), "key-22");
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-22"))
+                .isInstanceOf(DownstreamUnavailableException.class);
 
-        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
-                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
-        assertThat(intent.getValue().amount()).isEqualByComparingTo(REAL_PRICE);
-    }
-
-    @Test
-    @DisplayName("a shipping outage at PREVIEW does not let confirm charge more than it showed")
-    void aShippingOutageAtPreviewCannotOverchargeAtConfirm() {
-        catalogSays("PRICED", REAL_PRICE, "ZMW");
-
-        // Shipping is down while the shopper reaches the review step, so the
-        // quote they read is items-only and the Place order button is enabled.
-        doThrow(feign(503)).when(shipping).rates(any());
-        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
-        assertThat(preview.shippingCost()).isEqualByComparingTo("0.00");
-        assertThat(preview.total()).isEqualByComparingTo(REAL_PRICE);
-
-        // The circuit half-opens while they type their card, and shipping
-        // answers again.
-        shippingCosts("125.00");
-
-        // The catalog prices are byte-identical, so a digest over catalog
-        // alone validates and the card is charged MORE than the screen said.
-        // That is the one direction the staleness guard exists to make
-        // impossible.
-        assertThatThrownBy(() -> service.confirm(new ConfirmRequest(ADDRESS, "NG",
-                "4242424242424242", null, preview.pricingVersion()), "key-23"))
-                .isInstanceOf(PricingChangedException.class);
-
+        verify(order, never()).place(any());
         verify(payment, never()).createIntent(any());
     }
+    @Test
+    @DisplayName("a shipping outage at PREVIEW gives no quote at all, so nothing unseen can be confirmed")
+    void aPreviewDuringAShippingOutageIssuesNoToken() {
+        catalogSays("PRICED", REAL_PRICE, "ZMW");
+        // It used to answer with an items-only quote and a token; confirm then
+        // needed a second guard so it could not charge more once shipping
+        // returned. With no quote and no token, there is nothing to confirm.
+        doThrow(feign(503)).when(shipping).rates(any());
 
+        assertThatThrownBy(() -> service.preview(new PreviewRequest("ZM", null, ADDRESS)))
+                .isInstanceOf(DownstreamUnavailableException.class);
+    }
     @Test
     @DisplayName("a shipping quote appearing between preview and confirm is fine if it was quoted at both")
     void aStableShippingQuoteDoesNotInvalidateTheVersion() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
         shippingCosts("125.00");
 
-        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
-        service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
+        service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
                 preview.pricingVersion()), "key-24");
 
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
@@ -500,7 +520,7 @@ class ConfirmPricingTest {
         // What a shopper sends after an admin repriced the ring between their
         // preview and their Place order: a token for prices that no longer
         // exist.
-        ConfirmRequest stale = new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+        ConfirmRequest stale = new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
                 "0000000000000000000000000000000000000000000000000000000000000000");
 
         assertThatThrownBy(() -> service.confirm(stale, "key-12"))
@@ -519,8 +539,8 @@ class ConfirmPricingTest {
     void theVersionFromPreviewIsAccepted() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
 
-        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
-        var response = service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242",
+        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
+        var response = service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242",
                 null, preview.pricingVersion()), "key-13");
 
         assertThat(response.orderId()).isEqualTo(ORDER_ID);
@@ -530,7 +550,7 @@ class ConfirmPricingTest {
     @DisplayName("changing a quantity does not invalidate the version")
     void aQuantityEditDoesNotInvalidateTheVersion() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
-        var preview = service.preview(new PreviewRequest("NG", null, ADDRESS));
+        var preview = service.preview(new PreviewRequest("ZM", null, ADDRESS));
 
         // The shopper nudges the stepper from 1 to 3 after previewing. No price
         // changed, so their token must still be good: a version that included
@@ -541,7 +561,7 @@ class ConfirmPricingTest {
                 List.of(new CartClient.CartItem(UUID.randomUUID(), VARIANT,
                         "Free ring please", 3, ONE_CENT, ONE_CENT))));
 
-        service.confirm(new ConfirmRequest(ADDRESS, "NG", "4242424242424242", null,
+        service.confirm(new ConfirmRequest(ADDRESS, "ZM", "4242424242424242", null,
                 preview.pricingVersion()), "key-14");
 
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
@@ -579,8 +599,8 @@ class ConfirmPricingTest {
         // Unlike an outage, this is a configuration mismatch: paper over it
         // with free shipping and the mistake is permanent and invisible.
         when(shipping.rates(any())).thenReturn(new ShippingClient.RateResponse(
-                "NG", "DOMESTIC", List.of(new ShippingClient.ShippingOption(
-                        "DHL", "International", new BigDecimal("45.00"), "USD", 7, 14))));
+                "ZM", List.of(new ShippingClient.ShippingOption(
+                        "SELF_COLLECT", "DHL", "International", new BigDecimal("45.00"), "USD", 7, 14))));
 
         assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-10"))
                 .isInstanceOf(RuntimeException.class);
@@ -590,25 +610,17 @@ class ConfirmPricingTest {
     }
 
     @Test
-    @DisplayName("shipping being UNREACHABLE still degrades to free, as it always has")
-    void anUnreachableShippingServiceStillDegradesToFree() {
+    @DisplayName("shipping failing with no answer at all is a 503 too, before anything is ordered")
+    void anUnreachableShippingServiceIsServiceUnavailable() {
         catalogSays("PRICED", REAL_PRICE, "ZMW");
-        // Pinned so the refusal above cannot quietly become a refusal here.
-        // An unreachable rate service must not stop a sale -- under-charging
-        // ourselves by the shipping cost is the safe direction to be wrong in,
-        // and that is a deliberate, documented choice rather than an oversight.
         when(shipping.rates(any())).thenThrow(new IllegalStateException("shipping is down"));
 
-        service.confirm(confirmRequest(), "key-11");
+        assertThatThrownBy(() -> service.confirm(confirmRequest(), "key-11"))
+                .isInstanceOf(DownstreamUnavailableException.class);
 
-        ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
-                ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
-        assertThat(intent.getValue().amount())
-                .as("the items, with no shipping added")
-                .isEqualByComparingTo(REAL_PRICE);
+        verify(order, never()).place(any());
+        verify(payment, never()).createIntent(any());
     }
-
     @Test
     @DisplayName("a line catalog will not price is never ordered and never charged")
     void anUnpublishedLineIsRefusedEntirely() {

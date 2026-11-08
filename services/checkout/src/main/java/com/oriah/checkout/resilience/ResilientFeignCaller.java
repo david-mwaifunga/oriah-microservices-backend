@@ -155,4 +155,39 @@ public class ResilientFeignCaller {
         }
         return -1;
     }
+
+    /** The {@code "type"} member of a problem+json body. */
+    private static final java.util.regex.Pattern PROBLEM_TYPE =
+            java.util.regex.Pattern.compile("\"type\"\\s*:\\s*\"([^\"]+)\"");
+
+    /**
+     * WHAT a refusing downstream said, not just that it refused: the problem
+     * {@code type} of its problem+json body, or empty when there is no answer,
+     * no body, or no type.
+     *
+     * <p>Lets a caller pass on the one refusal the shopper can act on -- shipping's
+     * {@code outside-delivery-area} -- while every other 4xx stays "we sent
+     * something wrong". Keyed on the type rather than the status, because a 422
+     * means different things from different services.
+     *
+     * <p>A pattern match rather than a JSON parse: the bodies come from Oriah's
+     * own services, rendered by the shared {@code OriahExceptionHandlerSupport},
+     * and the only member read is a URI. Anything that does not match is
+     * simply "no type", which callers already treat as an ordinary refusal.
+     */
+    public static java.util.Optional<java.net.URI> answeredProblemType(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof FeignException fe) {
+                return fe.responseBody()
+                        .map(b -> java.nio.charset.StandardCharsets.UTF_8.decode(b.duplicate()).toString())
+                        .map(PROBLEM_TYPE::matcher)
+                        .filter(java.util.regex.Matcher::find)
+                        .map(m -> java.net.URI.create(m.group(1)));
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return java.util.Optional.empty();
+    }
 }

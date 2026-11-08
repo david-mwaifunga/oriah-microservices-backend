@@ -255,3 +255,22 @@ order|schema property type changed|LineItem.title: {"type": "string"} -> {"maxLe
 order|schema property type changed|LineItem.unitPrice: {"type": "number"} -> {"minimum": 0.0, "type": "number"}
 order|schema property type changed|PlaceOrderRequest.currency: {"maxLength": 3, "minLength": 3, "type": "string"} -> {"maxLength": 3, "minLength": 3, "pattern": "^[A-Z]{3}$", "type": "string"}
 order|schema property type changed|PlaceOrderRequest.items: {"items": {"$ref": "#/components/schemas/LineItem"}, "minItems": 1, "type": "array"} -> {"items": {"$ref": "#/components/schemas/LineItem"}, "maxItems": 100, "minItems": 1, "type": "array"}
+
+# ---------------------------------------------------------------------------
+# Phase 0, item 1: Zambia only, and self-collect only until Phase 7.
+# ---------------------------------------------------------------------------
+#
+# The zone rate card is gone. It was an old USD card multiplied by 25 that
+# nobody chose, its "domestic" zone was Nigeria, and a Lusaka customer was
+# charged the international K1,125. Oriah delivers within Zambia only, and the
+# owner prices delivery per town in Phase 7, so a zone is a type with one
+# value; any other country is now a 422 outside-delivery-area. oriah-web drops
+# shippingZone from its preview schema in the same change; nothing else read
+# either field.
+#
+# Predicted from the code; to be confirmed line for line against a gateway
+# running the new images before Phase 0 is closed.
+#
+# Reviewed and accepted 2026-11-08.
+shipping|schema property removed|RateResponse.zone
+checkout|schema property removed|PreviewResponse.shippingZone

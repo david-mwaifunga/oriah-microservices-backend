@@ -47,29 +47,15 @@ eureka:
 oriah:
   shipping:
     # -----------------------------------------------------------------------
-    # The published rate card. These were compiled into ShippingService's
-    # switch, next to the literal "USD" on every option: free over 150,
-    # standard 5.00, express 12.00, and so on per zone.
-    #
-    # They are business tariffs rather than logic, and the brand's currency is
-    # a configurable decision, so the card has to move with it.
-    #
-    # THE VALUES BELOW ARE THE OLD USD CARD MULTIPLIED BY 25, which is roughly
-    # the Kwacha rate. That basis is written down so it is auditable and
-    # reversible -- it is NOT a commercial decision, because real tariffs
-    # depend on carrier contracts. Replace them here or in
-    # config-repo/shipping.yaml.
-    #
-    # A complete card is kept locally on purpose: a service whose only source
-    # for its money configuration is the Config Server refuses to start when
-    # the Config Server is down, which is the mistake this project already
-    # made once with contact-info below.
+    # The currency shipping quotes in. The zone rate card that used to sit
+    # here (an old USD card multiplied by 25 that nobody chose, whose
+    # "domestic" zone was Nigeria) is gone: until Phase 7 the only option is
+    # self-collect at no charge, and Phase 7 prices delivery per town as data
+    # admin publishes. Any other key under tariff refuses to start the service
+    # (ignoreUnknownFields=false), so a stale card in config-repo is caught.
     # -----------------------------------------------------------------------
     tariff:
       currency: ZMW
-      domestic:      { standard-cost: 125.00,  express-cost: 300.00,  free-over: 3750.00 }
-      regional:      { standard-cost: 375.00,  express-cost: 875.00,  free-over: 6250.00 }
-      international: { standard-cost: 1125.00, express-cost: 2125.00, free-over: 12500.00 }
     contact-info:
       message: "Shipping service contact details are unavailable - the Config Server could not be reached"
       contact-details:
