@@ -1,0 +1,17 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="2. All services (local) - after the platform" type="CompoundRunConfigurationType" folderName="Oriah local">
+    <toRun name="catalog :8081 (local)" type="Application" />
+    <toRun name="inventory :8082 (local)" type="Application" />
+    <toRun name="customer :8083 (local)" type="Application" />
+    <toRun name="cart :8084 (local)" type="Application" />
+    <toRun name="payment :8085 (local)" type="Application" />
+    <toRun name="order :8086 (local)" type="Application" />
+    <toRun name="promotion :8087 (local)" type="Application" />
+    <toRun name="shipping :8088 (local)" type="Application" />
+    <toRun name="checkout :8089 (local)" type="Application" />
+    <toRun name="notification :8090 (local)" type="Application" />
+    <toRun name="review :8091 (local)" type="Application" />
+    <toRun name="search :8092 (local)" type="Application" />
+    <method v="2" />
+  </configuration>
+</component>

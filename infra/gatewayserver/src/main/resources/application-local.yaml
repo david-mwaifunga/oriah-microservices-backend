@@ -1,0 +1,23 @@
+# Profile `local`: this app runs from the IDE (or `mvnw spring-boot:run`)
+# against the backing services in Docker (.\scripts\dev-stack.ps1) --
+# docs/LOCAL_DEV.md. Start it with SPRING_PROFILES_ACTIVE=local.
+#
+# Only what differs from application.yaml is here; that file already points at
+# this PC for Eureka (:8761), Redis (:6379) and Keycloak (:7080). Every value is a development
+# value, used nowhere but this PC. Proved by scripts/local-dev-test.ps1.
+
+eureka:
+  instance:
+    # Register as localhost rather than this PC's network address
+    # (prefer-ip-address in application.yaml). Every Java app runs on this PC,
+    # so localhost always works -- the network address changes with the Wi-Fi.
+    hostname: localhost
+    prefer-ip-address: false
+
+management:
+  tracing:
+    export:
+      # Off unless Tempo runs (.\scripts\dev-stack.ps1 -Traces): with nothing
+      # listening, every batch of spans logs a warning. Trace ids still appear
+      # in the log. Turn on per run: MANAGEMENT_TRACING_EXPORT_ENABLED=true.
+      enabled: false

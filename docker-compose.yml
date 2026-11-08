@@ -33,5 +33,12 @@
 # compares `docker compose config` against the recorded baseline and fails on
 # any difference in any of the 34 services.
 
+# Pin the project name. Without it, compose names the project after the
+# directory it runs from: `oriah-api` here, `default` from docker-compose/default.
+# The two then use different volumes (oriah-api_postgres-keycloak-data vs
+# default_postgres-keycloak-data) and collide on container_name. The running
+# stack has always been `default`, so both entry points now agree on it.
+name: default
+
 include:
   - docker-compose/default/docker-compose.yml

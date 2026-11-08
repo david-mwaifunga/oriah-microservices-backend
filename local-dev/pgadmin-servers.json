@@ -1,0 +1,15 @@
+{
+  "Servers": {
+    "1":  { "Name": "catalog",      "Group": "Oriah local", "Host": "localhost", "Port": 5433, "MaintenanceDB": "catalog",      "Username": "catalog",      "SSLMode": "disable" },
+    "2":  { "Name": "inventory",    "Group": "Oriah local", "Host": "localhost", "Port": 5434, "MaintenanceDB": "inventory",    "Username": "inventory",    "SSLMode": "disable" },
+    "3":  { "Name": "customer",     "Group": "Oriah local", "Host": "localhost", "Port": 5435, "MaintenanceDB": "customer",     "Username": "customer",     "SSLMode": "disable" },
+    "4":  { "Name": "cart",         "Group": "Oriah local", "Host": "localhost", "Port": 5436, "MaintenanceDB": "cart",         "Username": "cart",         "SSLMode": "disable" },
+    "5":  { "Name": "payment",      "Group": "Oriah local", "Host": "localhost", "Port": 5437, "MaintenanceDB": "payment",      "Username": "payment",      "SSLMode": "disable" },
+    "6":  { "Name": "order",        "Group": "Oriah local", "Host": "localhost", "Port": 5438, "MaintenanceDB": "orders",       "Username": "orders",       "SSLMode": "disable" },
+    "7":  { "Name": "promotion",    "Group": "Oriah local", "Host": "localhost", "Port": 5439, "MaintenanceDB": "promotion",    "Username": "promotion",    "SSLMode": "disable" },
+    "8":  { "Name": "notification", "Group": "Oriah local", "Host": "localhost", "Port": 5440, "MaintenanceDB": "notification", "Username": "notification", "SSLMode": "disable" },
+    "9":  { "Name": "review",       "Group": "Oriah local", "Host": "localhost", "Port": 5441, "MaintenanceDB": "review",       "Username": "review",       "SSLMode": "disable" },
+    "10": { "Name": "search",       "Group": "Oriah local", "Host": "localhost", "Port": 5442, "MaintenanceDB": "search",       "Username": "search",       "SSLMode": "disable" },
+    "11": { "Name": "keycloak (read only - never edit)", "Group": "Oriah local", "Host": "localhost", "Port": 5443, "MaintenanceDB": "keycloak", "Username": "keycloak", "SSLMode": "disable" }
+  }
+}

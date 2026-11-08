@@ -1,0 +1,8 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="1. Platform (local) - start first" type="CompoundRunConfigurationType" folderName="Oriah local">
+    <toRun name="configserver :8888 (local)" type="Application" />
+    <toRun name="eurekaserver :8761 (local)" type="Application" />
+    <toRun name="gatewayserver :8080 (local)" type="Application" />
+    <method v="2" />
+  </configuration>
+</component>

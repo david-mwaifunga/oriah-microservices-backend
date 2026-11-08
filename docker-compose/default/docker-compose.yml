@@ -52,7 +52,10 @@
 #                         │  waits: gateway, kc    │
 #                         └────────────────────────┘
 #
-# Port map (host → container):
+# Port map (host → container). Every port is published on 127.0.0.1 only:
+# reachable from this PC (DataGrip, Postman, a service in the IDE), never from
+# the Wi-Fi it is on. The databases, Redis, Kafka and the object store run
+# with development passwords committed here, or none at all.
 #   3000 → grafana:3000
 #   3100 → loki:3100
 #   4000 → oriah-web:3000             # 3000 is taken by grafana on the host
@@ -66,6 +69,7 @@
 #   5440 → postgres-notification:5432
 #   5441 → postgres-review:5432
 #   5442 → postgres-search:5432
+#   5443 → postgres-keycloak:5432     # Keycloak's own store (logins, roles)
 #   6379 → redis:6379
 #   8333 → oriah-s3:8333               # S3 API for product images
 #   7080 → keycloak:8080
@@ -85,7 +89,7 @@
 #   8761 → eurekaserver:8761
 #   8888 → configserver:8888
 #   9090 → prometheus:9090
-#   9092 → kafka:9092
+#   9092 → kafka:29092                # HOST listener, for apps run from the IDE
 #   3200 → tempo:3200                 # trace query API
 #   4317 → tempo:4317                 # OTLP grpc
 #   4318 → tempo:4318                 # OTLP http (what the services use)
@@ -109,7 +113,7 @@ services:
       POSTGRES_USER: catalog
       POSTGRES_PASSWORD: catalog
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres-catalog-data:/var/lib/postgresql/data
     healthcheck:
@@ -125,7 +129,7 @@ services:
       POSTGRES_USER: inventory
       POSTGRES_PASSWORD: inventory
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - postgres-inventory-data:/var/lib/postgresql/data
     healthcheck:
@@ -141,7 +145,7 @@ services:
       POSTGRES_USER: customer
       POSTGRES_PASSWORD: customer
     ports:
-      - "5435:5432"
+      - "127.0.0.1:5435:5432"
     volumes:
       - postgres-customer-data:/var/lib/postgresql/data
     healthcheck:
@@ -157,7 +161,7 @@ services:
       POSTGRES_USER: cart
       POSTGRES_PASSWORD: cart
     ports:
-      - "5436:5432"
+      - "127.0.0.1:5436:5432"
     volumes:
       - postgres-cart-data:/var/lib/postgresql/data
     healthcheck:
@@ -173,7 +177,7 @@ services:
       POSTGRES_USER: payment
       POSTGRES_PASSWORD: payment
     ports:
-      - "5437:5432"
+      - "127.0.0.1:5437:5432"
     volumes:
       - postgres-payment-data:/var/lib/postgresql/data
     healthcheck:
@@ -189,7 +193,7 @@ services:
       POSTGRES_USER: orders
       POSTGRES_PASSWORD: orders
     ports:
-      - "5438:5432"
+      - "127.0.0.1:5438:5432"
     volumes:
       - postgres-order-data:/var/lib/postgresql/data
     healthcheck:
@@ -205,7 +209,7 @@ services:
       POSTGRES_USER: promotion
       POSTGRES_PASSWORD: promotion
     ports:
-      - "5439:5432"
+      - "127.0.0.1:5439:5432"
     volumes:
       - postgres-promotion-data:/var/lib/postgresql/data
     healthcheck:
@@ -221,7 +225,7 @@ services:
       POSTGRES_USER: notification
       POSTGRES_PASSWORD: notification
     ports:
-      - "5440:5432"
+      - "127.0.0.1:5440:5432"
     volumes:
       - postgres-notification-data:/var/lib/postgresql/data
     healthcheck:
@@ -237,7 +241,7 @@ services:
       POSTGRES_USER: review
       POSTGRES_PASSWORD: review
     ports:
-      - "5441:5432"
+      - "127.0.0.1:5441:5432"
     volumes:
       - postgres-review-data:/var/lib/postgresql/data
     healthcheck:
@@ -253,11 +257,34 @@ services:
       POSTGRES_USER: search
       POSTGRES_PASSWORD: search
     ports:
-      - "5442:5432"
+      - "127.0.0.1:5442:5432"
     volumes:
       - postgres-search-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U search -d search"]
+
+  # Keycloak's own database. Not a domain service's: it holds every login --
+  # the owner, each hire's job role, every customer who registered -- so it
+  # must outlive the keycloak container. Before this, Keycloak kept its data
+  # inside the container, and any recreate (image bump, env change, down/up)
+  # re-imported oriah-realm.json and wiped them all, giving re-created users a
+  # new `sub` that orphaned their customer and order rows.
+  # scripts/keycloak-persistence-test.ps1 proves a user survives a recreate.
+  postgres-keycloak:
+    extends:
+      file: ../common-config.yml
+      service: postgres-base-config
+    container_name: oriah-postgres-keycloak
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    ports:
+      - "127.0.0.1:5443:5432"
+    volumes:
+      - postgres-keycloak-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
 
   # ─────────────────────────── object storage ───────────────────────────
   #
@@ -270,12 +297,14 @@ services:
   # catalog talks to the S3 API through the AWS SDK, so the server is a
   # configuration choice and MinIO stays a drop-in if its images return.
   #
-  # No host port is published. Nothing outside the compose network needs to
-  # reach it: image bytes are served BY catalog at a relative URL, which is
-  # what keeps the browser, the server-rendering container and any other
-  # environment agreeing on one string without an absolute URL in the
-  # database. Publishing 8333 would also expose an object store whose
-  # development credentials are committed to this repository.
+  # Published on 127.0.0.1:8333 only, for catalog when it runs from the IDE
+  # (profile `local`): that copy of catalog must read and write the same
+  # images as the container, or a product photo uploaded in one is missing in
+  # the other. Loopback, never the Wi-Fi, because the development credentials
+  # are committed to this repository. Browsers still never call it: image
+  # bytes are served BY catalog at a relative URL, which keeps the browser,
+  # the server-rendering container and any other environment agreeing on one
+  # string without an absolute URL in the database.
   oriah-s3:
     extends:
       file: ../common-config.yml
@@ -283,6 +312,8 @@ services:
     image: chrislusf/seaweedfs:3.80
     container_name: oriah-s3
     command: ["server", "-s3", "-s3.config=/etc/seaweedfs/s3.json", "-dir=/data"]
+    ports:
+      - "127.0.0.1:8333:8333"
     volumes:
       - oriah-s3-data:/data
       # Two identities: an admin that may create buckets, and a bucket-scoped
@@ -360,8 +391,17 @@ services:
       service: network-deploy-service
     image: quay.io/keycloak/keycloak:26.0
     container_name: oriah-keycloak
-    # start-dev: H2 in-memory DB, no caching, hot-reload — fine for local dev.
-    # --import-realm: read every *.json in /opt/keycloak/data/import on first run.
+    # start-dev: no caching, hot-reload, plain HTTP -- local development only.
+    # Production runs `start` (optimized build, hostname and TLS/proxy set) on
+    # the same database settings below.
+    # --import-realm: imports oriah-realm.json only when the realm does NOT yet
+    # exist in the database. Now that the database persists, editing the JSON
+    # no longer changes a running realm. During development, apply a realm edit
+    # by removing ONLY Keycloak's volume and starting again:
+    #   docker compose rm -sf keycloak postgres-keycloak
+    #   docker volume rm default_postgres-keycloak-data
+    # (that wipes dev logins, never the ten domain databases). After go-live a
+    # realm change is applied by an idempotent admin-API step instead.
     command: ["start-dev", "--import-realm"]
     environment:
       # Bootstrap admin credentials (Keycloak 26+ uses KC_BOOTSTRAP_* naming).
@@ -375,8 +415,17 @@ services:
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
+      # Persistent store: Keycloak's own Postgres, never the container's
+      # filesystem (see postgres-keycloak above).
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres-keycloak:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+    depends_on:
+      postgres-keycloak:
+        condition: service_healthy
     ports:
-      - "7080:8080"
+      - "127.0.0.1:7080:8080"
     volumes:
       # Read-only mount of the realm export.
       - ../../keycloak/import:/opt/keycloak/data/import:ro
@@ -418,7 +467,7 @@ services:
       - ../../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     healthcheck:
       # Prometheus is built on a stripped Alpine without bash but it
       # ships wget. /-/healthy is the documented liveness endpoint.
@@ -451,7 +500,7 @@ services:
       - ../../monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       prometheus:
         condition: service_healthy
@@ -477,7 +526,7 @@ services:
       - ../../monitoring/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki-data:/loki
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"
     # No healthcheck: the grafana/loki image is fully distroless --
     # no shell, no wget, no ls -- so docker has nothing to exec to
     # probe /ready. Alloy depends on service_started instead of
@@ -495,7 +544,7 @@ services:
     image: redis:7-alpine
     container_name: oriah-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -515,16 +564,22 @@ services:
       # Required KRaft single-node config — node-id 1 is both broker and controller.
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
-      # Two listeners:
-      #   PLAINTEXT — bound to all interfaces on 9092 so external clients
-      #               (host curl) and internal clients (catalog/inventory)
-      #               can both reach it.
-      #   CONTROLLER — internal Raft quorum on 9093, bound to all interfaces.
-      # Advertised listeners are what clients are told to connect to; must
-      # be a routable hostname (0.0.0.0 is rejected by KafkaConfig validation).
-      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
-      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      # Three listeners:
+      #   PLAINTEXT  — 9092 inside the network, advertised as kafka:9092, for
+      #                the services running in containers.
+      #   HOST       — 29092 inside the container, published as the PC's
+      #                localhost:9092 and advertised as localhost:9092, for a
+      #                service started from the IDE (profile `local`).
+      #   CONTROLLER — internal Raft quorum on 9093.
+      # Advertised listeners are what a client is told to use after its first
+      # connection. With only kafka:9092 advertised, a program on the PC
+      # connects, is told "use kafka:9092", cannot resolve it, and every send
+      # times out -- while a topic listing still works, which is why
+      # scripts/local-dev/KafkaHostProbe.java sends a real record and reads it
+      # back (red before this listener, green after).
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,HOST://:29092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,HOST://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT,CONTROLLER:PLAINTEXT"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
@@ -541,7 +596,8 @@ services:
       # across container restarts.
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     ports:
-      - "9092:9092"
+      # The PC's 9092 is the HOST listener (container 29092), not PLAINTEXT.
+      - "127.0.0.1:9092:29092"
     healthcheck:
       # The apache/kafka image ships bash + nc-style /dev/tcp via bash.
       # Brokers bind 9092 only after the controller comes up, so this
@@ -583,13 +639,13 @@ services:
       - tempo-data:/var/tempo
     ports:
       # 3200 is the query API Grafana reads and the smoke test asserts against.
-      - "3200:3200"
+      - "127.0.0.1:3200:3200"
       # 4318 is the one the services actually use: the OTLP transport property
       # defaults to http, so the wired bean is OtlpHttpSpanExporter. 4317 (grpc)
       # is published anyway because it costs nothing and is the first thing
       # you'd want if the transport were ever switched.
-      - "4317:4317"
-      - "4318:4318"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
     # No healthcheck: grafana/tempo is distroless — no shell, no wget — so
     # docker has nothing to exec. Same situation as loki below. Readiness is
     # asserted over HTTP from the host in smoke-test.ps1 instead.
@@ -628,7 +684,7 @@ services:
       # http://localhost:12345/graph renders the live component graph with
       # per-component health — the fastest way to see whether discovery found
       # containers and whether writes to Loki are succeeding.
-      - "12345:12345"
+      - "127.0.0.1:12345:12345"
     depends_on:
       loki:
         condition: service_started
@@ -676,7 +732,7 @@ services:
       # edit and commit normally.
       - ../../../config-repo:/workspace/config-repo
     ports:
-      - "8888:8888"
+      - "127.0.0.1:8888:8888"
     healthcheck:
       # bash + coreutils come from paketo run-noble-base (set per build in
       # build-images.ps1). The default run-jammy-tiny has none of these.
@@ -701,7 +757,7 @@ services:
       # http, so the wired exporter is OtlpHttpSpanExporter.
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: "http://tempo:4318/v1/traces"
     ports:
-      - "8761:8761"
+      - "127.0.0.1:8761:8761"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8761"]
       start_period: 60s
@@ -735,7 +791,7 @@ services:
       # which is too small for the reactive Netty pipeline). No env
       # override needed here anymore.
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       eurekaserver:
         condition: service_healthy
@@ -768,7 +824,7 @@ services:
       SPRING_DATASOURCE_USERNAME: catalog
       SPRING_DATASOURCE_PASSWORD: catalog
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     depends_on:
       # The bucket must exist before catalog starts: it checks for the bucket
       # at startup and refuses to run without it, because accepting uploads
@@ -794,7 +850,7 @@ services:
       SPRING_DATASOURCE_USERNAME: inventory
       SPRING_DATASOURCE_PASSWORD: inventory
     ports:
-      - "8082:8082"
+      - "127.0.0.1:8082:8082"
     depends_on:
       postgres-inventory:
         condition: service_healthy
@@ -814,7 +870,7 @@ services:
       SPRING_DATASOURCE_USERNAME: customer
       SPRING_DATASOURCE_PASSWORD: customer
     ports:
-      - "8083:8083"
+      - "127.0.0.1:8083:8083"
     depends_on:
       postgres-customer:
         condition: service_healthy
@@ -832,7 +888,7 @@ services:
       SPRING_DATASOURCE_USERNAME: cart
       SPRING_DATASOURCE_PASSWORD: cart
     ports:
-      - "8084:8084"
+      - "127.0.0.1:8084:8084"
     depends_on:
       postgres-cart:
         condition: service_healthy
@@ -850,7 +906,7 @@ services:
       SPRING_DATASOURCE_USERNAME: payment
       SPRING_DATASOURCE_PASSWORD: payment
     ports:
-      - "8085:8085"
+      - "127.0.0.1:8085:8085"
     depends_on:
       postgres-payment:
         condition: service_healthy
@@ -868,7 +924,7 @@ services:
       SPRING_DATASOURCE_USERNAME: orders
       SPRING_DATASOURCE_PASSWORD: orders
     ports:
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     depends_on:
       postgres-order:
         condition: service_healthy
@@ -888,7 +944,7 @@ services:
       SPRING_DATASOURCE_USERNAME: promotion
       SPRING_DATASOURCE_PASSWORD: promotion
     ports:
-      - "8087:8087"
+      - "127.0.0.1:8087:8087"
     depends_on:
       postgres-promotion:
         condition: service_healthy
@@ -905,7 +961,7 @@ services:
     image: oriah/shipping:dev
     container_name: oriah-shipping
     ports:
-      - "8088:8088"
+      - "127.0.0.1:8088:8088"
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8088"]
       start_period: 60s
@@ -920,7 +976,7 @@ services:
     image: oriah/checkout:dev
     container_name: oriah-checkout
     ports:
-      - "8089:8089"
+      - "127.0.0.1:8089:8089"
     depends_on:
       cart:
         condition: service_healthy
@@ -946,7 +1002,7 @@ services:
       SPRING_DATASOURCE_USERNAME: notification
       SPRING_DATASOURCE_PASSWORD: notification
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     depends_on:
       postgres-notification:
         condition: service_healthy
@@ -966,7 +1022,7 @@ services:
       SPRING_DATASOURCE_USERNAME: review
       SPRING_DATASOURCE_PASSWORD: review
     ports:
-      - "8091:8091"
+      - "127.0.0.1:8091:8091"
     depends_on:
       postgres-review:
         condition: service_healthy
@@ -984,7 +1040,7 @@ services:
       SPRING_DATASOURCE_USERNAME: search
       SPRING_DATASOURCE_PASSWORD: search
     ports:
-      - "8092:8092"
+      - "127.0.0.1:8092:8092"
     depends_on:
       postgres-search:
         condition: service_healthy
@@ -1049,7 +1105,7 @@ services:
       # Host 4000 -> container 3000. Avoids the Grafana :3000 host
       # port (which is what made the brief pick 4000 in the first
       # place).
-      - "4000:3000"
+      - "127.0.0.1:4000:3000"
     extra_hosts:
       # Lets the container resolve `localhost` to the docker host so
       # KEYCLOAK_ISSUER=http://localhost:7080/... works in here.
@@ -1087,6 +1143,7 @@ volumes:
   postgres-notification-data:
   postgres-review-data:
   postgres-search-data:
+  postgres-keycloak-data:
   prometheus-data:
   grafana-data:
   loki-data:
