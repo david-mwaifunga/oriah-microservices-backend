@@ -69,11 +69,12 @@ from pathlib import Path
 # interesting in the "guards nothing" report.
 BUILTIN_ROLES = {"default-roles-oriah", "offline_access", "uma_authorization"}
 
-# Roles that exist in the realm on purpose but guard nothing yet. Recorded
-# rather than reported every run: the Tier 3 sweep established that
-# /api/v1/admin/payments has no admin surface, so PAYMENT_ADMIN is provisioned
-# ahead of one. Listed here so a NEW unused role still shows up.
-KNOWN_UNUSED = {"PAYMENT_ADMIN"}
+# Roles that exist in the realm on purpose but guard nothing yet, recorded
+# rather than reported every run. Empty since PAYMENT_ADMIN gained its admin
+# surface (AdminPaymentController). The capability roles Phase 0 item 5
+# provisioned for hiring are deliberately still REPORTED: each building phase
+# adds the endpoint that guards on it, and the report shows which are left.
+KNOWN_UNUSED = set()
 
 LINE_COMMENT = re.compile(r"//[^\n]*")
 BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
@@ -101,6 +102,17 @@ def realm_roles(realm_file):
     with open(realm_file, encoding="utf-8") as fh:
         realm = json.load(fh)
     return {r["name"] for r in (realm.get("roles") or {}).get("realm") or []}
+
+
+def job_roles(realm_file):
+    """Composite realm roles other than Keycloak's own: the JOB roles a person
+    is given (OWNER, MANAGER, ...). Code checks capabilities only -- Keycloak
+    puts a job role's members in the token -- so a job role never guards
+    anything, by design, and is not "unused"."""
+    with open(realm_file, encoding="utf-8") as fh:
+        realm = json.load(fh)
+    return {r["name"] for r in (realm.get("roles") or {}).get("realm") or []
+            if r.get("composite") and r["name"] not in BUILTIN_ROLES}
 
 
 def scan(root, declared):
@@ -131,19 +143,22 @@ def scan(root, declared):
     return findings, used
 
 
-def report(declared, findings, used):
-    print("realm roles:  %s" % ", ".join(sorted(declared - BUILTIN_ROLES)))
+def report(declared, findings, used, jobs=frozenset()):
+    print("realm roles:  %s" % ", ".join(sorted(declared - BUILTIN_ROLES - jobs)))
+    if jobs:
+        print("job roles:    %s (bundles of the above; never guarded, by design)"
+              % ", ".join(sorted(jobs)))
     print("code guards:  %s" % ", ".join(sorted(used)))
     print()
 
     used_ci = {u.upper() for u in used}
-    unused = {r for r in (declared - BUILTIN_ROLES) - KNOWN_UNUSED
+    unused = {r for r in (declared - BUILTIN_ROLES - jobs) - KNOWN_UNUSED
               if r.upper() not in used_ci}
     if unused:
-        print("REPORT: %d realm role(s) guard nothing: %s"
+        print("REPORT: %d capability role(s) guard nothing yet: %s"
               % (len(unused), ", ".join(sorted(unused))))
-        print("  Not a failure -- a role can be provisioned before its endpoints "
-              "exist. PAYMENT_ADMIN is already known and recorded that way.")
+        print("  Not a failure -- a role is provisioned before the endpoint "
+              "that guards on it; each building phase adds its own.")
         print()
 
     if not findings:
@@ -259,7 +274,7 @@ def main(argv):
         return self_test(root, realm_file)
 
     declared, findings, used = run(root, realm_file)
-    return 0 if report(declared, findings, used) else 1
+    return 0 if report(declared, findings, used, job_roles(realm_file)) else 1
 
 
 if __name__ == "__main__":

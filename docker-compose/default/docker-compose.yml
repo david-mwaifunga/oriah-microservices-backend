@@ -394,9 +394,12 @@ services:
     # start-dev: no caching, hot-reload, plain HTTP -- local development only.
     # Production runs `start` (optimized build, hostname and TLS/proxy set) on
     # the same database settings below.
-    # --import-realm: imports oriah-realm.json only when the realm does NOT yet
-    # exist in the database. Now that the database persists, editing the JSON
-    # no longer changes a running realm. During development, apply a realm edit
+    # --import-realm: imports the realm only when it does NOT yet exist in the
+    # database -- keycloak/import/oriah-realm.json (every role, both clients,
+    # the machine identity; no person, no secret) plus, in this DEV stack only,
+    # keycloak/dev/oriah-users-0.json (the people the smoke test and Playwright
+    # sign in as), mounted beside it below. Now that the database persists,
+    # editing either file no longer changes a running realm. During development, apply a realm edit
     # by removing ONLY Keycloak's volume and starting again:
     #   docker compose rm -sf keycloak postgres-keycloak
     #   docker volume rm default_postgres-keycloak-data
@@ -421,14 +424,28 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres-keycloak:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: keycloak
+      # oriah-admin's client secret. The committed realm carries only the
+      # placeholder ${ORIAH_ADMIN_CLIENT_SECRET}, which Keycloak fills from this
+      # variable at import. This is the DEVELOPMENT value, and it must match
+      # order's ORIAH_SERVICE_CLIENT_SECRET below and the scripts that sign in.
+      # Production never uses it: there, an unset variable must stop the stack
+      # -- `${ORIAH_ADMIN_CLIENT_SECRET:?...}` -- because Keycloak would
+      # otherwise store the placeholder TEXT as a working secret; and the
+      # go-live step (scripts/keycloak-go-live.ps1) sets the real one.
+      ORIAH_ADMIN_CLIENT_SECRET: oriah-admin-secret
     depends_on:
       postgres-keycloak:
         condition: service_healthy
     ports:
       - "127.0.0.1:7080:8080"
     volumes:
-      # Read-only mount of the realm export.
-      - ../../keycloak/import:/opt/keycloak/data/import:ro
+      # The realm, and the dev-only users file beside it -- each mounted on its
+      # own, read-only. A file mounted INSIDE a read-only folder mount stops the
+      # container from starting, and a writable folder would leave an empty
+      # placeholder file in the repo. The users file must keep its name:
+      # Keycloak pairs <realm>-users-<n>.json with <realm>-realm.json.
+      - ../../keycloak/import/oriah-realm.json:/opt/keycloak/data/import/oriah-realm.json:ro
+      - ../../keycloak/dev/oriah-users-0.json:/opt/keycloak/data/import/oriah-users-0.json:ro
       # Custom "oriah" theme (login/account/email) -- referenced by
       # the realm via loginTheme=oriah / accountTheme=oriah /
       # emailTheme=oriah. Mounted read-only so accidental changes

@@ -26,8 +26,8 @@
       "addReadTokenRoleOnCreate": false,
       "firstBrokerLoginFlowAlias": "first broker login",
       "config": {
-        "clientId": "${ORIAH_GOOGLE_CLIENT_ID:placeholder-google-client-id}",
-        "clientSecret": "${ORIAH_GOOGLE_CLIENT_SECRET:placeholder-google-client-secret}",
+        "clientId": "${ORIAH_GOOGLE_CLIENT_ID}",
+        "clientSecret": "${ORIAH_GOOGLE_CLIENT_SECRET}",
         "syncMode": "IMPORT",
         "useJwksUrl": "true"
       }
@@ -40,7 +40,7 @@
     "realm": [
       {
         "name": "USER",
-        "description": "Any authenticated end customer. Required for /api/v1/.../me endpoints (customer profile, cart, orders).",
+        "description": "A shopper: the customer surface and every /me endpoint (profile, cart, orders). Not a capability; every new sign-up gets it.",
         "composite": false,
         "clientRole": false
       },
@@ -60,7 +60,7 @@
       },
       {
         "name": "default-roles-oriah",
-        "description": "Auto-assigned to every new user (self-registered + Google-federated). Includes USER so a fresh sign-up can use the customer surface immediately.",
+        "description": "Given to every new user (self-registered or Google-federated). Includes USER so a fresh sign-up can use the customer surface immediately.",
         "composite": true,
         "composites": {
           "realm": ["offline_access", "uma_authorization", "USER"],
@@ -71,34 +71,143 @@
         "clientRole": false,
         "containerId": "oriah"
       },
+
       {
         "name": "CATALOG_ADMIN",
-        "description": "Full write access to /api/v1/admin/products on catalog-service",
+        "description": "Capability: products, variants, categories, prices and promotions.",
         "composite": false,
         "clientRole": false
       },
       {
         "name": "INVENTORY_ADMIN",
-        "description": "Full write access to /api/v1/admin/inventory on inventory-service",
+        "description": "Capability: stock reads, reservations and box commitments.",
         "composite": false,
         "clientRole": false
       },
       {
         "name": "CUSTOMER_ADMIN",
-        "description": "Support agents: read all customer profiles, edit addresses, etc.",
+        "description": "Capability: customer records.",
         "composite": false,
         "clientRole": false
       },
       {
         "name": "ORDER_ADMIN",
-        "description": "Order ops: view/fulfill/cancel any order, drive state transitions",
+        "description": "Capability: order administration and status.",
         "composite": false,
         "clientRole": false
       },
       {
         "name": "PAYMENT_ADMIN",
-        "description": "Payment ops: refunds, capture-overrides, gateway reconciliation",
+        "description": "Capability: refunds and payment administration.",
         "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "PROCUREMENT_ADMIN",
+        "description": "Capability: suppliers, purchase orders, consignments, cost lines and the opening consignment.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "FINANCE_ADMIN",
+        "description": "Capability: expenses and the profit reports.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "SHIPPING_ADMIN",
+        "description": "Capability: provinces, towns, delivery options, prices and publishing them; the free-delivery threshold.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "SALES_AGENT",
+        "description": "Capability: record a sale or phone order; confirm a payment received, or reject a false payment claim with a reason. No cost or margin.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "FULFILMENT_AGENT",
+        "description": "Capability: pack, dispatch, book Yango or a courier, record the fare paid.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "COST_VIEWER",
+        "description": "Capability: read landed cost and margin anywhere (the allow-list behind Q29).",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "STOCK_WRITE_OFF",
+        "description": "Capability: write off or give away stock, and take it back (Q8). Owner-only.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "BACKDATE_SALE",
+        "description": "Capability: record a sale paid more than 72 hours ago, with a reason (section 8.2). Owner-only.",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "DELIVERY_WAIVER",
+        "description": "Capability: give a customer free delivery on an order, with a reason.",
+        "composite": false,
+        "clientRole": false
+      },
+
+      {
+        "name": "OWNER",
+        "description": "Job role: the owner. Every capability.",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "CATALOG_ADMIN", "INVENTORY_ADMIN", "CUSTOMER_ADMIN", "ORDER_ADMIN", "PAYMENT_ADMIN",
+            "PROCUREMENT_ADMIN", "FINANCE_ADMIN", "SHIPPING_ADMIN", "SALES_AGENT", "FULFILMENT_AGENT",
+            "COST_VIEWER", "STOCK_WRITE_OFF", "BACKDATE_SALE", "DELIVERY_WAIVER"
+          ]
+        },
+        "clientRole": false
+      },
+      {
+        "name": "MANAGER",
+        "description": "Job role: a shop manager. Everything except write-offs, late-dated sales, payment administration and finance.",
+        "composite": true,
+        "composites": {
+          "realm": [
+            "CATALOG_ADMIN", "INVENTORY_ADMIN", "CUSTOMER_ADMIN", "ORDER_ADMIN",
+            "PROCUREMENT_ADMIN", "SHIPPING_ADMIN", "SALES_AGENT", "FULFILMENT_AGENT",
+            "COST_VIEWER", "DELIVERY_WAIVER"
+          ]
+        },
+        "clientRole": false
+      },
+      {
+        "name": "SALES",
+        "description": "Job role: a shop or phone sales assistant. Records sales and confirms payments; sees no cost or margin.",
+        "composite": true,
+        "composites": {
+          "realm": ["SALES_AGENT"]
+        },
+        "clientRole": false
+      },
+      {
+        "name": "DISPATCH",
+        "description": "Job role: a packer or driver.",
+        "composite": true,
+        "composites": {
+          "realm": ["FULFILMENT_AGENT"]
+        },
+        "clientRole": false
+      },
+      {
+        "name": "BOOKKEEPER",
+        "description": "Job role: a part-time bookkeeper. Expenses, the profit reports, and cost and margin.",
+        "composite": true,
+        "composites": {
+          "realm": ["FINANCE_ADMIN", "COST_VIEWER"]
+        },
         "clientRole": false
       }
     ]
@@ -109,7 +218,7 @@
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "secret": "oriah-admin-secret",
+      "secret": "${ORIAH_ADMIN_CLIENT_SECRET}",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": true,
       "serviceAccountsEnabled": true,
@@ -144,80 +253,10 @@
   ],
   "users": [
     {
-      "username": "admin",
-      "enabled": true,
-      "email": "admin@oriah.local",
-      "emailVerified": true,
-      "firstName": "Oriah",
-      "lastName": "Admin",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "ChangeMeOnFirstLogin!",
-          "temporary": true
-        }
-      ],
-      "requiredActions": ["UPDATE_PASSWORD"],
-      "realmRoles": [
-        "USER",
-        "CATALOG_ADMIN",
-        "INVENTORY_ADMIN",
-        "CUSTOMER_ADMIN",
-        "ORDER_ADMIN",
-        "PAYMENT_ADMIN"
-      ]
-    },
-    {
-      "username": "maya",
-      "enabled": true,
-      "email": "maya@oriah.local",
-      "emailVerified": true,
-      "firstName": "Maya",
-      "lastName": "Tester",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "password",
-          "temporary": false
-        }
-      ],
-      "realmRoles": [
-        "USER",
-        "CATALOG_ADMIN",
-        "INVENTORY_ADMIN",
-        "CUSTOMER_ADMIN",
-        "ORDER_ADMIN",
-        "PAYMENT_ADMIN"
-      ]
-    },
-    {
-      "username": "alice",
-      "enabled": true,
-      "email": "alice@oriah.local",
-      "emailVerified": true,
-      "firstName": "Alice",
-      "lastName": "Buyer",
-      "credentials": [
-        {
-          "type": "password",
-          "value": "password",
-          "temporary": false
-        }
-      ],
-      "realmRoles": ["USER"]
-    },
-    {
       "username": "service-account-oriah-admin",
       "enabled": true,
       "serviceAccountClientId": "oriah-admin",
-      "realmRoles": [
-        "USER",
-        "CATALOG_ADMIN",
-        "INVENTORY_ADMIN",
-        "CUSTOMER_ADMIN",
-        "ORDER_ADMIN",
-        "PAYMENT_ADMIN"
-      ]
+      "realmRoles": ["USER", "INVENTORY_ADMIN"]
     }
   ]
 }

@@ -1,0 +1,57 @@
+{
+  "realm": "oriah",
+  "users": [
+    {
+      "id": "ec2d298a-f38b-4b8e-aef0-cb263350ebbf",
+      "username": "admin",
+      "enabled": true,
+      "email": "admin@oriah.local",
+      "emailVerified": true,
+      "firstName": "Oriah",
+      "lastName": "Admin",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "ChangeMeOnFirstLogin!",
+          "temporary": true
+        }
+      ],
+      "requiredActions": ["UPDATE_PASSWORD"],
+      "realmRoles": ["OWNER", "USER"]
+    },
+    {
+      "id": "e1cac374-4f4c-46ff-8ec4-971ea281101c",
+      "username": "maya",
+      "enabled": true,
+      "email": "maya@oriah.local",
+      "emailVerified": true,
+      "firstName": "Maya",
+      "lastName": "Tester",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["OWNER", "USER"]
+    },
+    {
+      "id": "657a4290-095f-451e-bb03-0f3fde62bdee",
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@oriah.local",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Buyer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["USER"]
+    }
+  ]
+}

@@ -36,11 +36,23 @@
 .EXAMPLE
     powershell.exe -ExecutionPolicy Bypass -File .\scripts\validate-realm.ps1
 #>
+# -UsersFiles: Keycloak users files imported beside the realm -- the dev
+# stack's keycloak/dev/oriah-users-0.json (MVP_PLAN Phase 0, item 5). A users
+# file declares no roles of its own, so it can only be checked AGAINST the
+# realm: a role it names that the realm does not declare stops Keycloak from
+# importing it.
+#
+# Both defaults are found from this script's own folder, so the check runs the
+# same from anywhere. A path you pass is taken as you give it.
 param(
-    [string] $RealmFile = "keycloak/import/oriah-realm.json"
+    [string] $RealmFile = "",
+    [string[]] $UsersFiles = @()
 )
 
 $ErrorActionPreference = "Stop"
+$repo = Split-Path -Parent $PSScriptRoot
+if (-not $RealmFile) { $RealmFile = Join-Path $repo "keycloak/import/oriah-realm.json" }
+if ($UsersFiles.Count -eq 0) { $UsersFiles = @(Join-Path $repo "keycloak/dev/oriah-users-0.json") }
 
 if (-not (Test-Path $RealmFile)) {
     Write-Output "FAIL: realm file not found at $RealmFile"
@@ -136,6 +148,36 @@ for user in realm.get("users") or []:
                 f"which is not declared in roles.realm"
             )
 
+# Users files imported beside the realm (<realm>-users-<n>.json).
+for users_path in sys.argv[2:]:
+    try:
+        with open(users_path, encoding="utf-8") as fh:
+            users_file = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        problems.append(f"users file {users_path} cannot be read as JSON: {exc}")
+        continue
+    if users_file.get("realm") != realm.get("realm"):
+        problems.append(
+            f"users file {users_path} is for realm '{users_file.get('realm')}', "
+            f"not '{realm.get('realm')}'"
+        )
+    extra = set(users_file) - {"realm", "users"}
+    if extra:
+        problems.append(
+            f"users file {users_path} carries {sorted(extra)}: a users file holds "
+            f"people only. Anything more belongs in the realm -- a second realm "
+            f"file REPLACES the first on import, it is never merged"
+        )
+    for user in users_file.get("users") or []:
+        for name in user.get("realmRoles") or []:
+            if name not in declared_realm:
+                problems.append(
+                    f"user '{user.get('username')}' in {users_path} is assigned realm "
+                    f"role '{name}', which is not declared in the realm"
+                )
+    names = ", ".join(u.get("username", "?") for u in users_file.get("users") or [])
+    print(f"users file:     {users_path} -> {names}")
+
 print(f"realm:          {realm.get('realm')}")
 print(f"realm roles:    {len(declared_realm)} declared -> {', '.join(sorted(n for n in declared_realm if n))}")
 print(f"clients:        {', '.join(sorted(c for c in declared_clients if c))}")
@@ -153,5 +195,11 @@ sys.exit(0)
 $validatorPath = Join-Path $env:TEMP "oriah-validate-realm.py"
 Set-Content -Path $validatorPath -Value $validator -Encoding utf8
 
-python $validatorPath $RealmFile
+foreach ($usersFile in $UsersFiles) {
+    if (-not (Test-Path $usersFile)) {
+        Write-Output "FAIL: users file not found at $usersFile"
+        exit 1
+    }
+}
+python $validatorPath $RealmFile @UsersFiles
 exit $LASTEXITCODE
