@@ -1,5 +1,18 @@
 # ITERATION PLAN
 
+> ## ⛔ COMPLETED HISTORY — NOT A PLAN. All ten iterations are DONE.
+>
+> The "⬅️ **current**" marker on Iteration 1 below is years stale. Every
+> iteration on this ladder shipped: catalog, variants/collections, Config
+> Server, Eureka, Gateway, inventory + Feign + Resilience4j, Keycloak, Kafka,
+> Docker Compose, and the frontend — which is **Next.js 15**, not the
+> "React 18 + Vite" this file specifies.
+>
+> **Do not use this file to decide what to do next.** Read `docs/PROGRESS.md`
+> from the TOP (it is newest-first), and `../CLAUDE.md` for current scope.
+>
+> Kept only as a record of how the learning ladder was framed.
+
 The 10-step microservices learning ladder for `oriah-api`. Each step adds one
 concept on top of the last. TDD discipline throughout: nothing ships without a
 failing test driving it.

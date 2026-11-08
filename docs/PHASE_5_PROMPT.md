@@ -1,5 +1,22 @@
 # Phase 5 — new-session prompt (Next.js frontend rebuild)
 
+> ## ⛔ HISTORICAL RECORD — ALREADY EXECUTED. DO NOT RUN THIS PROMPT.
+>
+> **This work is DONE.** `oriah-web/` is already Next.js 15 + React 19 with
+> its own `CLAUDE.md`, ~225 passing tests, and a container in the live stack
+> (`oriah/oriah-web:dev`, http://localhost:4000).
+>
+> **The instruction below to "Tear down the Vite scaffold / Delete everything
+> in `oriah-web/`" refers to a Vite app that NO LONGER EXISTS.** Executing it
+> today would delete the finished Next.js application.
+>
+> The Vite teardown happened in 2026. There is nothing left to tear down.
+>
+> This file is kept only as a record of how Phase 5 was briefed. For the
+> current state and the real next action, read `docs/PROGRESS.md` from the
+> TOP (it is newest-first). For the frontend's own conventions, read
+> `../oriah-web/CLAUDE.md`.
+
 Paste the block below into a fresh Claude Code session opened at
 `C:\Users\mwaif\OneDrive\Documents\github\oriah\` — the **parent**
 directory that holds both `oriah-api/` and `oriah-web/`, so the

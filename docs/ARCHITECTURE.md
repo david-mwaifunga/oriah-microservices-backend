@@ -3,17 +3,47 @@
 Why we made each major choice. Read this before second-guessing a design call —
 the answer is probably here.
 
-The source-of-truth tech-stack spec for the wider project lives in the
-wireframes: `design/oriah-screens-meta.jsx`, function `ArchitectureScreen`. The
-decisions below operationalize that spec for iteration 1.
+> ## How to read this file
+>
+> **The *why* is live. The *what is true today* is not.**
+>
+> Each section was written when its decision was made and records the
+> reasoning at that moment. The rationale still holds and is worth reading.
+> But where a section describes the **present state** of the stack —
+> "tracing: none", "two postgres containers", "BOM not imported yet" — it is
+> frozen at its own date and several are now wrong. Sections carrying such
+> claims are marked inline.
+>
+> **The code is the source of truth.** For current scope and current defects
+> read `../CLAUDE.md`; for current state read `PROGRESS.md` from the top
+> (it is newest-first).
+>
+> ⛔ `../../design/oriah-screens-meta.jsx` is **not** a source-of-truth spec.
+> It is a May 2026 wireframe: it names Vite (the app is Next.js 15) and lists
+> 16 services including four that will never be built (`loyalty`, `content`,
+> `recommender`, `iam` — `iam` duplicates Keycloak). Visual reference only.
 
 ---
 
-## Observability gap audit (post-Phase 3)
+## Observability gap audit (post-Phase 3) — ✅ RESOLVED, see note
+
+> **This audit is the problem statement, not the current state.** Every gap
+> listed below was closed in Phase 4. What actually shipped:
+>
+> | Audit said | Reality now |
+> |---|---|
+> | tracing: **none** | Micrometer Tracing → **Tempo** over OTLP, viewed in Grafana |
+> | **Zipkin** container on `:9411` (item 2) | **Zipkin shipped, then was replaced by Tempo and removed.** There is no `:9411` now. Any Zipkin reference in these docs is stale |
+> | nothing scrapes `/actuator/prometheus` | Prometheus scrapes every service; Grafana has dashboards |
+> | no log aggregation | **Loki**, shipped by **Alloy** |
+> | global exception handling missing | `@RestControllerAdvice` → RFC 7807 Problem Details |
+>
+> The reasoning below is still the reason the stack has what it has. Read it
+> for *why*, not for *what*.
 
 After landing 12 services we audited the stack against "could a new
-developer debug a failing storefront request without me?" The current
-state is:
+developer debug a failing storefront request without me?" The state **at
+that time** was:
 
 - **Logging**: every service uses Lombok `@Slf4j`. Conventions
   (INFO on state changes, DEBUG on reads) are followed by discipline,
@@ -42,8 +72,14 @@ state is:
 1. Shared `oriah-observability-starter` Maven module that every
    service imports. Pulls in Micrometer Tracing + OpenTelemetry
    exporter + JSON-format logback config. One place to version-bump.
-2. **Zipkin** container in compose (port 9411) for trace
-   visualization. Spans propagate across HTTP (Feign + RestClient),
+2. ~~**Zipkin** container in compose (port 9411)~~ — **superseded.** Zipkin
+   did ship here, then **Tempo replaced it** and Zipkin was removed; traces
+   are now viewed through Grafana and nothing serves `:9411`. The swap was
+   staged rather than cut over: OTLP export was added while Zipkin still ran,
+   `SpanExporterCoexistenceTest` pinned both exporters being wired at once,
+   and the smoke test proved one `traceId` reached Tempo across all seven
+   saga services *before* Zipkin came out. Worth copying as a pattern for
+   swapping any telemetry backend. Spans propagate across HTTP (Feign + RestClient),
    reactive WebFlux (gateway), Kafka producer+consumer (Spring Cloud
    Stream auto-instrumented), and JDBC (Hibernate auto-instrumented).
 3. **Prometheus** scrapes every service every 15s. **Grafana** reads
@@ -93,8 +129,17 @@ spring.cloud.config.server.git:
 ### The two-repo layout
 
 - `oriah-api/` — code repo (this one).
-- `oriah/config-repo/` — sibling git repo. Three YAMLs only:
-  `application.yaml`, `catalog.yaml`, `inventory.yaml`.
+- `../config-repo/` — sibling git repo. (Written when it held three YAMLs;
+  it now holds `application.yaml` plus **one per domain service** — cart,
+  catalog, checkout, customer, inventory, notification, order, payment,
+  promotion, review, search, shipping.)
+
+> ⚠️ A service's config is the **merge** of `config-repo/<service>.yaml`
+> over its local `application.yaml`. Some settings exist in only one of the
+> two, so check both before concluding a property is unset — e.g. the
+> shipping tariff rate card lives **only** in shipping's local
+> `application.yaml`; `config-repo/shipping.yaml` has no `tariff` entries
+> at all.
 
 The Config Server's URI points at the local clone via `file:///` for
 dev. Production points at `https://github.com/<org>/config-repo` (or
@@ -375,6 +420,12 @@ hardened. Dev favors debuggability.
 
 ### Depends-on graph
 
+> The **pattern** below is current; the **rows** are the two-service era.
+> Every domain service follows the `catalog` row: its own Postgres +
+> eurekaserver + configserver + keycloak. `checkout` and `shipping` have no
+> Postgres row because they are stateless. Read
+> `docker-compose/default/docker-compose.yml` for the real graph.
+
 The startup order matches the user's stated topology:
 
 | Service        | Waits on                                                          |
@@ -390,10 +441,20 @@ Compose's `condition: service_healthy` blocks the dependent until the upstream
 healthcheck passes — so catalog won't try to connect to a Postgres that hasn't
 finished initializing.
 
-### Postgres: two instances, not one with two schemas
+### Postgres: one instance per service, not one with many schemas
 
-Each service owns its data store. We use **two postgres containers** (one per
-service) rather than one container with two SQL schemas. Why:
+> Written when there were two services. The principle held and scaled: the
+> stack now runs **ten** Postgres containers on host ports **5433–5442** —
+> catalog, inventory, customer, cart, payment, order, promotion,
+> notification, review, search. (`checkout` and `shipping` are stateless and
+> own no database, which is why 12 services need only 10 instances.)
+>
+> ⚠️ Consequence worth stating plainly: **`docker compose down -v` destroys
+> all ten volumes** *and* Keycloak's. The realm imports only onto an empty
+> volume.
+
+Each service owns its data store. We use **one postgres container per
+service** rather than one container with many SQL schemas. Why:
 
 - The "database per service" microservices principle is about ownership and
   isolation, not literal container count — but two containers is the cleanest
@@ -435,7 +496,28 @@ Admin console at `http://localhost:7080/`. Log in as `admin/admin`.
 
 ### Realm + roles + user
 
-Create realm **`oriah`**, then in that realm:
+> **Do not do this by hand any more.** The realm is **imported from
+> `keycloak/import/oriah-realm.json`** on first start of an empty Keycloak
+> volume. The manual steps below are kept to explain what the import
+> creates and why. What it actually creates today:
+>
+> - **Roles (6):** `USER`, `CATALOG_ADMIN`, `INVENTORY_ADMIN`,
+>   `CUSTOMER_ADMIN`, `ORDER_ADMIN`, `PAYMENT_ADMIN`
+> - **Users (all password `password`):** `admin`, `maya` (every admin role
+>   plus `USER`), `alice` (**`USER` only** — the customer the smoke test
+>   drives), and the machine account `service-account-oriah-admin` (already
+>   holds `ORDER_ADMIN` — **reuse it** rather than adding another service
+>   account)
+> - **Clients:** `oriah-admin` (confidential, secret `oriah-admin-secret`),
+>   `oriah-web`
+>
+> ⚠️ **The import runs only onto an empty volume.** Adding a role later
+> means either a console edit — which silently drifts from the committed
+> export — or a full teardown that destroys every Postgres volume too. So
+> make realm changes in **one** coordinated edit to the JSON, and plan the
+> whole set of roles you need before you start.
+
+Historically, by hand: create realm **`oriah`**, then in that realm:
 
 1. **Roles** (Realm → Realm roles):
    - `CATALOG_ADMIN`
@@ -588,7 +670,7 @@ via a profile-specific override or the (future) Config Server.
 
 **Risks we accepted:**
 - Fewer tutorials, blog posts, and StackOverflow answers target SB 4 today (2026-05-17). The Eazy Bytes "Master Microservices" book in `design/uploads/` targets SB 3.x. Adjust mentally when reading.
-- Spring Cloud release train for SB 4 is pinned as `2026.0.0` placeholder in `pom.xml` — needs verification when we add the config server in iteration 3. Fallback: if SB-4-compatible Spring Cloud isn't GA yet, we can either wait or temporarily downgrade to SB 3.5.x.
+- ~~Spring Cloud release train for SB 4 is pinned as `2026.0.0` placeholder in `pom.xml` — needs verification.~~ **Resolved:** it is `2025.1.1`, verified and in use. No downgrade was needed. See "Spring Cloud version selection" above for how that was pinned down.
 
 ---
 
@@ -649,9 +731,15 @@ oriah-api/
 
 ---
 
-## Spring Cloud BOM commented out (not imported yet)
+## Spring Cloud BOM commented out (not imported yet) — ✅ SUPERSEDED
 
-**Decision:** The `spring-cloud-dependencies` BOM block sits commented in `oriah-api/pom.xml` ready to uncomment in iteration 3.
+> **It is imported and active.** `oriah-api/pom.xml` imports
+> `spring-cloud-dependencies` at `${spring-cloud.version}` = **`2025.1.1`**
+> (the Spring Boot 4 line — see "Spring Cloud version selection" above).
+> It was uncommented when the Config Server landed. The reasoning below is
+> why it *started* commented.
+
+**Decision (historical):** The `spring-cloud-dependencies` BOM block sat commented in `oriah-api/pom.xml` ready to uncomment in iteration 3.
 
 **Why:** Until we add the first Spring Cloud module, importing the BOM has no value and pulls in transitive metadata we don't need. Keep the surface area small until we use it.
 
@@ -683,7 +771,7 @@ oriah-api/
 
 **Why:** Best TDD playground for a microservices beginner:
 - Mostly CRUD: write Product → find Product → list Products. Domain rules without distributed complications.
-- Foundation for everything else: cart needs products; checkout needs prices; recommender needs embeddings keyed by product. Building catalog first lets every later service have a real thing to reference.
+- Foundation for everything else: cart needs products; checkout needs prices; inventory, search and procurement all key off a product variant. Building catalog first lets every later service have a real thing to reference. (The original line named a `recommender` service — that was never built and is explicitly out of scope.)
 - No Redis (cart) or Spring Statemachine (order) or external integrations (payment/Stripe) — focus on Spring Boot + JPA + REST + tests, nothing else.
 
 The wireframes' `ArchitectureScreen` lists 16 eventual services. Iteration 6 adds the second (`inventory`); the rest grow from there.
@@ -694,7 +782,7 @@ The wireframes' `ArchitectureScreen` lists 16 eventual services. Iteration 6 add
 
 **Decision:** Red-green-refactor on every behavior change. Failing test first, watch it fail for the right reason, write minimal code to pass, then refactor. No exceptions.
 
-**Why:** User explicitly mandated this as project ground rule #1. The cost of skipping a test once is paid back many times when the next change breaks something unexpectedly. Memory: `feedback_tdd_strict.md`.
+**Why:** User explicitly mandated this as project ground rule #1. The cost of skipping a test once is paid back many times when the next change breaks something unexpectedly. It is also enforced globally by the user's own `~/.claude/CLAUDE.md` §1, which applies to every project and says in terms: never write production behaviour before there is a test that demands it, and never report a task done without running the tests and quoting the result.
 
 ---
 

@@ -3,6 +3,21 @@
 Running log of work on `oriah-api`. **Newest at the top.** Each Claude session should
 update this before ending and read it at the start.
 
+> ## How to read this file
+>
+> **Newest first.** The topmost `## CURRENT STATE` entry is the only one that
+> describes reality. Everything below it is a dated snapshot of a moment that
+> has passed, written in the present tense at the time.
+>
+> ⛔ **No `Next exact action` line in this file is live.** There are two left
+> (the 2026-05-25 evening entry and the 2026-05-19 entry) and **both are
+> completed history**; each is marked where it sits. One of them would destroy
+> the finished frontend if executed. The current plan lives in
+> **`MVP_PLAN.md`** and current scope in **`../CLAUDE.md`** — not here.
+>
+> When you add an entry, put it directly under this box, and do not write a
+> bare "Next exact action" heading — say what date it was true on.
+
 ---
 
 ## CURRENT STATE — 2026-10-12 (admin dashboard finished; two new aggregate endpoints)
@@ -701,11 +716,18 @@ Query v5 + shadcn/ui + Auth.js v5 (Keycloak PKCE public client)
 + Zustand + openapi-typescript codegen + Vitest. Container builds
 and runs in compose as the 34th container on the `oriah` network.
 
-**Next exact action**: Tier 3 -- the auth-gated interactive flows
-(cart, checkout with `Idempotency-Key`, order history, admin
-CRUD). See `docs/PHASE_5_PROMPT.md` bullets 16-19 for the brief,
-and `../oriah-web/CLAUDE.md` for the stack. Tier 4 (Playwright
-e2e + polish) follows.
+**Next exact action (AS OF THIS 2026-05-25 ENTRY — DONE, NOT LIVE)**:
+Tier 3 -- the auth-gated interactive flows (cart, checkout with
+`Idempotency-Key`, order history, admin CRUD). See
+`docs/PHASE_5_PROMPT.md` bullets 16-19 for the brief, and
+`../oriah-web/CLAUDE.md` for the stack. Tier 4 (Playwright e2e +
+polish) follows.
+
+> ⛔ **This completed.** All seven tiers landed (see the 2026-10-10
+> entry) and the admin surface finished (2026-10-12). Do not pick this
+> up, and do not open `PHASE_5_PROMPT.md` for a brief — that file
+> instructs a session to delete everything in `oriah-web/`, which today
+> would destroy the finished Next.js app.
 
 ### Phase 5 deliverables that landed (this session)
 
@@ -1208,7 +1230,16 @@ each service controls which test slices see it.
     - `catalog`         (port 8081)
     - `inventory`       (port 8082)
 
-### Next exact action
+### Next exact action (AS OF THIS 2026 ENTRY — SUPERSEDED, DO NOT EXECUTE)
+
+> ⛔ **HISTORICAL. This was the next action at the time of this entry and it
+> has since been COMPLETED.** `oriah-web/` is already Next.js 15 + React 19.
+> The Vite scaffold described below no longer exists, so "tear down" /
+> "disposable" refers to code that is already gone. Acting on this today
+> would delete the finished frontend.
+>
+> This log is **newest-first**: the live next action is at the TOP of this
+> file, not here.
 
 **Phase 5 -- frontend rebuild.** With the backend now observable,
 audited, rate-limited, idempotent, and discoverable via one

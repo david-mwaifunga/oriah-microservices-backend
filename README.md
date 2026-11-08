@@ -1,64 +1,125 @@
 # oriah-api
 
-Backend microservices for **Oriah Jewelry**, an e-commerce platform.
+Backend microservices for **Oriah Jewelry** — a curated jewelry and watch
+**reseller** in Zambia, focused on Lusaka. Single currency: **Zambian Kwacha
+(ZMW)**. Oriah buys finished pieces from suppliers and resells them; it does
+not manufacture, repair, resize or re-plate.
 
-The wireframes and architecture spec live in the sibling `../design/` folder.
-The React + TypeScript storefront lives in `../oriah-web/` (separate git repo).
+**Claude sessions: read `CLAUDE.md` first**, then `docs/MVP_PLAN.md` for the
+current plan and `docs/PROGRESS.md` from the top (it is newest-first).
+
+The storefront is `../oriah-web/` — **Next.js 15 + React 19 + TypeScript**, its
+own git repo, with its own `CLAUDE.md`. It is built and running.
+
+> ⛔ `../design/` is a **May 2026 wireframe set, not a spec.** It names Vite
+> and lists services that will never be built. Visual reference only; the code
+> is the source of truth.
 
 ## Stack
 
 - **Java 21** · **Spring Boot 4.0.6** · **Maven** (multi-module)
-- **PostgreSQL 16** · **Flyway** migrations
-- **Testcontainers** for integration tests against a real Postgres
-- **SpringDoc OpenAPI** for API documentation
-- **Spring Cloud** (Config + Eureka + Gateway) — added in later iterations
-- **Keycloak** for OAuth2/OIDC — added in later iterations
-- **Kafka / Spring Cloud Stream** for async events — added in later iterations
+- **PostgreSQL 16**, one instance per service · **Flyway** migrations ·
+  `ddl-auto: validate`
+- **Testcontainers** for integration tests against a real Postgres (never H2)
+- **SpringDoc OpenAPI**, aggregated behind the gateway
+- **Spring Cloud** `2025.1.1` — Config (git-backed) · Eureka · Gateway
+- **Keycloak 26** OAuth2/OIDC — every service is a resource server
+- **Kafka 3.9** via Spring Cloud Stream — topics `catalog.product`, `oriah.order`
+- **Redis** (cart) · **SeaweedFS** (S3-compatible object storage, *not* MinIO)
+- **OpenFeign + Resilience4j** for service-to-service calls
+- **Observability:** Prometheus · Grafana · Loki · **Tempo** (OTLP) · Alloy.
+  Zipkin was removed — there is no `:9411`.
+
+All of the above is built and running. Still later: Kubernetes / Helm.
 
 ## Layout
 
 ```
 oriah-api/
-├── pom.xml                      Root parent: BOM imports, plugin management,
-│                                shared properties. Every module inherits.
-├── services/                    Domain microservices.
-│   ├── pom.xml                  Aggregator for all services.
-│   └── catalog/                 First service. Products, variants, collections.
-├── infra/                       Platform services (config, discovery, gateway). [empty]
-├── shared/                      Cross-cutting libraries (domain, security, observability). [empty]
-├── mvnw, mvnw.cmd, .mvn/        Maven wrapper — use this instead of system Maven.
-└── README.md
+├── pom.xml                 Root parent: BOM imports, plugin management,
+│                           shared properties. Every module inherits.
+├── services/               12 domain services, each its own module:
+│                             catalog, inventory, cart, checkout, order,
+│                             payment, promotion, shipping, customer,
+│                             review, search, notification
+│                           (checkout and shipping are stateless — no DB)
+├── infra/                  configserver, eurekaserver, gatewayserver
+├── shared/                 oriah-jpa-base, oriah-observability-starter
+├── docker-compose/         default/docker-compose.yml + common-config.yml
+├── keycloak/import/        oriah-realm.json — imported on first start only
+├── monitoring/             Prometheus, Grafana, Loki, Tempo, Alloy config
+├── scripts/, s3-config/    helper scripts, SeaweedFS bucket setup
+├── build-images.ps1        Buildpacks image build for every service
+├── smoke-test.ps1          19 checks, full admin + customer saga
+├── mvnw, mvnw.cmd, .mvn/   Maven wrapper — use this, not system Maven
+└── docs/                   ARCHITECTURE.md, MVP_PLAN.md, PROGRESS.md
 ```
 
 ## Quick start
 
-Prerequisites: Java 21, Docker Desktop (running).
+Prerequisites: Java 21, Docker Desktop (running — Testcontainers needs it).
 
 ```powershell
-# From oriah-api/
-.\mvnw.cmd clean install        # build everything
-.\mvnw.cmd -pl services/catalog test   # run catalog tests only
-
-# Run catalog locally with Testcontainers-managed Postgres:
-.\mvnw.cmd -pl services/catalog spring-boot:test-run
-# Then: http://localhost:8081/swagger-ui.html
+.\mvnw.cmd -ntp clean install
 ```
+
+```powershell
+.\mvnw.cmd -ntp -pl services/catalog test
+```
+
+```powershell
+.\mvnw.cmd -ntp -pl services/catalog spring-boot:test-run
+```
+
+### The whole stack (~36 containers)
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\build-images.ps1
+```
+
+```powershell
+docker compose up -d
+```
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
+```
+
+Keycloak admin console http://localhost:7080 (admin/admin) · storefront
+http://localhost:4000 · Grafana for traces.
+
+> ⚠️ **`docker compose down -v` destroys all ten Postgres volumes** *and*
+> Keycloak's. The realm imports only onto an empty volume, so plan realm
+> changes as one coordinated edit to `keycloak/import/oriah-realm.json`.
 
 ## Working conventions
 
 - **TDD is mandatory.** Every behavior change starts with a failing test (red),
-  then minimal code to make it pass (green), then refactor. No production code
-  without a test driving it.
-- **Integration tests hit real Postgres** via Testcontainers (Spring Boot's
-  `@ServiceConnection`). No H2 substitution — production parity matters.
-- **One service per Maven module.** Each is an independently deployable Spring Boot app.
-- **Schema per service.** Each service owns its Postgres schema; cross-service
-  access is via API or event, never shared tables.
-- **Database changes are Flyway migrations.** Versioned SQL in `src/main/resources/db/migration/`.
+  watched failing for the right reason, then minimal code to make it pass
+  (green), then refactor. No production code without a test driving it.
+- **Integration tests hit real Postgres** via Testcontainers
+  (`@ServiceConnection`). No H2 substitution — production parity matters.
+- **One service per Maven module.** Each is an independently deployable Spring
+  Boot app.
+- **Database per service.** Cross-service access is via API or event, never
+  shared tables.
+- **Database changes are Flyway migrations**, `V{n}__{desc}.sql`. Check the
+  highest existing version in that service first — a duplicate number stops
+  Flyway from starting.
+- **Money is always `BigDecimal` and always carries its currency.**
+- **Cost belongs to a receipt lot, never to a product** — the same piece is
+  bought at different prices from different suppliers.
 
-## Iteration plan
+Full and binding version in `CLAUDE.md`.
 
-Tracking in the project notes — current state is **iteration 1: catalog-service standalone**.
-Once catalog has solid CRUD + integration tests, we add the Spring Cloud platform
-modules (`configserver`, `eurekaserver`, `gatewayserver`) and then a second service
-(`inventory`) wired via OpenFeign + Resilience4j.
+## Where the plan lives
+
+`docs/MVP_PLAN.md` — the business-flow-ordered build plan.
+`docs/ARCHITECTURE.md` — decisions and rationale (accurate on *why*; its
+present-tense claims are dated and marked).
+`docs/PROGRESS.md` — running log, newest at the top.
+
+> ⛔ `docs/ITERATION_PLAN.md`, `docs/PHASE_4_PROMPT.md` and
+> `docs/PHASE_5_PROMPT.md` are **completed history, not plans.** Do not
+> execute them. `PHASE_5_PROMPT.md` in particular instructs a session to
+> delete everything in `oriah-web/`, which today destroys the finished app.

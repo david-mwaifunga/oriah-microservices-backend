@@ -1,5 +1,18 @@
 # Phase 4 — new-session prompt
 
+> ## ⛔ COMPLETED HISTORY — DO NOT RUN THIS PROMPT.
+>
+> Phase 4 shipped. Tracing, metrics, log aggregation, RFC 7807 problem
+> details, JPA auditing and rate limiting are all in place — and the stack
+> now uses **Tempo**, not the **Zipkin** this prompt specifies. Running it
+> would re-introduce a removed component.
+>
+> Also note the path below (`github\oriah\oriah-api\`) is wrong: the repo
+> lives at `github\oriah-microservice\oriah-api\`.
+>
+> Kept only as a record of how Phase 4 was briefed. For current state read
+> `docs/PROGRESS.md` from the TOP; for scope read `../CLAUDE.md`.
+
 Paste the block below into a fresh Claude Code session opened at
 `C:\Users\mwaif\OneDrive\Documents\github\oriah\oriah-api\`. It's
 self-contained — the new session will reload context from CLAUDE.md +
