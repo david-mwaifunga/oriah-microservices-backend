@@ -72,15 +72,51 @@ its commit.
   service account's roles. `scripts/keycloak-go-live.ps1` writes the whole
   client back for that reason.
 
-### Follow-ups found during Phase 0 (not started)
+### Follow-ups found during Phase 0 — fixed the same day (2026-11-09)
 
-- order's direct `POST /api/v1/orders` stores any `shippingAddressId` without
-  checking it is the caller's — pre-existing; it matters once Phase 7 delivers.
-- The storefront's admin gate is `endsWith("_ADMIN")`: a SALES or DISPATCH
-  person would be refused `/admin`, and a BOOKKEEPER would get in with no menu
-  entry. Fix when their screens are built.
-- Phase 7's late payment confirmation must also be guarded by BACKDATE_SALE
-  (in the service, since the date is in the body).
+The owner asked for them to be fixed within Phase 0, and for the storefront's
+untrue promises to be reworded from the requirements. Each was built
+test-first, then reviewed by an agent told to break it, then by Codex.
+
+- **order refuses a delivery address that is not the caller's.** It asks
+  customer for the caller's addresses with the caller's own token, before
+  pricing: someone else's is 400 and no row is written; customer down is 503.
+  Catalog's timeouts went from 2 s/5 s to 1 s/3 s so the four calls on the
+  placement path still fit inside checkout's 15 s (`WritePathBudgetTest`,
+  which now reads the token timeouts from `MachineIdentityConfig` itself).
+  Not counted in that budget, as before: the save and the event publish.
+- **The storefront's admin gate is `isStaff`**: any of the 14 capabilities,
+  from `src/lib/auth/capabilities.ts`, which `scripts/validate_roles.py`
+  (check 3) keeps equal to the realm. The check lives here, not in a web test,
+  so the storefront's unit tests run in a checkout of that repo alone (Codex's
+  finding).
+- **The storefront's promises are true** for the finished shop, from one
+  module (`src/lib/shop/promises.ts`): "Delivery within Zambia"; Oriah's
+  charge set by town and shown at checkout ("our" charge, because a shopper
+  may pay the driver on arrival instead); returns and exchanges by
+  arrangement. Gone: complimentary and worldwide insured shipping, 30-day
+  returns, the care page's lifetime repair, "ships within 3 weeks", and
+  "taxes calculated at checkout". `ruled-out-promises.test.ts` keeps them out.
+- **Phase 7's late payment confirmation** — the `BACKDATE_SALE` check past 72
+  hours, in payment's service — is written into Phase 7 with its tests.
+
+**Decided: the frontend is built after the backend.** From Phase 1, `oriah-web`
+is not changed while the backend phases are built. `docs/FRONTEND_WORK.md`
+lists every admin screen and storefront change, phase by phase, plus the
+storefront text that came with the design mock-ups and describes a different
+business (an atelier in Lagos that makes and repairs; invented testimonials
+and press) — it waits for the owner's own words. Each backend phase updates
+that list in the same commit; a failing Playwright spec not listed there is a
+regression.
+
+**Verified 2026-11-09:** order 159 tests (was 137), checkout 117, web 360 in
+41 files (was 290), typecheck clean; smoke **24/24 steps**, whose new step 20
+(g) — maya naming alice's address — failed on the old order code and passes on
+the new; Playwright **6/6** against the rebuilt storefront; Postman check
+PASS; OpenAPI diff PASS (additions only, the same 20 waived breaks);
+`validate_roles.py` self-test 11/11 and its real run PASS. Codex: no defects
+in the backend; its one storefront finding (a unit test reading this repo)
+is fixed by moving that check into `validate_roles.py`.
 
 Next: **Phase 1 — the event log convention** (`MVP_PLAN.md`).
 

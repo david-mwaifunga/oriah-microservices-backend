@@ -330,7 +330,7 @@ service restarted.
 |---|---|
 | `catalog` | `kind` on product — `SELLABLE` \| `PACKAGING`. Packaging flows through procurement and inventory unchanged but never reaches the storefront |
 | `search` | Index only `SELLABLE` **and** published. Fixes a live bug: DRAFT products are full-text searchable today |
-| `shipping` | **Gains a database** for admin-managed delivery prices (Phase 7): delivery locations — **towns grouped by province**, the ten provinces and their main towns seeded as reference data and more added by admin (round 5) — × options (`SELF_COLLECT`, `ORIAH_DELIVERY`, `YANGO`, named couriers), each town × option with a dated price that admin **publishes**, and an on/off switch on each town and option, plus an admin-set free-delivery threshold, off by default. The website offers only published, switched-on prices, so the price is known before payment (Q24) and **no awaiting-quote state is built**. Who pays stays a **per-order payer attribute** (`ORIAH_COLLECTS` or `RECIPIENT_PAYS`), not a property of the courier |
+| `shipping` | **Gains a database** for admin-managed delivery prices (Phase 7): delivery locations — **towns grouped by province**, the ten provinces and their main towns seeded as reference data and more added by admin (round 5) — × options (`SELF_COLLECT`, `ORIAH_DELIVERY`, `YANGO`, named couriers), each town × option with a dated price that admin **publishes**, and an on/off switch on each town and option, plus an admin-set free-delivery threshold, off by default. The website offers only published, switched-on prices, so Oriah's delivery charge is known before payment (Q24) and **no awaiting-quote state is built** — where the shopper pays the driver on arrival instead, the order carries K0 and the fare is the driver's. Who pays stays a **per-order payer attribute** (`ORIAH_COLLECTS` or `RECIPIENT_PAYS`), not a property of the courier |
 | `order` | Server-priced, enforced `total = subtotal + shipping − discount` (Phase 0); the promotion discount worked out per piece and **stored per line** (Phase 7); `FULFILLED → DELIVERED` for self-collect; phone-order channel |
 | `payment` | **Staff-confirmed payments** — a `SALES_AGENT` marks an order paid after receiving the money, recording method, reference, gross, fee and net, the date the money arrived and who confirmed; it is the only way an order becomes paid (Phase 7). A claim proven false is rejected on a separate record that posts nothing. ZynlePay — mobile money and cards — feeds the same confirmation record (Phase 13); both are live at go-live, staff confirmation staying for cash and bank transfers |
 | `checkout` | Actually reserve stock. It touches nothing in inventory today |
@@ -427,6 +427,23 @@ line is **two** cost slices, which is why the receiving event carries slices
 
 ## Part 5 — The build, in business-flow order
 
+> **How the storefront and admin screens are built — decided 2026-11-09.**
+> **Backend first, then the frontend, from a list scoped in advance.** Phases
+> 1 to 13 are built in `oriah-api`. `oriah-web` is then built in one
+> frontend stage, test-first, from [`FRONTEND_WORK.md`](FRONTEND_WORK.md):
+> every admin screen and storefront change this plan implies, phase by phase,
+> written down now so the frontend follows the plan instead of drifting from
+> it. **Each backend phase updates that list in the same commit**: the exact
+> endpoint, request and reply, errors, the capability that may use it, and
+> any browser test (Playwright spec) the change breaks. A browser test that
+> fails and is not on that list is a regression, fixed at once.
+> Why this order: the money and stock rules live in the backend, and the
+> smoke test is already the proof that the admin side works (Part 6); screens
+> built on a settled API are built once; and nothing goes live until every
+> phase is built (`CLIENT_DECISIONS.md` §1.5), so a storefront that lags the
+> backend for a while costs the business nothing. Phase 0 was the exception:
+> it fixed live defects and kept `oriah-web` in step.
+
 Each phase ends green with its tests run and counts quoted. Flyway versions
 below are the **real next number** for each service, verified against the files
 on disk — four earlier designs each assumed they owned `orders` V4, and only
@@ -473,14 +490,27 @@ no step here needs an interim business arrangement.
 > by Codex and by a second review that tried to break it; every confirmed
 > finding was fixed.
 >
-> **Found during Phase 0, still to do:**
-> - order's direct `POST /api/v1/orders` stores any `shippingAddressId` without
->   checking that the address belongs to the caller. This was already so before
->   Phase 0; it matters once Phase 7 delivers to addresses.
-> - The storefront lets a person into `/admin` only if one of their roles ends
->   in `_ADMIN`. So a `SALES` person (`SALES_AGENT`) or a `DISPATCH` person
->   (`FULFILMENT_AGENT`) would be refused, and a `BOOKKEEPER` gets in with no
->   menu entry. Fix it when their screens are built.
+> **Found during Phase 0 — fixed 2026-11-09**, test-first, each reviewed by
+> an agent that tried to break it:
+> - **order refuses a delivery address that is not the caller's.** Its own
+>   `POST /api/v1/orders` used to store any `shippingAddressId`. It now asks
+>   customer for the caller's addresses, with the caller's token, before
+>   pricing: someone else's is 400 and nothing is written, customer down is
+>   503. The placement path's four calls fit inside the 15 s checkout waits
+>   (`WritePathBudgetTest`); catalog's timeouts went from 2 s/5 s to 1 s/3 s
+>   to make room. Smoke step 20 (g): red on the old code, green on the new.
+> - **The storefront's admin gate is `isStaff`** — any of the 14
+>   capabilities, from one list `scripts/validate_roles.py` keeps equal to the realm — not a role
+>   name ending in `_ADMIN`.
+> - **The storefront's promises are true.** Delivery within Zambia, Oriah's
+>   charge set by town and shown at checkout, returns and exchanges by
+>   arrangement, all from one module; the false ones (free and worldwide
+>   insured delivery, 30-day returns, lifetime repair, "ships within 3
+>   weeks", tax at checkout) are gone, and a test keeps them out.
+> - **Phase 7's late payment confirmation** is written into Phase 7 with its
+>   tests (item 6's note below).
+> - **The frontend is built after the backend**, from
+>   [`FRONTEND_WORK.md`](FRONTEND_WORK.md) (Part 5's note).
 
 0. **Keycloak on its own database — done 2026-11-08.** Keycloak kept its data
    inside its container, so any recreate re-imported the realm and wiped every
@@ -823,7 +853,8 @@ no step here needs an interim business arrangement.
    Two planning notes from the review (not defects):
    - **Phase 7's late payment confirmation must also be guarded by
      `BACKDATE_SALE`** — in the service, since the date is in the request
-     body, and with its own gateway path if it lives under payments.
+     body. Written into Phase 7 with its tests (2026-11-09); it keeps the
+     `SALES_AGENT` path above, so no new gateway matcher is needed.
    - **Give-aways and take-backs are reason codes on the write-off endpoint**,
      not new paths.
 7. **No money input finer than the ngwee.** `NUMERIC(12,2)` silently rounds
@@ -1132,7 +1163,16 @@ leaves money and stock consistent after redelivery.
 > - **The date the money arrived dates the sale** (Q22): `occurred_at` is that
 >   date and `recorded_at` is the confirmation, so a 31 March transfer confirmed
 >   on 1 April stays in March. A date more than 72 hours back needs
->   `BACKDATE_SALE` and a reason, like any late-keyed sale.
+>   `BACKDATE_SALE` and a reason, like any late-keyed sale. **The check is in
+>   payment's service, not the gateway**: the date is in the request body, and
+>   the gateway matches paths only, so `/api/v1/admin/payments/confirmations/**`
+>   stays `SALES_AGENT` (Phase 0 item 6) and the service refuses an older date
+>   from anyone without `BACKDATE_SALE`. Tests: a `SALES` token confirming
+>   money that arrived 73 hours ago is refused 403 and records nothing; the
+>   same with `OWNER` and a reason is recorded, dated to when the money
+>   arrived; `OWNER` without a reason is 400; 72 hours or less needs neither.
+>   The window is the same configurable 72 hours as a late-keyed sale, read
+>   from one setting.
 > - **The fee is posted from the record, never re-keyed** (Phase 10).
 >
 > **The 10-minute hold meets a human confirmer here.** A website customer pays

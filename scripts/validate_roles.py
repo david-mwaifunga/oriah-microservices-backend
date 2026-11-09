@@ -28,6 +28,9 @@ the realm file is edited by hand.
 CHECKS
   1. every role named in MAIN sources is declared in the realm        (FAIL)
   2. realm roles that no code guards on                               (report)
+  3. the storefront's capability list (../oriah-web/src/lib/auth/
+     capabilities.ts) equals the realm's capability roles             (FAIL;
+     SKIP, printed, when there is no storefront checkout beside this one)
 
 MAIN SOURCES ONLY, and that is a considered limit rather than an oversight.
 The first version also scanned tests, and of its six findings five were
@@ -115,6 +118,16 @@ def job_roles(realm_file):
             if r.get("composite") and r["name"] not in BUILTIN_ROLES}
 
 
+def realm_capabilities(realm_file):
+    """The capability roles: realm roles that are not composite, not
+    Keycloak's own, and not USER (which every shopper holds)."""
+    with open(realm_file, encoding="utf-8") as fh:
+        realm = json.load(fh)
+    return {r["name"] for r in (realm.get("roles") or {}).get("realm") or []
+            if not r.get("composite") and r["name"] not in BUILTIN_ROLES
+            and r["name"] != "USER"}
+
+
 def scan(root, declared):
     """Returns (findings, used_roles) over MAIN sources only."""
     findings, used = [], set()
@@ -177,6 +190,44 @@ def run(root, realm_file):
     return declared, findings, used
 
 
+CAPABILITIES_LIST = re.compile(r"export\s+const\s+CAPABILITIES\s*=\s*\[(.*?)\]", re.S)
+QUOTED_NAME = re.compile(r"""["']([A-Za-z0-9_]+)["']""")
+
+
+def web_check(web_root, realm_file):
+    """Check 3: the storefront's capability list equals the realm's.
+
+    oriah-web decides who counts as staff -- who may open /admin and sees the
+    admin link -- from its own copy of the capability list,
+    src/lib/auth/capabilities.ts. A copy drifts: its old rule, "any role
+    ending in _ADMIN", refused a shop assistant (SALES_AGENT) and let in any
+    made-up role with the right ending. The check lives HERE, with the realm,
+    because a realm edit is what makes the copy wrong, and because the
+    storefront's own unit tests must run in a checkout of that repo alone.
+
+    Returns ("pass" | "fail" | "skip", why). "skip" only when there is no
+    storefront folder at all -- a checkout of this repo on its own -- and the
+    caller prints it, so a skipped comparison is never mistaken for a pass.
+    """
+    web_root = Path(web_root)
+    if not web_root.is_dir():
+        return "skip", "no storefront at %s" % web_root
+    caps = web_root / "src" / "lib" / "auth" / "capabilities.ts"
+    if not caps.exists():
+        return "fail", "%s not found" % caps
+    src = LINE_COMMENT.sub("", BLOCK_COMMENT.sub("", caps.read_text(encoding="utf-8")))
+    found = CAPABILITIES_LIST.search(src)
+    names = set(QUOTED_NAME.findall(found.group(1))) if found else set()
+    if not names:
+        return "fail", "no readable `export const CAPABILITIES = [...]` in %s" % caps
+    realm = realm_capabilities(realm_file)
+    missing, extra = sorted(realm - names), sorted(names - realm)
+    if missing or extra:
+        return "fail", ("%s -- missing from the storefront: %s; not in the realm: %s"
+                        % (caps, ", ".join(missing) or "none", ", ".join(extra) or "none"))
+    return "pass", "%d capabilities, the same as the realm" % len(names)
+
+
 def self_test(root, realm_file):
     """A guard nobody has watched fail gets believed when it is broken."""
     import tempfile
@@ -194,6 +245,8 @@ def self_test(root, realm_file):
         for rel, line, name, _ in findings[:5]:
             print("          %s:%d '%s'" % (rel, line, name))
 
+    real_web = Path(root).resolve().parent / "oriah-web"
+    total = 10 + (1 if real_web.is_dir() else 0)
     tmp = Path(tempfile.mkdtemp())
     try:
         # a typo'd guard in main code
@@ -240,14 +293,76 @@ def self_test(root, realm_file):
         else:
             failures.append("case-sensitive comparison")
             print("  FAIL  reported a realm role that differs only in case")
+
+        # --- check 3: the storefront's capability list against the realm ---
+        if real_web.is_dir():
+            status, why = web_check(real_web, realm_file)
+            if status == "pass":
+                print("  ok    the real storefront's list equals the realm")
+            else:
+                failures.append("the real storefront's list does not match")
+                print("  FAIL  the real storefront: %s %s" % (status, why))
+        else:
+            print("  --    no real storefront next to this repo; its list not compared")
+
+        capabilities = sorted(realm_capabilities(realm_file))
+        web = tmp / "web"
+        caps = web / "src" / "lib" / "auth" / "capabilities.ts"
+        caps.parent.mkdir(parents=True)
+
+        def write_list(names):
+            caps.write_text(
+                "/** a comment naming FAKE_ROLE must not count */\n"
+                "export const CAPABILITIES = [\n"
+                + "".join('  "%s",\n' % n for n in names)
+                + "] as const;\n", encoding="utf-8")
+
+        write_list(capabilities[:-1])
+        status, _ = web_check(web, realm_file)
+        if status == "fail":
+            print("  ok    caught: the storefront's list is missing a capability")
+        else:
+            failures.append("missed a capability missing from the storefront")
+            print("  FAIL  missed: a capability missing from the storefront (%s)" % status)
+
+        write_list(capabilities + ["MADE_UP_ADMIN"])
+        status, _ = web_check(web, realm_file)
+        if status == "fail":
+            print("  ok    caught: the storefront's list has a role the realm lacks")
+        else:
+            failures.append("missed an extra storefront capability")
+            print("  FAIL  missed: an extra capability in the storefront (%s)" % status)
+
+        write_list(capabilities)
+        status, _ = web_check(web, realm_file)
+        if status == "pass":
+            print("  ok    passed: the same list, with a comment naming another role")
+        else:
+            failures.append("refused a matching list")
+            print("  FAIL  refused a list equal to the realm (%s)" % status)
+
+        caps.write_text("export const SOMETHING_ELSE = [];\n", encoding="utf-8")
+        status, _ = web_check(web, realm_file)
+        if status == "fail":
+            print("  ok    caught: a storefront file with no list it can read")
+        else:
+            failures.append("passed an unreadable storefront list")
+            print("  FAIL  passed a file with no CAPABILITIES list (%s)" % status)
+
+        status, _ = web_check(tmp / "no-such-folder", realm_file)
+        if status == "skip":
+            print("  ok    skipped, and said so: no storefront folder at all")
+        else:
+            failures.append("did not skip a missing storefront")
+            print("  FAIL  a missing storefront folder gave %s, not skip" % status)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     print()
     if failures:
-        print("SELF-TEST FAILED: %d/5 checks bad" % len(failures))
+        print("SELF-TEST FAILED: %d/%d checks bad" % (len(failures), total))
         return 1
-    print("SELF-TEST PASSED: 5/5 checks")
+    print("SELF-TEST PASSED: %d/%d checks" % (total, total))
     return 0
 
 
@@ -257,11 +372,14 @@ def main(argv):
                     help="repo root to scan (default: cwd)")
     ap.add_argument("--realm", default=None,
                     help="realm JSON (default: <root>/keycloak/import/oriah-realm.json)")
+    ap.add_argument("--web", default=None,
+                    help="the storefront checkout (default: oriah-web beside <root>)")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args(argv)
 
     root = Path(args.root)
     realm_file = Path(args.realm) if args.realm else root / "keycloak" / "import" / "oriah-realm.json"
+    web_root = Path(args.web) if args.web else root.resolve().parent / "oriah-web"
 
     if not root.is_dir():
         print("ERROR: root not found: %s" % root)
@@ -274,7 +392,18 @@ def main(argv):
         return self_test(root, realm_file)
 
     declared, findings, used = run(root, realm_file)
-    return 0 if report(declared, findings, used, job_roles(realm_file)) else 1
+    ok = report(declared, findings, used, job_roles(realm_file))
+
+    status, why = web_check(web_root, realm_file)
+    if status == "pass":
+        print("PASS: the storefront's capability list matches the realm (%s)." % why)
+    elif status == "skip":
+        print("SKIP: the storefront's capability list was NOT compared -- %s." % why)
+    else:
+        print("FAIL: the storefront's capability list does not match the realm")
+        print("  ! %s" % why)
+        ok = False
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

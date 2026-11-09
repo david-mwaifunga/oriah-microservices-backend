@@ -460,15 +460,28 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   events for reconciliation or debugging — the thing a money-moving app most
   needs. Phase 1 of `docs/MVP_PLAN.md`.
 
-New follow-ups found during Phase 0:
+Follow-ups found during Phase 0 — **fixed 2026-11-09**:
 
-- **order's direct `POST /api/v1/orders` stores any `shippingAddressId`**
-  without checking it is the caller's. Pre-existing; it matters once Phase 7
-  delivers.
-- **The storefront's admin gate is `endsWith("_ADMIN")`**, so a `SALES`
-  (`SALES_AGENT`) or `DISPATCH` (`FULFILMENT_AGENT`) person would be refused
-  `/admin`, and a `BOOKKEEPER` gets in with no menu entry. To fix when their
-  screens are built.
+- **order checks that a delivery address is the caller's.** Its own
+  `POST /api/v1/orders` used to store any `shippingAddressId`. It now asks
+  customer for the caller's addresses, with the caller's own token, before
+  pricing: someone else's address is 400 and nothing is written; customer
+  down is 503. The placement path's four calls (customer, catalog, the
+  machine token, shipping) fit inside the 15 s checkout waits for order —
+  `WritePathBudgetTest` adds them up; catalog went from 2 s/5 s to 1 s/3 s to
+  make room. Smoke step 20 (g) proves it live.
+- **The storefront's admin gate is `isStaff`** — any of the 14 capabilities,
+  from one list (`oriah-web/src/lib/auth/capabilities.ts`) that a test keeps
+  equal to the realm file — not `endsWith("_ADMIN")`.
+- **Phase 7's late payment confirmation** needs `BACKDATE_SALE` past 72 hours:
+  a check in payment's service, not a gateway path, written into Phase 7 with
+  its tests.
+
+**The frontend is built after the backend** (decided 2026-11-09): from Phase 1,
+`oriah-web` is not changed while backend phases are built. Each phase records
+what the frontend must do in **`docs/FRONTEND_WORK.md`**, in the same commit —
+endpoint, request and reply, errors, the capability, and any Playwright spec it
+breaks. A failing spec not listed there is a regression.
 
 ---
 
@@ -483,6 +496,9 @@ New follow-ups found during Phase 0:
   out), the **Zambian tax law with primary sources (§12)**, and only **one
   point still open (§8.4, for ZRA or an adviser), none blocking.** It wins over every other document in
   this repo. Read it before the plan.
+- **`docs/FRONTEND_WORK.md`** — the frontend half of the plan: every admin
+  screen and storefront change, phase by phase, and the content only the owner
+  can supply. Each backend phase updates it in the same commit.
 - **`docs/BUSINESS_MODEL_FOR_CLIENT.md`** — the same model in plain English, as
   it was *sent* to the client. ⚠ **It is a dated snapshot, not current**: its
   "Open questions" section is now answered in `CLIENT_DECISIONS.md`, and its
