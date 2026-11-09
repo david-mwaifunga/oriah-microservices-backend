@@ -97,9 +97,15 @@
 #      no order paid and no extra charge; (f) the owner's own replay must
 #      still be served; (g) an order naming another customer's delivery
 #      address is refused 400, and no order is written.
-#   [20b/20] Payment refuses an intent it cannot price unambiguously. No
+#   [20b/20] Payment's intents: unambiguous, the owner's, one at a time. No
 #      currency, a lower-case "zmw" and an amount past the column are each
-#      400; a well-formed ZMW intent is still created.
+#      400; a well-formed ZMW intent is still created, and the same create
+#      again is answered 200 with the same intent (what checkout relies on
+#      when a reply is lost); another customer's create for that order is
+#      404; an order whose intent has already been charged takes no second
+#      intent (409, one live intent per order); and an order checkout has
+#      already paid takes none either (409, it is no longer waiting for
+#      payment).
 
 # A pre-flight block ahead of step 1 waits for the gateway to resolve every
 # service through Eureka; see the comment there for why container health is not
@@ -1317,7 +1323,7 @@ if ($authzFailures.Count -gt 0) {
 }
 Write-Host "    6 exploit attempts refused (a-e, g); no order paid, no extra charge, no foreign address stored; owner replay (f) intact" -ForegroundColor Gray
 
-Write-Host "[20b/20] Payment refuses an intent it cannot price unambiguously..." -ForegroundColor Cyan
+Write-Host "[20b/20] Payment's intents: unambiguous, the owner's, one at a time..." -ForegroundColor Cyan
 # POST /intents took amount @DecimalMin("0.01") and a currency that was
 # @Size(3) and nothing else. Three gaps, all verified live before the fix:
 #
@@ -1363,30 +1369,97 @@ foreach ($probe in $intentProbes) {
 # order of its own: an order has at most one live intent (payment V5), and
 # $orderId was paid by checkout, so a second intent for it is 409 by design.
 $goodOrder = New-ProbeOrder $aliceH 11      # 11 x 100.00 = 1100.00
+$goodBody = ConvertTo-Json @{ orderId=$goodOrder.id; amount=$goodOrder.total; currency="ZMW" }
 $goodIntent = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/payments/intents" `
-    -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ orderId=$goodOrder.id; amount=$goodOrder.total; currency="ZMW" })
+    -Headers $aliceH -ContentType "application/json" -Body $goodBody
 if ($goodIntent.currency -ne "ZMW" -or $goodIntent.status -ne "PENDING") {
     $intentFailures += "a well-formed intent came back currency=$($goodIntent.currency) status=$($goodIntent.status)"
 }
-# One live intent per order: checkout already paid $orderId, so a second
-# intent for it is refused -- otherwise the same order could be charged twice.
+
+# The same create again -- what checkout sends when the reply to its first
+# attempt was lost -- is answered 200 with the SAME intent: not a 409, and not
+# a second intent. Invoke-WebRequest rather than Invoke-RestMethod, because
+# only it shows whether the answer was 200 (handed back) or 201 (made anew).
+# Inside try/catch: the regression this check exists to catch is a 409 or a
+# 503, which Invoke-WebRequest throws -- and with $ErrorActionPreference =
+# "Stop" that would end the script on a raw WebException instead of saying
+# what went wrong.
 try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-        -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ orderId=$orderId; amount=4500.00; currency="ZMW" }) | Out-Null
-    $intentFailures += "a second intent for an order already paid was ACCEPTED"
+    $repeat = Invoke-WebRequest -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+        -Headers $aliceH -ContentType "application/json" -Body $goodBody -UseBasicParsing
+    $repeatIntent = $repeat.Content | ConvertFrom-Json
+    if ($repeat.StatusCode -ne 200 -or $repeatIntent.id -ne $goodIntent.id) {
+        $intentFailures += "the same create again gave $($repeat.StatusCode) with intent $($repeatIntent.id), expected 200 with $($goodIntent.id)"
+    }
 } catch {
     $code = Probe-Status $_
-    if ($code -ne 409) { $intentFailures += "second intent for a paid order gave $code, expected 409" }
+    $intentFailures += "the same create again gave $code, expected 200 with $($goodIntent.id)"
+}
+
+# Another customer cannot make an intent for alice's order. Payment asks order
+# with the caller's own token; order shows maya no such order, so payment
+# answers 404 in the shared words. maya holds OWNER + USER
+# (keycloak/dev/oriah-users-0.json), so she is a second real customer here, as
+# in step 20 (d).
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+        -Headers $mayaH -ContentType "application/json" -Body $goodBody | Out-Null
+    $intentFailures += "another customer made an intent for alice's order"
+} catch {
+    $code = Probe-Status $_
+    if ($code -ne 404) { $intentFailures += "another customer's create for alice's order gave $code, expected 404" }
+}
+
+# One live intent per order. A further probe order's intent is confirmed
+# straight through payment: the card is charged, but nobody tells order, so
+# the order stays CREATED -- still waiting for payment. A create for it then
+# passes payment's ownership, status and amount checks, and is refused by the
+# one-live-intent rule alone: 409, so the same order is never charged twice.
+# The Idempotency-Key is the storefront's habit, not a requirement of confirm.
+$chargedOrder = New-ProbeOrder $aliceH 13   # 13 x 100.00 = 1300.00
+$chargedBody = ConvertTo-Json @{ orderId=$chargedOrder.id; amount=$chargedOrder.total; currency="ZMW" }
+$chargedIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+    -Headers $aliceH -ContentType "application/json" -Body $chargedBody
+$charged = Invoke-RestMethod -Method POST `
+    -Uri "http://localhost:8080/api/v1/payments/intents/$($chargedIntent.id)/confirm" `
+    -Headers ($aliceH + @{ "Idempotency-Key" = "smoke-20b-" + [guid]::NewGuid().ToString() }) `
+    -ContentType "application/json" -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
+$chargedOrderStatus = (Invoke-RestMethod -Method GET `
+    -Uri "http://localhost:8080/api/v1/orders/$($chargedOrder.id)" -Headers $aliceH).status
+if ($charged.status -ne "SUCCEEDED" -or $chargedOrderStatus -ne "CREATED") {
+    $intentFailures += "probe setup: the confirmed intent is $($charged.status) and its order $chargedOrderStatus (want SUCCEEDED and CREATED), so the next check would not test the one-live-intent rule"
+}
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+        -Headers $aliceH -ContentType "application/json" -Body $chargedBody | Out-Null
+    $intentFailures += "a second intent beside a SUCCEEDED one was ACCEPTED"
+} catch {
+    $code = Probe-Status $_
+    if ($code -ne 409) { $intentFailures += "a second intent beside a SUCCEEDED one gave $code, expected 409" }
+}
+
+# Checkout paid $orderId, and step 7 took it on to DELIVERED. A create for it
+# -- for exactly its total, $confirm.total, in its currency -- is refused 409
+# by payment's check that the order is still waiting for payment: a DELIVERED
+# order is not (only CREATED is), and that check comes before the amount and
+# before the one-live-intent rule. (This used to send 4500.00 against a 200.00
+# order, so the check that refused it was whichever ran first.)
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+        -Headers $aliceH -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ orderId=$orderId; amount=$confirm.total; currency="ZMW" }) | Out-Null
+    $intentFailures += "an intent for an order already paid was ACCEPTED"
+} catch {
+    $code = Probe-Status $_
+    if ($code -ne 409) { $intentFailures += "an intent for a paid order gave $code, expected 409" }
 }
 if ($intentFailures.Count -gt 0) {
     $intentFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
-    Write-Error "payment intent input surface regressed on $($intentFailures.Count) check(s)"
+    Write-Error "payment intent surface regressed on $($intentFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent still created; a second intent for a paid order refused 409" -ForegroundColor Gray
+Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent created, and the same create again handed it back (200); another customer's create 404; a second intent beside a charged one 409; an intent for a paid order 409" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green

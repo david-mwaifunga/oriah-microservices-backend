@@ -19,12 +19,16 @@ import org.springframework.web.server.ResponseStatusException;
  * who acts on it, because "retryable" is easy to overclaim:
  *
  * <ul>
- *   <li><strong>Checkout already retried.</strong> Its own Resilience4j
- *       instances retry each outbound call 3 times, 500ms apart, on
- *       {@code IOException} and {@code FeignServerException} and never on a
- *       4xx. So a 503 reaching the client means those attempts are already
- *       spent — which is also why {@code Retry-After} is seconds and not
- *       milliseconds.</li>
+ *   <li><strong>Checkout has already done what it can.</strong> Its own
+ *       Resilience4j instances retry each outbound call up to 3 times, 500ms
+ *       apart, when a second attempt cannot do anything twice: a connection
+ *       never opened, or a 502, 503 or 504 -- never a 4xx, never a 500, and
+ *       (except for payment's idempotent createIntent) never a reply that was
+ *       lost. Or it made no attempt at all, because the circuit breaker was
+ *       open or the rate limiter refused: those protect a service that is
+ *       already struggling, and are the reason to wait. Either way a 503
+ *       reaching the client means another immediate try is pointless —
+ *       which is why {@code Retry-After} is seconds and not milliseconds.</li>
  *   <li><strong>The gateway does not retry this.</strong> Its retry filter is
  *       {@code setMethods(HttpMethod.GET)}, so {@code POST /confirm} is never
  *       replayed at the edge. Deliberate: auto-replaying a POST that moves

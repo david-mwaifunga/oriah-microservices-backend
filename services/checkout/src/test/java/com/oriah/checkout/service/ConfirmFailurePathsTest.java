@@ -309,16 +309,124 @@ class ConfirmFailurePathsTest {
         // refused", which is final and must not be retried; 502 means "we could
         // not reach the processor", which is transient and should be. Both used
         // to be the same 200 with a different message string.
+        //
+        // A REAL read timeout, as Feign raises it: the request reached payment
+        // and the answer never came, so the charge may have happened. This used
+        // to throw a hand-made RuntimeException("read timeout"), which carries
+        // none of what checkout reads to decide "was anything sent?" -- so it
+        // stayed green when a read timeout was mislabelled "nothing charged".
         cartHasOneItem();
         shippingIsFree();
         orderIsPlaced();
         intentIsCreated();
-        when(payment.confirm(any(), any(), any())).thenThrow(new RuntimeException("read timeout"));
+        RuntimeException readTimeout;
+        try (var failures = new com.oriah.checkout.resilience.RealFeignFailures()) {
+            readTimeout = failures.readTimeout();
+        }
+        when(payment.confirm(any(), any(), any())).thenThrow(readTimeout);
 
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(PaymentConfirmationFailedException.class);
 
         verify(order, never()).pay(any(), any());
+    }
+
+    // ------------------------------------------------------------------
+    // 503, not 502 -- confirm was never sent, so nothing was charged
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("confirm's breaker open: 503 'nothing charged', never the 502 'may have gone through'")
+    void anOpenBreakerInFrontOfConfirmIsServiceUnavailable() {
+        // An open breaker refuses the call inside checkout: nothing went to
+        // payment. The 502 says "the charge may or may not have gone through"
+        // and tells the shopper to check their payment method -- untrue here,
+        // and it withholds the retry the storefront offers only on a 503.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        when(payment.createIntent(any())).thenAnswer(inv -> {
+            // Other shoppers' failed confirms opened it a moment ago.
+            breakers.circuitBreaker("payment").transitionToOpenState();
+            return new PaymentClient.IntentResponse(INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD",
+                    "PENDING", null);
+        });
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(DownstreamUnavailableException.class)
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.type(ResponseStatusException.class))
+                .satisfies(ex -> assertThat(ex.getStatusCode().value()).isEqualTo(503));
+
+        verify(payment, never()).confirm(any(), any(), any());
+        verify(order, never()).pay(any(), any());
+    }
+
+    @Test
+    @DisplayName("confirm refused by checkout's own rate limiter: 503, nothing was sent")
+    void aRateLimiterRefusingConfirmIsServiceUnavailable() {
+        // The limiter, like the breaker, stops the call before it leaves.
+        RateLimiterRegistry limiters = RateLimiterRegistry.of(RateLimiterConfig.ofDefaults());
+        limiters.rateLimiter("payment", RateLimiterConfig.custom()
+                .limitForPeriod(1).limitRefreshPeriod(java.time.Duration.ofHours(1))
+                .timeoutDuration(java.time.Duration.ZERO).build()).acquirePermission();
+        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, payment, order, customer,
+                new ResilientFeignCaller(breakers, RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
+                        limiters));
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        intentIsCreated();
+
+        assertThatThrownBy(() -> checkout.confirm(request(), KEY))
+                .isInstanceOf(DownstreamUnavailableException.class);
+
+        verify(payment, never()).confirm(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("confirm's connection refused: 503, nothing was sent")
+    void aConfirmThatCouldNotConnectIsServiceUnavailable() {
+        // A real refused connection, raised by Feign: the request never left
+        // checkout, so payment cannot have charged anything.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        intentIsCreated();
+        when(payment.confirm(any(), any(), any())).thenAnswer(inv -> {
+            throw com.oriah.checkout.resilience.RealFeignFailures.refused();
+        });
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(DownstreamUnavailableException.class);
+
+        verify(order, never()).pay(any(), any());
+    }
+
+    @Test
+    @DisplayName("confirm answered 503 ('outcome unknown') and then the breaker opened: still 502, it may have charged")
+    void aConfirmThatReachedPaymentStays502EvenIfTheRetryFindsTheBreakerOpen() {
+        // Payment's 503 on confirm means the gateway gave no answer: the money
+        // may have been taken. The retry then finds the breaker open. The
+        // failure checkout ends with is the open breaker -- but the FIRST
+        // attempt reached payment, so "nothing was charged" would be a lie.
+        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, payment, order, customer,
+                new ResilientFeignCaller(breakers, RetryRegistry.of(RetryConfig.custom().maxAttempts(3)
+                        .waitDuration(java.time.Duration.ofMillis(1))
+                        .retryOnException(new com.oriah.checkout.resilience.RetryForAnyCall()).build()),
+                        RateLimiterRegistry.of(RateLimiterConfig.ofDefaults())));
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        intentIsCreated();
+        when(payment.confirm(any(), any(), any())).thenAnswer(inv -> {
+            breakers.circuitBreaker("payment").transitionToOpenState();
+            throw answeredWith(503);
+        });
+
+        assertThatThrownBy(() -> checkout.confirm(request(), KEY))
+                .isInstanceOf(PaymentConfirmationFailedException.class);
+
+        verify(payment, org.mockito.Mockito.times(1)).confirm(any(), any(), any());
     }
 
     // ------------------------------------------------------------------
@@ -446,6 +554,55 @@ class ConfirmFailurePathsTest {
 
         assertThat(response.orderStatus()).isEqualTo("PAID");
         verify(order).pay(eq(ORDER_ID), any());
+    }
+
+    @Test
+    @DisplayName("other shoppers' failed createIntents cannot stop THIS shopper confirming the intent just made")
+    void createIntentFailuresDoNotBlockConfirmingAnIntentJustMade() {
+        // createIntent and confirm used to share the "payment" breaker.
+        // Payment answers createIntent 503 whenever order is slow (it asks
+        // order whose order it is), so a few slow seconds for OTHER shoppers
+        // -- 5 failures in a window of 10 -- opened the breaker, and a shopper
+        // whose intent had just been made could not confirm it.
+        //
+        // The breakers here are set as application.yaml sets them: a window
+        // of 10 calls, open at 50% failures.
+        CircuitBreakerRegistry asConfigured = CircuitBreakerRegistry.of(
+                io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.custom()
+                        .slidingWindowSize(10).failureRateThreshold(50).build());
+        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, payment, order, customer,
+                new ResilientFeignCaller(asConfigured, RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
+                        RateLimiterRegistry.of(RateLimiterConfig.ofDefaults())));
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        java.util.concurrent.atomic.AtomicBoolean othersAreCheckingOut = new java.util.concurrent.atomic.AtomicBoolean();
+        when(payment.createIntent(any())).thenAnswer(inv -> {
+            if (othersAreCheckingOut.get()) {
+                throw answeredWith(503);   // payment could not ask order in time
+            }
+            // While this shopper's intent is being made, ten other shoppers'
+            // checkouts fail at createIntent.
+            othersAreCheckingOut.set(true);
+            for (int i = 0; i < 10; i++) {
+                String theirKey = "another-shopper-" + i;
+                assertThatThrownBy(() -> checkout.confirm(request(), theirKey))
+                        .isInstanceOf(DownstreamUnavailableException.class);
+            }
+            othersAreCheckingOut.set(false);
+            return new PaymentClient.IntentResponse(INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD",
+                    "PENDING", null);
+        });
+        when(payment.confirm(any(), any(), any())).thenReturn(new PaymentClient.IntentResponse(
+                INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD", "SUCCEEDED", null));
+        when(order.pay(any(), any())).thenReturn(new OrderClient.OrderResponse(
+                ORDER_ID, "kc-alice", "PAID", new BigDecimal("100.00"),
+                new BigDecimal("100.00"), "USD", INTENT_ID));
+
+        var response = checkout.confirm(request(), KEY);
+
+        assertThat(response.orderStatus()).isEqualTo("PAID");
+        verify(payment).confirm(eq(INTENT_ID), eq(KEY), any());
     }
 
     @Test

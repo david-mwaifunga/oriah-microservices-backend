@@ -30,6 +30,7 @@ import com.oriah.checkout.exception.PaymentConfirmationFailedException;
 import com.oriah.checkout.exception.PaymentDeclinedException;
 import com.oriah.checkout.exception.PricingChangedException;
 import com.oriah.checkout.exception.PromotionCodesNotAcceptedException;
+import com.oriah.checkout.resilience.NothingSentException;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
 import com.oriah.money.Ngwee;
 import com.oriah.observability.ProblemTypes;
@@ -81,8 +82,10 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>Nothing auto-retries this endpoint, and that is correct: the gateway's
  * retry filter is GET-only, so a POST that moves money is never replayed for
- * the shopper. Resilience4j retries each <em>outbound</em> call on a transport
- * fault or a downstream 5xx, so a 503 out of here means that already failed.
+ * the shopper. Resilience4j retries each <em>outbound</em> call -- but only
+ * when a second attempt cannot do anything twice: a connection that was never
+ * opened, or a 502, 503 or 504 (payment's createIntent, being idempotent, also
+ * on a reply that was lost). So a 503 out of here means those already failed.
  *
  * <p>This is still not a "real" saga with compensating actions across
  * services. A captured payment that cannot be attached to an order answers 500
@@ -217,8 +220,9 @@ public class CheckoutService {
     public PreviewResponse preview(PreviewRequest req) {
         refusePromotionCode(req.promotionCode());
 
-        // One R4J instance per Feign client (not per method), so when
-        // cart-service is unhealthy, ALL cart.* calls trip the same circuit.
+        // One R4J instance per Feign client, so when cart-service is
+        // unhealthy, ALL cart.* calls trip the same circuit. (Two calls have
+        // their own: order-pay and payment-create -- see application.yaml.)
         var myCart = safeCall(cart::getMyCart, "cart");
         if (myCart == null || myCart.items() == null || myCart.items().isEmpty()) {
             // Nothing to quote: confirm refuses an empty bag on its own terms
@@ -414,14 +418,23 @@ public class CheckoutService {
      * </ul>
      */
     private <T> T mustCall(java.util.function.Supplier<T> call, String name) {
+        return mustCall(call, name, name);
+    }
+
+    /**
+     * {@link #mustCall(java.util.function.Supplier, String)} for a call with a
+     * resilience instance of its own: {@code instance} picks the breaker, retry
+     * and limiter; {@code service} is the name the shopper is told.
+     */
+    private <T> T mustCall(java.util.function.Supplier<T> call, String service, String instance) {
         T result;
         try {
-            result = resilient.callOrThrow(name, call);
+            result = resilient.callOrThrow(instance, call);
         } catch (RuntimeException e) {
-            throw classify(name, e);
+            throw classify(service, e);
         }
         if (result == null) {
-            throw new DownstreamRejectedException(name);
+            throw new DownstreamRejectedException(service);
         }
         return result;
     }
@@ -445,8 +458,8 @@ public class CheckoutService {
      * secret, shipping refusing it). Telling a shopper to "try again shortly"
      * about that would invite them to, for ever; and order.place is a POST, so
      * a 500 that came after the order was saved must not be retried into a
-     * second one. Resilience4j's retry-exceptions name the same three
-     * statuses.
+     * second one. The retry rule ({@code RetryForAnyCall}) repeats the same
+     * three statuses, and of "no answer" only a connection never opened.
      */
     private static boolean isOutage(int answered) {
         return answered < 0 || answered == 502 || answered == 503 || answered == 504;
@@ -507,21 +520,35 @@ public class CheckoutService {
 
         // 5) Payment, for the total ORDER recorded. Nothing has been charged
         //    yet, so a failure up to and including createIntent is transient.
+        //
+        //    Its OWN resilience instance, "payment-create", for two reasons.
+        //    Creating an intent is idempotent -- payment hands a repeated create
+        //    the intent it already made -- so its retry may repeat a timed-out
+        //    call, which no other call here may. And payment answers it 503
+        //    whenever order is slow; on confirm's breaker those failures, from
+        //    other shoppers, would stop a shopper confirming an intent just made.
         BigDecimal total = placed.total();
         var intent = mustCall(() -> payment.createIntent(
                 new PaymentClient.CreateIntentRequest(placed.id(), total, priced.currency())),
-                "payment");
+                "payment", "payment-create");
 
         PaymentClient.IntentResponse confirmed;
         try {
             confirmed = resilient.callOrThrow("payment", () -> payment.confirm(intent.id(),
                     idempotencyKey, new PaymentClient.ConfirmRequest(req.cardNumber())));
+        } catch (NothingSentException e) {
+            // 503, not 502: the request to charge never left checkout -- the
+            // breaker was open, the rate limiter refused, the connection could
+            // not be opened, or the load balancer had no address for payment,
+            // on every attempt. Payment did nothing, so "nothing has been
+            // charged, try again" is the truth.
+            throw new DownstreamUnavailableException("payment", e);
         } catch (RuntimeException e) {
-            // 502, not 503 and not 402. The charge may or may not have gone
-            // through, so this is the one ambiguous outcome: the order stays
-            // CREATED and the cart stays intact, which keeps it recoverable,
-            // and a retry is safe because confirmation is idempotent on the
-            // intent.
+            // 502, not 503 and not 402. The request reached payment at least
+            // once, and the charge may or may not have gone through, so this
+            // is the one ambiguous outcome: the order stays CREATED and the
+            // cart stays intact, which keeps it recoverable, and a retry is
+            // safe because confirmation is idempotent on the intent.
             throw new PaymentConfirmationFailedException("the payment service did not answer", e);
         }
         if (confirmed == null) {

@@ -1,5 +1,6 @@
 package com.oriah.checkout.resilience;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 import lombok.extern.slf4j.Slf4j;
@@ -40,10 +41,11 @@ import feign.FeignException;
  *   <li>{@link Retry} -- on failure, re-invokes the chain.</li>
  * </ol>
  *
- * <p>{@code name} is both the bean lookup key (every Feign client has
- * a matching {@code resilience4j.{circuitbreaker,retry,ratelimiter}.
- * instances.<name>} block in {@code application.yaml}) and the
- * log/span tag for the call.
+ * <p>{@code name} is both the bean lookup key (every name has a matching
+ * {@code resilience4j.{circuitbreaker,retry,ratelimiter}.instances.<name>}
+ * block in {@code application.yaml}: one per Feign client, plus
+ * {@code order-pay} and {@code payment-create} for two calls of their own)
+ * and the log/span tag for the call.
  *
  * <p>Two call styles, because the two readers of a failure want
  * opposite things:
@@ -102,29 +104,57 @@ public class ResilientFeignCaller {
      *
      * <p>Everything the caller needs to classify the failure survives: a
      * {@code FeignException} carrying the status a downstream answered with
-     * (see {@link #answeredStatus}), a
-     * {@code CallNotPermittedException} when the circuit is open, a
-     * {@code RequestNotPermitted} when the rate limiter is starved, or a
-     * transport exception when nothing answered at all.
+     * (see {@link #answeredStatus}), Feign's {@code RetryableException} (status
+     * -1) when nothing answered, a {@code CallNotPermittedException} when the
+     * circuit opened between attempts.
+     *
+     * <p>When NO attempt could have reached the service -- the circuit was
+     * open ({@code CallNotPermittedException}), the rate limiter refused
+     * ({@code RequestNotPermitted}), or the connection could not even be opened
+     * or the load balancer had no address for the service
+     * ({@link NetworkFailures#neverArrived}), on every attempt -- the failure is
+     * thrown as a {@link NothingSentException} with the last one as its cause,
+     * so the caller can say truthfully that the service did nothing.
      */
     public <T> T callOrThrow(String name, Supplier<T> supplier) {
         CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker(name);
         Retry retry = retryRegistry.retry(name);
         RateLimiter rl = rateLimiterRegistry.rateLimiter(name);
 
-        Supplier<T> decorated = Decorators.ofSupplier(supplier)
+        // Set by any attempt that got past the limiter and the breaker and did
+        // not fail before its connection was open. An attempt the limiter or
+        // the breaker stops never runs this supplier at all.
+        AtomicBoolean mayHaveArrived = new AtomicBoolean();
+        Supplier<T> attempt = () -> {
+            boolean neverArrived = false;
+            try {
+                return supplier.get();
+            } catch (RuntimeException e) {
+                neverArrived = NetworkFailures.neverArrived(e);
+                throw e;
+            } finally {
+                if (!neverArrived) {
+                    mayHaveArrived.set(true);
+                }
+            }
+        };
+
+        Supplier<T> decorated = Decorators.ofSupplier(attempt)
                 .withRateLimiter(rl)
                 .withCircuitBreaker(cb)
                 .withRetry(retry)
                 .decorate();
         try {
             return decorated.get();
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             // Logged here so that every failure is recorded with its circuit
             // state exactly once, whether the caller goes on to swallow it or
             // to turn it into a status.
             log.warn("{} failed after R4J decoration (cb={}, retries={}): {}",
                     name, cb.getState(), retry.getMetrics().getNumberOfTotalCalls(), e.getMessage());
+            if (!mayHaveArrived.get()) {
+                throw new NothingSentException(name, e);
+            }
             throw e;
         }
     }

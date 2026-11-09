@@ -49,6 +49,12 @@
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator-test</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation-test</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
+        <!-- A real HTTP server in tests, so the network failures that decide
+             what checkout retries are the ones Feign itself raises: a reply
+             that never comes, a connection dropped after the request went out.
+             Version from spring-cloud-contract-dependencies, as in order and
+             payment. -->
+        <dependency><groupId>org.wiremock</groupId><artifactId>wiremock-standalone</artifactId><scope>test</scope></dependency>
     </dependencies>
 
     <build>

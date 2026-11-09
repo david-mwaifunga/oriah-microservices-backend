@@ -10,6 +10,12 @@ package com.oriah.checkout.exception;
  * because the three need different client behaviour and this one is the
  * ambiguous case — the charge may or may not have gone through.
  *
+ * <p>Only when the request to charge reached payment at least once. When it
+ * never left checkout -- confirm's circuit breaker open, the rate limiter
+ * refusing, the connection never opened, the load balancer holding no address
+ * for payment -- nothing can have been charged, and that is the 503 instead
+ * ({@code NothingSentException}).
+ *
  * <p>That ambiguity is why the order is left in {@code CREATED} and the cart is
  * left intact: the state has to stay recoverable.
  *

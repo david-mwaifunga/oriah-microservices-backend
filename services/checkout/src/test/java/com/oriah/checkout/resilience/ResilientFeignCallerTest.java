@@ -2,8 +2,6 @@ package com.oriah.checkout.resilience;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -24,12 +22,19 @@ import io.github.resilience4j.retry.RetryRegistry;
  * Unit tests for the synchronous R4J decoration. We do not need a
  * Spring context: instantiate the registries with realistic configs,
  * hand them to the caller, and verify the supplier wiring.
+ *
+ * <p>The failure retried below is a REAL one: a Feign call to a port with
+ * nothing listening, retried by the production rule ({@link RetryForAnyCall}).
+ * These tests used to throw an {@code UncheckedIOException} at a retry set up
+ * to retry {@code UncheckedIOException} -- which passed while checkout's real
+ * settings retried no network failure at all, because Feign never throws
+ * one (see {@link RealFeignFailures}).
  */
 class ResilientFeignCallerTest {
 
     private final RetryConfig retryConfig = RetryConfig.<Object>custom()
             .maxAttempts(3)
-            .retryExceptions(IOException.class, UncheckedIOException.class)
+            .retryOnException(new RetryForAnyCall())
             .build();
 
     private final ResilientFeignCaller caller = new ResilientFeignCaller(
@@ -56,7 +61,7 @@ class ResilientFeignCallerTest {
         AtomicInteger attempts = new AtomicInteger();
         String result = caller.call("test3", () -> {
             attempts.incrementAndGet();
-            throw new UncheckedIOException(new IOException("transient"));
+            throw RealFeignFailures.refused();
         }, "after-retries");
 
         assertThat(result).isEqualTo("after-retries");
@@ -70,7 +75,7 @@ class ResilientFeignCallerTest {
         String result = caller.call("test4", () -> {
             int n = attempts.incrementAndGet();
             if (n < 3) {
-                throw new UncheckedIOException(new IOException("transient"));
+                throw RealFeignFailures.refused();
             }
             return "third-try-charm";
         }, "fallback");
@@ -129,7 +134,7 @@ class ResilientFeignCallerTest {
             caller.call("test6", () -> {
                 seenPerAttempt.add(SecurityContextHolder.getContext().getAuthentication());
                 if (attempts.incrementAndGet() < 3) {
-                    throw new UncheckedIOException(new IOException("transient"));
+                    throw RealFeignFailures.refused();
                 }
                 return "ok";
             }, "fallback");
