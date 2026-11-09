@@ -1,0 +1,4 @@
+com.oriah.events.OutboxAutoConfiguration
+com.oriah.events.OutboxRelayAutoConfiguration
+com.oriah.events.OutboxReplayAutoConfiguration
+com.oriah.events.InboxAutoConfiguration

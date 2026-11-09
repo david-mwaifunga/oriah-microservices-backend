@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>shared</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>oriah-events</artifactId>
+    <packaging>jar</packaging>
+
+    <name>oriah-events</name>
+    <description>
+        The event log convention every service shares (MVP_PLAN Phase 1): a
+        money-affecting fact is written to the service's own permanent log
+        (the outbox table) in the same database transaction as the change it
+        describes, then published to Kafka by a relay that never skips and
+        never reorders. Consumers apply each event once in effect (the
+        inbox), and a late consumer can ask a producer to replay its log.
+
+        Auto-configured, every part off until a service switches it on:
+        oriah.events.outbox.enabled, .relay.enabled, .replay.enabled,
+        .inbox.enabled.
+
+        The module ships no Flyway file: each service adds the tables in its
+        own next migration, copied from the reference SQL in this module's
+        test resources (db/oriah-events). The test-jar carries
+        OutboxSchemaGuard and InboxSchemaGuard, which each service runs
+        against its own migrated database to prove the copy is exact and
+        that the permanent tables refuse UPDATE, DELETE and TRUNCATE.
+    </description>
+
+    <dependencies>
+        <!-- @AutoConfiguration, the property conditions and @ConfigurationProperties. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- JDBC only, no JPA entities: NamedParameterJdbcTemplate, and the
+             transaction support behind @Transactional(MANDATORY) and the
+             relay's one-transaction-per-batch. JDBC joins whatever
+             transaction the service's own manager (JPA or plain JDBC) has
+             open on the same DataSource. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-tx</artifactId>
+        </dependency>
+
+        <!-- StreamBridge, which the relay sends through. Every service that
+             adopts this module already has a Spring Cloud Stream binder. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-stream</artifactId>
+        </dependency>
+
+        <!-- Jackson 3: the generation Spring Cloud Stream 5 serialises
+             today's event payloads with, so the module's mapper can match
+             today's wire format. -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Test deps. Real Postgres in a container (never H2), Flyway to
+             run the reference SQL exactly as a service would, and the
+             Spring Cloud Stream test binder in place of Kafka - except in
+             OutboxRelayKafkaTest, which runs the relay through the real
+             Kafka binder to a real broker, because the test binder keeps
+             messages in memory and never runs Kafka's serializers. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-stream-test-binder</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The real broker test: the Kafka binder every producing service
+             runs, against Kafka in a container (the compose image). -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-stream-binder-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                        <configuration>
+                            <!-- Only what an adopting service needs: the two
+                                 schema guards and the reference SQL. The
+                                 module's own tests and its probe application
+                                 stay out, so they never land on a service's
+                                 test classpath. -->
+                            <includes>
+                                <include>com/oriah/events/OutboxSchemaGuard*.class</include>
+                                <include>com/oriah/events/InboxSchemaGuard*.class</include>
+                                <include>com/oriah/events/SchemaGuardSupport*.class</include>
+                                <include>db/oriah-events/**</include>
+                            </includes>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

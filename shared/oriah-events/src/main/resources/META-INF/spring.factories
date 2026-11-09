@@ -1,0 +1,4 @@
+# Binds the replay-request listener when oriah.events.replay.enabled=true
+# (see OutboxReplayBinding). Does nothing when replay is off.
+org.springframework.boot.EnvironmentPostProcessor=\
+com.oriah.events.OutboxReplayBinding

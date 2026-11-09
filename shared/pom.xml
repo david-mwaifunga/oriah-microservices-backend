@@ -26,5 +26,6 @@
         <module>oriah-jpa-base</module>
         <module>oriah-money</module>
         <module>oriah-quote</module>
+        <module>oriah-events</module>
     </modules>
 </project>
