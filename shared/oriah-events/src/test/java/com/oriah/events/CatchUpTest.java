@@ -1,5 +1,6 @@
 package com.oriah.events;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.HashMap;
@@ -104,6 +105,21 @@ class CatchUpTest {
             assertThat(row.completedAt()).isNull();
         }
         assertThat(consumer.catchUp("probe").requestId()).isNotEqualTo(consumer.catchUp("catalog").requestId());
+    }
+
+    @Test
+    @DisplayName("the request is keyed by its request id, as the producer keys every continuation of it: Kafka then "
+            + "keeps the whole replay's requests on one partition of the requests topic, in order")
+    void requestKeyedByItsId() {
+        RunningConsumer consumer = consumer(Kind.FACT, FreshDatabase.in(postgres));
+
+        Message<byte[]> request = only(consumer.requests());
+
+        UUID requestId = consumer.catchUp("probe").requestId();
+        assertThat(body(request).get("requestId")).isEqualTo(requestId.toString());
+        // Bytes, as the Kafka binder takes a key (see EventHeaders.KAFKA_KEY).
+        assertThat((byte[]) request.getHeaders().get(EventHeaders.KAFKA_KEY)).as("the Kafka key")
+                .isEqualTo(requestId.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     @Test
@@ -408,7 +424,7 @@ class CatchUpTest {
         RunningConsumer consumer = consumer(Kind.FACT, FreshDatabase.in(postgres));
         CatchUpRow before = consumer.catchUp("probe");
         UUID eventId = UUID.randomUUID();
-        InboxConsumer someoneElse = InboxConsumer.named("someone-else").handles("sale.recorded", 1);
+        InboxConsumer someoneElse = InboxConsumer.named("someone-else").handles("sale", "sale.recorded", 1);
 
         assertThatThrownBy(() -> consumer.transaction().executeWithoutResult(status ->
                 consumer.catchUpHelper().once(someoneElse, record(eventId, before.requestId()), () -> { })))

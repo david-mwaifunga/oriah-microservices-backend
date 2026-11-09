@@ -69,7 +69,14 @@ final class RunningProducer implements AutoCloseable {
                 "oriah.events.relay.delay=" + relayDelayMillis,
                 "oriah.events.replay.enabled=true",
                 // Ignored by the test binder; required by the relay, as in a service.
-                "spring.cloud.stream.kafka.default.producer.sync=true"));
+                "spring.cloud.stream.kafka.default.producer.sync=true",
+                // The send timeouts the README asks of a producing service.
+                // Ignored by the test binder; replay refuses to start without
+                // them (a step must fit the listener's poll interval: see
+                // ReplayStepTime), as in a service.
+                "spring.cloud.stream.kafka.binder.producer-properties.max.block.ms=10000",
+                "spring.cloud.stream.kafka.binder.producer-properties.request.timeout.ms=5000",
+                "spring.cloud.stream.kafka.binder.producer-properties.delivery.timeout.ms=10000"));
         return new RunningProducer(new SpringApplicationBuilder(ProbeApplication.class,
                 TestChannelBinderConfiguration.class)
                 .web(WebApplicationType.NONE)
@@ -118,6 +125,12 @@ final class RunningProducer implements AutoCloseable {
      * Delivers a consumer's replay request to this producer's listener, as
      * Kafka would, and returns the replay it sent: every record, then the
      * end-of-replay marker.
+     *
+     * <p>A replay longer than one step (oriah.events.replay.chunk-size rows)
+     * is answered whole all the same: the producer sends each continuation to
+     * the requests topic, and the test binder hands it straight back to this
+     * same listener (one in-memory channel per topic) before the send
+     * returns. ChunkedReplayKafkaTest shows the steps on a real broker.
      */
     List<Message<byte[]>> answer(Message<byte[]> request, String consumer) {
         input.send(request, ReplayRequest.TOPIC);

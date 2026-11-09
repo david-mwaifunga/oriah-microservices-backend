@@ -115,8 +115,8 @@ class EventsAutoConfigurationTest {
 
     @ParameterizedTest(name = "batch size {0}")
     @ValueSource(strings = {"0", "-1"})
-    @DisplayName("a relay batch size under 1 is refused at startup -- at 0 the relay would publish nothing, and "
-            + "a replay would page through nothing for ever, holding its transaction open")
+    @DisplayName("a relay batch size under 1 is refused at startup -- at 0 the relay would publish nothing, "
+            + "with no error")
     void relayBatchSizeAtLeastOne(String batchSize) {
         runner.withPropertyValues("oriah.events.outbox.enabled=true", "oriah.events.topics=oriah.order",
                         "oriah.events.relay.enabled=true", "oriah.events.producer=order",
@@ -232,6 +232,35 @@ class EventsAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("a replay is answered in steps of oriah.events.replay.chunk-size rows, 10 unless set -- not the "
+            + "relay's batch size: a step must fit the time Kafka allows the listener between polls")
+    void replayChunkSizeDefault() {
+        runner.withPropertyValues(REPLAY_READY)
+                .withPropertyValues("oriah.events.replay.enabled=true", "oriah.events.relay.batch-size=100")
+                .run(context -> assertThat(context.getBean(OutboxReplayer.class).chunkSize()).isEqualTo(10));
+    }
+
+    @Test
+    @DisplayName("oriah.events.replay.chunk-size set: each step sends that many rows at most")
+    void replayChunkSizeSet() {
+        runner.withPropertyValues(REPLAY_READY)
+                .withPropertyValues("oriah.events.replay.enabled=true", "oriah.events.replay.chunk-size=3")
+                .run(context -> assertThat(context.getBean(OutboxReplayer.class).chunkSize()).isEqualTo(3));
+    }
+
+    @ParameterizedTest(name = "chunk size {0}")
+    @ValueSource(strings = {"0", "-1"})
+    @DisplayName("a replay chunk size under 1 is refused at startup -- a step that sends no row would hand the "
+            + "same position on to the next step for ever")
+    void replayChunkSizeAtLeastOne(String chunkSize) {
+        runner.withPropertyValues(REPLAY_READY)
+                .withPropertyValues("oriah.events.replay.enabled=true", "oriah.events.replay.chunk-size=" + chunkSize)
+                .run(context -> assertThat(context).getFailure()
+                        .rootCause().hasMessageContaining("oriah.events.replay.chunk-size")
+                        .hasMessageContaining(chunkSize));
+    }
+
+    @Test
     @DisplayName("replay on without the relay: refused at startup, a replay re-sends what the relay publishes")
     void replayNeedsRelay() {
         runner.withPropertyValues("oriah.events.outbox.enabled=true", "oriah.events.topics=oriah.order",
@@ -251,9 +280,15 @@ class EventsAutoConfigurationTest {
                         .rootCause().hasMessageContaining("oriah.events.replay.enabled needs spring.application.name"));
     }
 
-    /** Everything replay needs around it: the outbox, the relay, a producer and an application name. */
+    /**
+     * Everything replay needs around it: the outbox, the relay, a producer, an
+     * application name, and the README's send timeouts (a replay step must fit
+     * the time Kafka allows its listener between polls: see ReplayStepTime).
+     */
     private static final String[] REPLAY_READY = {
             "oriah.events.outbox.enabled=true", "oriah.events.topics=oriah.order",
             "oriah.events.relay.enabled=true", "oriah.events.producer=order",
-            "spring.application.name=order"};
+            "spring.application.name=order",
+            "spring.cloud.stream.kafka.binder.producer-properties.max.block.ms=10000",
+            "spring.cloud.stream.kafka.binder.producer-properties.delivery.timeout.ms=10000"};
 }

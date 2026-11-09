@@ -7,8 +7,9 @@ import java.util.UUID;
 /**
  * The envelope headers a consumer needs, read and checked before anything
  * is written. A message missing one, or carrying one that does not parse,
- * is refused with an IllegalArgumentException naming the header -- so it is
- * retried and then dead-lettered, never half-applied.
+ * is refused with an IllegalArgumentException naming the header -- so it
+ * goes to the dead-letter topic (see {@link DeadLetterCustomizer}) and is
+ * never half-applied.
  *
  * <p>A header value may be a String (what the relay sets, and what Spring
  * Cloud Stream hands a consumer) or raw bytes (how Kafka itself carries

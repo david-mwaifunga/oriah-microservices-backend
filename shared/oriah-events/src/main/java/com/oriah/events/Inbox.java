@@ -30,9 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
  * </ul>
  *
  * <p>Before anything is written, the envelope headers are checked and the
- * event's type and payload version are matched against the consumer's
- * {@link InboxConsumer declaration}. Anything wrong throws, with no marker:
- * the binder retries, then dead-letters the message, and nothing is lost.
+ * event's type, payload version and aggregate type are matched against the
+ * consumer's {@link InboxConsumer declaration}. Anything wrong throws, with
+ * no marker, and the module's dead-letter handling takes over: the message is tried
+ * again or not, as the binding's retryable-exceptions say, then published to
+ * the binding's dead-letter topic, and not committed until that topic has it
+ * (see {@link DeadLetterCustomizer}).
  */
 public class Inbox {
 
@@ -81,6 +84,13 @@ public class Inbox {
      * applied, so for this consumer the older event is done with. An ignored
      * type does not move the seq -- its snapshot was not applied, so a
      * handled one before it must not be skipped on its account.
+     *
+     * <p>The seq is kept under the aggregate-type header, so that header must
+     * be right: an event whose aggregate-type is not the one the consumer
+     * declared for its type is refused before anything is written (see
+     * {@link InboxConsumer#handles}). Accepted, its snapshot would be applied
+     * while its seq was recorded under another aggregate, and a later, older
+     * snapshot of the real one would then overwrite the newer state.
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public void onceInOrder(InboxConsumer consumer, Map<String, ?> headers, Runnable effect) {

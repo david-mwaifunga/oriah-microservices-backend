@@ -128,6 +128,10 @@ class OutboxReplayTest {
         String consumer = freshConsumer();
         UUID requestId = UUID.randomUUID();
 
+        // Through the binding. The test binder hands each continuation the
+        // producer sends to the requests topic straight back to this same
+        // listener (one in-memory channel per topic), so the whole replay,
+        // every step, is answered before this returns.
         input.send(request(requestId, "probe", consumer, 0L), REQUESTS);
 
         List<Message<byte[]>> stream = all(output, "oriah.replay." + consumer);
@@ -297,6 +301,186 @@ class OutboxReplayTest {
     }
 
     @Test
+    @DisplayName("a replay longer than one step is answered in steps: chunk-size rows each, the chain unbroken across "
+            + "them, each step but the last ending with a continuation to the requests topic, keyed by the request "
+            + "id; the last ends with the marker")
+    void answeredInSteps() {
+        String a = fresh();
+        List<AppendedEvent> rows = List.of(append(a, TOPIC), append(a, TOPIC), append(a, TOPIC), append(a, TOPIC),
+                append(a, TOPIC));
+        long h = maxOutboxId();
+        HeldContinuations held = new HeldContinuations(streams);
+        OutboxReplayer stepping = new OutboxReplayer(dataSource, transactionManager, held, "probe", 2);
+        String consumer = freshConsumer();
+        UUID requestId = UUID.randomUUID();
+        long from = rows.get(0).outboxId();
+
+        stepping.handle(request(requestId, "probe", consumer, from));
+
+        List<Message<byte[]>> first = all(output, "oriah.replay." + consumer);
+        assertThat(headers(first, "outbox-id")).containsExactly(id(rows, 0), id(rows, 1));
+        assertThat(headers(first, "replay-prev-outbox-id")).containsExactly(Long.toString(from - 1), id(rows, 0));
+        Message<byte[]> afterFirst = only(held.take());
+        assertContinuation(afterFirst, requestId, consumer, from, h, rows.get(1).outboxId());
+
+        stepping.handle(afterFirst);
+
+        List<Message<byte[]>> second = all(output, "oriah.replay." + consumer);
+        assertThat(headers(second, "outbox-id")).containsExactly(id(rows, 2), id(rows, 3));
+        assertThat(headers(second, "replay-prev-outbox-id")).containsExactly(id(rows, 1), id(rows, 2));
+        assertThat(headers(second, "replay-request-id")).containsOnly(requestId.toString());
+        Message<byte[]> afterSecond = only(held.take());
+        assertContinuation(afterSecond, requestId, consumer, from, h, rows.get(3).outboxId());
+
+        stepping.handle(afterSecond);
+
+        List<Message<byte[]>> last = all(output, "oriah.replay." + consumer);
+        assertThat(headers(last, "outbox-id")).containsExactly(id(rows, 4), null);
+        assertThat(header(last.get(0), "replay-prev-outbox-id")).isEqualTo(id(rows, 3));
+        assertMarker(last.get(1), h, rows.get(4).outboxId());
+        assertThat(header(last.get(1), "replay-request-id")).isEqualTo(requestId.toString());
+        assertThat(held.take()).as("no continuation after the last step").isEmpty();
+    }
+
+    @Test
+    @DisplayName("outbox ids with gaps (an append that rolled back used up its id): each record names the row "
+            + "actually sent before it, never its own id minus one, so the chain stays unbroken across every gap, "
+            + "inside a step and between steps")
+    void chainUnbrokenAcrossUsedUpIds() {
+        String a = fresh();
+        AppendedEvent r1 = append(a, TOPIC);
+        useUpAnOutboxId();
+        AppendedEvent r2 = append(a, TOPIC);
+        AppendedEvent r3 = append(a, TOPIC);
+        useUpAnOutboxId();
+        AppendedEvent r4 = append(a, TOPIC);
+        useUpAnOutboxId();
+        AppendedEvent r5 = append(a, TOPIC);
+        List<AppendedEvent> rows = List.of(r1, r2, r3, r4, r5);
+        assertThat(r2.outboxId()).as("an id used up between r1 and r2").isGreaterThan(r1.outboxId() + 1);
+        assertThat(r4.outboxId()).as("an id used up between r3 and r4").isGreaterThan(r3.outboxId() + 1);
+        assertThat(r5.outboxId()).as("an id used up between r4 and r5").isGreaterThan(r4.outboxId() + 1);
+        HeldContinuations held = new HeldContinuations(streams);
+        OutboxReplayer stepping = new OutboxReplayer(dataSource, transactionManager, held, "probe", 2);
+        String consumer = freshConsumer();
+
+        stepping.handle(request(UUID.randomUUID(), "probe", consumer, r1.outboxId()));
+        answer(held, stepping);
+
+        // Steps of two: [r1 r2], [r3 r4], [r5] -- a gap inside each of the first two steps, and one just before
+        // the last step's only row.
+        List<Message<byte[]>> stream = all(output, "oriah.replay." + consumer);
+        assertThat(headers(stream, "outbox-id")).containsExactly(
+                id(rows, 0), id(rows, 1), id(rows, 2), id(rows, 3), id(rows, 4), null);
+        assertThat(headers(stream, "replay-prev-outbox-id")).containsExactly(
+                Long.toString(r1.outboxId() - 1), id(rows, 0), id(rows, 1), id(rows, 2), id(rows, 3), null);
+        assertMarker(stream.get(5), r5.outboxId(), r5.outboxId());
+    }
+
+    @Test
+    @DisplayName("exactly one step's rows left: the step sends them and then the marker, with no empty step after")
+    void exactlyOneStepLeft() {
+        String a = fresh();
+        List<AppendedEvent> rows = List.of(append(a, TOPIC), append(a, TOPIC), append(a, TOPIC), append(a, TOPIC));
+        HeldContinuations held = new HeldContinuations(streams);
+        OutboxReplayer stepping = new OutboxReplayer(dataSource, transactionManager, held, "probe", 2);
+        String consumer = freshConsumer();
+
+        stepping.handle(request(UUID.randomUUID(), "probe", consumer, rows.get(0).outboxId()));
+        assertThat(headers(all(output, "oriah.replay." + consumer), "outbox-id")).containsExactly(id(rows, 0),
+                id(rows, 1));
+        stepping.handle(only(held.take()));
+
+        List<Message<byte[]>> last = all(output, "oriah.replay." + consumer);
+        assertThat(headers(last, "outbox-id")).containsExactly(id(rows, 2), id(rows, 3), null);
+        assertMarker(last.get(2), rows.get(3).outboxId(), rows.get(3).outboxId());
+        assertThat(held.take()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a continuation delivered twice is answered once: the second copy sends nothing, and the step is "
+            + "recorded once, under an id of its own")
+    void continuationTwiceAnsweredOnce() {
+        String a = fresh();
+        List<AppendedEvent> rows = List.of(append(a, TOPIC), append(a, TOPIC), append(a, TOPIC));
+        HeldContinuations held = new HeldContinuations(streams);
+        OutboxReplayer stepping = new OutboxReplayer(dataSource, transactionManager, held, "probe", 2);
+        String consumer = freshConsumer();
+        UUID requestId = UUID.randomUUID();
+        stepping.handle(request(requestId, "probe", consumer, rows.get(0).outboxId()));
+        all(output, "oriah.replay." + consumer);
+        Message<byte[]> continuation = only(held.take());
+
+        stepping.handle(continuation);
+        stepping.handle(continuation);
+
+        assertThat(headers(all(output, "oriah.replay." + consumer), "outbox-id"))
+                .as("the second step's row and the marker, once").containsExactly(id(rows, 2), null);
+        assertThat(held.take()).isEmpty();
+        UUID step = new ReplayRequest(requestId, "probe", consumer, rows.get(0).outboxId())
+                .continueAfter(rows.get(2).outboxId(), rows.get(1).outboxId()).stepId();
+        assertThat(stepMarkers(step)).isEqualTo(1);
+        assertThat(stepMarkers(requestId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a step that sent its records and its continuation but did not commit (a crash) is answered again "
+            + "when Kafka redelivers it: the same records and continuation again; the next step, delivered twice, "
+            + "once")
+    void stepAnsweredAgainAfterNoCommit() {
+        String a = fresh();
+        List<AppendedEvent> rows = List.of(append(a, TOPIC), append(a, TOPIC), append(a, TOPIC), append(a, TOPIC));
+        HeldContinuations held = new HeldContinuations(streams);
+        ReplayHooks crashing = new ReplayHooks(held, null, transactionManager, TOPIC, 0,
+                rows.get(1).outboxId());
+        OutboxReplayer stepping = new OutboxReplayer(dataSource, transactionManager, crashing, "probe", 2);
+        String consumer = freshConsumer();
+        UUID requestId = UUID.randomUUID();
+        Message<byte[]> request = request(requestId, "probe", consumer, rows.get(0).outboxId());
+
+        assertThatThrownBy(() -> stepping.handle(request)).isInstanceOf(IllegalStateException.class);
+        assertThat(stepMarkers(requestId)).as("the crashed step is not recorded").isZero();
+        stepping.handle(request);
+        List<Message<byte[]>> continuations = held.take();
+        assertThat(continuations).as("the step's continuation, sent by both attempts").hasSize(2);
+        continuations.forEach(stepping::handle);
+
+        assertThat(headers(all(output, "oriah.replay." + consumer), "outbox-id")).containsExactly(
+                id(rows, 0), id(rows, 1), id(rows, 0), id(rows, 1), id(rows, 2), id(rows, 3), null);
+        assertThat(held.take()).isEmpty();
+        assertThat(stepMarkers(requestId)).isEqualTo(1);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("refusedContinuations")
+    @DisplayName("a continuation whose fields do not fit together is refused (dead-lettered on its first "
+            + "delivery): nothing replayed, nothing recorded, no further step")
+    void refusedContinuation(String why, String body, String refusal) {
+        append(fresh(), TOPIC);
+        int markers = requestMarkers();
+
+        assertThatThrownBy(() -> replayer.handle(raw(body)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(refusal);
+
+        assertThat(requestMarkers()).isEqualTo(markers);
+        assertThat(all(output, "oriah.replay.finance")).isEmpty();
+    }
+
+    static Stream<Arguments> refusedContinuations() {
+        String id = UUID.randomUUID().toString();
+        return Stream.of(
+                Arguments.of("throughOutboxId without afterOutboxId",
+                        json(id, "probe", "finance", 1L, 35L, null), "come together"),
+                Arguments.of("afterOutboxId without throughOutboxId",
+                        json(id, "probe", "finance", 1L, null, 10L), "come together"),
+                Arguments.of("afterOutboxId before the first row asked for",
+                        json(id, "probe", "finance", 5L, 35L, 3L), "afterOutboxId is fromOutboxId - 1 or more"),
+                Arguments.of("throughOutboxId before afterOutboxId",
+                        json(id, "probe", "finance", 1L, 9L, 10L), "throughOutboxId is afterOutboxId or more"));
+    }
+
+    @Test
     @DisplayName("a duplicate request (Kafka delivers at least once) replays once")
     void duplicateReplaysOnce() {
         AppendedEvent last = append(fresh(), TOPIC);
@@ -330,13 +514,15 @@ class OutboxReplayTest {
         String a = fresh();
         AppendedEvent first = append(a, TOPIC);
         AppendedEvent second = append(a, TOPIC);
-        AppendingDuringReplay appending = new AppendingDuringReplay(streams, () -> requiresNew(() ->
+        HeldContinuations held = new HeldContinuations(streams);
+        AppendingDuringReplay appending = new AppendingDuringReplay(held, () -> requiresNew(() ->
                 writer.append(draft(a, TOPIC))));
-        // One row per page, so the replay reads the log again after the append.
+        // One row per step, so a later step reads the log again after the append.
         OutboxReplayer replaying = new OutboxReplayer(dataSource, transactionManager, appending, "probe", 1);
         String consumer = freshConsumer();
 
         replaying.handle(request(UUID.randomUUID(), "probe", consumer, first.outboxId()));
+        answer(held, replaying);
 
         AppendedEvent during = appending.appended();
         assertThat(during).as("a row was appended mid-replay").isNotNull();
@@ -379,6 +565,95 @@ class OutboxReplayTest {
         assertThat(headers(all(output, "oriah.replay." + consumer), "outbox-id")).containsExactly(
                 Long.toString(first.outboxId()), Long.toString(second.outboxId()), null);
         assertThat(requestMarker(request)).isEqualTo(1);
+    }
+
+    /** Kafka's part in a replay of several steps: each continuation held back is delivered, until none is left. */
+    private static void answer(HeldContinuations held, OutboxReplayer replaying) {
+        List<Message<byte[]>> continuations;
+        while (!(continuations = held.take()).isEmpty()) {
+            continuations.forEach(replaying::handle);
+        }
+    }
+
+    /**
+     * The real StreamBridge, except that what a replayer built by the test
+     * sends to the requests topic -- its continuations -- is kept here
+     * instead, for the test to deliver as Kafka would: when it chooses, as
+     * often as it chooses. Passed on, the test binder would hand them to
+     * the context's own bound listener at once.
+     */
+    private static final class HeldContinuations implements StreamOperations {
+
+        private final StreamOperations real;
+        private final List<Message<byte[]>> held = new ArrayList<>();
+
+        HeldContinuations(StreamOperations real) {
+            this.real = real;
+        }
+
+        /** What was held since the last call, oldest first. */
+        List<Message<byte[]>> take() {
+            List<Message<byte[]>> taken = List.copyOf(held);
+            held.clear();
+            return taken;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public boolean send(String bindingName, Object data) {
+            if (REQUESTS.equals(bindingName)) {
+                held.add((Message<byte[]>) data);
+                return true;
+            }
+            return real.send(bindingName, data);
+        }
+
+        @Override
+        public boolean send(String bindingName, Object data, MimeType outputContentType) {
+            return send(bindingName, data);
+        }
+
+        @Override
+        public boolean send(String bindingName, String binderName, Object data) {
+            return send(bindingName, data);
+        }
+
+        @Override
+        public boolean send(String bindingName, String binderName, Object data, MimeType outputContentType) {
+            return send(bindingName, data);
+        }
+    }
+
+    /** A continuation as the producer sends it to itself: the request plus H and the last row sent, keyed, JSON. */
+    private static void assertContinuation(Message<byte[]> continuation, UUID requestId, String consumer, long from,
+                                           long through, long after) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> body = EventJson.mapper().readValue(continuation.getPayload(), Map.class);
+        assertThat(body.get("requestId")).isEqualTo(requestId.toString());
+        assertThat(body.get("producer")).isEqualTo("probe");
+        assertThat(body.get("consumer")).isEqualTo(consumer);
+        assertThat(((Number) body.get("fromOutboxId")).longValue()).isEqualTo(from);
+        assertThat(((Number) body.get("throughOutboxId")).longValue()).as("H").isEqualTo(through);
+        assertThat(((Number) body.get("afterOutboxId")).longValue()).as("the last row sent").isEqualTo(after);
+        assertThat((byte[]) continuation.getHeaders().get("kafka_messageKey")).as("the key")
+                .isEqualTo(requestId.toString().getBytes(StandardCharsets.UTF_8));
+        assertThat(MimeType.valueOf(header(continuation, MessageHeaders.CONTENT_TYPE)))
+                .isEqualTo(MimeType.valueOf("application/json"));
+    }
+
+    private static String id(List<AppendedEvent> rows, int index) {
+        return Long.toString(rows.get(index).outboxId());
+    }
+
+    private static Message<byte[]> only(List<Message<byte[]>> messages) {
+        assertThat(messages).hasSize(1);
+        return messages.get(0);
+    }
+
+    private int stepMarkers(UUID step) {
+        return jdbc.queryForObject(
+                "SELECT count(*) FROM processed_event WHERE consumer = 'replay-requests' AND event_id = ?",
+                Integer.class, step);
     }
 
     private static void assertMarker(Message<byte[]> marker, long through, long last) {
@@ -439,6 +714,12 @@ class OutboxReplayTest {
 
     /** The request on the wire, built field by field so a test can leave one out. */
     private static String json(String requestId, String producer, String consumer, Long fromOutboxId) {
+        return json(requestId, producer, consumer, fromOutboxId, null, null);
+    }
+
+    /** A continuation on the wire: a request plus H and the last row sent, either of which a test can leave out. */
+    private static String json(String requestId, String producer, String consumer, Long fromOutboxId,
+                               Long throughOutboxId, Long afterOutboxId) {
         Map<String, Object> body = new LinkedHashMap<>();
         if (requestId != null) {
             body.put("requestId", requestId);
@@ -452,11 +733,30 @@ class OutboxReplayTest {
         if (fromOutboxId != null) {
             body.put("fromOutboxId", fromOutboxId);
         }
+        if (throughOutboxId != null) {
+            body.put("throughOutboxId", throughOutboxId);
+        }
+        if (afterOutboxId != null) {
+            body.put("afterOutboxId", afterOutboxId);
+        }
         return EventJson.write(body);
     }
 
     private AppendedEvent append(String aggregateId, String topic) {
         return new TransactionTemplate(transactionManager).execute(status -> writer.append(draft(aggregateId, topic)));
+    }
+
+    /**
+     * An append whose transaction rolls back. Its row never exists, but the
+     * outbox_id it drew from the sequence is gone for good (a sequence never
+     * hands an id back), so the committed ids have a gap -- as they do in a
+     * real service whenever a write fails after its append.
+     */
+    private void useUpAnOutboxId() {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            writer.append(draft(fresh(), TOPIC));
+            status.setRollbackOnly();
+        });
     }
 
     private <T> T requiresNew(Supplier<T> work) {

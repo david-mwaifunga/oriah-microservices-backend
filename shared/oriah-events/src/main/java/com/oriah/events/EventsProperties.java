@@ -26,14 +26,45 @@ public record EventsProperties(
         @DefaultValue Set<String> topics,
         @DefaultValue Switch outbox,
         @DefaultValue Relay relay,
-        @DefaultValue Switch replay,
+        @DefaultValue Replay replay,
         @DefaultValue InboxSwitch inbox) {
 
     public record Switch(boolean enabled) {
     }
 
-    /** @param catchUp {@code oriah.events.inbox.catch-up.*}; naming a consumer there switches CatchUp on */
-    public record InboxSwitch(boolean enabled, @DefaultValue CatchUpSettings catchUp) {
+    /**
+     * @param chunkSize the most outbox rows one replay step sends
+     *                  ({@code oriah.events.replay.chunk-size}, default 10,
+     *                  1 or more). A replay is answered one step per Kafka
+     *                  delivery, and each step must finish inside the time
+     *                  Kafka allows the listener between two polls, however
+     *                  slowly the broker answers -- see {@link ReplayStepTime}.
+     *                  Small on purpose: a long history just takes more
+     *                  steps.
+     */
+    public record Replay(boolean enabled, @DefaultValue("10") int chunkSize) {
+
+        public Replay {
+            // Refused at startup: a step that sends no row would hand the
+            // same position on to the next step, for ever.
+            if (chunkSize < 1) {
+                throw new IllegalArgumentException("oriah.events.replay.chunk-size must be 1 or more, was "
+                        + chunkSize);
+            }
+        }
+    }
+
+    /**
+     * @param topics  the topics this service reads through the Inbox
+     *                ({@code oriah.events.inbox.topics}). Required when the
+     *                Inbox is on: the bindings that read them are the ones
+     *                that get the module's dead-letter handling (see
+     *                {@link DeadLetterScope}); every other binding keeps the
+     *                binder's own.
+     * @param catchUp {@code oriah.events.inbox.catch-up.*}; naming a consumer there switches CatchUp on
+     */
+    public record InboxSwitch(boolean enabled, @DefaultValue Set<String> topics,
+                              @DefaultValue CatchUpSettings catchUp) {
     }
 
     /**
@@ -48,15 +79,14 @@ public record EventsProperties(
     }
 
     /**
-     * @param batchSize the most rows one relay round publishes, and the page
-     *                  size a replay reads the outbox in; 1 or more
+     * @param batchSize the most rows one relay round publishes; 1 or more. (A
+     *                  replay steps by its own {@link Replay#chunkSize()}.)
      */
     public record Relay(boolean enabled, @DefaultValue("100") int batchSize) {
 
         public Relay {
             // Refused at startup: at 0 the relay would publish nothing, with
-            // no error, and a replay would read empty pages for ever while
-            // holding its transaction open.
+            // no error.
             if (batchSize < 1) {
                 throw new IllegalArgumentException("oriah.events.relay.batch-size must be 1 or more, was "
                         + batchSize);

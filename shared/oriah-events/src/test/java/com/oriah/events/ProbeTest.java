@@ -42,7 +42,25 @@ import com.oriah.events.probe.ProbeApplication;
         "oriah.events.inbox.enabled=true",
         // The test binder ignores it, but the relay refuses to start without
         // it, exactly as in a service (see SyncSends).
-        "spring.cloud.stream.kafka.default.producer.sync=true"
+        "spring.cloud.stream.kafka.default.producer.sync=true",
+        // The send timeouts the README asks of a producing service. The test
+        // binder ignores them, but replay refuses to start unless a whole
+        // replay step fits the time Kafka allows its listener between polls
+        // (see ReplayStepTime), exactly as in a service.
+        "spring.cloud.stream.kafka.binder.producer-properties.max.block.ms=10000",
+        "spring.cloud.stream.kafka.binder.producer-properties.request.timeout.ms=5000",
+        "spring.cloud.stream.kafka.binder.producer-properties.delivery.timeout.ms=10000",
+        // The Inbox's topic and its binding, and dead-lettering on that
+        // binding, as a service sets them. These tests call the Inbox
+        // directly and the test binder ignores all of it, but the module
+        // refuses to start without it (see DeadLetterStartupCheck), exactly
+        // as in a service. (The replay-request listener's dead-lettering is
+        // the module's own: see OutboxReplayBinding.)
+        "oriah.events.inbox.topics=oriah.probe",
+        "spring.cloud.stream.bindings.probeEvents-in-0.destination=oriah.probe",
+        "spring.cloud.stream.bindings.probeEvents-in-0.group=probe",
+        "spring.cloud.stream.kafka.default.consumer.enable-dlq=true",
+        "spring.cloud.stream.kafka.bindings.probeEvents-in-0.consumer.dlq-name=oriah.probe.dlq.probe"
 })
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 public @interface ProbeTest {

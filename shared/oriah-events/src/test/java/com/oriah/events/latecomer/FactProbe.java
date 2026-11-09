@@ -29,7 +29,7 @@ import static com.oriah.events.latecomer.ProbeConsumer.header;
 public class FactProbe implements ProbeConsumer {
 
     public static final InboxConsumer SALES = InboxConsumer.named("fact-probe")
-            .handles("sale.recorded", 1)
+            .handles("sale", "sale.recorded", 1)
             .ignores("product.updated", "product.deleted");
 
     private final Inbox inbox;

@@ -78,10 +78,15 @@ class InboxTest {
     @Autowired
     private JdbcTemplate jdbc;
 
-    /** A fresh consumer per test: processed_event is append-only, so no test can clean up after another. */
+    /**
+     * A fresh consumer per test: processed_event is append-only, so no test can clean up after another.
+     * payment.succeeded is about a payment_intent, as payment's events are: the aggregate is declared per
+     * event type, never guessed from the event type's name.
+     */
     private final InboxConsumer consumer = InboxConsumer.named("probe-" + UUID.randomUUID().toString().substring(0, 8))
-            .handles("product.updated", 1)
-            .handles("product.deleted", 1)
+            .handles("product", "product.updated", 1)
+            .handles("product", "product.deleted", 1)
+            .handles("payment_intent", "payment.succeeded", 1)
             .ignores("product.reviewed");
 
     private final AtomicInteger effects = new AtomicInteger();
@@ -195,6 +200,77 @@ class InboxTest {
 
         assertThat(effects).hasValue(0);
         assertThat(markers()).isZero();
+    }
+
+    @ParameterizedTest(name = "{0}: aggregate-type \"{1}\"")
+    @MethodSource("wrongAggregate")
+    @DisplayName("a handled type whose aggregate-type is not the one declared for it is refused before any marker: "
+            + "nothing is applied, and no seq is recorded under any aggregate")
+    void wrongAggregateTypeRefused(Method method, String aggregateType) {
+        String product = fresh();
+        Map<String, Object> headers = envelope("product.updated", product, 5);
+        headers.put("aggregate-type", aggregateType);
+
+        assertThatThrownBy(() -> deliver(method, headers, () -> {
+            effects.incrementAndGet();
+            project(product, 5);
+        }))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("product.updated")
+                .hasMessageContaining("'product'")
+                .hasMessageContaining("'" + aggregateType + "'");
+
+        assertThat(effects).hasValue(0);
+        assertThat(markers()).isZero();
+        assertThat(aggregates()).as("processed_aggregate rows for this consumer").isZero();
+        assertThat(projectedSeq(product)).isNull();
+    }
+
+    /**
+     * "order": an aggregate the consumer never declared. "payment_intent": one it declared, but for another
+     * event type. "Product": the match is exact, as the producer wrote it -- in processed_aggregate a
+     * differently spelled type is a different aggregate.
+     */
+    static Stream<Arguments> wrongAggregate() {
+        List<Arguments> cases = new ArrayList<>();
+        for (Method method : Method.values()) {
+            for (String aggregateType : List.of("order", "payment_intent", "Product")) {
+                cases.add(Arguments.of(method, aggregateType));
+            }
+        }
+        return cases.stream();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Method.class)
+    @DisplayName("an event whose aggregate-type is the one declared for its type is applied -- payment.succeeded "
+            + "about a payment_intent, an aggregate its type's name does not give")
+    void declaredAggregateTypeApplied(Method method) {
+        String intent = fresh();
+        Map<String, Object> headers = envelope("payment.succeeded", intent, 1);
+        headers.put("aggregate-type", "payment_intent");
+
+        deliver(method, headers, effects::incrementAndGet);
+
+        assertThat(effects).hasValue(1);
+        assertThat(markers()).isEqualTo(1);
+        // Only a projection keeps a seq, and it keeps it under the declared aggregate.
+        assertThat(lastSeq("payment_intent", intent)).isEqualTo(method == Method.ONCE_IN_ORDER ? 1L : null);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Method.class)
+    @DisplayName("an ignored type is marked whatever its aggregate-type says: it is never applied, so it touches "
+            + "no aggregate's seq")
+    void ignoredTypeAnyAggregate(Method method) {
+        Map<String, Object> headers = envelope("product.reviewed", fresh(), 7);
+        headers.put("aggregate-type", "review");
+
+        deliver(method, headers, effects::incrementAndGet);
+
+        assertThat(effects).hasValue(0);
+        assertThat(markers()).isEqualTo(1);
+        assertThat(aggregates()).isZero();
     }
 
     @ParameterizedTest
@@ -356,11 +432,21 @@ class InboxTest {
     }
 
     private Long lastSeq(String product) {
+        return lastSeq("product", product);
+    }
+
+    private Long lastSeq(String aggregateType, String aggregateId) {
         List<Long> seq = jdbc.queryForList("""
                 SELECT last_seq FROM processed_aggregate
-                WHERE consumer = ? AND aggregate_type = 'product' AND aggregate_id = ?""",
-                Long.class, consumer.name(), product);
+                WHERE consumer = ? AND aggregate_type = ? AND aggregate_id = ?""",
+                Long.class, consumer.name(), aggregateType, aggregateId);
         return seq.isEmpty() ? null : seq.get(0);
+    }
+
+    /** Every processed_aggregate row of this consumer, whatever its aggregate. */
+    private int aggregates() {
+        return jdbc.queryForObject("SELECT count(*) FROM processed_aggregate WHERE consumer = ?",
+                Integer.class, consumer.name());
     }
 
     private int markers() {

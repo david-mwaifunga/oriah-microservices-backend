@@ -40,8 +40,11 @@ public class OutboxReplayAutoConfiguration {
             throw new IllegalStateException("oriah.events.replay.enabled needs spring.application.name: "
                     + "it names the consumer group the replay requests are read in");
         }
+        // And one replay step must fit the time Kafka allows the listener
+        // between polls, however slowly Kafka answers within its timeouts.
+        ReplayStepTime.require(properties.replay().chunkSize(), environment);
         return new OutboxReplayer(dataSource, transactionManager, streams,
-                properties.producer(), properties.relay().batchSize());
+                properties.producer(), properties.replay().chunkSize());
     }
 
     /** The listener itself; {@link OutboxReplayBinding} binds it by this name. */

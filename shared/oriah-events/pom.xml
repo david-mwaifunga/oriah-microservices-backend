@@ -25,7 +25,9 @@
 
         Auto-configured, every part off until a service switches it on:
         oriah.events.outbox.enabled, .relay.enabled, .replay.enabled,
-        .inbox.enabled.
+        .inbox.enabled. On the Kafka binder, the module's own bindings
+        dead-letter a message that keeps failing and never commit it until
+        the dead-letter topic has it.
 
         The module ships no Flyway file: each service adds the tables in its
         own next migration, copied from the reference SQL in this module's
@@ -74,6 +76,18 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- The dead-letter handling (DeadLetterAutoConfiguration) works
+             through the Kafka binder's own hook for a listener's error
+             handling, so it needs the binder's classes to compile. Optional:
+             a service gets the binder from its own dependency, never from
+             this jar, and with no Kafka binder on the classpath that part of
+             the module simply stays off. -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-stream-binder-kafka</artifactId>
+            <optional>true</optional>
         </dependency>
 
         <!-- Test deps. Real Postgres in a container (never H2), Flyway to
@@ -127,13 +141,9 @@
             <artifactId>spring-cloud-stream-test-binder</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- The real broker test: the Kafka binder every producing service
-             runs, against Kafka in a container (the compose image). -->
-        <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-stream-binder-kafka</artifactId>
-            <scope>test</scope>
-        </dependency>
+        <!-- The real broker tests: the Kafka binder every service runs (the
+             optional dependency above, which is on the test classpath too),
+             against Kafka in a container (the compose image). -->
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-kafka</artifactId>

@@ -1,7 +1,5 @@
 package com.oriah.events;
 
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -20,8 +18,6 @@ import org.springframework.context.ApplicationListener;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.messaging.Message;
-import org.springframework.messaging.MessageHeaders;
-import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,7 +65,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       continues an unbroken chain.</li>
  * </ul>
  * So replayed_through always means "every row up to here is applied". A
- * record that fails is retried and dead-lettered and never commits: the
+ * record that fails goes to the dead-letter topic and its change never commits: the
  * chain breaks there and replayed_through stops, while later records still
  * apply (harmlessly, once) but cannot move it. Live deliveries go straight
  * to the Inbox and never touch it.
@@ -235,16 +231,13 @@ public class CatchUp implements ApplicationListener<ApplicationReadyEvent>, Appl
      * must not run believing it asked. That covers a broker that does not
      * take the request only because sends are synchronous, which is why
      * CatchUp refuses to start without them ({@link SyncSends}).
+     *
+     * <p>The request is keyed by its request id ({@link ReplayRequest#message()}),
+     * as the producer keys every continuation of it, so all the steps of one
+     * replay sit on one partition of the requests topic, in order.
      */
     private void send(ReplayRequest request) {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("requestId", request.requestId().toString());
-        body.put("producer", request.producer());
-        body.put("consumer", request.consumer());
-        body.put("fromOutboxId", request.fromOutboxId());
-        Message<byte[]> message = MessageBuilder.withPayload(EventJson.write(body).getBytes(StandardCharsets.UTF_8))
-                .setHeader(MessageHeaders.CONTENT_TYPE, "application/json")
-                .build();
+        Message<byte[]> message = request.message();
         boolean accepted;
         try {
             accepted = streams.send(ReplayRequest.TOPIC, message);

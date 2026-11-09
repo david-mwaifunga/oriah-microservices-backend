@@ -23,29 +23,54 @@ import tools.jackson.core.JacksonException;
 
 /**
  * Answers replay requests: sends this service's outbox again, from a
- * position, to the asking consumer's own topic.
+ * position, to the asking consumer's own topic -- one bounded step per
+ * delivery.
  *
  * <p>Why a consumer asks: one added late (finance, months after orders
  * began) or one that lost its copy needs every fact, and Kafka keeps
  * messages only for a while. The outbox keeps them for good.
  *
- * <p>For each request read from {@link ReplayRequest#TOPIC}:
+ * <p><b>Why steps.</b> Kafka gives a listener a fixed time between two polls
+ * ({@code max.poll.interval.ms}); a listener that takes longer is presumed
+ * dead, its partitions go to another instance, and the request it was
+ * answering is delivered again -- where it would take just as long, for
+ * ever. A whole history has no upper bound, so one delivery never answers
+ * all of it: it sends at most {@code chunkSize} rows
+ * ({@code oriah.events.replay.chunk-size}) and then hands the rest of the
+ * replay to a <em>continuation</em>, a request it sends back to
+ * {@link ReplayRequest#TOPIC} and answers when Kafka delivers it, like any
+ * other. The module refuses to start unless a whole step fits the poll
+ * interval, however slowly Kafka answers within its timeouts (see
+ * {@link ReplayStepTime}).
+ *
+ * <p>For each request (or continuation) read from {@link ReplayRequest#TOPIC}:
  * <ol>
  *   <li>a request naming another producer is ignored -- every producer
  *       reads the topic;</li>
- *   <li>a malformed one is refused (it throws, so the binder retries it and
- *       then dead-letters it);</li>
- *   <li>a request already answered is ignored: its requestId is recorded
- *       in processed_event under the consumer name {@value #REQUESTS_CONSUMER},
- *       exactly as the Inbox records an event;</li>
- *   <li>H = the newest outbox_id now. Every row from the asked position
- *       through H is sent, oldest first, to {@code oriah.replay.<consumer>}:
- *       the live message again plus {@code replay-request-id} and
- *       {@code replay-prev-outbox-id}, keyed by the request id instead of
- *       the aggregate id (see {@link #key});</li>
- *   <li>then one end-of-replay marker ({@value ReplayRequest#COMPLETED})
- *       with {@code through-outbox-id} = H and {@code last-outbox-id}, under
- *       the same key.</li>
+ *   <li>a malformed one is refused: it throws, and the module's dead-letter
+ *       handling publishes it to the listener's dead-letter topic, at least
+ *       once, keeping it uncommitted until that topic has it (see
+ *       {@link DeadLetterCustomizer});</li>
+ *   <li>a step already answered is ignored: its id
+ *       ({@link ReplayRequest#stepId()} -- the requestId for the first step)
+ *       is recorded in processed_event under the consumer name
+ *       {@value #REQUESTS_CONSUMER}, exactly as the Inbox records an
+ *       event;</li>
+ *   <li>the first step fixes H = the newest outbox_id now, and starts after
+ *       {@code fromOutboxId - 1}; a continuation carries both with it;</li>
+ *   <li>up to {@code chunkSize} rows after that position and up to H are
+ *       sent, oldest first, to {@code oriah.replay.<consumer>}: the live
+ *       message again plus {@code replay-request-id} and
+ *       {@code replay-prev-outbox-id} (the row before it in this replay, so
+ *       the chain runs unbroken across steps), keyed by the request id
+ *       instead of the aggregate id (see {@link #key});</li>
+ *   <li>if rows up to H remain, a continuation goes to
+ *       {@link ReplayRequest#TOPIC} (H, and the last row sent), keyed by the
+ *       request id too, so every step of a replay is on one partition, in
+ *       order; otherwise the end-of-replay marker
+ *       ({@value ReplayRequest#COMPLETED}) goes to the consumer, with
+ *       {@code through-outbox-id} = H and {@code last-outbox-id};</li>
+ *   <li>the step's record commits.</li>
  * </ol>
  *
  * <p>Why H is safe to stop at: appends are serialised by the outbox's lock,
@@ -53,17 +78,28 @@ import tools.jackson.core.JacksonException;
  * one. Every row up to H is therefore already there, and anything appended
  * during the replay is above H and goes out live as usual.
  *
- * <p>The whole answer is one database transaction, so the "answered" record
- * commits only after the marker has been sent. If a send fails (or the
- * service dies part-way), the record rolls back and the redelivered request
- * replays the whole range again; the consumer applies duplicates once. A
- * second copy delivered at the same moment waits on the first one's record
- * and is then ignored. The relay's cursor and the live topics are never
- * touched.
+ * <p>Each step is one database transaction, and every send in it waits
+ * until Kafka has the record (sync sends), so the step's record commits
+ * only after its rows and its continuation or marker are on Kafka. If a
+ * send fails, or the service dies before the commit, the record rolls back
+ * and Kafka delivers the step again: its rows are sent again (the consumer
+ * applies each once) and so is its continuation, which the step id then
+ * makes harmless -- the copy is answered once. A second copy delivered at
+ * the same moment waits on the first one's record and is then ignored. The
+ * relay's cursor and the live topics are never touched.
+ *
+ * <p>Two costs to know about. Every step leaves its id in processed_event
+ * for good (the table is append-only), so a replay through H adds about
+ * H / chunkSize rows to it. And nothing here knows that a replay has been
+ * overtaken: when a consumer restarts mid-replay, {@link CatchUp} asks again
+ * under a new request id, while the old request's continuations keep
+ * answering, step by step, up to their own H. The consumer applies every
+ * record once, so nothing goes wrong, but each such restart can cost up to
+ * one more whole replay of sends.
  */
 public class OutboxReplayer {
 
-    /** The Inbox consumer name replay requests are deduped under. */
+    /** The Inbox consumer name replay steps are deduped under. */
     static final String REQUESTS_CONSUMER = "replay-requests";
 
     private static final Logger log = LoggerFactory.getLogger(OutboxReplayer.class);
@@ -73,23 +109,27 @@ public class OutboxReplayer {
     private final StreamOperations streams;
     private final ProcessedEvents processed;
     private final String producer;
-    private final int pageSize;
+    private final int chunkSize;
 
     /**
-     * @param pageSize how many rows are read from the outbox at a time; the
-     *                 whole range is still sent in one answer
+     * @param chunkSize the most rows one step sends ({@code oriah.events.replay.chunk-size}); 1 or more
      */
     public OutboxReplayer(DataSource dataSource, PlatformTransactionManager transactionManager,
-                          StreamOperations streams, String producer, int pageSize) {
+                          StreamOperations streams, String producer, int chunkSize) {
         this.jdbc = new NamedParameterJdbcTemplate(dataSource);
         this.transaction = new TransactionTemplate(transactionManager);
         this.streams = streams;
         this.processed = new ProcessedEvents(jdbc);
         this.producer = producer;
-        this.pageSize = pageSize;
+        this.chunkSize = chunkSize;
     }
 
-    /** The listener: one request as it arrived on {@link ReplayRequest#TOPIC}. */
+    /** The most rows one step sends. */
+    int chunkSize() {
+        return chunkSize;
+    }
+
+    /** The listener: one request or continuation as it arrived on {@link ReplayRequest#TOPIC}. */
     public void handle(Message<byte[]> message) {
         WireRequest wire = WireRequest.read(message.getPayload());
         if (wire.producer() != null && !wire.producer().equals(producer)) {
@@ -98,44 +138,63 @@ public class OutboxReplayer {
             return;
         }
         ReplayRequest request = wire.validated();
-        transaction.executeWithoutResult(status -> replay(request));
+        transaction.executeWithoutResult(status -> step(request));
     }
 
-    private void replay(ReplayRequest request) {
-        if (!processed.markFirst(REQUESTS_CONSUMER, request.requestId())) {
-            log.info("Replay request {} from '{}' was already answered; this copy is ignored",
-                    request.requestId(), request.consumer());
+    private void step(ReplayRequest request) {
+        if (!processed.markFirst(REQUESTS_CONSUMER, request.stepId())) {
+            log.info("Replay request {} from '{}': the step after outbox {} was already answered; this copy is "
+                    + "ignored", request.requestId(), request.consumer(), after(request));
             return;
         }
-        long through = jdbc.getJdbcOperations().queryForObject("SELECT coalesce(max(outbox_id), 0) FROM outbox",
-                Long.class);
-        log.info("Replaying outbox {}..{} to {} for request {}", request.fromOutboxId(), through,
-                request.destination(), request.requestId());
+        long through = request.continuation() ? request.throughOutboxId() : newestOutboxId();
+        long after = after(request);
+        if (!request.continuation()) {
+            log.info("Replaying outbox {}..{} to {} for request {}, up to {} rows a step", request.fromOutboxId(),
+                    through, request.destination(), request.requestId(), chunkSize);
+        }
 
-        long previous = request.fromOutboxId() - 1;
-        List<OutboxRow> page;
-        do {
-            page = jdbc.query("SELECT " + OutboxRow.COLUMNS + """
-                     FROM outbox
-                    WHERE outbox_id > :previous AND outbox_id <= :through
-                    ORDER BY outbox_id
-                    LIMIT :limit""",
-                    new MapSqlParameterSource("previous", previous)
-                            .addValue("through", through)
-                            .addValue("limit", pageSize),
-                    OutboxRow::read);
-            for (OutboxRow row : page) {
-                send(request, "outbox row " + row.outboxId(), row.message(producer)
-                        .setHeader(EventHeaders.KAFKA_KEY, key(request))
-                        .setHeader(EventHeaders.REPLAY_REQUEST_ID, request.requestId().toString())
-                        .setHeader(EventHeaders.REPLAY_PREV_OUTBOX_ID, Long.toString(previous))
-                        .build());
-                previous = row.outboxId();
-            }
-        } while (page.size() == pageSize);
+        // One row more than a step sends: if it is there, rows remain up to H.
+        List<OutboxRow> rows = jdbc.query("SELECT " + OutboxRow.COLUMNS + """
+                 FROM outbox
+                WHERE outbox_id > :after AND outbox_id <= :through
+                ORDER BY outbox_id
+                LIMIT :limit""",
+                new MapSqlParameterSource("after", after)
+                        .addValue("through", through)
+                        .addValue("limit", chunkSize + 1),
+                OutboxRow::read);
+        boolean more = rows.size() > chunkSize;
 
-        send(request, "the end-of-replay marker", marker(request, through, previous));
-        log.info("Replay for request {} sent through outbox {} (last row {})", request.requestId(), through, previous);
+        long previous = after;
+        for (OutboxRow row : more ? rows.subList(0, chunkSize) : rows) {
+            send(request, "outbox row " + row.outboxId(), request.destination(), row.message(producer)
+                    .setHeader(EventHeaders.KAFKA_KEY, key(request))
+                    .setHeader(EventHeaders.REPLAY_REQUEST_ID, request.requestId().toString())
+                    .setHeader(EventHeaders.REPLAY_PREV_OUTBOX_ID, Long.toString(previous))
+                    .build());
+            previous = row.outboxId();
+        }
+
+        if (more) {
+            send(request, "the continuation after outbox " + previous, ReplayRequest.TOPIC,
+                    request.continueAfter(through, previous).message());
+            log.info("Replay for request {} sent outbox {}..{}; it continues after {} in a step of its own",
+                    request.requestId(), after + 1, previous, previous);
+        } else {
+            send(request, "the end-of-replay marker", request.destination(), marker(request, through, previous));
+            log.info("Replay for request {} sent through outbox {} (last row {})", request.requestId(), through,
+                    previous);
+        }
+    }
+
+    /** Where the step starts: after the last row already sent, or before the first row asked for. */
+    private static long after(ReplayRequest request) {
+        return request.continuation() ? request.afterOutboxId() : request.fromOutboxId() - 1;
+    }
+
+    private long newestOutboxId() {
+        return jdbc.getJdbcOperations().queryForObject("SELECT coalesce(max(outbox_id), 0) FROM outbox", Long.class);
     }
 
     /**
@@ -176,18 +235,18 @@ public class OutboxReplayer {
         return request.requestId().toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    /** A send the binder refuses or throws on stops the whole answer, so its record rolls back. */
-    private void send(ReplayRequest request, String what, Message<byte[]> message) {
+    /** A send the binder refuses or throws on stops the step, so its record rolls back and Kafka delivers it again. */
+    private void send(ReplayRequest request, String what, String destination, Message<byte[]> message) {
         boolean accepted;
         try {
-            accepted = streams.send(request.destination(), message);
+            accepted = streams.send(destination, message);
         } catch (RuntimeException e) {
             throw new IllegalStateException("Replay for request " + request.requestId() + " stopped at " + what
-                    + ": it could not be sent to " + request.destination(), e);
+                    + ": it could not be sent to " + destination, e);
         }
         if (!accepted) {
             throw new IllegalStateException("Replay for request " + request.requestId() + " stopped at " + what
-                    + ": the binder did not accept it for " + request.destination());
+                    + ": the binder did not accept it for " + destination);
         }
     }
 
@@ -195,7 +254,8 @@ public class OutboxReplayer {
      * The request as it arrived, every field optional, so that one meant for
      * another producer can be recognised and ignored before it is judged.
      */
-    record WireRequest(String requestId, String producer, String consumer, Long fromOutboxId) {
+    record WireRequest(String requestId, String producer, String consumer, Long fromOutboxId,
+                       Long throughOutboxId, Long afterOutboxId) {
 
         static WireRequest read(byte[] body) {
             try {
@@ -210,7 +270,7 @@ public class OutboxReplayer {
             if (fromOutboxId == null) {
                 throw new IllegalArgumentException("replay request " + requestId + " has no fromOutboxId");
             }
-            return new ReplayRequest(uuid(), producer, consumer, fromOutboxId);
+            return new ReplayRequest(uuid(), producer, consumer, fromOutboxId, throughOutboxId, afterOutboxId);
         }
 
         private UUID uuid() {

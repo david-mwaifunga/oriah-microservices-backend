@@ -43,7 +43,7 @@ public record EventDraft(
     private static final Pattern ACTOR = Pattern.compile("(user|system):\\S.*");
 
     public EventDraft {
-        requireName("aggregateType", aggregateType, 64);
+        requireAggregateType(aggregateType);
         requireName("aggregateId", aggregateId, 64);
         requireName("eventType", eventType, 128);
         requireName("topic", topic, 128);
@@ -61,6 +61,17 @@ public record EventDraft(
         if (payload == null) {
             throw new IllegalArgumentException("payload is required");
         }
+    }
+
+    /**
+     * The one rule for an aggregate type, wherever one is named: present, and
+     * no longer than its column (aggregate_type is 64 characters in the outbox
+     * and in processed_aggregate). {@link InboxConsumer} applies the same rule
+     * to the aggregate a consumer declares, so a consumer can never declare an
+     * aggregate type no producer could write.
+     */
+    static void requireAggregateType(String aggregateType) {
+        requireName("aggregateType", aggregateType, 64);
     }
 
     private static void requireName(String field, String value, int maxLength) {

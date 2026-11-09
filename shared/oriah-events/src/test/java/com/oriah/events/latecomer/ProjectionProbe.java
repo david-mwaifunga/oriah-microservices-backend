@@ -28,8 +28,8 @@ import static com.oriah.events.latecomer.ProbeConsumer.header;
 public class ProjectionProbe implements ProbeConsumer {
 
     public static final InboxConsumer PRODUCTS = InboxConsumer.named("projection-probe")
-            .handles("product.updated", 1)
-            .handles("product.deleted", 1)
+            .handles("product", "product.updated", 1)
+            .handles("product", "product.deleted", 1)
             .ignores("sale.recorded");
 
     private final Inbox inbox;
