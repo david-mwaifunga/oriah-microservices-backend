@@ -20,6 +20,72 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-09 (MVP_PLAN Phase 0 complete: what was live and wrong is fixed)
+
+Phase 0 of `MVP_PLAN.md` — "fix what is live and wrong" — is built, tested,
+reviewed and committed in both repos (**not pushed**). Strict test-first
+throughout; every item had a Codex review and a multi-agent review with an
+adversarial verifier per finding, and every confirmed finding was fixed before
+its commit.
+
+| Item | What changed, in one line | Commits |
+|---|---|---|
+| 0 | Requirements baseline (CLIENT_DECISIONS, MVP_PLAN) committed | `d237825`, `44de485`; web `20b7d56` |
+| 3 | `@Version` on `Inventory` (inventory V5); a lost race is 409, not a silent overwrite | `95d5b63` |
+| 7 | No money finer than the ngwee: `shared/oriah-money`, `@NgweeAmount`, `MoneyEdgeGuard` | `9e627cc` |
+| 1 | Zambia only; self-collect at K0 until Phase 7; abroad is 422; a shipping outage is 503, never free delivery | `4cb1385`; web `79addfc` |
+| 2 + 4 | Quote, then commit: preview hands out a digest of the whole quote; checkout and order both refuse a quote that moved (409); the shopper's NAMED option is charged; order prices delivery itself (V4) and its total is subtotal + delivery − discount; payment must equal that total; promotion codes refused (422) until Phase 7 | `0e24a94`; web `ce503e6` |
+| 5 | Every role for hiring: 14 capabilities + 5 job roles (OWNER, MANAGER, SALES, DISPATCH, BOOKKEEPER); the committed realm has no person and no secret; dev people in `keycloak/dev/oriah-users-0.json`; go-live script | `2e43b92` |
+| 6 | Gateway path-to-capability matrix; any unmapped `/api/v1/admin/**` path is denied | `0bbab46` |
+
+### Verified on 2026-11-09
+
+- Unit and integration: quote 23, order 137, checkout 117, gateway 186, web
+  290 — all passing (full clean install of every module: see the line below).
+- Live stack (all 15 images rebuilt): smoke **20/20**, Playwright **6/6**,
+  error goldens **15/15**, Postman check PASS, OpenAPI diff PASS (additions
+  only, 20 waived breaks, each with its reason), Keycloak persistence test
+  PASS, go-live test **9/9** steps, both realm validators PASS.
+
+### Things worth knowing that the code does not say
+
+- **The dev Keycloak was reset** (only its own volume) to load the new realm.
+  The dev users kept their old ids — pinned in the users file — so alice's and
+  maya's existing customers, carts and orders still belong to them.
+- **Applying a realm edit in dev**: `docker compose rm -sf keycloak
+  postgres-keycloak`, `docker volume rm default_postgres-keycloak-data`,
+  `docker compose up -d keycloak`, then restart `order` — its cached machine
+  token was signed by the old keys. After any service restart the first smoke
+  run can fail at the gateway with "No servers available for service: X"
+  (load-balancer cache); wait for Eureka to show it UP and run again.
+- **One deliberate deviation from the plan**: a delivery option that is not
+  offered at confirm is 409 pricing-changed, not 400. Checkout cannot tell
+  "withdrawn since preview" from "never offered", order answers 409 for the
+  same, and 409 sends the storefront back to show what IS offered.
+- **Windows PowerShell 5.1 traps met in the scripts** (all fixed, all worth
+  remembering): a chunked error body leaves `ErrorDetails` empty (read the
+  response stream); `Invoke-RestMethod` returns a JSON array as ONE object;
+  a function returning a one-element array hands back the bare object, whose
+  `.Count` is `$null` in 5.1 (return `,@(...)`); and `$` in a .NET regex
+  matches before a final newline (use `\A...\z`).
+- **A Keycloak finding**: updating a client with a PARTIAL body resets its
+  service account's roles. `scripts/keycloak-go-live.ps1` writes the whole
+  client back for that reason.
+
+### Follow-ups found during Phase 0 (not started)
+
+- order's direct `POST /api/v1/orders` stores any `shippingAddressId` without
+  checking it is the caller's — pre-existing; it matters once Phase 7 delivers.
+- The storefront's admin gate is `endsWith("_ADMIN")`: a SALES or DISPATCH
+  person would be refused `/admin`, and a BOOKKEEPER would get in with no menu
+  entry. Fix when their screens are built.
+- Phase 7's late payment confirmation must also be guarded by BACKDATE_SALE
+  (in the service, since the date is in the body).
+
+Next: **Phase 1 — the event log convention** (`MVP_PLAN.md`).
+
+---
+
 ## CURRENT STATE — 2026-10-12 (admin dashboard finished; two new aggregate endpoints)
 
 The dashboard's six cards each rendered a hardcoded em-dash under copy

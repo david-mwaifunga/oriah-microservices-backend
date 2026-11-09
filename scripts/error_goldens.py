@@ -200,9 +200,10 @@ def main(argv):
         return 2
 
     # Two DIFFERENT principals, which the first version got wrong by reusing
-    # the admin token for both. The realm gives maya every admin role, so a
-    # "403 as a user" case run with her token is a 2xx -- and when the case was
-    # a POST, a silently successful one.
+    # the admin token for both. maya (keycloak/dev/oriah-users-0.json) holds
+    # OWNER + USER, so all 14 capabilities, and a "403 as a user" case run
+    # with her token is a 2xx -- and when the case was a POST, a silently
+    # successful one.
     try:
         plain_user = token(args.gateway, args.client, args.secret, "alice")
     except Exception as exc:                                  # noqa: BLE001

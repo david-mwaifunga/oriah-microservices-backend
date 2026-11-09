@@ -199,7 +199,7 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 9. **Packaging is a catalog entry of `kind = PACKAGING`** — stocked, lotted and
    FIFO-drained like anything else, and recorded against the sale it went out
    with. Never baked into a product's own cost.
-10. **Nothing transactional is seeded.** Reference data (product types, zones,
+10. **Nothing transactional is seeded.** Reference data (product types,
     provinces and towns, courier list) may be. Products, variants, prices, suppliers, consignments,
     costs and stock are all created through admin endpoints — which is what
     proves the admin surface works.
@@ -322,30 +322,90 @@ volumes.
 > 2026-11-08 so logins survive a restart; `scripts/keycloak-persistence-test.ps1`
 > proves it). The realm is imported **only when it does not yet exist in that
 > database**, so in development a realm edit to
-> `keycloak/import/oriah-realm.json` is applied by removing **only** Keycloak's
-> volume (`default_postgres-keycloak-data`) and restarting — never by a console
-> edit, which drifts from the committed export. At go-live, realm changes go
-> through an idempotent admin-API step instead.
+> `keycloak/import/oriah-realm.json` (or to the dev users file
+> `keycloak/dev/oriah-users-0.json`) is applied by removing **only** Keycloak's
+> volume (`default_postgres-keycloak-data`), starting Keycloak again and then
+> restarting `order` — the exact steps are under **Keycloak** below — never by
+> a console edit, which drifts from the committed files. At go-live, realm
+> changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **19 checks**, not a quick probe: the full admin +
-customer saga through the gateway (product, inventory, promo, cart, checkout
-preview + confirm, order transitions, Kafka-driven search index, reviews,
-notifications, 401-without-token), plus a Tempo trace assertion, Prometheus
-scrape coverage, gateway body-size limits, and readiness/liveness probes.
+`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b and 20b**, not a quick
+probe: the full admin + customer saga through the gateway (product, inventory,
+cart, checkout **quote then commit**, order transitions, Kafka-driven search
+index, reviews, notifications, 401-without-token), plus a Tempo trace
+assertion, Prometheus scrape coverage, gateway body-size limits, and
+readiness/liveness probes. "Quote then commit" means: preview prices the bag
+and returns a fingerprint of that price (`quoteDigest`); confirm must send the
+fingerprint back. The script works the digest out on its own in PowerShell and
+it must match the server's, and a quantity changed after preview is refused
+live. **There are no promo steps** — checkout refuses promotion codes until
+Phase 7 (Phase 0, `0e24a94`).
 
 ### Keycloak
 
-Realm `oriah` imports into Keycloak's own Postgres on first start — only when
-the realm does not exist there yet — with:
+Realm `oriah` (`keycloak/import/oriah-realm.json`) imports into Keycloak's own
+Postgres on first start — only when the realm does not exist there yet.
+**The committed realm carries no person and no secret** (Phase 0 item 5,
+`2e43b92`). It holds:
 
-- **Clients:** `oriah-admin` (confidential, secret `oriah-admin-secret`), `oriah-web`
-- **Users** (all password `password`): `admin`, `maya`, `alice`, and the
-  machine account **`service-account-oriah-admin`** (it already holds
-  `ORDER_ADMIN` — reuse it rather than creating another service account)
-- **Roles:** `USER`, `CATALOG_ADMIN`, `INVENTORY_ADMIN`, `CUSTOMER_ADMIN`,
-  `ORDER_ADMIN`, `PAYMENT_ADMIN`
-- `maya` holds every admin role plus `USER`. **`alice` holds only `USER`** and
-  is the customer account the smoke test drives.
+- **Clients:** `oriah-admin` (confidential), `oriah-web`.
+- **One user only — the machine identity `service-account-oriah-admin`**,
+  holding exactly `USER` + `INVENTORY_ADMIN`. It used to hold `USER` + all
+  five admin roles, so the old advice "reuse it, it already holds
+  `ORDER_ADMIN`" is **no longer true**. `order` signs in as `oriah-admin`
+  to price delivery — *client credentials*: the service signs in as itself,
+  with the client's id and secret, not on behalf of a person.
+- **Roles — two kinds.** 14 **capability roles**, the ones the code checks:
+  `CATALOG_ADMIN`, `INVENTORY_ADMIN`, `CUSTOMER_ADMIN`, `ORDER_ADMIN`,
+  `PAYMENT_ADMIN`, `PROCUREMENT_ADMIN`, `FINANCE_ADMIN`, `SHIPPING_ADMIN`,
+  `SALES_AGENT`, `FULFILMENT_AGENT`, `COST_VIEWER`, `STOCK_WRITE_OFF`,
+  `BACKDATE_SALE`, `DELIVERY_WAIVER` — plus `USER` for shoppers. Five **job
+  roles**, which are what a *person* is given: `OWNER` (all 14), `MANAGER`
+  (all but `STOCK_WRITE_OFF`, `BACKDATE_SALE`, `PAYMENT_ADMIN`,
+  `FINANCE_ADMIN`), `SALES` (`SALES_AGENT`), `DISPATCH` (`FULFILMENT_AGENT`),
+  `BOOKKEEPER` (`FINANCE_ADMIN`, `COST_VIEWER`). A job role is a Keycloak
+  *composite* — a role made of other roles — and Keycloak puts its members in
+  the token, so **code checks capabilities only, never job roles**.
+  `RealmRolesTest` (gateway module) asserts each job role's capabilities
+  exactly.
+
+**How oriah-admin's secret is supplied.** In the realm file it is the
+placeholder `${ORIAH_ADMIN_CLIENT_SECRET}`, filled from Keycloak's environment
+at import. There is no default: an unset variable would leave the placeholder
+*text* as a working secret, so a production compose must use
+`${ORIAH_ADMIN_CLIENT_SECRET:?...}` (refuse to start if it is unset). The dev
+compose sets `ORIAH_ADMIN_CLIENT_SECRET: oriah-admin-secret` on keycloak — the
+dev value, matching order's `ORIAH_SERVICE_CLIENT_SECRET` and the scripts that
+sign in. At go-live, `scripts/keycloak-go-live.ps1` sets the production secret
+(last, after creating the owner's account); after any rotation, give the new
+secret to every service that uses it (order: `ORIAH_SERVICE_CLIENT_SECRET`).
+
+**Dev people** live in `keycloak/dev/oriah-users-0.json` (Keycloak's own
+users-file format), imported beside the realm in the dev stack only:
+
+- `admin` — email admin@oriah.local, temporary password
+  `ChangeMeOnFirstLogin!`, must change it at first sign-in; `OWNER` + `USER`
+- `maya` — password `password`; `OWNER` + `USER`
+- `alice` — password `password`; **only `USER`**. The customer account the
+  smoke test drives.
+
+Their ids are pinned, so a Keycloak reset orphans no customer, cart or order.
+The dev compose mounts the realm file and the users file **each on its own**,
+read-only (a file inside a read-only folder mount stops the container).
+
+**Applying a realm edit in dev** — remove ONLY Keycloak's volume and start
+again:
+
+```powershell
+docker compose rm -sf keycloak postgres-keycloak
+docker volume rm default_postgres-keycloak-data
+docker compose up -d keycloak
+```
+
+Then **restart `order`** — its cached machine token was signed by the old
+keys. Never `down -v` (that wipes all eleven databases); never a console edit
+(it drifts from the committed files). Both files are imported only when the
+realm does not yet exist.
 
 Admin console: http://localhost:7080 (admin/admin). Storefront:
 http://localhost:4000. Grafana (not Zipkin) for traces.
@@ -364,14 +424,29 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   `reserve`/`release`/`confirm` are `INVENTORY_ADMIN`-only and
   `CheckoutService` never calls them, so a paid sale decrements nothing and
   the shop can oversell without limit. Critical for one-of-a-kind pieces.
-- **`Zone.DOMESTIC` is `{NG}` (Nigeria)** while all tariffs are in ZMW, so a
-  Zambian customer is classified `INTERNATIONAL` and charged ~9× (1,125.00
-  instead of 125.00). There is also **no self-collect option**.
-- **`Order.recomputeTotals()` ends `total = subtotal`** ("no shipping/discount
-  yet"), so the order's own total omits shipping and discount that checkout
-  actually charged.
-- **No `@Version` anywhere** in `services/` or `shared/` — no optimistic
-  locking, so read-modify-write stock updates can race.
+  Phase 7 of `docs/MVP_PLAN.md`.
+- ✅ **FIXED in Phase 0 (`4cb1385`).** `Zone.DOMESTIC` was `{NG}` (Nigeria)
+  while all tariffs were in ZMW, so a Zambian customer was classified
+  `INTERNATIONAL` and charged ~9× (K1,125.00 instead of K125.00), and there
+  was **no self-collect option**. Now shipping offers Zambia exactly
+  one option, `SELF_COLLECT` at K0, until Phase 7; any other country is 422
+  `outside-delivery-area`; zones are gone. A shipping outage is 503 — never
+  free delivery.
+- ✅ **FIXED in Phase 0 (`0e24a94`).** `Order.recomputeTotals()` ended
+  `total = subtotal` ("no shipping/discount yet"), so the order's own total
+  omitted shipping and discount that checkout actually charged. Now order
+  records `shipping_amount`, `discount_amount`, `delivery_option` and
+  `totals_authoritative` (Flyway V4), and a database CHECK holds an order
+  marked authoritative to total = subtotal + shipping − discount. Checkout
+  charges the option the shopper named (it used to take the cheapest), and
+  order refuses a payment whose amount is not that total — too little and too
+  much alike. Orders from before V4 have NULL there (unknown) and stay
+  payable.
+- **`@Version` exists only on `Inventory`** (Phase 0 item 3, `95d5b63`,
+  inventory V5): reserve/release/confirm/restock go through one path, and the
+  losing writer of a race gets 409. **Every other aggregate still has no
+  `@Version`** — no optimistic locking, so read-modify-write updates there can
+  still race.
 - **`Review.orderId` is client-supplied** and never verified against
   order-service, so "verified purchase" is self-asserted.
 - **No landed cost exists anywhere**, so cost of goods and profit cannot be
@@ -384,6 +459,16 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
 - **No append-only business event log**, so there is no reliable order of
   events for reconciliation or debugging — the thing a money-moving app most
   needs. Phase 1 of `docs/MVP_PLAN.md`.
+
+New follow-ups found during Phase 0:
+
+- **order's direct `POST /api/v1/orders` stores any `shippingAddressId`**
+  without checking it is the caller's. Pre-existing; it matters once Phase 7
+  delivers.
+- **The storefront's admin gate is `endsWith("_ADMIN")`**, so a `SALES`
+  (`SALES_AGENT`) or `DISPATCH` (`FULFILMENT_AGENT`) person would be refused
+  `/admin`, and a `BOOKKEEPER` gets in with no menu entry. To fix when their
+  screens are built.
 
 ---
 

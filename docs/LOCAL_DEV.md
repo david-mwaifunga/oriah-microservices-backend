@@ -68,8 +68,9 @@ A service started in IntelliJ with `SPRING_PROFILES_ACTIVE=local` reads
 
 3. **Start the services:** run **2. All services (local)**, or only the ones
    you need. Who calls whom: cart → catalog; catalog → inventory; order →
-   catalog, payment; checkout → cart, catalog, customer, promotion, shipping,
-   order, payment. For the one you are investigating
+   catalog, payment, shipping; checkout → cart, catalog, customer, shipping,
+   order, payment (checkout no longer calls promotion — Phase 0, `0e24a94`).
+   For the one you are investigating
    use **Debug** (the bug icon) instead of Run, and set your breakpoints.
 
 4. **Check:** http://localhost:8761 lists every service you started, each as
@@ -104,15 +105,70 @@ stops them again (about 30 minutes) — the proof that this setup works at all.
 | What | Where | User | Password |
 |---|---|---|---|
 | Keycloak admin console | http://localhost:7080 | `admin` | `admin` |
-| Staff user — every admin role | log in through Postman or the storefront | `maya` | `password` |
-| Customer user | same | `alice` | `password` |
-| Owner placeholder | same | `admin` | must set a new password on first login; use `maya` instead |
-| OAuth client (Postman, scripts) | realm `oriah` | `oriah-admin` | secret `oriah-admin-secret` |
+| Staff user — job role `OWNER` (every capability) + `USER` | log in through Postman or the storefront | `maya` | `password` |
+| Customer user — `USER` only | same | `alice` | `password` |
+| Owner placeholder — `OWNER` + `USER`, email `admin@oriah.local` | same | `admin` | temporary `ChangeMeOnFirstLogin!`; must set a new one at first login — use `maya` instead |
+| OAuth client (Postman, scripts, order's own calls to shipping) | realm `oriah` | `oriah-admin` | secret `oriah-admin-secret` |
 | Grafana (only with `-Traces`) | http://localhost:3000 | `admin` | `admin` |
 | Image store, catalog's key | http://localhost:8333 | `catalogkey` | `catalogsecret` |
 
+The two `admin` rows are different accounts: the first is Keycloak's own
+console login, the second a person in the shop's realm `oriah`.
+
 A login token lasts **30 minutes**. When Postman starts answering 401, run the
 log-in request again.
+
+### Who the people are, and where they live
+
+Since Phase 0 (`2e43b92`) the realm file and the people are kept apart:
+
+- **`keycloak/import/oriah-realm.json`** — the roles and the two clients. It
+  holds **no person and no secret**. Its only user is the machine identity
+  (below).
+- **`keycloak/dev/oriah-users-0.json`** — the three people above (`admin`,
+  `maya`, `alice`). Only this development stack imports it, beside the realm;
+  production never sees it. Each person's id is fixed in the file, so a
+  Keycloak reset does not orphan a customer, cart or order of theirs.
+
+**Job roles and capabilities.** A *capability* is permission for one area of
+work — `INVENTORY_ADMIN`, `SALES_AGENT`, and so on; there are 14, and the code
+checks only these. A *job role* is what a person is given; it bundles
+capabilities, and Keycloak puts those capabilities into the person's login
+token. The five job roles:
+
+| Job role | Capabilities it holds |
+|---|---|
+| `OWNER` | all 14 |
+| `MANAGER` | all but `STOCK_WRITE_OFF`, `BACKDATE_SALE`, `PAYMENT_ADMIN`, `FINANCE_ADMIN` |
+| `SALES` | `SALES_AGENT` |
+| `DISPATCH` | `FULFILMENT_AGENT` |
+| `BOOKKEEPER` | `FINANCE_ADMIN`, `COST_VIEWER` |
+
+Shoppers hold `USER`. Today `admin` and `maya` hold `OWNER` + `USER`, and
+`alice` holds `USER` only.
+
+**The machine identity.** `service-account-oriah-admin` is not a person: it is
+who a program becomes when it logs in as the `oriah-admin` client with the
+client secret (no user name, no password). It holds exactly **`USER` +
+`INVENTORY_ADMIN`**. It used to hold every admin role; it no longer holds
+`ORDER_ADMIN` or any other, so do not reuse it for them.
+
+**The development secret, and where it is set.** The realm file holds only a
+placeholder, `${ORIAH_ADMIN_CLIENT_SECRET}`. Keycloak fills it in at import
+from its own environment: `docker-compose/default/docker-compose.yml` sets
+`ORIAH_ADMIN_CLIENT_SECRET: oriah-admin-secret` on `keycloak`. The same value
+is used by the scripts that sign in and by **order**, which signs its own calls
+to shipping with it, read from `ORIAH_SERVICE_CLIENT_SECRET`. All of them must
+match:
+
+- order in a container — the compose file sets `ORIAH_SERVICE_CLIENT_SECRET`.
+- order from IntelliJ (profile `local`) — it needs `ORIAH_SERVICE_CLIENT_SECRET`
+  too, and `services/order/src/main/resources/application-local.yaml` already
+  supplies it (`oriah-admin-secret`). There is nothing to set by hand.
+
+Production never uses this value: `scripts/keycloak-go-live.ps1` sets the real
+secret at go-live, and that new secret is then given to order as
+`ORIAH_SERVICE_CLIENT_SECRET`.
 
 ## Seeing the data
 
@@ -151,14 +207,33 @@ Import `local-dev/postman/oriah-local.postman_collection.json` and
 `oriah-local.postman_environment.json`, and select the **Oriah local**
 environment.
 
-1. Run **0. Log in → as maya** (staff, every admin role) or **as alice**
-   (customer). It stores the token in `bearerToken`; every other request sends
+1. Run **0. Log in → as maya** (staff, job role `OWNER` — every capability)
+   or **as alice** (customer). It stores the token in `bearerToken`; every other request sends
    it. Tokens last 30 minutes — log in again on a 401.
 2. **1. Is it up?** — one health check per app, straight to its port.
 3. One folder per service with **all 81 endpoints**, each with its path
    variables, query parameters and an example body. They go through the gateway
    (`{{baseUrl}}`); the few the gateway does not expose (inventory's internal
    reads) go straight to the service and say so in their description.
+4. **Checkout: preview first, then confirm** (as alice, with something in her
+   cart). Since Phase 0 (`0e24a94`) checkout quotes, then commits:
+   - **Price the caller's cart** (`POST /api/v1/checkout/preview`). Leave
+     `deliveryOption` empty and it lists `shippingOptions`, with no total and
+     no `quoteDigest` yet. Today Zambia gets exactly one option,
+     `SELF_COLLECT` at K0. Send it again with `"deliveryOption": "SELF_COLLECT"`
+     and it returns the total and a `quoteDigest` — a fingerprint of that
+     exact price.
+   - **Run the checkout saga** (`POST /api/v1/checkout/confirm`). Send the same
+     `deliveryOption`, that `quoteDigest` and a `cardNumber`.
+     `shippingAddressId` is needed only for an option that delivers, so for
+     `SELF_COLLECT` remove the example's placeholder. There is no
+     `destinationCountry` on confirm any more.
+   - Leave **`promotionCode` empty** (the example bodies still show it): any
+     code is refused with **422 promotion-codes-not-accepted** until Phase 7.
+   - If a quantity, a price or the delivery price changed after the preview,
+     confirm answers **409 pricing-changed** before anything is ordered or
+     charged. Preview again
+     and confirm with the new `quoteDigest`.
 
 The collection is **generated from the services' own API descriptions**, not
 written by hand, so it cannot drift. After an endpoint changes, with the apps
@@ -202,14 +277,26 @@ own port (`http://localhost:8086/...`) only to rule the gateway out.
   .\scripts\dev-stack.ps1
   ```
 
-- **Changed `keycloak/import/oriah-realm.json`?** Keycloak imports it only into
-  an empty database. Reset Keycloak's alone:
+- **Changed `keycloak/import/oriah-realm.json` or
+  `keycloak/dev/oriah-users-0.json`?** Keycloak imports both only when the
+  realm does not yet exist in its database. Remove **only** Keycloak's volume
+  and start it again:
 
   ```powershell
   docker compose rm -sf keycloak postgres-keycloak
   docker volume rm default_postgres-keycloak-data
-  .\scripts\dev-stack.ps1
+  docker compose up -d keycloak
   ```
+
+  (`.\scripts\dev-stack.ps1` also starts it again, with the rest of the
+  backing services.) Then **restart `order`** (in IntelliJ, or its container
+  in the full stack): it keeps a machine
+  login token that was signed by the old Keycloak's keys. The people's ids are
+  fixed, so their customers, carts and orders survive the reset.
+
+  Never `docker compose down -v` for this — it wipes all eleven databases, not
+  just Keycloak's. And never change roles or users in the Keycloak console:
+  the change is not in the committed files and is lost at the next reset.
 
 - **"Port already in use"**: a container or an earlier run still holds it.
   `.\scripts\dev-stack.ps1` stops the containers; stop old runs in IntelliJ.
@@ -242,4 +329,7 @@ own port (`http://localhost:8086/...`) only to rule the gateway out.
 7. **Treat an API change as a contract change.** `oriah-web` is generated from
    these OpenAPI descriptions; `scripts/openapi-diff.ps1` shows what changed.
 8. **Secrets in Git are development values only.** Everything on this page is
-   for this PC; production gets its own, outside Git (planned in Phase 0).
+   for this PC; production gets its own, outside Git — the committed realm
+   holds no person and no secret, and `scripts/keycloak-go-live.ps1` creates
+   the owner's account and sets the production client secret (built in
+   Phase 0, `2e43b92`).

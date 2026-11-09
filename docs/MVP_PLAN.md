@@ -430,13 +430,15 @@ line is **two** cost slices, which is why the receiving event carries slices
 Each phase ends green with its tests run and counts quoted. Flyway versions
 below are the **real next number** for each service, verified against the files
 on disk — four earlier designs each assumed they owned `orders` V4, and only
-one migration can have that number.
+one migration can have that number. **Updated after Phase 0 (2026-11-09):**
+Phase 0 used order **V4** and inventory **V5**, so their next free numbers are
+now order **V5** and inventory **V6**.
 
 | Service | Highest now | Next free |
 |---|---|---|
 | catalog | V3 | **V4** |
-| inventory | **V4** | **V5** — Phase 0's `@Version`; Phase 5's `cost_lot` is **V6** |
-| order | V3 | **V4** — Phase 0's authoritative totals |
+| inventory | **V5** — USED by Phase 0's `@Version` | **V6** — Phase 5's `cost_lot` |
+| order | **V4** — USED by Phase 0's authoritative totals | **V5** |
 | cart | V3 | V4 |
 | payment | V4 | V5 |
 | promotion / customer / review / search / notification | V2 | V3 |
@@ -453,6 +455,32 @@ might break some code in other services"* — so an OpenAPI break goes in
 `scripts/openapi-allowed-breaks.txt` and `oriah-web` changes in the same step.
 Nothing goes live until every phase is built (`CLIENT_DECISIONS.md` §1.5), so
 no step here needs an interim business arrangement.
+
+> **Status: built, 2026-11-08/09.** All seven items below are built, tested and
+> committed (not pushed yet). The reasoning under each item describes the code
+> **as it was before the fix**; the **Built** note under it says what is true
+> now, with its commit. Commits — `oriah-api`: `d237825` and `44de485` (the
+> starting point), `95d5b63` item 3, `9e627cc` item 7, `4cb1385` item 1,
+> `0e24a94` items 2 and 4, `2e43b92` item 5, `0bbab46` item 6. `oriah-web`:
+> `20b7d56` (docs), `79addfc` item 1, `ce503e6` items 2 and 4.
+>
+> **The checks, run 2026-11-09:** each module's tests green (quote 23, order
+> 137, checkout 117, gateway 186, web 290). On the running stack: smoke test
+> 20/20, Playwright (browser tests) 6/6, error goldens (saved sample error
+> replies) 15/15, Postman check PASS, OpenAPI diff (the API contract compared
+> with the last one) PASS (additions only, 20 waived), Keycloak persistence test PASS,
+> go-live test 9/9 steps, both realm validators PASS. Every item was reviewed
+> by Codex and by a second review that tried to break it; every confirmed
+> finding was fixed.
+>
+> **Found during Phase 0, still to do:**
+> - order's direct `POST /api/v1/orders` stores any `shippingAddressId` without
+>   checking that the address belongs to the caller. This was already so before
+>   Phase 0; it matters once Phase 7 delivers to addresses.
+> - The storefront lets a person into `/admin` only if one of their roles ends
+>   in `_ADMIN`. So a `SALES` person (`SALES_AGENT`) or a `DISPATCH` person
+>   (`FULFILMENT_AGENT`) would be refused, and a `BOOKKEEPER` gets in with no
+>   menu entry. Fix it when their screens are built.
 
 0. **Keycloak on its own database — done 2026-11-08.** Keycloak kept its data
    inside its container, so any recreate re-imported the realm and wiped every
@@ -484,6 +512,12 @@ no step here needs an interim business arrangement.
    **any country other than ZM refused with a 422** *"we deliver within Zambia
    only"*, which checkout passes on as a 422 the shopper can act on — never a
    500, and never a zero charge abroad.
+   **Built 2026-11-08/09** in `4cb1385` (storefront: `oriah-web` `79addfc`).
+   Shipping offers Zambia exactly one option, `SELF_COLLECT` at K0, with a
+   stable `code`. Any other country gets 422 `outside-delivery-area`, which
+   checkout passes on as its own 422. The zones are gone, and so is the old NG
+   "domestic" card. When shipping is down, preview and confirm answer 503 —
+   never free delivery.
 2. **The customer's delivery choice travels the whole chain.** Today checkout
    takes the cheapest option (confirm takes the minimum over option costs, so a
    K0 option would make every delivery free) and nothing carries a choice.
@@ -491,12 +525,32 @@ no step here needs an interim business arrangement.
    - each shipping option has a stable `code` (`SELF_COLLECT` now; Phase 7 adds
      town × option codes), echoed in checkout's option DTO;
    - `PreviewRequest` and `ConfirmRequest` carry `deliveryOption`; confirm
-     charges **the named option** and refuses one that was not offered (400);
+     charges **the named option** and refuses one that was not offered (400 —
+     *built as 409, see below*);
      the quote digest (item 4.4) covers the option and its amount;
    - `shippingAddressId` is optional when the option is `SELF_COLLECT`;
    - order's `PlaceOrderRequest` carries the option, and order **V4** stores it
      (item 4);
    - `oriah-web` gets the option in its schema, a picker and the confirm body.
+
+   **Built 2026-11-08/09** together with item 4, in `0e24a94` (storefront:
+   `oriah-web` `ce503e6`).
+   - **Preview** (`POST /api/v1/checkout/preview`) takes `{deliveryOption?,
+     shippingAddressId?, destinationCountry?}`. With no offered option named,
+     it lists `shippingOptions` and leaves `shippingCost`, `total`,
+     `deliveryOption` and `quoteDigest` empty (null). With one, it returns that
+     option's charge, the total and the `quoteDigest`.
+   - **Confirm** (`POST /api/v1/checkout/confirm`) takes `{deliveryOption,
+     quoteDigest, cardNumber, shippingAddressId}`. `deliveryOption` and
+     `quoteDigest` are required; the address is required unless the option is
+     `SELF_COLLECT`. `destinationCountry` is gone. Confirm charges the option
+     the shopper **named** — it used to take the cheapest.
+   - **Deviation from the plan: an option not offered at confirm is 409
+     `pricing-changed`, not 400.** Checkout cannot tell an option *withdrawn
+     since preview* from one *never offered*, and order answers 409 for the
+     same case, so checkout answers the same way.
+   - The storefront's first step is now **Delivery**: an option picker, and an
+     address only when the option delivers.
 3. **Atomic stock changes — `@Version` on `Inventory`**, in inventory **V5**
    (`version BIGINT NOT NULL DEFAULT 0`); Phase 5's `cost_lot` moves to **V6**.
    `reserve`, `release`, `confirm` and `restock` all go through one
@@ -508,6 +562,11 @@ no step here needs an interim business arrangement.
    test first, on real Postgres: two concurrent `reserve(1)` against
    `on_hand = 1` — exactly one succeeds, `reserved = 1`, the other gets 409 —
    and the same for release, confirm and restock.
+   **Built 2026-11-08/09** in `95d5b63`. `Inventory` carries `@Version`
+   (inventory **V5**). Reserve, release, confirm and restock go through one
+   change path, and the losing writer gets **409**
+   (`ObjectOptimisticLockingFailureException`, mapped in
+   `OriahExceptionHandlerSupport`). No other aggregate has `@Version` yet.
 4. **Make the order total authoritative, and enforce it.** One line in
    `Order.recomputeTotals()` is not enough: `orders` has no shipping or discount
    column and order prices neither on the server, so the underpayment hole stays
@@ -573,6 +632,59 @@ no step here needs an interim business arrangement.
       `PayVerificationTest.underpaymentIsAcceptedUntilTotalsAreAuthoritative` is
       flipped to assert the refusal, with a test that an unmarked order stays
       payable.
+
+   **Built 2026-11-08/09** together with item 2, in `0e24a94` (storefront:
+   `oriah-web` `ce503e6`).
+   - **A new shared module, `shared/oriah-quote`.** `Quote` holds the lines,
+     currency, delivery option and delivery amount; its total is subtotal −
+     discount + delivery. `QuoteDigest` is the quote's fingerprint: a SHA-256
+     hash over a fixed text form of the quote, pinned by a test to a known
+     value (`532785fb…`). `pricingVersion` and `appliedPromotion` are gone from
+     preview.
+   - **order V4** (`V4__order_totals_authoritative.sql`) as planned:
+     `shipping_amount`, `discount_amount`, `delivery_option`,
+     `totals_authoritative` (no backfill — NULL means *unknown* on an older
+     order) and the CHECK that a marked order's total = subtotal + shipping −
+     discount.
+   - Order prices delivery through **its own Feign client signed with client
+     credentials** (`oriah-admin`, the secret from `ORIAH_SERVICE_CLIENT_SECRET`),
+     kept apart from the payment client, which still forwards the caller's
+     token. `PlaceOrderRequest` requires `deliveryOption` and `quoteDigest`;
+     the address is optional for `SELF_COLLECT`. `OrderResponse` gains
+     `shippingAmount`, `discountAmount` and `deliveryOption` (absent on orders
+     from before V4).
+   - **A quote that moved** — quantity, price or delivery price — is **409
+     `pricing-changed`** before anything is ordered or charged. Checkout passes
+     order's `pricing-changed`, `bag-not-purchasable` and `mixed-currency` 409s
+     through, recognised by problem type. The payment intent is created for the
+     total order recorded, and only when it equals the agreed quote; the
+     response carries the paid order's total.
+   - `PaymentIntentVerifier` requires `intent.amount == order.total` on marked
+     orders, so under- and over-payment are both refused. Orders from before V4
+     stay payable.
+   - **Promotion codes are refused**: a non-blank `promotionCode` is **422
+     `promotion-codes-not-accepted`** at preview and confirm, until Phase 7's
+     scoped promotions. Checkout's `PromotionClient` and its redeem call are
+     deleted. The promotion service and its admin create/edit/delete endpoints
+     still exist.
+   - **Checkout's resilience.** Marking a charged order paid has its own
+     circuit-breaker instance, `order-pay`, so failures while placing orders
+     cannot trip the breaker that guards it. Only an outage (no answer, 502,
+     503, 504) is retried and reported as 503; a 500 is final.
+   - **Storefront**: no promo-code field; "—" where there is no quote yet. A
+     quote can be paid only while it describes the bag as it is now and no newer
+     quote is loading. After `pricing-changed` the page shows the **new** total
+     and the shopper places the order again (it used to re-send in one click).
+   - **Smoke test** (`smoke-test.ps1`): 20 numbered steps plus 4b, 5b, 6b and
+     20b. The promo steps are removed. The script works the digest out on its
+     own in PowerShell, and it must match the server's. A quantity changed
+     after preview is refused, on the live stack. Step 20's charge counter
+     matched nothing (`amount=700 ` against `amount=700.00`) and now counts
+     (D10). An error body sent in chunks is read from the response stream
+     (Windows PowerShell 5.1 leaves `ErrorDetails` empty).
+   - The OpenAPI breaks are recorded in `scripts/openapi-allowed-breaks.txt`,
+     plus one owed since `06884de` (cart's accidental `purchasable`). The
+     Postman collection is regenerated.
 5. **One realm edit creating every role the business will need as it hires**
    — round 4: *"see what roles are needed and you can create them so that once
    we start hiring, all will already be in place in the system."* The design is
@@ -612,10 +724,58 @@ no step here needs an interim business arrangement.
      outside Git and injected into each service that uses it as an environment
      secret. Tests: order obtains a token with the configured secret, and after
      a rotation the old secret is refused and the new one works.
+
+   **Built 2026-11-08/09** in `2e43b92`.
+   - **Roles** (`keycloak/import/oriah-realm.json`): 14 capability roles —
+     `CATALOG_ADMIN`, `INVENTORY_ADMIN`, `CUSTOMER_ADMIN`, `ORDER_ADMIN`,
+     `PAYMENT_ADMIN`, `PROCUREMENT_ADMIN`, `FINANCE_ADMIN`, `SHIPPING_ADMIN`,
+     `SALES_AGENT`, `FULFILMENT_AGENT`, `COST_VIEWER`, `STOCK_WRITE_OFF`,
+     `BACKDATE_SALE`, `DELIVERY_WAIVER` — plus `USER` for shoppers. The five
+     job roles are Keycloak composites, exactly as above. Keycloak puts a
+     composite's members in the token, so the code checks capabilities only.
+     `RealmRolesTest` (gateway module) asserts each job role's capabilities
+     exactly.
+   - **The committed realm carries no person and no secret.** Its only user is
+     `service-account-oriah-admin`, holding exactly `USER` + `INVENTORY_ADMIN`.
+     `oriah-admin`'s secret is the placeholder `${ORIAH_ADMIN_CLIENT_SECRET}`,
+     filled from Keycloak's environment at import, with no default. An unset
+     variable would leave the placeholder *text* as a working secret, so a
+     production compose must use `${ORIAH_ADMIN_CLIENT_SECRET:?...}`.
+   - **The dev overlay is a second import file**,
+     `keycloak/dev/oriah-users-0.json`, imported beside the realm in the dev
+     stack only: `admin` (must change its temporary password at first sign-in;
+     `OWNER` + `USER`), `maya` (`OWNER` + `USER`) and `alice` (`USER`). Their
+     ids are pinned, so a Keycloak reset orphans no customer, cart or order.
+     The dev secret is not in that file: the dev compose sets
+     `ORIAH_ADMIN_CLIENT_SECRET: oriah-admin-secret` on keycloak, matching
+     order's `ORIAH_SERVICE_CLIENT_SECRET`. It mounts the realm file and the
+     users file each on its own, read-only.
+   - **Applying a realm edit in dev**: `docker compose rm -sf keycloak
+     postgres-keycloak`, `docker volume rm default_postgres-keycloak-data`,
+     `docker compose up -d keycloak` — then restart `order`, whose cached
+     machine token was signed by the old keys. Never `down -v`, never a console
+     edit.
+   - **Go-live is `scripts/keycloak-go-live.ps1`**, proven by
+     `scripts/keycloak-go-live-test.ps1` against a throwaway Keycloak. It
+     creates the owner's account — exactly `OWNER`, a one-time password, and
+     the owner must choose their own at first sign-in — and sets the
+     production client secret **last**. It refuses an account someone else
+     registered under the owner's email unless `-AdoptExisting` (which replaces
+     its password and ends its sessions), and refuses a second owner unless
+     `-AdditionalOwner`. With no `-OwnerEmail` it only rotates the secret.
+     Secrets come from environment variables (`KC_GO_LIVE_ADMIN_PASSWORD`,
+     `ORIAH_ADMIN_CLIENT_SECRET`, `ORIAH_OWNER_TEMPORARY_PASSWORD`). After a
+     rotation, give the new secret to every service that uses it (order:
+     `ORIAH_SERVICE_CLIENT_SECRET`).
+   - Validators: `scripts/validate-realm.ps1` also checks the dev users file
+     against the realm, from any folder; `scripts/validate_roles.py` lists the
+     job roles separately and reports the 9 capabilities still waiting for
+     their endpoints.
 6. **The path-to-capability matrix is fixed now; each job-role test lands with
    its endpoint.** `SecurityConfig` uses explicit per-prefix matchers with a
    terminal `anyExchange().authenticated()` — a prefix without a matcher is
-   admitted to **any** authenticated user, which has happened once already.
+   admitted to **any** authenticated user, which has happened once already
+   (*fixed for `/api/v1/admin/**` in `0bbab46` — see below*).
    Phase 0 fixes **where each capability's work lives** and its matcher:
    dispatch (`FULFILMENT_AGENT`), payment confirmation and staff-recorded
    orders (`SALES_AGENT`) each get their own endpoint with a method-level check,
@@ -632,11 +792,40 @@ no step here needs an interim business arrangement.
    `INVENTORY_ADMIN` and `ORDER_ADMIN` but not `STOCK_WRITE_OFF` or
    `BACKDATE_SALE`. The generic transition stays `ORDER_ADMIN`. Phase 0's test:
    `SALES` and `DISPATCH` tokens get 403 on the generic transition. **Each
-   building phase adds its route, matcher, `adminPathsRejectNonAdmins` case and
-   job-role gateway test** — cost reads and write-offs in 5 (`MANAGER` 403 on a
-   write-off), payment confirmation, the waiver and the late-dated sale in 7
+   building phase adds its route, its service's method-level check (the
+   matcher is already in place from Phase 0), its `adminPathsRejectNonAdmins`
+   case and job-role gateway test** — cost reads and write-offs in 5
+   (`MANAGER` 403 on a write-off), payment confirmation, the waiver and the late-dated sale in 7
    (`MANAGER` 403 on a late-dated sale past the window), dispatch in 8,
    staff-recorded orders in 9, finance in 10, the 403 on refunds in 12.
+
+   **Built 2026-11-08/09** in `0bbab46`. The paths are now fixed. In the
+   gateway (`infra/gatewayserver/.../SecurityConfig.java`), each matcher sits
+   before the broader area it belongs to:
+
+   | Path | Capability |
+   |---|---|
+   | `/api/v1/admin/inventory/write-offs/**` | `STOCK_WRITE_OFF` |
+   | `/api/v1/admin/orders/*/dispatch/**` | `FULFILMENT_AGENT` |
+   | `/api/v1/admin/orders/*/delivery-waiver/**` | `DELIVERY_WAIVER` |
+   | `/api/v1/admin/orders/late-recorded/**` | `BACKDATE_SALE` |
+   | `/api/v1/admin/orders/recorded/**` | `SALES_AGENT` |
+   | `/api/v1/admin/payments/confirmations/**` | `SALES_AGENT` |
+   | `/api/v1/admin/procurement/**` | `PROCUREMENT_ADMIN` |
+   | `/api/v1/admin/shipping/**` | `SHIPPING_ADMIN` |
+   | `/api/v1/admin/finance/**` | `FINANCE_ADMIN` |
+   | `/api/v1/admin/costs/**` | `COST_VIEWER` |
+
+   **Any other `/api/v1/admin/**` path — one with no matcher of its own — is
+   denied to everyone** (`denyAll`), so a forgotten matcher fails closed —
+   nobody gets in — instead of letting every signed-in user in.
+
+   Two planning notes from the review (not defects):
+   - **Phase 7's late payment confirmation must also be guarded by
+     `BACKDATE_SALE`** — in the service, since the date is in the request
+     body, and with its own gateway path if it lives under payments.
+   - **Give-aways and take-backs are reason codes on the write-off endpoint**,
+     not new paths.
 7. **No money input finer than the ngwee.** `NUMERIC(12,2)` silently rounds
    `0.001`, and no money field carries `@Digits` today. Every money field at an
    API edge gets `@Digits(integer = 10, fraction = 2)` beside its bounds, and
@@ -644,7 +833,7 @@ no step here needs an interim business arrangement.
    rule in `shared/`, applied to today's DTOs now and to each new one (delivery
    prices, costs, fees, expenses, refunds) as it is built. Test: `0.001` is
    refused with 400, never rounded.
-   **Built 2026-11-08** as `shared/oriah-money`: `@NgweeAmount` on request fields
+   **Built 2026-11-08** in `9e627cc` as `shared/oriah-money`: `@NgweeAmount` on request fields
    and `Ngwee.require` in the aggregates (catalog's variant, promotion, payment
    intent, order line), one check behind both. It applies `@Digits(integer = 10,
    fraction = 2)`'s limits **by value**: Hibernate's `@Digits` counts decimals as
@@ -1436,8 +1625,8 @@ variants, prices, suppliers, consignments, costs and stock are all created
 through admin endpoints.
 
 This is deliberate and it buys something: it makes `smoke-test.ps1` the proof
-that the admin surface actually works end to end. The current 19-check smoke
-test grows into an admin-driven setup — create supplier, create product and
+that the admin surface actually works end to end. The current smoke test (20
+numbered steps plus 4b, 5b, 6b and 20b since Phase 0) grows into an admin-driven setup — create supplier, create product and
 variants, record consignment with costs, receive it, assert the landed cost to
 the ngwee (Part 4's `UNITS` default case), price it, publish it, then run the existing customer saga against
 stock that was genuinely procured.

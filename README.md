@@ -44,13 +44,19 @@ oriah-api/
 │                             review, search, notification
 │                           (checkout and shipping are stateless — no DB)
 ├── infra/                  configserver, eurekaserver, gatewayserver
-├── shared/                 oriah-jpa-base, oriah-observability-starter
+├── shared/                 oriah-jpa-base, oriah-observability-starter,
+│                           oriah-money, oriah-quote
 ├── docker-compose/         default/docker-compose.yml + common-config.yml
-├── keycloak/import/        oriah-realm.json — imported on first start only
+├── keycloak/import/        oriah-realm.json — roles and clients, no person,
+│                           no secret; imported only when the realm does not
+│                           yet exist
+├── keycloak/dev/           oriah-users-0.json — the dev people (admin, maya,
+│                           alice); imported by the dev stack only
 ├── monitoring/             Prometheus, Grafana, Loki, Tempo, Alloy config
 ├── scripts/, s3-config/    helper scripts, SeaweedFS bucket setup
 ├── build-images.ps1        Buildpacks image build for every service
-├── smoke-test.ps1          19 checks, full admin + customer saga
+├── smoke-test.ps1          20 numbered steps (plus 4b, 5b, 6b, 20b), full
+│                           admin + customer saga
 ├── mvnw, mvnw.cmd, .mvn/   Maven wrapper — use this, not system Maven
 └── docs/                   ARCHITECTURE.md, MVP_PLAN.md, PROGRESS.md
 ```
@@ -88,9 +94,21 @@ powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 Keycloak admin console http://localhost:7080 (admin/admin) · storefront
 http://localhost:4000 · Grafana for traces.
 
-> ⚠️ **`docker compose down -v` destroys all ten Postgres volumes** *and*
-> Keycloak's. The realm imports only onto an empty volume, so plan realm
-> changes as one coordinated edit to `keycloak/import/oriah-realm.json`.
+> ⚠️ **`docker compose down -v` destroys all eleven Postgres volumes** — the
+> ten domain databases *and* Keycloak's. Never use it to apply a realm change.
+> The realm (and, in dev, `keycloak/dev/oriah-users-0.json`) is imported only
+> when the realm does not yet exist, so after editing either file remove
+> **only** Keycloak's volume and start it again, then restart `order` (its
+> cached machine login was signed by the old keys):
+>
+> ```powershell
+> docker compose rm -sf keycloak postgres-keycloak
+> docker volume rm default_postgres-keycloak-data
+> docker compose up -d keycloak
+> ```
+>
+> Never edit roles or users in the Keycloak console — the change drifts from
+> the committed files. Details in `docs/LOCAL_DEV.md`.
 
 ## Working conventions
 

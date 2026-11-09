@@ -25,6 +25,120 @@ the answer is probably here.
 
 ---
 
+## Who may do what, and quote-then-commit (Phase 0, 2026-11-09)
+
+Three decisions from Phase 0 of `MVP_PLAN.md`. Commits are in `oriah-api`
+unless marked `oriah-web`.
+
+### Capability roles and job roles (`2e43b92`)
+
+**Decision:** the realm (`keycloak/import/oriah-realm.json`) has two kinds of
+role.
+
+- **Capability roles** each name one thing that may be done. There are 14:
+  `CATALOG_ADMIN`, `INVENTORY_ADMIN`, `CUSTOMER_ADMIN`, `ORDER_ADMIN`,
+  `PAYMENT_ADMIN`, `PROCUREMENT_ADMIN`, `FINANCE_ADMIN`, `SHIPPING_ADMIN`,
+  `SALES_AGENT`, `FULFILMENT_AGENT`, `COST_VIEWER`, `STOCK_WRITE_OFF`,
+  `BACKDATE_SALE`, `DELIVERY_WAIVER`. Shoppers hold `USER`.
+- **Job roles** are what a *person* is given. There are five. Each is a
+  Keycloak *composite* — a role that is a bundle of other roles:
+
+| Job role | Capabilities in the bundle |
+|---|---|
+| `OWNER` | all 14 |
+| `MANAGER` | all except `STOCK_WRITE_OFF`, `BACKDATE_SALE`, `PAYMENT_ADMIN`, `FINANCE_ADMIN` |
+| `SALES` | `SALES_AGENT` |
+| `DISPATCH` | `FULFILMENT_AGENT` |
+| `BOOKKEEPER` | `FINANCE_ADMIN`, `COST_VIEWER` |
+
+**Why:** Keycloak puts every member of a bundle into the sign-in token, so the
+code checks capabilities only. It never asks "is this a manager?". Hiring
+someone means giving them a job role; changing what a job may do is a realm
+edit, not a code change. `RealmRolesTest` (gateway module) asserts each job
+role's capabilities exactly, so a wrong bundle fails a test.
+
+**Who holds what.** The committed realm carries **no person and no secret**.
+Its only user is the machine identity `service-account-oriah-admin`, holding
+exactly `USER` + `INVENTORY_ADMIN` — `USER` for order's delivery price (below),
+`INVENTORY_ADMIN` for checkout's stock reservations in Phase 7. It used to hold
+`USER` + all five admin roles; the old advice "reuse it, it holds
+`ORDER_ADMIN`" is no longer true. People live elsewhere: in development, three
+test users in `keycloak/dev/oriah-users-0.json` (see "Realm + roles + user"
+below); in production, the owner's account, which
+`scripts/keycloak-go-live.ps1` creates with exactly `OWNER` before setting the
+production client secret. Keeping them apart means a test password or the dev
+secret never reaches the live shop.
+
+### The admin door is shut unless a rule opens it (`0bbab46`)
+
+**Decision:** the gateway (`infra/gatewayserver/.../SecurityConfig.java`) names
+the capability each admin path needs. The gateway uses the **first** rule that
+matches, so each narrow path sits before the broader area it belongs to —
+otherwise the broad rule would let the wrong person in:
+
+| Path | Capability |
+|---|---|
+| `/api/v1/admin/inventory/write-offs/**` | `STOCK_WRITE_OFF` |
+| `/api/v1/admin/orders/*/dispatch/**` | `FULFILMENT_AGENT` |
+| `/api/v1/admin/orders/*/delivery-waiver/**` | `DELIVERY_WAIVER` |
+| `/api/v1/admin/orders/late-recorded/**` | `BACKDATE_SALE` |
+| `/api/v1/admin/orders/recorded/**` | `SALES_AGENT` |
+| `/api/v1/admin/payments/confirmations/**` | `SALES_AGENT` |
+| `/api/v1/admin/procurement/**` | `PROCUREMENT_ADMIN` |
+| `/api/v1/admin/shipping/**` | `SHIPPING_ADMIN` |
+| `/api/v1/admin/finance/**` | `FINANCE_ADMIN` |
+| `/api/v1/admin/costs/**` | `COST_VIEWER` |
+
+**Any other `/api/v1/admin/**` path is denied to everyone** (`denyAll`).
+
+**Why:** a forgotten rule fails closed. A new admin endpoint without its rule
+is refused to everyone, not opened to every signed-in user. So each building
+phase adds four things together: the route, the service's own method-level
+check, an `adminPathsRejectNonAdmins` case and a job-role gateway test.
+`scripts/validate_roles.py` reports the 9 capabilities still waiting for their
+endpoints.
+
+**Not yet right:** the storefront's own admin gate is `endsWith("_ADMIN")`, so
+a `SALES` (`SALES_AGENT`) or `DISPATCH` (`FULFILMENT_AGENT`) person would be
+refused `/admin`, and a `BOOKKEEPER` gets in with no menu entry. To fix when
+their screens are built.
+
+### Quote, then commit (`0e24a94`, `oriah-web` `ce503e6`)
+
+**Decision:** the shopper agrees one price before anything is charged, and the
+order records that same price.
+
+1. **Preview** (`POST /api/v1/checkout/preview`). Once the shopper has picked a
+   delivery option, it returns that option's charge, the total and a
+   `quoteDigest`. The digest is a SHA-256 fingerprint of the quote (lines,
+   currency, delivery option, delivery amount), made by `shared/oriah-quote`.
+   With no option picked there is no total and no digest.
+2. **Confirm** (`POST /api/v1/checkout/confirm`) must send back the
+   `deliveryOption` and the `quoteDigest`. Checkout works the quote out again.
+   If anything moved — a quantity, a price, a delivery price — it answers
+   **409 pricing-changed** before anything is ordered or charged. It charges
+   the option the shopper named (it used to take the cheapest).
+3. **Order checks too.** `PlaceOrderRequest` requires both. Order prices
+   delivery itself: its own Feign client calls shipping signed with **client
+   credentials** (`oriah-admin`, secret from `ORIAH_SERVICE_CLIENT_SECRET`) —
+   order signs in as itself, not with the shopper's token. That makes order the
+   machine identity's first caller. The client is kept apart from the payment
+   client, which passes on the shopper's own token. Order's Flyway **V4** stores
+   `shipping_amount`, `discount_amount` and `delivery_option`, and a CHECK holds
+   an order marked `totals_authoritative` to total = subtotal + shipping −
+   discount. Orders from before V4 have NULL there (unknown) and stay payable.
+4. **The payment is for the order's total.** Checkout creates the payment
+   intent for the total order recorded, and only when it equals the agreed
+   quote. `PaymentIntentVerifier` refuses an intent whose amount is not the
+   order's total — too little and too much alike.
+
+**Why two checks:** checkout and order are separate services. Checkout must not
+charge for a quote that moved; order must not record a total it did not work
+out itself. ✅ This **fixed** an old defect: the order's own total used to leave
+out the delivery and discount that checkout charged.
+
+---
+
 ## Observability gap audit (post-Phase 3) — ✅ RESOLVED, see note
 
 > **This audit is the problem statement, not the current state.** Every gap
@@ -136,10 +250,12 @@ spring.cloud.config.server.git:
 
 > ⚠️ A service's config is the **merge** of `config-repo/<service>.yaml`
 > over its local `application.yaml`. Some settings exist in only one of the
-> two, so check both before concluding a property is unset — e.g. the
-> shipping tariff rate card lives **only** in shipping's local
-> `application.yaml`; `config-repo/shipping.yaml` has no `tariff` entries
-> at all.
+> two, so check both before concluding a property is unset — e.g. shipping's
+> `tariff.currency` lives **only** in shipping's local `application.yaml`;
+> `config-repo/shipping.yaml` has no `tariff` entries at all. (There is no
+> rate card or zone list any more: since `4cb1385` shipping offers Zambia
+> only `SELF_COLLECT` at K0 until Phase 7, and `tariff.currency` is the only
+> key left under `tariff`.)
 
 The Config Server's URI points at the local clone via `file:///` for
 dev. Production points at `https://github.com/<org>/config-repo` (or
@@ -377,16 +493,39 @@ This is set per-service in `application-docker.yaml`, activated by
 
 ### Realm import on first start
 
+> ⚠️ **The roles and users below are the Iteration 9 realm.** Since Phase 0
+> (`2e43b92`) the realm file holds 14 capability roles, `USER` and five job
+> roles, and **no person** — the dev people are in a second file,
+> `keycloak/dev/oriah-users-0.json`, mounted beside it in the dev stack only
+> (each file on its own, read-only: a file inside a read-only folder mount
+> stops the container). See "Who may do what" at the top of this file.
+
 `keycloak/import/oriah-realm.json` is mounted into
 `/opt/keycloak/data/import/`. The container runs `start-dev --import-realm`,
 which seeds the `oriah` realm with `CATALOG_ADMIN` + `INVENTORY_ADMIN` realm
 roles, the `oriah-admin` client (confidential, password + client_credentials
 grants enabled), and a test user `maya` with password `password` and both
-roles. The service-account user for `oriah-admin` also carries both roles so
-machine-to-machine flows work.
+roles. ~~The service-account user for `oriah-admin` also carries both roles so
+machine-to-machine flows work.~~ **Now it holds exactly `USER` +
+`INVENTORY_ADMIN`** (`2e43b92`), and order is its first machine caller: it
+prices delivery by calling shipping with client credentials (`0e24a94`).
 
-Import only runs on first start (when the realm doesn't already exist). To
-re-seed, `docker compose down -v` (drops the volume) then `up` again.
+Import only runs on first start (when the realm doesn't already exist). ~~To
+re-seed, `docker compose down -v` (drops the volume) then `up` again.~~
+**Wrong now — `down -v` wipes all eleven databases.** To apply a realm edit in
+dev, remove **only** Keycloak's volume and start again:
+
+```powershell
+docker compose rm -sf keycloak postgres-keycloak
+docker volume rm default_postgres-keycloak-data
+docker compose up -d keycloak
+```
+
+Then **restart `order`**: a new Keycloak signs with new keys, and order is still
+holding a machine token signed with the old ones. Never fix the realm with a
+console edit — it drifts from the committed files. Both files are imported only
+when the realm does not yet exist. The dev users' ids are pinned, so a Keycloak
+reset orphans no customer, cart or order.
 
 ### Healthcheck design (the tiny-image trap)
 
@@ -450,8 +589,10 @@ finished initializing.
 > own no database, which is why 12 services need only 10 instances.)
 >
 > ⚠️ Consequence worth stating plainly: **`docker compose down -v` destroys
-> all ten volumes** *and* Keycloak's. The realm imports only onto an empty
-> volume.
+> all eleven databases** — these ten *and* Keycloak's own
+> (`postgres-keycloak`). The realm imports only when it does not yet exist, so
+> to apply a realm edit remove **only** Keycloak's volume — steps under
+> "Realm import on first start" above. Never `down -v` for that.
 
 Each service owns its data store. We use **one postgres container per
 service** rather than one container with many SQL schemas. Why:
@@ -499,23 +640,39 @@ Admin console at `http://localhost:7080/`. Log in as `admin/admin`.
 > **Do not do this by hand any more.** The realm is **imported from
 > `keycloak/import/oriah-realm.json`** on first start of an empty Keycloak
 > volume. The manual steps below are kept to explain what the import
-> creates and why. What it actually creates today:
+> creates and why. What it actually creates today (since Phase 0,
+> `2e43b92`):
 >
-> - **Roles (6):** `USER`, `CATALOG_ADMIN`, `INVENTORY_ADMIN`,
->   `CUSTOMER_ADMIN`, `ORDER_ADMIN`, `PAYMENT_ADMIN`
-> - **Users (all password `password`):** `admin`, `maya` (every admin role
->   plus `USER`), `alice` (**`USER` only** — the customer the smoke test
->   drives), and the machine account `service-account-oriah-admin` (already
->   holds `ORDER_ADMIN` — **reuse it** rather than adding another service
->   account)
-> - **Clients:** `oriah-admin` (confidential, secret `oriah-admin-secret`),
->   `oriah-web`
+> - **Roles:** 14 capability roles plus `USER`, and five job roles
+>   (`OWNER`, `MANAGER`, `SALES`, `DISPATCH`, `BOOKKEEPER`) built from them —
+>   the full list and who gets what is under "Who may do what" at the top of
+>   this file
+> - **Users:** the realm file holds **one** — the machine account
+>   `service-account-oriah-admin`, holding exactly `USER` + `INVENTORY_ADMIN`.
+>   ~~already holds `ORDER_ADMIN` — **reuse it**~~ — **no longer true.** The
+>   people are in the dev-only file `keycloak/dev/oriah-users-0.json`:
+>   `admin` (email admin@oriah.local, temporary password
+>   `ChangeMeOnFirstLogin!`, must change it; `OWNER` + `USER`), `maya`
+>   (password `password`; `OWNER` + `USER`), `alice` (password `password`;
+>   **`USER` only** — the customer the smoke test drives)
+> - **Clients:** `oriah-admin` (confidential), `oriah-web`. In the realm file
+>   oriah-admin's secret is the placeholder `${ORIAH_ADMIN_CLIENT_SECRET}`,
+>   filled from Keycloak's environment at import. The dev compose sets it to
+>   `oriah-admin-secret`, matching order's `ORIAH_SERVICE_CLIENT_SECRET`.
+>   There is no default: an unset variable would leave the placeholder *text*
+>   as a working secret, so a production compose must use
+>   `${ORIAH_ADMIN_CLIENT_SECRET:?...}`. At go-live,
+>   `scripts/keycloak-go-live.ps1` sets the production secret; after any
+>   change of secret, give the new one to every service that uses it (order:
+>   `ORIAH_SERVICE_CLIENT_SECRET`)
 >
-> ⚠️ **The import runs only onto an empty volume.** Adding a role later
-> means either a console edit — which silently drifts from the committed
-> export — or a full teardown that destroys every Postgres volume too. So
-> make realm changes in **one** coordinated edit to the JSON, and plan the
-> whole set of roles you need before you start.
+> ⚠️ **The import runs only when the realm does not yet exist.** Adding a role
+> later means either a console edit — which silently drifts from the committed
+> export — or ~~a full teardown that destroys every Postgres volume too~~
+> removing **only** Keycloak's volume (steps under "Realm import on first
+> start"). Still: make realm changes in **one** coordinated edit to the JSON,
+> and plan the whole set of roles you need before you start. Phase 0 did
+> exactly that — the full role set for hiring, in one edit (`2e43b92`).
 
 Historically, by hand: create realm **`oriah`**, then in that realm:
 

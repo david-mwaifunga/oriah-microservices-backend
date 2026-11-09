@@ -19,7 +19,7 @@
       "name": "0. Log in",
       "item": [
         {
-          "name": "as maya (staff, every admin role)",
+          "name": "as maya (staff, job role OWNER)",
           "event": [
             {
               "listen": "test",

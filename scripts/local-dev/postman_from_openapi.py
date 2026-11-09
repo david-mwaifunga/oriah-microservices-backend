@@ -172,7 +172,7 @@ def main():
                                 'Start with "0. Log in". Requests go through the gateway ({{baseUrl}}) unless marked.',
                  'schema': 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json'},
         'auth': {'type': 'bearer', 'bearer': [{'key': 'token', 'value': '{{bearerToken}}', 'type': 'string'}]},
-        'item': [{'name': '0. Log in', 'item': [login('maya', 'staff, every admin role'),
+        'item': [{'name': '0. Log in', 'item': [login('maya', 'staff, job role OWNER'),
                                                 login('alice', 'customer')]},
                  {'name': '1. Is it up?', 'item': [health(n, p) for n, p in {**PLATFORM, **SERVICES}.items()]}]
                 + folders}

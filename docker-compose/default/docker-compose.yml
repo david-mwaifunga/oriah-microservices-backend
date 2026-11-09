@@ -25,7 +25,7 @@
 # service names are DNS hostnames):
 #
 #   ┌─────────── data tier (no deps) ───────────┐
-#   │  postgres-* ×10   keycloak   kafka         │
+#   │  postgres-* ×11   keycloak   kafka         │
 #   │  redis   loki   prometheus   tempo   alloy  │
 #   └─────────────────────────────────────────────┘
 #                  │                │
@@ -44,7 +44,8 @@
 #   ┌─── domain tier (waits: configserver, eurekaserver, keycloak, ───┐
 #   │    plus its own postgres, plus kafka where it is an event       │
 #   │    producer/consumer) ×12                                       │
-#   │  checkout additionally waits on the 5 services it orchestrates  │
+#   │  checkout additionally waits on the 6 services it calls: cart,  │
+#   │  catalog, customer, order, payment and shipping                 │
 #   └──────────────────────────────────────────────────────────────────┘
 #                                      │
 #                                      ▼
@@ -399,12 +400,19 @@ services:
     # the machine identity; no person, no secret) plus, in this DEV stack only,
     # keycloak/dev/oriah-users-0.json (the people the smoke test and Playwright
     # sign in as), mounted beside it below. Now that the database persists,
-    # editing either file no longer changes a running realm. During development, apply a realm edit
-    # by removing ONLY Keycloak's volume and starting again:
+    # editing either file no longer changes a running realm. During
+    # development, apply a realm edit by removing ONLY Keycloak's volume and
+    # starting again:
     #   docker compose rm -sf keycloak postgres-keycloak
     #   docker volume rm default_postgres-keycloak-data
-    # (that wipes dev logins, never the ten domain databases). After go-live a
-    # realm change is applied by an idempotent admin-API step instead.
+    #   docker compose up -d keycloak
+    # then restart order (docker compose restart order) -- its cached machine
+    # token was signed by the old keys. Removing that one volume wipes dev
+    # logins, never the ten domain databases. Never `docker compose down -v`
+    # (it wipes all eleven databases); never a console edit (it drifts from the
+    # committed files).
+    # After go-live a realm change is applied by an idempotent admin-API step
+    # instead.
     command: ["start-dev", "--import-realm"]
     environment:
       # Bootstrap admin credentials (Keycloak 26+ uses KC_BOOTSTRAP_* naming).
@@ -974,8 +982,9 @@ services:
       start_period: 90s
 
   shipping:
-    # No Postgres: shipping computes rates from configuration, it stores
-    # nothing.
+    # No Postgres: shipping stores nothing. Until Phase 7 it offers Zambia one
+    # option, SELF_COLLECT at K0, and refuses any other country (422
+    # outside-delivery-area); there is no rate card or zone list.
     extends:
       file: ../common-config.yml
       service: microservice-keycloak-config
@@ -1001,11 +1010,13 @@ services:
     depends_on:
       cart:
         condition: service_healthy
+      catalog:
+        condition: service_healthy
+      customer:
+        condition: service_healthy
       payment:
         condition: service_healthy
       order:
-        condition: service_healthy
-      promotion:
         condition: service_healthy
       shipping:
         condition: service_healthy

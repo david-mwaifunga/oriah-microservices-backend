@@ -4,10 +4,11 @@
 
 .DESCRIPTION
     Catches realm-import errors without needing a fresh Keycloak, which is the
-    whole point: these errors only surface on a FRESH import
-    (`docker compose down -v`), so a stack running against an existing volume
-    will look perfectly healthy while the realm file is broken and nobody can
-    stand the stack up from scratch.
+    whole point: these errors only surface on a FRESH import (which comes from
+    removing only Keycloak's volume, default_postgres-keycloak-data -- never
+    `docker compose down -v`, which wipes all eleven databases), so a stack
+    running against an existing volume will look perfectly healthy while the
+    realm file is broken and nobody can stand the stack up from scratch.
 
     That is exactly what happened. `default-roles-oriah` was made a composite
     referencing the realm roles `offline_access` and `uma_authorization`, which
