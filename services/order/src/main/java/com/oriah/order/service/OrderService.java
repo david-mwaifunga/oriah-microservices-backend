@@ -9,29 +9,36 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.oriah.order.dto.PlaceOrderRequest;
-import com.oriah.order.events.OrderEvent;
-import com.oriah.order.events.OrderEventPublisher;
+import com.oriah.order.events.OrderEventLog;
 import com.oriah.order.model.Order;
 import com.oriah.order.model.OrderStatus;
 import com.oriah.order.repository.OrderRepository;
 
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * Every write here names its {@code actor} -- {@code user:<keycloak subject>}
+ * of whoever asked: the customer for place, pay and cancel, the member of
+ * staff for an admin transition -- and records the change in the event log in
+ * the same transaction ({@link OrderEventLog}). The actor is separate from the
+ * order's owner because they are not always the same person: staff move a
+ * customer's order, and will place phone orders on a customer's behalf.
+ */
 @Service
 @Slf4j
 public class OrderService {
 
     private final OrderRepository repository;
-    // Still needed by transition(), which publishes its own status changes.
-    // Placement's publish moved to OrderWriter with the persist it belongs to.
-    private final OrderEventPublisher events;
+    // Records every status change made here; placement records its own, in
+    // OrderWriter, with the persist it belongs to.
+    private final OrderEventLog events;
     private final PaymentIntentVerifier paymentVerifier;
     private final OrderPricingService pricing;
     private final OrderWriter writer;
     private final AddressOwnership addresses;
 
     public OrderService(OrderRepository repository,
-                        OrderEventPublisher events,
+                        OrderEventLog events,
                         PaymentIntentVerifier paymentVerifier,
                         OrderPricingService pricing,
                         OrderWriter writer,
@@ -48,16 +55,15 @@ public class OrderService {
      * Resolves one of the caller's own orders and proves the payment claim
      * against payment-service, without taking a transaction.
      *
-     * <h2>Why this is a separate step rather than part of attachPayment</h2>
+     * <h2>Why this is a separate step rather than part of markPaid</h2>
      *
      * It makes an outbound HTTP call, so it must not run inside a transaction:
      * holding a database connection open across a network call to another
      * service is how a slow dependency becomes an exhausted connection pool.
-     * {@code attachPayment} and {@code transition} keep their own
-     * {@code @Transactional} boundaries and are still invoked through the
-     * proxy by the controller -- calling them from here instead would be
-     * self-invocation, which bypasses the proxy, and the attach would silently
-     * never be flushed.
+     * {@link #markPaid} keeps its own {@code @Transactional} boundary and is
+     * invoked through the proxy by the controller, after this -- calling it
+     * from here instead would be self-invocation, which bypasses the proxy,
+     * and the order would silently be marked paid with no transaction at all.
      *
      * @return the caller's order, or empty when it does not exist or is not
      *         theirs -- the controller answers both with the same 404
@@ -102,13 +108,9 @@ public class OrderService {
      * ignoring -- so their figure can only ever cause a refusal, never a lower
      * charge.
      *
-     * <p>What this does NOT fix: {@code PaymentIntentVerifier} still cannot
-     * compare {@code intent.amount} to {@code order.total}, because the order
-     * still has no discount or shipping while checkout charges
-     * {@code afterDiscount + shipping}. A 0.01 intent therefore still settles
-     * a correctly-priced order. That needs an authoritative-money marker per
-     * row so orders placed before this change stay payable, and it is a
-     * separate change.
+     * <p>The order's total is authoritative since V4 (subtotal + delivery -
+     * discount), and {@code PaymentIntentVerifier} holds a payment to exactly
+     * that total.
      *
      * <h2>The address is the caller's, checked first</h2>
      *
@@ -117,38 +119,76 @@ public class OrderService {
      * is not theirs, or one nobody could check, costs no call to catalog or
      * shipping and saves nothing ({@link AddressOwnership}). Like pricing, it
      * is a network call, and it happens here, outside any transaction.
+     *
+     * @param actor who placed it, {@code user:<keycloak subject>}
      */
-    public Order placeOrder(String keycloakId, PlaceOrderRequest req) {
+    public Order placeOrder(String keycloakId, PlaceOrderRequest req, String actor) {
         addresses.requireCallersOwn(req.shippingAddressId());
         OrderPricingService.PricedOrder priced = pricing.price(req);
-        return writer.persist(keycloakId, req.shippingAddressId(), priced);
+        return writer.persist(keycloakId, req.shippingAddressId(), priced, actor);
     }
 
+    /**
+     * Marks one of the owner's orders paid, after {@link #verifyPaymentClaim}
+     * has proved the payment: attaches the payment intent, moves the order to
+     * PAID and appends {@code order.paid} -- ONE transaction, so the order is
+     * never paid without its payment recorded, nor announced paid without
+     * being so. It used to be two transactions (attach, then transition), and
+     * a failure between them left a CREATED order holding a payment.
+     *
+     * <p>An order that is no longer CREATED (cancelled meanwhile, or already
+     * paid) refuses with 409, and so does one changed by someone else since
+     * this transaction read it (the order's version): exactly one of two
+     * simultaneous changes wins, and only the winner is in the log.
+     *
+     * @return the order, or empty when it does not exist or is not the owner's
+     */
     @Transactional
-    public Optional<Order> attachPayment(String keycloakId, UUID orderId, UUID paymentIntentId) {
+    public Optional<Order> markPaid(String owner, UUID orderId, UUID paymentIntentId, String actor) {
         return repository.findById(orderId)
-                .filter(o -> o.keycloakId().equals(keycloakId))
+                .filter(o -> o.keycloakId().equals(owner))
                 .map(o -> {
+                    OrderStatus prev = o.status();
                     o.attachPaymentIntent(paymentIntentId);
-                    log.info("Attached PaymentIntent id={} to order id={}", paymentIntentId, o.id());
+                    o.transitionTo(OrderStatus.PAID);
+                    events.moved(o, prev, actor);
+                    log.info("Order id={} {} -> PAID with PaymentIntent id={}", o.id(), prev, paymentIntentId);
                     return o;
                 });
     }
 
     /**
-     * Drive the FSM. Caller-allowed transitions (USER): CREATED -> CANCELLED.
-     * Admin-allowed transitions (ORDER_ADMIN): everything else.
-     * Authorization is enforced at the controller layer via @PreAuthorize.
+     * The owner cancels their own order. Ownership is checked inside the same
+     * transaction as the change, so what was checked is what is changed.
+     *
+     * @return the order, or empty when it does not exist or is not the owner's
      */
     @Transactional
-    public Optional<Order> transition(UUID orderId, OrderStatus targetStatus) {
-        return repository.findById(orderId).map(o -> {
-            OrderStatus prev = o.status();
-            o.transitionTo(targetStatus);
-            log.info("Order id={} {} -> {}", o.id(), prev, targetStatus);
-            events.publish(new OrderEvent(o.id(), o.keycloakId(), prev, targetStatus, o.total(), o.currency()));
-            return o;
-        });
+    public Optional<Order> cancel(String owner, UUID orderId, String actor) {
+        return repository.findById(orderId)
+                .filter(o -> o.keycloakId().equals(owner))
+                .map(o -> move(o, OrderStatus.CANCELLED, actor));
+    }
+
+    /**
+     * Drive the FSM. Caller-allowed transitions (USER): CREATED -> CANCELLED,
+     * through {@link #cancel}. Admin-allowed transitions (ORDER_ADMIN):
+     * everything else. Authorization is enforced at the controller layer via
+     * {@code @PreAuthorize}.
+     *
+     * @param actor the member of staff, {@code user:<keycloak subject>}
+     */
+    @Transactional
+    public Optional<Order> transition(UUID orderId, OrderStatus targetStatus, String actor) {
+        return repository.findById(orderId).map(o -> move(o, targetStatus, actor));
+    }
+
+    private Order move(Order order, OrderStatus target, String actor) {
+        OrderStatus prev = order.status();
+        order.transitionTo(target);
+        events.moved(order, prev, actor);
+        log.info("Order id={} {} -> {} by {}", order.id(), prev, target, actor);
+        return order;
     }
 
     @Transactional(readOnly = true)

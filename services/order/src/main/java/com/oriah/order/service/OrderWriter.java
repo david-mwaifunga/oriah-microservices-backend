@@ -5,10 +5,8 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.oriah.order.events.OrderEvent;
-import com.oriah.order.events.OrderEventPublisher;
+import com.oriah.order.events.OrderEventLog;
 import com.oriah.order.model.Order;
-import com.oriah.order.model.OrderStatus;
 import com.oriah.order.repository.OrderRepository;
 
 import lombok.extern.slf4j.Slf4j;
@@ -40,27 +38,24 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <h2>This transaction stays short on purpose</h2>
  *
- * Everything in it is local: build the aggregate, save, publish. There is no
- * HTTP here and there should never be.
+ * Everything in it is local: build the aggregate, save it, and append
+ * {@code order.created} to the event log. There is no HTTP here and there
+ * should never be.
  *
- * <p>The Kafka publish is still INSIDE the transaction, which is a known and
- * pre-existing problem: an event can be emitted for a transaction that later
- * rolls back, and notification-service renders that event as an email to the
- * shopper. It is deliberately not fixed here. Moving it to an after-commit
- * listener raises its own question -- whether {@code order.created} is a
- * best-effort notification or a durable integration event, which decides
- * between a listener and an outbox -- and this change adds no new reachable
- * cause, because every refusal it introduces happens during pricing, before
- * this method is entered.
+ * <p>The event is a row in the same transaction ({@link OrderEventLog}), so
+ * the order and its announcement commit together or not at all. It used to
+ * be a Kafka send made here, before the order row was written: a placement
+ * that then failed was announced anyway, and notification could email a
+ * customer about an order that does not exist ({@code OrderEventLogTest}).
  */
 @Service
 @Slf4j
 public class OrderWriter {
 
     private final OrderRepository repository;
-    private final OrderEventPublisher events;
+    private final OrderEventLog events;
 
-    public OrderWriter(OrderRepository repository, OrderEventPublisher events) {
+    public OrderWriter(OrderRepository repository, OrderEventLog events) {
         this.repository = repository;
         this.events = events;
     }
@@ -70,21 +65,22 @@ public class OrderWriter {
      *               stated them. The currency is catalog's too: the request's
      *               currency is only ever a claim to be checked, never the
      *               value stored.
+     * @param actor  who placed it, {@code user:<keycloak subject>}; the
+     *               customer today, a member of staff for a phone order later
      */
     @Transactional
     public Order persist(String keycloakId, UUID shippingAddressId,
-                         OrderPricingService.PricedOrder priced) {
+                         OrderPricingService.PricedOrder priced, String actor) {
         Order order = new Order(keycloakId, shippingAddressId, priced.currency(),
                 priced.deliveryOption(), priced.shippingAmount());
         priced.lines().forEach(line ->
                 order.addItem(line.variantId(), line.title(), line.quantity(), line.unitPrice()));
 
         Order saved = repository.save(order);
+        events.placed(saved, actor);
         log.info("Placed order id={} keycloakId={} subtotal={} total={} {} items={}",
                 saved.id(), keycloakId, saved.subtotal(), saved.total(),
                 saved.currency(), saved.items().size());
-        events.publish(new OrderEvent(saved.id(), keycloakId, null, OrderStatus.CREATED,
-                saved.total(), saved.currency()));
         return saved;
     }
 }

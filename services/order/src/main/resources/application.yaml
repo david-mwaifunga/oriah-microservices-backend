@@ -81,8 +81,8 @@ spring:
           #   while order is still working, and order may yet save an order
           #   nobody is waiting for. WritePathBudgetTest adds these up (the
           #   token's from MachineIdentityConfig's own constants) and fails
-          #   when they no longer fit. Not counted: the save and the event
-          #   publish after these calls, so in the very worst case -- all four
+          #   when they no longer fit. Not counted: the save and the event-log
+          #   append after these calls, so in the very worst case -- all four
           #   at their full timeouts -- checkout can still give up first. That
           #   was already so before customer was added.
           #
@@ -112,12 +112,48 @@ spring:
             connect-timeout: 1000
             read-timeout: 3000
     stream:
-      bindings:
-        orderEvents-out-0:
-          destination: oriah.order
+      # No producer binding: order no longer sends to Kafka itself. Every event
+      # is a row in the outbox, and the relay (shared/oriah-events) sends each
+      # row to the topic stored on it, oriah.order.
+      #
+      # Every send is JSON, including the relay's to oriah.order and the
+      # replays' to oriah.replay.<consumer>, which are named only at send time.
+      default:
+        contentType: application/json
       kafka:
+        default:
+          producer:
+            # A send returns only once Kafka has the record, and fails if Kafka
+            # did not take it. The relay moves its cursor past a row only on a
+            # send that returned, so without this it could pass a row Kafka
+            # never got and that event would never be published. The relay
+            # refuses to start without it -- in tests too.
+            sync: true
         binder:
           brokers: localhost:9092
+          # How long one send may wait for a broker that is down. The relay
+          # holds its database transaction and its place in the log while it
+          # waits; Kafka's defaults would hold them for a minute or two. With
+          # these a send fails within about 10 to 25 s, the cursor stays where
+          # it was, and the row goes out once the broker is back.
+          producer-properties:
+            max.block.ms: 10000         # waiting for the topic's details from the broker
+            request.timeout.ms: 5000    # one request to the broker
+            delivery.timeout.ms: 10000  # the whole send, retries included
+        bindings:
+          # The replay-request listener. The module binds it (destination
+          # oriah.outbox.replay-requests, group order); what Kafka does with a
+          # request order cannot answer is set here. A malformed request is
+          # refused, and a replay can fail part-way while Kafka is briefly
+          # down. Either way the binder retries it, and then parks it on its
+          # own dead-letter topic, named <topic>.dlq.<group> like every other.
+          # Without this the binder would log the last failure and skip past
+          # the request, and the consumer that asked would wait for a replay
+          # that never comes. ReplayRequestBindingTest pins it.
+          outboxReplayRequests-in-0:
+            consumer:
+              enable-dlq: true
+              dlq-name: oriah.outbox.replay-requests.dlq.order
 
 server:
   port: 8086
@@ -135,26 +171,46 @@ eureka:
   instance:
     prefer-ip-address: true
 
-# ---------------------------------------------------------------------------
-# Local fallback for GET /api/v1/orders/contact-info.
-#
-# config-repo/order.yaml overrides every key below whenever the Config Server
-# is up: spring.config.import wins over the document that imports it. This
-# block exists so the endpoint -- and, more importantly, the @Validated
-# binding -- still work when it is down, which the local/Maven profile
-# explicitly tolerates via `optional:configserver`.
-#
-# Without it, @NotBlank/@NotEmpty on OrderContactInfoDto turn an absent prefix
-# into BindValidationException and this service refuses to start. That is the
-# Tier 4 `base-config` hard-link mistake exactly: centralizing a value
-# converted an optional dependency into a required one.
-#
-# The keys here mirror config-repo/order.yaml ONE FOR ONE on purpose. Maps
-# merge key by key across property sources while lists are replaced wholesale,
-# so an extra key here would survive a config-repo override that omits it and
-# leak a stale value into the served response.
-# ---------------------------------------------------------------------------
 oriah:
+  # The event log (shared/oriah-events, MVP_PLAN Phase 1). Every order change
+  # is appended to the outbox in the same transaction as the change; the relay
+  # publishes the outbox to oriah.order; replay answers a late consumer that
+  # asks for the whole log again. Order consumes no events, so its Inbox is
+  # off (the replay listener records the requests it has answered without it).
+  # Each switch is exactly true or false: the module refuses anything else.
+  events:
+    outbox:
+      enabled: true
+    relay:
+      enabled: true
+    replay:
+      enabled: true
+    inbox:
+      enabled: false
+    # Sent with every message as the producer header.
+    producer: order
+    # The only topic order may publish to: an append naming any other is refused.
+    topics: oriah.order
+
+  # -------------------------------------------------------------------------
+  # Local fallback for GET /api/v1/orders/contact-info.
+  #
+  # config-repo/order.yaml overrides every key below whenever the Config Server
+  # is up: spring.config.import wins over the document that imports it. This
+  # block exists so the endpoint -- and, more importantly, the @Validated
+  # binding -- still work when it is down, which the local/Maven profile
+  # explicitly tolerates via `optional:configserver`.
+  #
+  # Without it, @NotBlank/@NotEmpty on OrderContactInfoDto turn an absent prefix
+  # into BindValidationException and this service refuses to start. That is the
+  # Tier 4 `base-config` hard-link mistake exactly: centralizing a value
+  # converted an optional dependency into a required one.
+  #
+  # The keys here mirror config-repo/order.yaml ONE FOR ONE on purpose. Maps
+  # merge key by key across property sources while lists are replaced wholesale,
+  # so an extra key here would survive a config-repo override that omits it and
+  # leak a stale value into the served response.
+  # -------------------------------------------------------------------------
   order:
     contact-info:
       message: "Order service contact details are unavailable - the Config Server could not be reached"

@@ -104,7 +104,6 @@ class OutboundIdentityTest {
         r.add("spring.security.oauth2.client.registration.oriah-admin.client-secret", () -> "test-secret");
         r.add("spring.cloud.config.enabled", () -> "false");
         r.add("eureka.client.enabled", () -> "false");
-        r.add("spring.cloud.stream.bindings.orderEvents-out-0.destination", () -> "oriah.order");
     }
 
     @Autowired

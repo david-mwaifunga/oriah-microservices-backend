@@ -88,8 +88,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.stream.bindings.orderEvents-out-0.destination=oriah.order"
+        "eureka.client.enabled=false"
 })
 class PlaceOrderPricingTest {
 

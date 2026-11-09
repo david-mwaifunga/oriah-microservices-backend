@@ -17,6 +17,7 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 
 import com.oriah.jpa.BaseEntity;
 import com.oriah.quote.Quote;
@@ -86,6 +87,18 @@ public class Order extends BaseEntity {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    /**
+     * Optimistic locking (V5). Every change to an order checks that nobody
+     * changed it since it was read: paying and cancelling at the same moment
+     * both read CREATED, and from CREATED both moves are legal, so without
+     * this both would win and the event log would say the order was paid AND
+     * cancelled. With it, the second write is refused (409) and appends
+     * nothing. A wrapper, so Spring Data sees an unsaved order as new.
+     */
+    @Version
+    @Column(nullable = false)
+    private Long version;
 
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<OrderItem> items = new ArrayList<>();

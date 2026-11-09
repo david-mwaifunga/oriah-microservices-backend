@@ -23,7 +23,6 @@ import com.oriah.order.dto.OrderResponse;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.order.dto.PlaceOrderRequest;
 import com.oriah.order.model.Order;
-import com.oriah.order.model.OrderStatus;
 import com.oriah.order.service.OrderService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -79,7 +78,7 @@ public class OrderController {
     public ResponseEntity<OrderResponse> place(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody PlaceOrderRequest body) {
-        Order o = service.placeOrder(jwt.getSubject(), body);
+        Order o = service.placeOrder(jwt.getSubject(), body, Actor.of(jwt));
         return ResponseEntity.created(URI.create("/api/v1/orders/" + o.id()))
                 .body(OrderResponse.from(o));
     }
@@ -131,20 +130,17 @@ public class OrderController {
      *
      * <p>The claim in the body is verified against payment-service before
      * anything is attached: the intent must be SUCCEEDED, must name this
-     * order, and must be in this order's currency.
+     * order, must be in this order's currency, and -- for every order placed
+     * since V4, whose total is authoritative -- must be for exactly its total.
+     * An order placed before V4 is not held to the amount: its total left out
+     * delivery. See {@link com.oriah.order.service.PaymentIntentVerifier}.
+     * This endpoint previously trusted the body, so any shopper could post a
+     * random UUID against their own order and receive a PAID order having
+     * paid nothing.
      *
-     * <p>It is NOT checked against the order's AMOUNT, and that gap is
-     * deliberate rather than an oversight -- {@code order.total} is the
-     * client-supplied line sum while checkout charges
-     * {@code afterDiscount + shipping}, so an exact comparison would reject
-     * real checkouts. A 0.01 intent therefore still settles a 4,500.00 order,
-     * and closing that needs the order total to become authoritative. This
-     * paragraph exists because the previous wording claimed the amount WAS
-     * verified: anyone auditing the money path from this controller would have
-     * concluded the hole was closed and stopped reading. See
-     * {@link com.oriah.order.service.PaymentIntentVerifier}. This endpoint
-     * previously trusted the body, so any shopper could post a random UUID
-     * against their own order and receive a PAID order having paid nothing.
+     * <p>Then ONE transaction attaches the payment, moves the order to PAID
+     * and records {@code order.paid} in the event log, with the caller as its
+     * actor.
      *
      * <p>Note that the verification is a property of the ENDPOINT, not of the
      * checkout orchestrator. Checkout reaches this same path forwarding the
@@ -174,12 +170,12 @@ public class OrderController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id,
             @Valid @RequestBody AttachPaymentRequest body) {
-        // Verify first, outside any transaction, and only then attach. Each
-        // call goes through the service proxy so attach and transition keep
-        // their own transactional boundaries.
+        // Verify first, outside any transaction, and only then mark paid: one
+        // transaction that attaches the payment, moves the order to PAID and
+        // records order.paid. Each call goes through the service proxy, so
+        // markPaid keeps its own transactional boundary.
         return service.verifyPaymentClaim(jwt.getSubject(), id, body.paymentIntentId())
-                .flatMap(o -> service.attachPayment(jwt.getSubject(), id, body.paymentIntentId()))
-                .flatMap(o -> service.transition(o.id(), OrderStatus.PAID))
+                .flatMap(o -> service.markPaid(jwt.getSubject(), id, body.paymentIntentId(), Actor.of(jwt)))
                 .map(OrderResponse::from)
                 .orElseThrow(() -> unknownOrder(id));
     }
@@ -196,9 +192,7 @@ public class OrderController {
     public OrderResponse cancel(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id) {
-        return service.findById(id)
-                .filter(o -> o.keycloakId().equals(jwt.getSubject()))
-                .flatMap(o -> service.transition(o.id(), OrderStatus.CANCELLED))
+        return service.cancel(jwt.getSubject(), id, Actor.of(jwt))
                 .map(OrderResponse::from)
                 .orElseThrow(() -> unknownOrder(id));
     }

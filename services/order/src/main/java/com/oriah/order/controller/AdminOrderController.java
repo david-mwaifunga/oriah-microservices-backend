@@ -8,6 +8,8 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -123,9 +125,11 @@ public class AdminOrderController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{id}/transition")
     public OrderResponse transition(
+            @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id,
             @Valid @RequestBody TransitionRequest body) {
-        return service.transition(id, body.targetStatus())
+        // The member of staff is the actor the event log records.
+        return service.transition(id, body.targetStatus(), Actor.of(jwt))
                 .map(OrderResponse::from)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
