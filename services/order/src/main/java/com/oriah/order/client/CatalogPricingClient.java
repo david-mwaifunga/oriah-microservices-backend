@@ -79,11 +79,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * is exactly the stale snapshot this phase exists to remove. The caller turns a
  * throw into a 503 and persists nothing.
  *
- * <p>Timeouts are explicit (2s connect / 5s read, see
+ * <p>Timeouts are explicit (1s connect / 3s read, see
  * {@code application.yaml}) because feign-core's defaults are 10s/60s and this
- * call sits inside a checkout request that is cut off at 15s.
+ * call sits inside a checkout request that is cut off at 15s -- a budget it
+ * now shares with customer, order's token and shipping.
  * {@code CatalogClientTimeoutTest} asserts them on this client's own Feign
- * child context.
+ * child context, and {@code WritePathBudgetTest} that the four still fit.
  */
 @FeignClient(name = "catalog")
 public interface CatalogPricingClient {

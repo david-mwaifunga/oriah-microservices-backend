@@ -95,8 +95,20 @@ class OrderIntegrationTest {
     /** Shipping as it is until Phase 7: self-collect at no charge, in the order's currency. */
     @MockitoBean
     private com.oriah.order.client.ShippingClient shipping;
+
+    /**
+     * customer, listing the fixture's address as the caller's -- whoever the
+     * caller is, since this class's subject is listing, the FSM and the
+     * cross-user 404, not whose address it is ({@link PlaceOrderAddressTest}).
+     */
+    @MockitoBean
+    private com.oriah.order.client.CustomerClient customer;
+
     @BeforeEach
     void clean() {
+        org.mockito.Mockito.doReturn(java.util.List.of(new com.oriah.order.client.CustomerClient.Address(
+                        UUID.fromString("11111111-1111-1111-1111-111111111111"))))
+                .when(customer).myAddresses();
         org.mockito.Mockito.doAnswer(inv -> {
             com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
             return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(

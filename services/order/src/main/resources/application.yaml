@@ -23,7 +23,7 @@ spring:
       # than the shopper's: a client-credentials token for
       # service-account-oriah-admin, sent to shipping to price delivery
       # (MVP_PLAN Phase 0, item 4.2). Only ShippingClient uses it
-      # (ShippingClientIdentity); payment keeps the shopper's token.
+      # (ShippingClientIdentity); payment and customer keep the shopper's token.
       #
       # token-uri, never issuer-uri: an issuer triggers discovery at start-up,
       # which fails offline and inside the container. The secret is never
@@ -47,11 +47,12 @@ spring:
     # and a permissive loader would resolve it by discarding one of the two.
     openfeign:
       circuitbreaker:
-        # Stays off. PaymentClient forwards the shopper's JWT from
-        # SecurityContextHolder, which is a ThreadLocal, and Spring Cloud's
+        # Stays off. PaymentClient and CustomerClient forward the shopper's JWT
+        # from SecurityContextHolder, which is a ThreadLocal, and Spring Cloud's
         # OpenFeign+Resilience4j integration dispatches the call to a
         # ForkJoinPool worker -- the Authorization header would be dropped and
-        # payment would answer 401 for every verification. It also keeps a
+        # payment would answer 401 for every verification, customer for every
+        # address check. It also keeps a
         # failed call throwing rather than falling back to an invented answer
         # about whether an order was paid. Checkout documents the same trap.
         enabled: false
@@ -64,19 +65,49 @@ spring:
           # budget -- and the only symptom checkout can report is a downstream
           # outage for a catalog that is merely slow.
           #
-          # One pricing call has to fit well inside that budget with room for
-          # the persist that follows, hence 2s/5s. CatalogClientTimeoutTest
-          # asserts these on the NAMED client's own Feign child context, not on
-          # a bean: Spring Cloud builds a context per client name and silently
-          # falls back to the defaults for a name it has no config for, so a
-          # misspelled key here looks exactly like an omitted one.
+          # A placement makes FOUR calls, one after another, and all of them
+          # have to fit inside checkout's 15s together. In order:
+          #
+          #   customer  1s + 2s   is this address the caller's?
+          #   catalog   1s + 3s   what do the lines cost?
+          #   token     1s + 3s   order's own token, when the cached one has
+          #                       run out (set in MachineIdentityConfig)
+          #   shipping  1s + 3s   what does the chosen delivery cost?
+          #   --------------------
+          #   15s worst case -- every call taking its full time to connect
+          #   and its full time to answer. That is ALL of checkout's 15s:
+          #   there is no slack, so a further call on this path must take its
+          #   time from these, not add to them. Past 15s checkout gives up
+          #   while order is still working, and order may yet save an order
+          #   nobody is waiting for. WritePathBudgetTest adds these up (the
+          #   token's from MachineIdentityConfig's own constants) and fails
+          #   when they no longer fit. Not counted: the save and the event
+          #   publish after these calls, so in the very worst case -- all four
+          #   at their full timeouts -- checkout can still give up first. That
+          #   was already so before customer was added.
+          #
+          # Every value is read under the client's NAME (CatalogClientTimeoutTest
+          # explains why that is asserted): Spring Cloud builds a context per
+          # name and silently falls back to the defaults for a name it has no
+          # config for, so a misspelled key here looks exactly like an omitted
+          # one.
+          #
+          # customer gets 2s to answer: on the checkout path checkout has just
+          # read this same list, so customer is warm, and the answer is a few
+          # rows for one shopper. OutboundIdentityTest.aHangingCustomerTimesOut
+          # pins it.
+          customer:
+            connect-timeout: 1000
+            read-timeout: 2000
+          # catalog was 2s/5s while it shared the path with only the token and
+          # shipping; adding customer would have made 18s, so it now has 1s/3s like
+          # shipping and the token, which is still ample for one batch of at
+          # most 100 ids -- and checkout priced the same bag from catalog
+          # moments earlier, so catalog is warm too.
           catalog:
-            connect-timeout: 2000
-            read-timeout: 5000
-          # shipping prices the delivery on the same write path, after catalog
-          # and after order's machine token (also 1s/3s, MachineIdentityConfig):
-          # catalog 2+5 + token 1+3 + shipping 1+3 = 15s worst case, inside
-          # checkout's 15s. OutboundIdentityTest.aHangingShippingTimesOut pins it.
+            connect-timeout: 1000
+            read-timeout: 3000
+          # OutboundIdentityTest.aHangingShippingTimesOut pins this one.
           shipping:
             connect-timeout: 1000
             read-timeout: 3000

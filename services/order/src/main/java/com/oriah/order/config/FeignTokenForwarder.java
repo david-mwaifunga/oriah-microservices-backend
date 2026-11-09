@@ -20,13 +20,19 @@ import feign.RequestInterceptor;
  * identity instead would hand us every customer's intents and oblige us to
  * re-implement the ownership rule here.
  *
+ * <p>The same holds for {@link com.oriah.order.client.CustomerClient}: customer
+ * lists the addresses of whoever the token belongs to, so forwarding the
+ * shopper's token is what makes "is this address yours?" a question about
+ * this shopper.
+ *
  * <p>Mirrors checkout's forwarder of the same name. Both depend on the call
  * running on the request thread, which is why the circuit breaker stays
  * disabled -- see {@link com.oriah.order.client.PaymentClient}.
  */
 // Deliberately NOT @Configuration: a component-scanned configuration makes its
-// interceptor GLOBAL, and it then reached catalog and shipping too. It is now
-// attached to PaymentClient alone (@FeignClient(configuration = ...)).
+// interceptor GLOBAL, and it then reached catalog and shipping too. It is
+// attached to PaymentClient and CustomerClient only
+// (@FeignClient(configuration = ...)), each in its own Feign child context.
 public class FeignTokenForwarder {
 
     @Bean

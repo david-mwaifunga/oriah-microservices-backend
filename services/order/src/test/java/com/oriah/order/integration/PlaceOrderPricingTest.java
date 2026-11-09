@@ -116,6 +116,15 @@ class PlaceOrderPricingTest {
     @MockitoBean
     private ShippingClient shipping;
 
+    /**
+     * customer, listing {@link #ADDRESS} as alice's. Every body here sends
+     * that address, and order now checks it is the caller's before pricing;
+     * without this every placement would be a 503. Whose address it is has
+     * its own tests in {@link PlaceOrderAddressTest}.
+     */
+    @MockitoBean
+    private com.oriah.order.client.CustomerClient customer;
+
     @Autowired
     private JdbcTemplate jdbc;
 
@@ -130,6 +139,8 @@ class PlaceOrderPricingTest {
         // Shipping as it is until Phase 7: self-collect at no charge. Every
         // placement now asks it; a missing stub would read as an outage.
         shippingOffers("SELF_COLLECT", "0.00", "ZMW");
+        doReturn(List.of(new com.oriah.order.client.CustomerClient.Address(UUID.fromString(ADDRESS))))
+                .when(customer).myAddresses();
     }
 
     /** Shipping answering with exactly this option. */

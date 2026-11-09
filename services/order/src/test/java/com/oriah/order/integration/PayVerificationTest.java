@@ -134,11 +134,22 @@ class PayVerificationTest {
     @MockitoBean
     private com.oriah.order.client.ShippingClient shipping;
 
+    /**
+     * customer, listing the fixture's address as the caller's. Whose address it
+     * is has its own tests ({@link PlaceOrderAddressTest}); this class's
+     * subject is payment.
+     */
+    @MockitoBean
+    private com.oriah.order.client.CustomerClient customer;
+
     @Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @BeforeEach
     void clean() {
+        org.mockito.Mockito.doReturn(java.util.List.of(new com.oriah.order.client.CustomerClient.Address(
+                        UUID.fromString("11111111-1111-1111-1111-111111111111"))))
+                .when(customer).myAddresses();
         org.mockito.Mockito.doAnswer(inv -> {
             com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
             return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(

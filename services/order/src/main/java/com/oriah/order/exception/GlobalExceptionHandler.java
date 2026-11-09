@@ -113,7 +113,12 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
                 HttpStatus.CONFLICT.getReasonPhrase(), ex.getMessage()));
     }
 
-    /** 503: a service needed to price the order did not answer. Nothing placed; retry is safe. */
+    /**
+     * 503: a service order needs before it can place the order did not answer
+     * -- customer (whose address it is), catalog or shipping (the price).
+     * Nothing placed; retry is safe. "Place", not "price": the address check
+     * runs before pricing, so when customer is down nothing has been priced.
+     */
     @ExceptionHandler(UpstreamUnavailableException.class)
     public ResponseEntity<ProblemDetail> upstreamUnavailable(UpstreamUnavailableException ex) {
         log.warn("503 {}", ex.getMessage());
@@ -121,7 +126,7 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
                 .header("Retry-After", "5")
                 .body(problem(HttpStatus.SERVICE_UNAVAILABLE, TYPE_UPSTREAM_UNAVAILABLE,
                         HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
-                        "We could not price your order just now. Nothing has been ordered "
+                        "We could not place your order just now. Nothing has been ordered "
                                 + "or charged; please try again."));
     }
 

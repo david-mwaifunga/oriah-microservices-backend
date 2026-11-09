@@ -127,8 +127,19 @@ class PlaceOrderValidationTest {
     @MockitoBean
     private com.oriah.order.client.ShippingClient shipping;
 
+    /**
+     * customer, listing {@link #ADDRESS} as alice's: the two happy paths send
+     * it, and order checks it is the caller's before pricing. The bodies this
+     * class refuses never get that far -- Bean Validation answers first.
+     */
+    @MockitoBean
+    private com.oriah.order.client.CustomerClient customer;
+
     @BeforeEach
     void reset() {
+        org.mockito.Mockito.doReturn(java.util.List.of(
+                        new com.oriah.order.client.CustomerClient.Address(UUID.fromString(ADDRESS))))
+                .when(customer).myAddresses();
         org.mockito.Mockito.doAnswer(inv -> {
             com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
             return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(

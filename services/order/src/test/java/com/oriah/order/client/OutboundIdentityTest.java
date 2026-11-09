@@ -56,10 +56,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *       be refused there, since shipping admits {@code USER}.</li>
  *   <li><b>payment</b> still gets the SHOPPER's token: its "is this your
  *       payment?" check needs the shopper's identity.</li>
+ *   <li><b>customer</b> gets the SHOPPER's token too: "which addresses are
+ *       yours?" is answered for whoever the token belongs to. Order's own token
+ *       would ask about the shop's service account, which owns no address.</li>
  *   <li><b>catalog</b>'s pricing endpoint is anonymous and gets no token.</li>
  * </ul>
  *
- * <p>A real HTTP server (WireMock) stands in for all three and for Keycloak,
+ * <p>A real HTTP server (WireMock) stands in for all four and for Keycloak,
  * so these assert the Authorization header each one actually received -- one
  * value, not two appended. Feign's interceptors APPEND, so a global forwarder
  * running beside the machine-token interceptor would send both.
@@ -70,6 +73,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class OutboundIdentityTest {
 
     private static final String TOKEN_PATH = "/realms/oriah/protocol/openid-connect/token";
+    private static final String ADDRESSES_PATH = "/api/v1/customers/me/addresses";
+    /** The address every placement here sends, and the one customer lists as the shopper's. */
+    private static final String ADDRESS = "11111111-2222-3333-4444-555555555555";
     private static final UUID VARIANT = UUID.fromString("22222222-3333-4444-5555-666666666666");
     /** The digest of the one quote these tests place: VARIANT once at 100.00, self-collect. */
     private static final String SEEN = com.oriah.order.QuoteFixtures.selfCollect("ZMW",
@@ -93,6 +99,7 @@ class OutboundIdentityTest {
         r.add("spring.cloud.openfeign.client.config.shipping.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.payment.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.catalog.url", WM::baseUrl);
+        r.add("spring.cloud.openfeign.client.config.customer.url", WM::baseUrl);
         r.add("spring.security.oauth2.client.provider.keycloak.token-uri", () -> WM.baseUrl() + TOKEN_PATH);
         r.add("spring.security.oauth2.client.registration.oriah-admin.client-secret", () -> "test-secret");
         r.add("spring.cloud.config.enabled", () -> "false");
@@ -130,6 +137,12 @@ class OutboundIdentityTest {
                         + "\"unitPrice\":100.00,\"currency\":\"ZMW\"}]}")));
         WM.stubFor(post(urlEqualTo("/api/v1/shipping/rates")).willReturn(okJson(
                 "{\"destinationCountry\":\"ZM\",\"options\":[{\"code\":\"SELF_COLLECT\",\"cost\":0.00,\"currency\":\"ZMW\"}]}")));
+        // customer's real response shape, every field included, so the
+        // id-only binding is proved to tolerate the ones order does not read.
+        WM.stubFor(get(urlEqualTo(ADDRESSES_PATH)).willReturn(okJson(
+                "[{\"id\":\"" + ADDRESS + "\",\"label\":\"Home\",\"line1\":\"Plot 12, Kabulonga Road\","
+                        + "\"line2\":null,\"city\":\"Lusaka\",\"state\":\"Lusaka\",\"postalCode\":\"10101\","
+                        + "\"country\":\"ZM\",\"isDefault\":true}]")));
     }
 
     private static RequestPostProcessor shopper(String subject, String token) {
@@ -219,6 +232,37 @@ class OutboundIdentityTest {
     }
 
     @Test
+    @DisplayName("customer receives the SHOPPER's token -- once, and never order's machine token")
+    void customerSeesTheShopperNotTheServiceAccount() throws Exception {
+        String placed = place(shopper("kc-alice", "shopper-token"));
+
+        // Placed, with the address customer listed: the id-only binding read
+        // customer's full response without tripping on the fields it ignores.
+        assertThat((String) com.jayway.jsonpath.JsonPath.read(placed, "$.shippingAddressId"))
+                .isEqualTo(ADDRESS);
+        var calls = WM.findAll(getRequestedFor(urlEqualTo(ADDRESSES_PATH)));
+        assertThat(calls).hasSize(1);
+        // One value, not two appended: the machine-token interceptor is
+        // shipping's alone, so it must not reach this client.
+        assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer shopper-token");
+    }
+
+    @Test
+    @DisplayName("each shopper's address check carries THEIR token, never the previous shopper's")
+    void eachShoppersAddressCheckCarriesTheirOwnToken() throws Exception {
+        // The machine token is cached and shared; the shopper's must never be.
+        // A forwarder that kept the first caller's token would let maya's order
+        // be checked against alice's addresses.
+        place(shopper("kc-alice", "alice-token"));
+        place(shopper("kc-maya", "maya-token"));
+
+        var calls = WM.findAll(getRequestedFor(urlEqualTo(ADDRESSES_PATH)));
+        assertThat(calls).hasSize(2);
+        assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer alice-token");
+        assertThat(authorizationOf(calls.get(1))).containsExactly("Bearer maya-token");
+    }
+
+    @Test
     @DisplayName("no Feign interceptor is global: each client carries only its own")
     void noRequestInterceptorIsGlobal() {
         assertThat(context.getBeansOfType(RequestInterceptor.class)).isEmpty();
@@ -279,5 +323,34 @@ class OutboundIdentityTest {
         // Read timeout 3s, inside checkout's 15s budget for the whole placement.
         assertThat(tookMs).isLessThan(5_500);
         assertThat(orders.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("customer hanging: order gives up within its own budget with a 503, saves nothing, prices nothing")
+    void aHangingCustomerTimesOut() throws Exception {
+        // An empty list, if it ever arrived, would be a 400 -- so the 503 below
+        // can only be order giving up on the wait.
+        WM.stubFor(get(urlEqualTo(ADDRESSES_PATH)).willReturn(okJson("[]").withFixedDelay(6000)));
+
+        long began = System.nanoTime();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/orders")
+                        .with(shopper("kc-alice", "shopper-token"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currency\":\"ZMW\",\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + SEEN + "\","
+                                + "\"shippingAddressId\":\"" + ADDRESS + "\","
+                                + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,"
+                                + "\"unitPrice\":100.00}]}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/upstream-unavailable"));
+        long tookMs = (System.nanoTime() - began) / 1_000_000;
+
+        // Read timeout 2s (application.yaml): its share of checkout's 15s.
+        // Feign's own default would wait 60s.
+        assertThat(tookMs).isLessThan(4_500);
+        assertThat(orders.count()).isZero();
+        // The check runs before pricing, so a placement that could not be
+        // checked never reached catalog or shipping.
+        WM.verify(0, postRequestedFor(urlEqualTo("/api/v1/variants/pricing")));
+        WM.verify(0, postRequestedFor(urlEqualTo("/api/v1/shipping/rates")));
     }
 }

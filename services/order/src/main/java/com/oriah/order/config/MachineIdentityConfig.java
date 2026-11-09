@@ -33,6 +33,11 @@ import org.springframework.web.client.RestClient;
 @Configuration
 public class MachineIdentityConfig {
 
+    /** How long the token request may take to connect. Public so WritePathBudgetTest reads it, not a copy. */
+    public static final Duration TOKEN_CONNECT_TIMEOUT = Duration.ofSeconds(1);
+    /** How long the token request may take to answer. */
+    public static final Duration TOKEN_READ_TIMEOUT = Duration.ofSeconds(3);
+
     @Bean
     public OAuth2AuthorizedClientManager machineClients(ClientRegistrationRepository registrations,
                                                         OAuth2AuthorizedClientService authorizedClients) {
@@ -41,8 +46,8 @@ public class MachineIdentityConfig {
         // body-less "invalid_token_response" and a misconfigured secret read as
         // an outage (OutboundIdentityTest.aWrongClientSecretIsOurFault).
         JdkClientHttpRequestFactory requests = new JdkClientHttpRequestFactory(
-                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build());
-        requests.setReadTimeout(Duration.ofSeconds(3));
+                HttpClient.newBuilder().connectTimeout(TOKEN_CONNECT_TIMEOUT).build());
+        requests.setReadTimeout(TOKEN_READ_TIMEOUT);
 
         // Built as Spring Security builds its default one, plus the timeouts.
         @SuppressWarnings("deprecation")

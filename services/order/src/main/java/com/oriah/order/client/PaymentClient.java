@@ -43,8 +43,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  * documents the same trap in its own config.
  */
 // The SHOPPER's token, forwarded: payment's owner check needs who is paying.
-// Attached to this client alone (FeignTokenForwarder is not a global
-// @Configuration any more), so shipping never receives it.
+// Attached per client (FeignTokenForwarder is not a global @Configuration any
+// more) -- here and on CustomerClient -- so shipping never receives it.
 @FeignClient(name = "payment", configuration = com.oriah.order.config.FeignTokenForwarder.class)
 public interface PaymentClient {
 

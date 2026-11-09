@@ -60,7 +60,8 @@ public class OrderController {
 
     @Operation(operationId = "place", summary = "Place an order")
     @ApiResponse(responseCode = "201", description = "Created; Location points at the order")
-    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter (see "
+            + "fieldErrors), or the shipping address is not one of the caller's own; nothing was saved",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "The basket or its price changed since the shopper saw "
@@ -70,8 +71,8 @@ public class OrderController {
     @ApiResponse(responseCode = "422", description = "The total is larger than an order can hold",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "503", description = "catalog, shipping or the token server is unreachable; "
-            + "nothing was saved -- retry after Retry-After",
+    @ApiResponse(responseCode = "503", description = "customer, catalog, shipping or the token server is "
+            + "unreachable; nothing was saved -- retry after Retry-After",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping

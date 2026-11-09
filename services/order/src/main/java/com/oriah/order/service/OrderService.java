@@ -28,17 +28,20 @@ public class OrderService {
     private final PaymentIntentVerifier paymentVerifier;
     private final OrderPricingService pricing;
     private final OrderWriter writer;
+    private final AddressOwnership addresses;
 
     public OrderService(OrderRepository repository,
                         OrderEventPublisher events,
                         PaymentIntentVerifier paymentVerifier,
                         OrderPricingService pricing,
-                        OrderWriter writer) {
+                        OrderWriter writer,
+                        AddressOwnership addresses) {
         this.repository = repository;
         this.events = events;
         this.paymentVerifier = paymentVerifier;
         this.pricing = pricing;
         this.writer = writer;
+        this.addresses = addresses;
     }
 
     /**
@@ -106,8 +109,17 @@ public class OrderService {
      * a correctly-priced order. That needs an authoritative-money marker per
      * row so orders placed before this change stay payable, and it is a
      * separate change.
+     *
+     * <h2>The address is the caller's, checked first</h2>
+     *
+     * The shopper chooses the address, but only from their own: customer is
+     * asked, with their token, before anything is priced -- so an address that
+     * is not theirs, or one nobody could check, costs no call to catalog or
+     * shipping and saves nothing ({@link AddressOwnership}). Like pricing, it
+     * is a network call, and it happens here, outside any transaction.
      */
     public Order placeOrder(String keycloakId, PlaceOrderRequest req) {
+        addresses.requireCallersOwn(req.shippingAddressId());
         OrderPricingService.PricedOrder priced = pricing.price(req);
         return writer.persist(keycloakId, req.shippingAddressId(), priced);
     }

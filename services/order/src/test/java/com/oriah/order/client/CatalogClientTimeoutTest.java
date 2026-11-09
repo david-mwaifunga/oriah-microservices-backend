@@ -60,8 +60,10 @@ class CatalogClientTimeoutTest {
     /** Must match {@code @FeignClient(name = ...)} on CatalogPricingClient. */
     private static final String CLIENT = "catalog";
 
-    private static final int CONNECT_MS = 2_000;
-    private static final int READ_MS = 5_000;
+    // 1s/3s, down from 2s/5s once customer joined the placement path: four
+    // calls now share checkout's 15s (WritePathBudgetTest adds them up).
+    private static final int CONNECT_MS = 1_000;
+    private static final int READ_MS = 3_000;
 
     @Autowired
     private FeignClientProperties feignClientProperties;

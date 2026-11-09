@@ -95,7 +95,8 @@
 #      intent, (d) another customer confirming alice's intent and (e) the
 #      same Idempotency-Key from another customer must all be refused, with
 #      no order paid and no extra charge; (f) the owner's own replay must
-#      still be served.
+#      still be served; (g) an order naming another customer's delivery
+#      address is refused 400, and no order is written.
 #   [20b/20] Payment refuses an intent it cannot price unambiguously. No
 #      currency, a lower-case "zmw" and an amount past the column are each
 #      400; a well-formed ZMW intent is still created.
@@ -1286,13 +1287,35 @@ if ($aliceReplay.id -ne $aliceOwn.id -or $aliceReplay.status -ne $aliceOwn.statu
     $authzFailures += "the owner's replay no longer returns the stored response"
 }
 
+# (g) An order must not name somebody else's delivery address. Checkout checks
+#     this itself, but order's own POST /orders is reachable directly, and it
+#     stored any address id it was given -- from Phase 7 that is where the
+#     parcel goes. maya names alice's address: 400, and maya has no new order.
+$mayaOrdersBefore = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
+    -Headers $mayaH).totalElements
+$foreignAddressCode = $null
+try {
+    New-ProbeOrder $mayaH 3 | Out-Null    # carries alice's $addrId
+    $authzFailures += "an order naming another customer's address was accepted"
+} catch {
+    $foreignAddressCode = Probe-Status $_
+}
+$mayaOrdersAfter = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
+    -Headers $mayaH).totalElements
+if ($null -ne $foreignAddressCode -and $foreignAddressCode -ne 400) {
+    $authzFailures += "foreign address: code=$foreignAddressCode (want 400)"
+}
+if ($mayaOrdersAfter -ne $mayaOrdersBefore) {
+    $authzFailures += "foreign address: an order was written ($mayaOrdersBefore -> $mayaOrdersAfter)"
+}
+
 if ($authzFailures.Count -gt 0) {
     Write-Host "    money-path authorization FAILED:" -ForegroundColor Red
     $authzFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
     Write-Error "money-path authorization regressed on $($authzFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    6 exploit attempts refused; no order paid, no extra charge, owner replay intact" -ForegroundColor Gray
+Write-Host "    6 exploit attempts refused (a-e, g); no order paid, no extra charge, no foreign address stored; owner replay (f) intact" -ForegroundColor Gray
 
 Write-Host "[20b/20] Payment refuses an intent it cannot price unambiguously..." -ForegroundColor Cyan
 # POST /intents took amount @DecimalMin("0.01") and a currency that was
