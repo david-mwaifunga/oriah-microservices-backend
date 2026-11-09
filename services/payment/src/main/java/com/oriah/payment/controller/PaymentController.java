@@ -55,27 +55,57 @@ public class PaymentController {
     }
 
     /**
-     * The 409 is declared here because nothing else would publish it: the
-     * service refuses with an IllegalStateException, which the shared error
-     * advice turns into a 409 out of springdoc's sight.
+     * A payment intent for one of the caller's own orders, for its total.
+     *
+     * <p>Every refusal is declared here because nothing else would publish it:
+     * the service refuses with exceptions that the shared error advice turns
+     * into 400, 404, 409 and 503 out of springdoc's sight. The 200 is declared
+     * because checkout's retry of a create whose answer was lost receives it,
+     * and a client that knows only 201 would treat it as unexpected.
      */
-    @Operation(operationId = "createIntent", summary = "Create a payment intent for an order")
+    @Operation(operationId = "createIntent", summary = "Create a payment intent for one of the caller's orders")
+    @ApiResponse(responseCode = "200",
+            description = "Nothing new was created: the caller already has a PENDING intent for this order, for "
+                    + "the same amount and currency -- that intent, unchanged. This is what a repeat of a create "
+                    + "whose answer was lost receives.",
+            content = @Content(mediaType = "application/json",
+                    schema = @Schema(implementation = PaymentIntentResponse.class)))
     @ApiResponse(responseCode = "201", description = "Created; Location points at the intent")
-    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
+    @ApiResponse(responseCode = "400",
+            description = "Validation failure or unparseable parameter (see fieldErrors), or the amount or "
+                    + "currency is not the order's total; nothing was created",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404",
+            description = "No order of yours has this id -- it belongs to someone else or does not exist, and the "
+                    + "answer is the same either way; nothing was created",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409",
-            description = "Not created. The order already has a payment intent that is pending, being charged or "
-                    + "paid -- one order is paid through one intent. A new one can be made only if that one fails.",
+            description = "Not created. The order is no longer waiting for payment (cancelled or already paid), "
+                    + "or it already has a payment intent that is pending, being charged or paid -- one order is "
+                    + "paid through one intent. A pending intent for a different amount or currency is not handed "
+                    + "back. A new one can be made only if that one fails.",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503",
+            description = "Order could not be asked whether this order is yours (it is down, slow or failing); "
+                    + "nothing was created or charged -- retry after Retry-After",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/intents")
     public ResponseEntity<PaymentIntentResponse> createIntent(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody CreateIntentRequest body) {
-        PaymentIntent created = service.createIntent(jwt.getSubject(), body);
-        return ResponseEntity.created(URI.create("/api/v1/payments/intents/" + created.id()))
-                .body(PaymentIntentResponse.from(created));
+        PaymentService.CreatedIntent result = service.createIntent(jwt.getSubject(), body);
+        PaymentIntent intent = result.intent();
+        if (!result.created()) {
+            // The same create again -- typically checkout's retry after the
+            // first answer was lost: the intent already made, nothing new.
+            return ResponseEntity.ok(PaymentIntentResponse.from(intent));
+        }
+        return ResponseEntity.created(URI.create("/api/v1/payments/intents/" + intent.id()))
+                .body(PaymentIntentResponse.from(intent));
     }
 
     /**

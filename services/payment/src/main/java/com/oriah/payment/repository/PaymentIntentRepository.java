@@ -3,6 +3,7 @@ package com.oriah.payment.repository;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -19,12 +20,14 @@ public interface PaymentIntentRepository extends JpaRepository<PaymentIntent, UU
     List<PaymentIntent> findByKeycloakId(String keycloakId);
 
     /**
-     * Whether the order already has an intent in one of {@code statuses}.
-     * (There was a {@code findByOrderId} returning one Optional here, unused;
-     * an order can have several intents -- failed ones and their
-     * replacement -- so it would have thrown on the first order that did.)
+     * The order's intent in one of {@code statuses}, if it has one. Called
+     * with {@link PaymentStatus#LIVE}, of which an order has at most one -- the
+     * partial unique index uq_payment_intents_one_live_per_order (V5) -- so
+     * one Optional is enough. (A {@code findByOrderId} returning one Optional
+     * would not be: an order can have several intents -- failed ones and
+     * their replacement.)
      */
-    boolean existsByOrderIdAndStatusIn(UUID orderId, Collection<PaymentStatus> statuses);
+    Optional<PaymentIntent> findByOrderIdAndStatusIn(UUID orderId, Collection<PaymentStatus> statuses);
 
     /** A charge whose answer payment is still waiting for: the intent, and the reference the gateway knows it by. */
     record ChargeInFlight(UUID intentId, UUID chargeReference, Instant since) {}

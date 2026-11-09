@@ -18,9 +18,12 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
+import com.oriah.payment.OrderAnswers;
 import com.oriah.payment.TestcontainersConfiguration;
+import com.oriah.payment.client.OrderClient;
 import com.oriah.payment.repository.PaymentIntentRepository;
 
+import static org.mockito.Mockito.doReturn;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -97,6 +100,10 @@ class CreateIntentValidationTest {
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
+    /** order, asked whose order an intent is for: see alicesOrderFor. */
+    @MockitoBean
+    private OrderClient orders;
+
     private static RequestPostProcessor alice() {
         return jwt().authorities(ROLE_USER).jwt(j -> j.subject("kc-alice"));
     }
@@ -162,10 +169,11 @@ class CreateIntentValidationTest {
         // currency and is deliberately still accepted: validating against the
         // ISO register would couple payment to a list that changes without us,
         // and the shape check is what stops the mismatches that actually bite.
+        UUID order = alicesOrderFor("4500.00");
         mvc.perform(post("/api/v1/payments/intents")
                         .with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"amount\":4500.00,"
+                        .content("{\"orderId\":\"" + order + "\",\"amount\":4500.00,"
                                 + "\"currency\":\"ZMW\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.currency").value("ZMW"))
@@ -178,11 +186,24 @@ class CreateIntentValidationTest {
     void theCeilingIsInclusive() throws Exception {
         // The boundary itself, so the ceiling is pinned to the column's real
         // capacity rather than to a round number someone liked.
+        UUID order = alicesOrderFor("9999999999.99");
         mvc.perform(post("/api/v1/payments/intents")
                         .with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"amount\":9999999999.99,"
+                        .content("{\"orderId\":\"" + order + "\",\"amount\":9999999999.99,"
                                 + "\"currency\":\"ZMW\"}"))
                 .andExpect(status().isCreated());
+    }
+
+    /**
+     * A fresh order of alice's, in Kwacha, for this total: creating an intent
+     * asks order whose order it is (CreateIntentOwnershipTest), and an intent
+     * must be for the order's total. The refused requests above never get
+     * that far -- validation answers before order is asked.
+     */
+    private UUID alicesOrderFor(String total) {
+        UUID order = UUID.randomUUID();
+        doReturn(OrderAnswers.yours(order, total, "ZMW")).when(orders).order(order);
+        return order;
     }
 }

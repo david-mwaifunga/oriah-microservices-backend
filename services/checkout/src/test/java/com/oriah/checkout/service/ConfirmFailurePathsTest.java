@@ -236,6 +236,47 @@ class ConfirmFailurePathsTest {
         verify(payment, never()).confirm(any(), any(), any());
     }
 
+    @Test
+    @DisplayName("payment answering 503 to createIntent (order could not be asked) is 503, and nothing is charged")
+    void paymentCouldNotAskOrderIsServiceUnavailable() {
+        // Payment asks order whose order an intent is for, and answers 503
+        // when order is down or slow. Nothing was created or charged, so this
+        // is the retryable 503, the same as payment itself being down.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        when(payment.createIntent(any())).thenThrow(answeredWith(503));
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(DownstreamUnavailableException.class)
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.type(
+                        ResponseStatusException.class))
+                .satisfies(ex -> assertThat(ex.getStatusCode().value()).isEqualTo(503));
+
+        verify(payment, never()).confirm(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("payment answering 404 to createIntent (no such order of yours) is our 500, never a 503 retry")
+    void paymentNotFindingTheOrderIsOurFault() {
+        // Checkout has just placed this order with the shopper's own token and
+        // asks payment with the same token, so payment saying "no order of
+        // yours has this id" means the services disagree -- a fault in the
+        // shop's set-up. A 503 would have the shopper retry for ever; it is
+        // checkout's 500, and no card is charged.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        when(payment.createIntent(any())).thenThrow(answeredWith(404));
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(DownstreamRejectedException.class)
+                .isNotInstanceOf(DownstreamUnavailableException.class);
+
+        verify(payment, never()).confirm(any(), any(), any());
+        verify(order, never()).pay(any(), any());
+    }
+
     // ------------------------------------------------------------------
     // 402 / 502 -- the two payment outcomes, which must not be conflated
     // ------------------------------------------------------------------

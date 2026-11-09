@@ -39,6 +39,7 @@ public class PaymentService {
     private final IdempotencyKeyRepository idempotencyKeys;
     private final PaymentGateway gateway;
     private final ChargeSettlement settlement;
+    private final OrderOwnership orderOwnership;
     private final TransactionTemplate transaction;
     private final ObjectMapper objectMapper;
 
@@ -46,30 +47,90 @@ public class PaymentService {
                           IdempotencyKeyRepository idempotencyKeys,
                           PaymentGateway gateway,
                           ChargeSettlement settlement,
+                          OrderOwnership orderOwnership,
                           PlatformTransactionManager transactionManager,
                           ObjectMapper objectMapper) {
         this.repository = repository;
         this.idempotencyKeys = idempotencyKeys;
         this.gateway = gateway;
         this.settlement = settlement;
+        this.orderOwnership = orderOwnership;
         this.transaction = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
     }
 
     /**
-     * A new PENDING intent for the order -- refused (409) while the order
-     * already has one that is pending, being charged or paid.
-     *
-     * <p>Two live intents for one order would be two ways to take the same
-     * money: two confirms, two captures. The check here gives the caller a
-     * sentence; the partial unique index uq_payment_intents_one_live_per_order
-     * is what actually holds when two requests pass the check at the same
-     * moment, and its refusal becomes the same 409 rather than a 500.
+     * What {@link #createIntent} did: made a new intent ({@code created}), or
+     * found the very one the caller asked for already made -- 201 or 200.
      */
-    @Transactional
-    public PaymentIntent createIntent(String keycloakId, CreateIntentRequest req) {
-        if (repository.existsByOrderIdAndStatusIn(req.orderId(), PaymentStatus.LIVE)) {
-            throw orderAlreadyHasALiveIntent(req.orderId(), null);
+    public record CreatedIntent(PaymentIntent intent, boolean created) {}
+
+    /**
+     * A PENDING intent for one of the caller's own orders, for its total:
+     * made new, or -- when the caller already has exactly that intent -- the
+     * one already made. Refused (409) while the order has any other live
+     * intent: pending for a different amount or currency or for somebody
+     * else, being charged, or paid.
+     *
+     * <h2>Whose order, and for how much</h2>
+     *
+     * Order is asked first ({@link OrderOwnership}): not the caller's order or
+     * no such order is a 404, an order no longer waiting for payment
+     * (cancelled, or already paid) a 409, the wrong amount or currency a 400,
+     * order not answering a 503 -- and nothing is written in any of them. Without it any
+     * signed-in customer who knew an order id could make the order's one live
+     * intent, and the owner's payment would be refused while it stood. The
+     * call is made before any transaction is opened, so no database
+     * connection is held while order is waited on.
+     *
+     * <h2>The same request twice gets the same intent</h2>
+     *
+     * Checkout retries this call up to three times. When the first attempt is
+     * saved but its answer is lost on the way back, the retry finds the
+     * caller's own PENDING intent for the same amount and currency and is
+     * given it (200), rather than a 409 that would leave checkout without the
+     * intent's id and the order unpayable. Only that exact intent is handed
+     * back: one being charged or paid is never offered for confirming again,
+     * and one for another amount, another currency or another person is not
+     * the intent this request asked for.
+     *
+     * <h2>One live intent per order</h2>
+     *
+     * Two live intents for one order would be two ways to take the same
+     * money: two confirms, two captures. The check here gives the caller its
+     * answer; the partial unique index uq_payment_intents_one_live_per_order
+     * is what actually holds when two requests pass the check at the same
+     * moment. The loser's insert is refused, its transaction rolled back, and
+     * it reads the winner's intent afresh and gets the same answer a later
+     * request would: that intent (200), or the 409.
+     */
+    public CreatedIntent createIntent(String keycloakId, CreateIntentRequest req) {
+        orderOwnership.requireCallersOwn(req.orderId(), req.amount(), req.currency());
+        try {
+            return transaction.execute(status -> findOrInsert(keycloakId, req));
+        } catch (DataIntegrityViolationException e) {
+            if (!String.valueOf(e.getMostSpecificCause().getMessage()).contains(ONE_LIVE_INTENT_PER_ORDER)) {
+                throw e;
+            }
+            // A request for the same order inserted first and committed. A
+            // fresh transaction sees its intent -- this one was aborted with
+            // the refused insert. Should that intent have stopped being live
+            // in the meantime, there is nothing to hand back: 409, and the
+            // caller may try again.
+            log.info("PaymentIntent for orderId={}: another request made the order's live intent first",
+                    req.orderId());
+            return transaction.execute(status -> repository
+                    .findByOrderIdAndStatusIn(req.orderId(), PaymentStatus.LIVE)
+                    .map(live -> handBackOrRefuse(live, keycloakId, req, e))
+                    .orElseThrow(() -> orderAlreadyHasALiveIntent(req.orderId(), e)));
+        }
+    }
+
+    /** Runs inside {@link #transaction}. */
+    private CreatedIntent findOrInsert(String keycloakId, CreateIntentRequest req) {
+        Optional<PaymentIntent> live = repository.findByOrderIdAndStatusIn(req.orderId(), PaymentStatus.LIVE);
+        if (live.isPresent()) {
+            return handBackOrRefuse(live.get(), keycloakId, req, null);
         }
         // No default. CreateIntentRequest requires a currency, so there is
         // nothing to substitute -- and the substitute was "USD" on a platform
@@ -81,24 +142,38 @@ public class PaymentService {
                 req.amount(),
                 req.currency()
         );
-        PaymentIntent saved;
-        try {
-            // Flushed here so a lost race surfaces inside this method, where
-            // it can be told apart from any other failure.
-            saved = repository.saveAndFlush(intent);
-        } catch (DataIntegrityViolationException e) {
-            if (String.valueOf(e.getMostSpecificCause().getMessage()).contains(ONE_LIVE_INTENT_PER_ORDER)) {
-                throw orderAlreadyHasALiveIntent(req.orderId(), e);
-            }
-            throw e;
-        }
-        log.info("Created PaymentIntent id={} orderId={} amount={}", saved.id(), saved.orderId(), saved.amount());
-        return saved;
+        // Flushed here so a lost race surfaces inside the transaction, where
+        // createIntent can tell it apart from any other failure.
+        PaymentIntent saved = repository.saveAndFlush(intent);
+        log.info("Created PaymentIntent id={} orderId={} amount={} {}",
+                saved.id(), saved.orderId(), saved.amount(), saved.currency());
+        return new CreatedIntent(saved, true);
     }
 
     /**
-     * Deliberately does not name the existing intent: order ids come from the
-     * caller, and the intent may not be theirs to know about.
+     * The order's live intent, given back only when it is exactly what this
+     * request asks for: PENDING, the caller's own, the same amount (compared
+     * as an amount, so 4500 and 4500.00 are one) and the same currency.
+     * Anything else is the 409.
+     */
+    private static CreatedIntent handBackOrRefuse(PaymentIntent live, String keycloakId, CreateIntentRequest req,
+                                                  Exception cause) {
+        boolean theSameIntent = live.status() == PaymentStatus.PENDING
+                && live.keycloakId().equals(keycloakId)
+                && live.amount().compareTo(req.amount()) == 0
+                && live.currency().equals(req.currency());
+        if (!theSameIntent) {
+            throw orderAlreadyHasALiveIntent(req.orderId(), cause);
+        }
+        log.info("PaymentIntent id={} orderId={}: the same create again; answering with the intent already made",
+                live.id(), live.orderId());
+        return new CreatedIntent(live, false);
+    }
+
+    /**
+     * Deliberately does not name the existing intent: it may be somebody
+     * else's (one made before payment asked order whose order it was), and
+     * then it is not the caller's to know about.
      */
     private static IllegalStateException orderAlreadyHasALiveIntent(UUID orderId, Exception cause) {
         return new IllegalStateException("Order " + orderId + " already has a payment intent that is pending, "

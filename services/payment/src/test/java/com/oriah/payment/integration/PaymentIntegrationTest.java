@@ -19,10 +19,13 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.payment.OrderAnswers;
 import com.oriah.payment.TestcontainersConfiguration;
+import com.oriah.payment.client.OrderClient;
 import com.oriah.payment.repository.IdempotencyKeyRepository;
 import com.oriah.payment.repository.PaymentIntentRepository;
 
+import static org.mockito.Mockito.doReturn;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -49,6 +52,9 @@ class PaymentIntegrationTest {
     @MockitoBean
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
+    /** order, asked whose order each intent is for: see createIntent. */
+    @MockitoBean
+    private OrderClient orders;
 
     @BeforeEach
     void clean() {
@@ -170,9 +176,14 @@ class PaymentIntegrationTest {
     }
 
     private String createIntent(String sub, String amount) throws Exception {
+        // Creating an intent asks order whose order it is; here order says
+        // "the caller's, for exactly this amount" (CreateIntentOwnershipTest
+        // covers every other answer).
+        UUID orderId = UUID.randomUUID();
+        doReturn(OrderAnswers.yours(orderId, amount, "USD")).when(orders).order(orderId);
         MvcResult res = mvc.perform(post("/api/v1/payments/intents").with(jwtFor(sub))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"amount\":" + amount + ",\"currency\":\"USD\"}"))
+                        .content("{\"orderId\":\"" + orderId + "\",\"amount\":" + amount + ",\"currency\":\"USD\"}"))
                 .andExpect(status().isCreated())
                 .andReturn();
         JsonNode body = objectMapper.readTree(res.getResponse().getContentAsString());

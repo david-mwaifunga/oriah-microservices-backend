@@ -30,6 +30,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  *       pending, being charged or paid -- one order is paid through one
  *       intent. The shared error advice turns the refusal into a 409 without
  *       springdoc seeing it, so only an explicit annotation publishes it;</li>
+ *   <li>createIntent: <b>200</b> with the intent already made, when the
+ *       caller sends the same create again (checkout's retry after a lost
+ *       answer); <b>404</b> when the order is not the caller's or does not
+ *       exist; <b>400</b> also when the amount or currency is not the order's
+ *       total; <b>503</b> when order could not be asked;</li>
  *   <li>confirm: <b>409</b> also when the intent is not chargeable -- being
  *       charged (its outcome is not known yet) or already settled -- or a
  *       request with the same Idempotency-Key is still in progress;</li>
@@ -74,6 +79,85 @@ class OpenApiContractTest {
                 .contains("pending, being charged or paid")
                 .contains("only if that one fails");
         assertThat(conflict.toString()).contains(PROBLEM_REF);
+    }
+
+    private JsonNode createIntentResponses() throws Exception {
+        return spec().path("paths").path(INTENTS).path("post").path("responses");
+    }
+
+    @Test
+    @DisplayName("createIntent documents 200: the caller's pending intent for the same amount, already made")
+    void createIntentDocumentsTheSameIntentAgain() throws Exception {
+        // checkout retries a create whose answer was lost; the retry is given
+        // the intent already made. A client that knows only 201 would treat
+        // that 200 as unexpected.
+        JsonNode ok = createIntentResponses().path("200");
+
+        assertThat(ok.isMissingNode()).as("createIntent answers 200 for the same create again").isFalse();
+        assertThat(ok.path("description").asText())
+                .contains("already")
+                .contains("same amount and currency")
+                .contains("PENDING");
+        assertThat(ok.toString()).contains("#/components/schemas/PaymentIntentResponse");
+    }
+
+    @Test
+    @DisplayName("createIntent still documents 201 for a new intent")
+    void createIntentDocumentsCreated() throws Exception {
+        assertThat(createIntentResponses().path("201").isMissingNode()).isFalse();
+    }
+
+    @Test
+    @DisplayName("createIntent documents 400: also an amount or currency that is not the order's total")
+    void createIntentDocumentsTheWrongAmount() throws Exception {
+        JsonNode badRequest = createIntentResponses().path("400");
+
+        assertThat(badRequest.path("description").asText())
+                .contains("fieldErrors")
+                .contains("not the order's total");
+        assertThat(badRequest.toString()).contains(PROBLEM_REF);
+    }
+
+    @Test
+    @DisplayName("createIntent documents 404: no order of the caller's has this id")
+    void createIntentDocumentsNoSuchOrderOfYours() throws Exception {
+        JsonNode notFound = createIntentResponses().path("404");
+
+        assertThat(notFound.isMissingNode()).as("createIntent answers 404 for an order that is not the caller's")
+                .isFalse();
+        assertThat(notFound.path("description").asText())
+                .contains("No order of yours")
+                .contains("nothing was created");
+        assertThat(notFound.toString()).contains(PROBLEM_REF);
+    }
+
+    @Test
+    @DisplayName("createIntent's 409 says a pending intent for a different amount or currency is refused too")
+    void createIntentConflictCoversADifferentPendingIntent() throws Exception {
+        assertThat(createIntentResponses().path("409").path("description").asText())
+                .contains("different amount or currency");
+    }
+
+    @Test
+    @DisplayName("createIntent's 409 says an order that is no longer waiting for payment is refused too")
+    void createIntentConflictCoversAnOrderThatCannotBePaid() throws Exception {
+        assertThat(createIntentResponses().path("409").path("description").asText())
+                .contains("no longer waiting for payment")
+                .contains("cancelled or already paid");
+    }
+
+    @Test
+    @DisplayName("createIntent documents 503: order could not be asked, nothing created, retry")
+    void createIntentDocumentsOrderUnavailable() throws Exception {
+        JsonNode unavailable = createIntentResponses().path("503");
+
+        assertThat(unavailable.isMissingNode()).as("createIntent answers 503 when order cannot be asked")
+                .isFalse();
+        assertThat(unavailable.path("description").asText())
+                .contains("could not be asked")
+                .contains("nothing was created")
+                .contains("Retry-After");
+        assertThat(unavailable.toString()).contains(PROBLEM_REF);
     }
 
     @Test

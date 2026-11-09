@@ -31,6 +31,36 @@ spring:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
   cloud:
+    # Nested under the EXISTING spring.cloud key on purpose: a second
+    # top-level `spring:` key is refused by Spring Boot's loader.
+    openfeign:
+      circuitbreaker:
+        # Stays off. OrderClient sends the caller's own token, read from
+        # SecurityContextHolder, which belongs to the request thread; Spring
+        # Cloud's circuit-breaker integration runs the call on another thread,
+        # so the token would be dropped and order would answer 401 to every
+        # ownership check. Order and checkout document the same trap.
+        enabled: false
+      client:
+        config:
+          # Creating an intent asks order whose order it is (OrderOwnership),
+          # inside a request checkout makes and cuts off at 15 s per attempt
+          # (checkout application.yaml, readTimeout). Feign's own defaults are
+          # 10 s to connect and 60 s to answer -- four times checkout's whole
+          # wait. With these, a hanging order costs at most 1 s + 3 s, and
+          # checkout hears payment's 503 well before it would give up on its
+          # own; it then retries (three attempts, 500 ms apart). The read is
+          # one order by id, so 3 s is generous. CreateIntentBudgetTest adds
+          # it up and fails if it stops fitting; a further call on this path
+          # must fit in the same 15 s.
+          #
+          # Keyed by the client's NAME (@FeignClient(name = "order")): Spring
+          # Cloud silently uses the defaults for a name it has no config for,
+          # so a misspelled key looks exactly like an omitted one -- the test
+          # asserts the name as well.
+          order:
+            connect-timeout: 1000
+            read-timeout: 3000
     stream:
       # Kafka is the outbox relay's only use of the binder today: it publishes
       # payment.succeeded / payment.failed to oriah.payment, and answers replay
