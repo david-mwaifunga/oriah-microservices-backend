@@ -1,6 +1,11 @@
 package com.oriah.inventory.events;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,6 +13,9 @@ import org.springframework.messaging.Message;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.events.EventHeaders;
+import com.oriah.events.Inbox;
+import com.oriah.events.InboxConsumer;
 import com.oriah.inventory.model.ProductRef;
 import com.oriah.inventory.repository.ProductRefRepository;
 
@@ -20,18 +28,33 @@ import lombok.extern.slf4j.Slf4j;
  * <p>One bean handles all three event types ({@code product.created},
  * {@code product.updated}, {@code product.deleted}) because they all land
  * on the same topic. The {@code event-type} header (set by catalog's
- * {@link com.oriah.inventory.events package-info} bridge) drives the
- * switch — payload deserialization runs only after we know what shape to
- * expect.
+ * outbox relay) drives the switch — payload deserialization runs only
+ * after we know what shape to expect.
  *
  * <p>Binding name: the bean {@code productEvents} becomes the function
  * binding {@code productEvents-in-0}; YAML wires that to the
  * {@code catalog.product} destination.
  *
- * <p>Idempotency comes from upsert semantics: created and updated both
- * call {@code save()} on the {@code ProductRef} entity keyed by
- * variantId, so a replayed event from at-least-once Kafka delivery just
- * overwrites the row with identical data.
+ * <h2>Only the newest snapshot counts</h2>
+ *
+ * product_index is a PROJECTION: a copy of catalog's variants, and each
+ * product event carries the whole product as it then was, numbered per
+ * product by seq. So each event goes through {@link Inbox#onceInOrder}: one
+ * already applied (Kafka redelivers) is skipped, and so is one older than the
+ * newest already applied to that product -- an old title never overwrites a
+ * newer one. The newest seq per product is kept in processed_aggregate, in
+ * the same transaction as the change to product_index.
+ *
+ * <h2>Nothing is swallowed</h2>
+ *
+ * An event that cannot be applied -- a type or payload version not declared
+ * below, a missing or garbled envelope header, a body that breaks the
+ * contract -- throws. The transaction rolls back with its record, and the
+ * binder publishes it to {@code catalog.product.dlq.inventory}: on the first
+ * try for a refusal like these, which would fail the same way again, and after
+ * its retries for anything else, such as the database being away
+ * (application.yaml). Logging and carrying on, as this consumer once did,
+ * lost such an event for good.
  *
  * <p>Why we read the body manually instead of typed
  * {@code Consumer<ProductCreatedEvent>}: Spring Cloud Stream would happily
@@ -43,13 +66,23 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ProductEventConsumer {
 
-    private static final String HEADER_EVENT_TYPE = "event-type";
+    /**
+     * Every type catalog publishes on catalog.product, all handled: each is a
+     * full snapshot product_index needs. Nothing is ignored. Payload version 1
+     * is {@link ProductCreatedEvent}, {@link ProductUpdatedEvent} and
+     * {@link ProductDeletedEvent}.
+     */
+    static final InboxConsumer INVENTORY = InboxConsumer.named("inventory")
+            .handles(ProductCreatedEvent.TYPE, 1)
+            .handles(ProductUpdatedEvent.TYPE, 1)
+            .handles(ProductDeletedEvent.TYPE, 1);
 
     @Bean
     public Consumer<Message<byte[]>> productEvents(
+            Inbox inbox,
             ProductRefRepository repository,
             ObjectMapper objectMapper) {
-        return new ProductEventHandler(repository, objectMapper);
+        return new ProductEventHandler(inbox, repository, objectMapper);
     }
 
     /**
@@ -58,10 +91,12 @@ public class ProductEventConsumer {
      * don't go through the proxy that {@code @Transactional} relies on.
      */
     static class ProductEventHandler implements Consumer<Message<byte[]>> {
+        private final Inbox inbox;
         private final ProductRefRepository repository;
         private final ObjectMapper objectMapper;
 
-        ProductEventHandler(ProductRefRepository repository, ObjectMapper objectMapper) {
+        ProductEventHandler(Inbox inbox, ProductRefRepository repository, ObjectMapper objectMapper) {
+            this.inbox = inbox;
             this.repository = repository;
             this.objectMapper = objectMapper;
         }
@@ -69,28 +104,50 @@ public class ProductEventConsumer {
         @Override
         @Transactional
         public void accept(Message<byte[]> message) {
-            Object typeHeader = message.getHeaders().get(HEADER_EVENT_TYPE);
-            String type = typeHeader == null ? null : typeHeader.toString();
-            try {
-                switch (type) {
-                    case null -> log.warn("Skipping message with no event-type header headers={}", message.getHeaders());
-                    case ProductCreatedEvent.TYPE -> handleCreated(
-                            objectMapper.readValue(message.getPayload(), ProductCreatedEvent.class));
-                    case ProductUpdatedEvent.TYPE -> handleUpdated(
-                            objectMapper.readValue(message.getPayload(), ProductUpdatedEvent.class));
-                    case ProductDeletedEvent.TYPE -> handleDeleted(
-                            objectMapper.readValue(message.getPayload(), ProductDeletedEvent.class));
-                    default -> log.warn("Skipping unrecognized event-type={}", type);
-                }
-            } catch (Exception e) {
-                // Logging-and-swallowing here makes the consumer NOT retry on
-                // malformed payloads — they go to a dead-letter topic in a
-                // production setup. Out of scope for this iteration; we'd
-                // configure spring.cloud.stream.kafka.bindings.productEvents-in-0
-                // .consumer.dlqName to wire one up.
-                log.error("Failed to handle event-type={} payload-length={}", type,
-                        message.getPayload().length, e);
+            inbox.onceInOrder(INVENTORY, message.getHeaders(), () -> apply(message));
+        }
+
+        /** Runs only for a handled snapshot newer than any applied to its product; the Inbox checked the headers. */
+        private void apply(Message<byte[]> message) {
+            String type = header(message, EventHeaders.EVENT_TYPE);
+            switch (type) {
+                case ProductCreatedEvent.TYPE ->
+                        handleCreated(snapshot(message, ProductCreatedEvent.class, ProductCreatedEvent::id));
+                case ProductUpdatedEvent.TYPE ->
+                        handleUpdated(snapshot(message, ProductUpdatedEvent.class, ProductUpdatedEvent::id));
+                case ProductDeletedEvent.TYPE ->
+                        handleDeleted(snapshot(message, ProductDeletedEvent.class, ProductDeletedEvent::id));
+                // Unreachable while INVENTORY and this switch list the same types.
+                default -> throw new IllegalStateException("no handling for declared event type " + type);
             }
+        }
+
+        /**
+         * Reads the body, which must be a snapshot of the product the envelope
+         * names. The seq that orders snapshots is counted per aggregate-id, so
+         * a body about another product would be ordered by the wrong product's
+         * seq; it is refused instead.
+         */
+        private <T> T snapshot(Message<byte[]> message, Class<T> type, Function<T, UUID> productIdOf) {
+            T event;
+            try {
+                event = objectMapper.readValue(message.getPayload(), type);
+            } catch (IOException e) {
+                throw new UncheckedIOException("product event body does not match " + type.getSimpleName(), e);
+            }
+            UUID productId = productIdOf.apply(event);
+            String aggregateId = header(message, EventHeaders.AGGREGATE_ID);
+            if (productId == null || !productId.toString().equals(aggregateId)) {
+                throw new IllegalArgumentException("snapshot of product " + productId
+                        + " arrived in an envelope for product " + aggregateId);
+            }
+            return event;
+        }
+
+        /** A header as text: a String as the binder hands it over, or raw UTF-8 bytes as Kafka carries it. */
+        private static String header(Message<?> message, String name) {
+            Object value = message.getHeaders().get(name);
+            return value instanceof byte[] bytes ? new String(bytes, StandardCharsets.UTF_8) : String.valueOf(value);
         }
 
         private void handleCreated(ProductCreatedEvent event) {

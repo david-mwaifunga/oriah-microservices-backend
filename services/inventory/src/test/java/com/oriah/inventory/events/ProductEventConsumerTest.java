@@ -3,6 +3,7 @@ package com.oriah.inventory.events;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +13,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.stream.binder.test.InputDestination;
 import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -43,6 +45,9 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.cloud.stream.bindings.productEvents-in-0.destination=catalog.product"
 })
 class ProductEventConsumerTest {
+
+    /** Catalog numbers each product's events 1, 2, 3 ...; one rising counter keeps every test's sends in order. */
+    private static final AtomicLong SEQ = new AtomicLong();
 
     @Autowired
     private InputDestination inputDestination;
@@ -136,10 +141,12 @@ class ProductEventConsumerTest {
     void replayedCreatedIsIdempotent() {
         UUID productId = UUID.randomUUID();
         UUID variantId = UUID.randomUUID();
-        var event = created(productId, "Aurelia", variant(variantId, "Aurelia - M"));
+        var event = message(created(productId, "Aurelia", variant(variantId, "Aurelia - M")),
+                ProductCreatedEvent.TYPE);
 
-        send(event, ProductCreatedEvent.TYPE);
-        send(event, ProductCreatedEvent.TYPE);
+        // The same event twice: same event-id, as Kafka redelivers it.
+        inputDestination.send(event, "catalog.product");
+        inputDestination.send(event, "catalog.product");
 
         assertThat(productRefs.count()).isEqualTo(1L);
     }
@@ -250,15 +257,26 @@ class ProductEventConsumerTest {
     }
 
     /**
-     * Publishes through the test binder, exactly as the Kafka binder would:
-     * the payload plus the `event-type` header the consumer dispatches on.
+     * Publishes through the test binder, exactly as catalog's relay would:
+     * the payload plus the envelope headers -- the `event-type` the consumer
+     * dispatches on, and the event-id and per-product seq the Inbox requires.
      */
     private void send(Object payload, String type) {
-        inputDestination.send(
-                MessageBuilder.withPayload(payload)
-                        .setHeader("event-type", type)
-                        .build(),
-                "catalog.product"
-        );
+        inputDestination.send(message(payload, type), "catalog.product");
+    }
+
+    /**
+     * A new event: its own event-id, and a seq above every one sent before,
+     * so the events of each test are applied in the order they are sent.
+     */
+    private static Message<Object> message(Object payload, String type) {
+        UUID productId = switch (payload) {
+            case ProductCreatedEvent created -> created.id();
+            case ProductUpdatedEvent updated -> updated.id();
+            case ProductDeletedEvent deleted -> deleted.id();
+            default -> throw new IllegalArgumentException("not a product event: " + payload);
+        };
+        return Relayed.envelope(MessageBuilder.withPayload(payload), UUID.randomUUID(), type, productId,
+                SEQ.incrementAndGet()).build();
     }
 }

@@ -135,10 +135,10 @@ class ProductEventCompatibilityTest {
     @Test
     @DisplayName("a missing title degrades to empty rather than throwing")
     void missingTitleDegrades() throws Exception {
-        // Not expected from catalog, where title is NOT NULL -- but the
-        // consumer logs and swallows exceptions with no DLQ configured, so a
-        // throw here would mean the event vanishes silently. Degrading keeps
-        // the row indexable.
+        // Not expected from catalog, where title is NOT NULL -- but a throw
+        // here would park the whole snapshot on the dead-letter topic and
+        // leave the product out of the index until someone replays it.
+        // Degrading keeps the row indexable.
         assertThat(extract(mapper.readTree("""
                 {"id": "11111111-1111-4111-8111-111111111111"}
                 """))[1]).isEmpty();

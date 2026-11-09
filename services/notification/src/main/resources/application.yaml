@@ -25,9 +25,65 @@ spring:
           group: notification
           consumer:
             use-native-decoding: false
+            # An event the consumer cannot apply throws (it is never
+            # swallowed): the binder tries it again, pausing 1 s and then
+            # doubling the pause, at most 10 s. Spring Cloud Stream 5.0 hands
+            # max-attempts to Spring's RetryPolicy as the number of RETRIES
+            # after the first try, so 3 here is up to four tries in all
+            # (pauses of 1, 2 and 4 s) ...
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # ... except a refusal, which fails the same way every time: a
+            # type, payload version or envelope header the Inbox does not
+            # accept, or a body that breaks the contract (all
+            # IllegalArgumentException), and a body Jackson cannot read
+            # (JsonProcessingException, found inside the
+            # UncheckedIOException the consumer wraps it in). Retrying those
+            # cannot change the answer and only holds up the orders behind
+            # them, so they go to the dead-letter topic on the first try.
+            # (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup
+            # rejects a bracketed key with capitals and the app won't start.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
       kafka:
         binder:
           brokers: localhost:9092
+        bindings:
+          orderEvents-in-0:
+            consumer:
+              # Then the binder publishes it to a dead-letter topic of its
+              # own, named <topic>.dlq.<group>, and moves on to the orders
+              # behind it. Nothing was recorded for it, so it could still be
+              # sent later -- but today nothing does that:
+              #  * nothing reads oriah.order.dlq.notification, and
+              #    notification has no replay listener. A database outage
+              #    that outlasts the retries parks every order event of
+              #    that time there, unsent.
+              #  * the publish is best effort: if the dead-letter topic does
+              #    not take it, the binder only logs an error, the offset is
+              #    committed, and that message to the customer is lost.
+              enable-dlq: true
+              dlq-name: oriah.order.dlq.notification
+              configuration:
+                # The binder retries in the thread that polls Kafka. Kafka
+                # takes the partition away if the next poll is more than
+                # max.poll.interval.ms (5 min) away, and the batch in hand
+                # then comes back to be failed all over again -- for ever,
+                # with every order behind it waiting. One event per poll keeps
+                # the worst poll (the database away: four tries of up to 30 s
+                # each, 7 s of pauses, up to 122 s waiting on the dead-letter
+                # send) inside it, and commits each event's offset as it is
+                # done. OrderEventBindingTest adds it up.
+                max.poll.records: 1
+
+# The event log convention (shared/oriah-events). Notification only receives:
+# the Inbox records each order event it has sent (processed_event) in the same
+# transaction as the notification, so a redelivered event is never sent twice.
+# Notification publishes nothing, so outbox, relay and replay stay off.
+oriah.events.inbox.enabled: true
 
 server:
   port: 8090

@@ -25,9 +25,64 @@ spring:
           group: search
           consumer:
             use-native-decoding: false
+            # A snapshot the index cannot apply throws (it is never
+            # swallowed): the binder tries it again, pausing 1 s and then
+            # doubling the pause, at most 10 s. Spring Cloud Stream 5.0 hands
+            # max-attempts to Spring's RetryPolicy as the number of RETRIES
+            # after the first try, so 3 here is up to four tries in all
+            # (pauses of 1, 2 and 4 s) ...
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # ... except a refusal, which fails the same way every time: a
+            # type, payload version or envelope header the Inbox does not
+            # accept, or a snapshot that breaks the contract (all
+            # IllegalArgumentException), and a body Jackson cannot read
+            # (JsonProcessingException, found inside the
+            # UncheckedIOException the consumer wraps it in). Retrying those
+            # cannot change the answer and only holds up the products behind
+            # them, so they go to the dead-letter topic on the first try.
+            # (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup
+            # rejects a bracketed key with capitals and the app won't start.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
       kafka:
         binder:
           brokers: localhost:9092
+        bindings:
+          productEvents-in-0:
+            consumer:
+              # Then the binder publishes it to a dead-letter topic of its
+              # own, named <topic>.dlq.<group>, and moves on to the products
+              # behind it. Nothing was recorded for it, so it could still be
+              # applied later -- but today nothing does that: nothing reads
+              # catalog.product.dlq.search and search has no replay
+              # listener, so the index stays as it was until catalog's next
+              # snapshot of that product. And the publish is best effort: if
+              # the dead-letter topic does not take it, the binder only logs
+              # an error and the offset is committed.
+              enable-dlq: true
+              dlq-name: catalog.product.dlq.search
+              configuration:
+                # The binder retries in the thread that polls Kafka. Kafka
+                # takes the partition away if the next poll is more than
+                # max.poll.interval.ms (5 min) away, and the batch in hand
+                # then comes back to be failed all over again -- for ever,
+                # with every product behind it waiting. One event per poll
+                # keeps the worst poll (the database away: four tries of up
+                # to 30 s each, 7 s of pauses, up to 122 s waiting on the
+                # dead-letter send) inside it, and commits each event's offset
+                # as it is done. ProductEventBindingTest adds it up.
+                max.poll.records: 1
+
+# The event log convention (shared/oriah-events). Search only receives: the
+# Inbox records each product event it applies (processed_event) and the newest
+# seq per product (processed_aggregate) in the same transaction as the index
+# change, so a redelivered or older snapshot never overwrites a newer one.
+# Search publishes nothing, so outbox, relay and replay stay off.
+oriah.events.inbox.enabled: true
 
 server:
   port: 8092

@@ -49,6 +49,25 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!--
+            The event log convention (shared/oriah-events): the Inbox applies
+            each catalog product snapshot once and never an older one over a
+            newer. The test-jar's InboxSchemaGuard proves this service's copy
+            of the inbox tables.
+        -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-events</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-events</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Persistence -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

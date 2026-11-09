@@ -115,16 +115,16 @@ public class ProductRef extends BaseEntity {
     /**
      * Refreshes the display title.
      *
-     * <p>Deliberately does NOT clear {@link #productDeleted}. There is no
-     * ordering guarantee on the catalog topic — no message key is set, so with
-     * more than one partition a {@code product.updated} can arrive after the
-     * {@code product.deleted} that superseded it, and at-least-once delivery
-     * means an old update can simply be redelivered. A product that has been
-     * deleted cannot subsequently be updated, so a later update for it is
-     * always stale and the correct response is to leave the flag alone.
+     * <p>Deliberately does NOT clear {@link #productDeleted}. A product that
+     * has been deleted cannot subsequently be updated, so an update applied
+     * after its deletion is always stale and the correct response is to leave
+     * the flag alone.
      *
-     * <p>That makes the flag monotonic, which is what lets this consumer be
-     * correct without timestamps or sequence numbers to compare.
+     * <p>The consumer already skips a snapshot older than the newest applied
+     * (each product event carries a per-product seq, kept in
+     * processed_aggregate), so a late {@code product.updated} normally never
+     * gets here. The flag stays monotonic anyway: it does not depend on every
+     * producer numbering its events correctly.
      */
     public void updateTitle(String newTitle) {
         if (newTitle == null || newTitle.isBlank()) {

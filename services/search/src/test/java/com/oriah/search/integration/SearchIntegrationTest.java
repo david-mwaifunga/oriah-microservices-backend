@@ -3,6 +3,7 @@ package com.oriah.search.integration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -13,12 +14,12 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.cloud.stream.binder.test.InputDestination;
 import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
-import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.search.TestcontainersConfiguration;
+import com.oriah.search.events.Relayed;
 import com.oriah.search.repository.SearchIndexRepository;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -52,6 +53,7 @@ class SearchIntegrationTest {
     private static final UUID R1 = UUID.randomUUID();
     private static final UUID R2 = UUID.randomUUID();
     private static final UUID R3 = UUID.randomUUID();
+    private static final AtomicLong SEQ = new AtomicLong();
 
     @BeforeEach
     void clean() {
@@ -111,24 +113,30 @@ class SearchIntegrationTest {
     }
 
     private void sendCreated(UUID id, String title, String description, List<String> tags) throws Exception {
-        send("product.created", Map.of("id", id.toString(), "title", title, "tags", tags));
+        send("product.created", id, Map.of("id", id.toString(), "title", title, "tags", tags));
     }
 
     private void sendUpdated(UUID id, String title, String description, List<String> tags) throws Exception {
-        send("product.updated", Map.of(
+        send("product.updated", id, Map.of(
                 "id", id.toString(), "title", title,
                 "description", description, "tags", tags));
     }
 
     private void sendDeleted(UUID id) throws Exception {
-        send("product.deleted", Map.of("id", id.toString()));
+        send("product.deleted", id, Map.of("id", id.toString()));
     }
 
-    private void send(String type, Map<String, Object> payload) throws Exception {
+    /**
+     * Sends as catalog's relay does, with the envelope the Inbox requires. The
+     * seq only ever rises, as catalog's does per product: R1..R3 are shared by
+     * every test here and the newest seq applied per product outlives the
+     * index rows cleared before each test, so a test starting again from 1
+     * would have its snapshots skipped as old.
+     */
+    private void send(String type, UUID productId, Map<String, Object> payload) throws Exception {
         inputDestination.send(
-                MessageBuilder.withPayload(objectMapper.writeValueAsBytes(payload))
-                        .setHeader("event-type", type)
-                        .build(),
+                Relayed.productEvent(type, productId, SEQ.incrementAndGet(),
+                        objectMapper.writeValueAsString(payload)).build(),
                 "catalog.product"
         );
     }

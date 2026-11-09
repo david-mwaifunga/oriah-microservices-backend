@@ -19,10 +19,11 @@ import java.util.UUID;
  * which is a perfectly reasonable thing to want for request bodies -- would
  * turn every field catalog adds into a poison message.
  *
- * <p>And it would do so silently: this consumer logs and swallows
- * deserialisation failures, and no DLQ is configured, so the symptom would be
- * events disappearing with a line in a log nobody is watching rather than
- * anything failing loudly.
+ * <p>It would no longer be silent -- a body that cannot be read now throws,
+ * and the binder sends the message to the dead-letter topic on its first
+ * try, since a retry would read it no better -- but every product event after
+ * such a change would stop reaching product_index until the consumer was
+ * fixed and the events replayed.
  *
  * <p>Found by a test that constructed a raw ObjectMapper and failed, which is
  * exactly the condition described above.
