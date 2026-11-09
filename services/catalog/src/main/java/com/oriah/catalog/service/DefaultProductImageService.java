@@ -62,7 +62,10 @@ public class DefaultProductImageService implements ProductImageService {
     @Transactional
     public ProductImageResponse upload(UUID productId, byte[] bytes, String filename,
                                        String declaredContentType, String altText) {
+        // A deleted product is not found: its objects were swept when it was
+        // deleted, so new bytes would be stored for a product nobody can see.
         Product product = products.findById(productId)
+                .filter(p -> !p.isDeleted())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Product", "id", productId.toString()));
 
@@ -163,7 +166,9 @@ public class DefaultProductImageService implements ProductImageService {
     @Override
     @Transactional
     public boolean delete(UUID productId, UUID imageId) {
-        Optional<Product> owner = products.findById(productId);
+        // A deleted product's image rows are kept on purpose (they describe
+        // what an order bought), so its images cannot be deleted either.
+        Optional<Product> owner = products.findById(productId).filter(p -> !p.isDeleted());
         if (owner.isEmpty()) {
             return false;
         }

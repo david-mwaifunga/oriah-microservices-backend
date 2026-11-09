@@ -25,6 +25,7 @@ import com.oriah.catalog.repository.ProductRepository;
 import com.oriah.catalog.storage.InMemoryProductImageStorage;
 import com.oriah.catalog.storage.ProductImageStorage;
 import com.oriah.catalog.storage.TestImages;
+import com.oriah.observability.ResourceNotFoundException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -292,6 +293,30 @@ class ProductImageServiceTest {
         // And the product is unreachable, which is what "deleted" means here.
         assertThat(products.findByIdWithAvailability(liveProduct)).isEmpty();
         assertThat(products.findByIdForAdmin(liveProduct)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a deleted product takes no new image: its storage was already swept, so the bytes "
+            + "would be stored for nothing")
+    void uploadToADeletedProductIsRefused() {
+        products.deleteById(liveProduct, STAFF);
+
+        assertThatThrownBy(() -> service.upload(
+                liveProduct, TestImages.jpeg(200, 200), "a.jpg", "image/jpeg", null))
+                .isInstanceOf(ResourceNotFoundException.class);
+        assertThat(imageRepository.count()).isZero();
+        assertThat(((InMemoryProductImageStorage) storage).size()).isZero();
+    }
+
+    @Test
+    @DisplayName("a deleted product's image rows are kept, not deleted: they describe what an order bought")
+    void deletingADeletedProductsImageIsRefused() {
+        var uploaded = service.upload(
+                liveProduct, TestImages.jpeg(200, 200), "a.jpg", "image/jpeg", null);
+        products.deleteById(liveProduct, STAFF);
+
+        assertThat(service.delete(liveProduct, uploaded.id())).isFalse();
+        assertThat(imageRepository.findById(uploaded.id())).isPresent();
     }
 
     @Test
