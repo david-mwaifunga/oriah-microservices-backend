@@ -1,6 +1,7 @@
 package com.oriah.payment.integration;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Set;
 import java.util.UUID;
 
@@ -101,7 +102,10 @@ class AdminPaymentListTest {
         PaymentIntent intent = new PaymentIntent(
                 UUID.randomUUID(), "kc-" + UUID.randomUUID(),
                 new BigDecimal("100.00"), "USD");
-        intent.markSucceeded();
+        // A paid intent has been charged: through CHARGING, with the gateway's
+        // reference and time, as every real one is.
+        intent.startCharging(UUID.randomUUID());
+        intent.markSucceeded("fake_ch_" + UUID.randomUUID(), Instant.now());
         return repository.saveAndFlush(intent);
     }
 
@@ -202,6 +206,26 @@ class AdminPaymentListTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalElements").value(1))
                 .andExpect(jsonPath("$.content[0].status").value("SUCCEEDED"));
+    }
+
+    @Test
+    @DisplayName("status=CHARGING lists the intents whose outcome is not known yet")
+    void chargingIsAFilter() throws Exception {
+        // The list staff use to find a payment stuck while its outcome is
+        // settled: it must be reachable by its own status.
+        pending();
+        succeeded();
+        PaymentIntent inFlight = new PaymentIntent(
+                UUID.randomUUID(), "kc-" + UUID.randomUUID(), new BigDecimal("100.00"), "USD");
+        inFlight.startCharging(UUID.randomUUID());
+        repository.saveAndFlush(inFlight);
+
+        mvc.perform(get(PATH).param("status", "CHARGING")
+                        .with(jwt().authorities(ROLE_PAYMENT_ADMIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totalElements").value(1))
+                .andExpect(jsonPath("$.content[0].id").value(inFlight.id().toString()))
+                .andExpect(jsonPath("$.content[0].status").value("CHARGING"));
     }
 
     @Test

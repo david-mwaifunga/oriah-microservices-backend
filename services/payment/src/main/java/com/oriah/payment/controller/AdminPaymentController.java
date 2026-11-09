@@ -131,6 +131,7 @@ public class AdminPaymentController {
                 repository.countByDeletedFalseAndStatus(PaymentStatus.SUCCEEDED),
                 repository.countByDeletedFalseAndStatus(PaymentStatus.FAILED),
                 repository.countByDeletedFalseAndStatus(PaymentStatus.PENDING),
+                repository.countByDeletedFalseAndStatus(PaymentStatus.CHARGING),
                 repository.sumAmountByCurrency(PaymentStatus.SUCCEEDED)));
     }
 

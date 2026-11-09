@@ -1,6 +1,7 @@
 package com.oriah.payment.integration;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -16,10 +17,13 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.payment.TestcontainersConfiguration;
 import com.oriah.payment.model.PaymentIntent;
 import com.oriah.payment.repository.PaymentIntentRepository;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -79,13 +83,17 @@ class AdminPaymentSummaryTest {
 
     private void captured(String amount, String currency) {
         PaymentIntent i = intent(amount, currency);
-        i.markSucceeded();
+        // Settled the only way an intent now settles: charged first, then
+        // the gateway's answer with its reference and time.
+        i.startCharging(UUID.randomUUID());
+        i.markSucceeded("fake_ch_" + UUID.randomUUID(), Instant.now());
         repository.saveAndFlush(i);
     }
 
     private void failed(String amount) {
         PaymentIntent i = intent(amount, "USD");
-        i.markFailed("card declined");
+        i.startCharging(UUID.randomUUID());
+        i.markFailed("card declined", Instant.now());
         repository.saveAndFlush(i);
     }
 
@@ -117,6 +125,33 @@ class AdminPaymentSummaryTest {
     }
 
     @Test
+    @DisplayName("an intent being charged is counted as charging, and the counts add up to the total")
+    void chargingIsCountedAndTheCountsAddUp() throws Exception {
+        // CHARGING is where an intent waits while its outcome is unknown. Left
+        // out of the summary, the counts would no longer add up to the total
+        // and a payment that may have taken money would be in no column.
+        captured("100.00", "USD");
+        failed("20.00");
+        repository.saveAndFlush(intent("30.00", "USD"));  // PENDING
+        PaymentIntent inFlight = intent("40.00", "USD");
+        inFlight.startCharging(UUID.randomUUID());
+        repository.saveAndFlush(inFlight);
+
+        String json = mvc.perform(get(PATH).with(jwt().authorities(ROLE_PAYMENT_ADMIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.chargingCount").value(1))
+                .andExpect(jsonPath("$.totalCount").value(4))
+                .andExpect(jsonPath("$.captured[0].amount").value(100.00))
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode summary = new ObjectMapper().readTree(json);
+        assertThat(summary.get("capturedCount").asLong() + summary.get("failedCount").asLong()
+                                + summary.get("pendingCount").asLong() + summary.get("chargingCount").asLong())
+                .as("every intent is in exactly one column")
+                .isEqualTo(summary.get("totalCount").asLong());
+    }
+
+    @Test
     @DisplayName("currencies are kept apart instead of being added together")
     void currenciesAreNotMixed() throws Exception {
         // 100 USD + 100 EUR is not 200 of anything. If this ever collapses to
@@ -140,7 +175,8 @@ class AdminPaymentSummaryTest {
     void softDeletedExcluded() throws Exception {
         captured("100.00", "USD");
         PaymentIntent gone = intent("5000.00", "USD");
-        gone.markSucceeded();
+        gone.startCharging(UUID.randomUUID());
+        gone.markSucceeded("fake_ch_" + UUID.randomUUID(), Instant.now());
         // markDeleted(), not repository.delete(): the latter hard-deletes, so
         // it would prove nothing about the aggregate's filter.
         gone.markDeleted();

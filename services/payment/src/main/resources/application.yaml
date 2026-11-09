@@ -14,11 +14,49 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  task:
+    scheduling:
+      # Two scheduled jobs run here, each on a thread of its own: the outbox
+      # relay (shared/oriah-events) and the payment reconciler. Spring Boot's
+      # default is ONE thread for all of them, so a reconciler pass waiting on
+      # a slow gateway would hold back every payment announcement, and a relay
+      # round waiting on a stopped Kafka (up to about 25 s) would hold back
+      # reconciliation. ReconcilerScheduleTest proves the first. Add a thread
+      # for any further @Scheduled job.
+      pool:
+        size: 2
   security:
     oauth2:
       resourceserver:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
+  cloud:
+    stream:
+      # Kafka is the outbox relay's only use of the binder today: it publishes
+      # payment.succeeded / payment.failed to oriah.payment, and answers replay
+      # requests (shared/oriah-events/README.md). These are set here, not per
+      # profile, so every profile and every test runs with them -- the relay
+      # refuses to start without sync=true.
+      default:
+        contentType: application/json
+      kafka:
+        default:
+          producer:
+            # A send returns only once Kafka has the record. Without it the
+            # relay would move its cursor past an event Kafka never took, and
+            # a payment that happened would never be announced.
+            sync: true
+        binder:
+          brokers: localhost:9092
+          # How long one send may wait for Kafka. While it waits the relay
+          # holds its database transaction and its place in the log; with
+          # Kafka's own defaults a stopped broker holds it for 60 to 120
+          # seconds, with these the send fails in about 10 to 25 and the row
+          # goes out in a later round.
+          producer-properties:
+            "[max.block.ms]": 10000
+            "[request.timeout.ms]": 5000
+            "[delivery.timeout.ms]": 10000
 
 server:
   port: 8085
@@ -37,26 +75,68 @@ eureka:
     prefer-ip-address: true
 
 # ---------------------------------------------------------------------------
-# Local fallback for GET /api/v1/payments/contact-info.
+# The event log (MVP_PLAN Phase 1, shared/oriah-events/README.md).
 #
-# config-repo/payment.yaml overrides every key below whenever the Config Server
-# is up: spring.config.import wins over the document that imports it. This
-# block exists so the endpoint -- and, more importantly, the @Validated
-# binding -- still work when it is down, which the local/Maven profile
-# explicitly tolerates via `optional:configserver`.
-#
-# Without it, @NotBlank/@NotEmpty on PaymentContactInfoDto turn an absent prefix
-# into BindValidationException and this service refuses to start. That is the
-# Tier 4 `base-config` hard-link mistake exactly: centralizing a value
-# converted an optional dependency into a required one.
-#
-# The keys here mirror config-repo/payment.yaml ONE FOR ONE on purpose. Maps
-# merge key by key across property sources while lists are replaced wholesale,
-# so an extra key here would survive a config-repo override that omits it and
-# leak a stale value into the served response.
+# Payment is a producer: each charge outcome is appended to its outbox in the
+# same transaction that records it (outbox), published to Kafka in order
+# (relay), and sent again to a late consumer that asks (replay). It consumes
+# nothing yet, so the Inbox stays off; replay requests are still deduplicated,
+# in processed_event, without it. Each switch is exactly true or false.
 # ---------------------------------------------------------------------------
 oriah:
+  events:
+    producer: payment
+    topics: oriah.payment
+    outbox:
+      enabled: true
+    relay:
+      enabled: true
+    replay:
+      enabled: true
+    inbox:
+      enabled: false
+
   payment:
+    # -------------------------------------------------------------------------
+    # The reconciler (PaymentReconciler): settles intents whose charge outcome
+    # never reached payment -- a gateway timeout, a crash, or a failure to
+    # record the answer -- by asking the gateway about the charge reference.
+    #
+    # charging-age: how long an intent must have been CHARGING before it is
+    #   asked about. A confirm still waiting on the gateway is CHARGING too,
+    #   and asking too early would void a charge that was about to go through,
+    #   so this must stay well above the longest gateway call.
+    # delay: milliseconds between the end of one pass and the start of the
+    #   next.
+    #
+    # On in every profile: without it a lost answer stays CHARGING for good.
+    # (The tests switch it off and call it themselves; see
+    # src/test/resources/config/application.yaml.)
+    # -------------------------------------------------------------------------
+    reconciler:
+      enabled: true
+      charging-age: 120s
+      delay: 30000
+
+    # ---------------------------------------------------------------------------
+    # Local fallback for GET /api/v1/payments/contact-info.
+    #
+    # config-repo/payment.yaml overrides every key below whenever the Config Server
+    # is up: spring.config.import wins over the document that imports it. This
+    # block exists so the endpoint -- and, more importantly, the @Validated
+    # binding -- still work when it is down, which the local/Maven profile
+    # explicitly tolerates via `optional:configserver`.
+    #
+    # Without it, @NotBlank/@NotEmpty on PaymentContactInfoDto turn an absent prefix
+    # into BindValidationException and this service refuses to start. That is the
+    # Tier 4 `base-config` hard-link mistake exactly: centralizing a value
+    # converted an optional dependency into a required one.
+    #
+    # The keys here mirror config-repo/payment.yaml ONE FOR ONE on purpose. Maps
+    # merge key by key across property sources while lists are replaced wholesale,
+    # so an extra key here would survive a config-repo override that omits it and
+    # leak a stale value into the served response.
+    # ---------------------------------------------------------------------------
     contact-info:
       message: "Payment service contact details are unavailable - the Config Server could not be reached"
       contact-details:

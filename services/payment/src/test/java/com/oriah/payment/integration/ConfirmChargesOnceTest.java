@@ -143,7 +143,7 @@ class ConfirmChargesOnceTest {
 
         // THE assertion. The 409 was always returned; what mattered is whether
         // the card was charged before it.
-        verify(gateway, times(1)).charge(any(), any(), any());
+        verify(gateway, times(1)).charge(any(), any(), any(), any());
         assertThat(intents.findById(intent.id()).orElseThrow().status())
                 .isEqualTo(PaymentStatus.SUCCEEDED);
     }
@@ -172,7 +172,7 @@ class ConfirmChargesOnceTest {
                         .content(body(GOOD_CARD)))
                 .andExpect(status().isConflict());
 
-        verify(gateway, times(1)).charge(any(), any(), any());
+        verify(gateway, times(1)).charge(any(), any(), any(), any());
         assertThat(intents.findById(intent.id()).orElseThrow().status())
                 .as("a terminal FAILED intent must not be flipped to SUCCEEDED by a retry")
                 .isEqualTo(PaymentStatus.FAILED);

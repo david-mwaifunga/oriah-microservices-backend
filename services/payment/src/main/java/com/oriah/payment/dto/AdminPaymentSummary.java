@@ -25,12 +25,21 @@ import java.util.List;
  * <p>Only captured money is summed. A failed or pending intent has an amount,
  * but it is an amount nobody has, and a dashboard that added it to revenue
  * would be reporting a wish.
+ *
+ * <h2>Why {@code chargingCount}</h2>
+ *
+ * <p>CHARGING is where an intent waits while the outcome of its charge is not
+ * known yet: the gateway's answer was lost, and the reconciler has still to
+ * settle it. The money may have been taken, so it is not revenue yet -- but
+ * it must be in a column of its own, or the counts stop adding up to
+ * {@code totalCount} and a payment that may have moved money is in none.
  */
 public record AdminPaymentSummary(
         long totalCount,
         long capturedCount,
         long failedCount,
         long pendingCount,
+        long chargingCount,
         List<CurrencyTotal> captured
 ) {
     /** Captured money in one currency. */

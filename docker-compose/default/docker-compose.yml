@@ -935,6 +935,8 @@ services:
     depends_on:
       postgres-payment:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8085"]
       start_period: 90s

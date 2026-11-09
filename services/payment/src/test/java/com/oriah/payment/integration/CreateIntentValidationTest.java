@@ -1,5 +1,7 @@
 package com.oriah.payment.integration;
 
+import java.util.UUID;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -77,6 +79,12 @@ class CreateIntentValidationTest {
     private static final SimpleGrantedAuthority ROLE_USER =
             new SimpleGrantedAuthority("ROLE_USER");
 
+    /**
+     * For the refused requests only, which never create anything. A request
+     * that is expected to create an intent uses a fresh order: an order may
+     * have only one intent that is pending, being charged or paid (V5), so a
+     * second success for this order would rightly be a 409.
+     */
     private static final String ORDER = "11111111-2222-3333-4444-555555555555";
 
     @Autowired
@@ -157,7 +165,7 @@ class CreateIntentValidationTest {
         mvc.perform(post("/api/v1/payments/intents")
                         .with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + ORDER + "\",\"amount\":4500.00,"
+                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"amount\":4500.00,"
                                 + "\"currency\":\"ZMW\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.currency").value("ZMW"))
@@ -173,7 +181,7 @@ class CreateIntentValidationTest {
         mvc.perform(post("/api/v1/payments/intents")
                         .with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + ORDER + "\",\"amount\":9999999999.99,"
+                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"amount\":9999999999.99,"
                                 + "\"currency\":\"ZMW\"}"))
                 .andExpect(status().isCreated());
     }

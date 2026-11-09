@@ -1,7 +1,8 @@
 package com.oriah.payment.repository;
 
+import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -15,8 +16,41 @@ import com.oriah.payment.model.PaymentIntent;
 import com.oriah.payment.model.PaymentStatus;
 
 public interface PaymentIntentRepository extends JpaRepository<PaymentIntent, UUID> {
-    Optional<PaymentIntent> findByOrderId(UUID orderId);
     List<PaymentIntent> findByKeycloakId(String keycloakId);
+
+    /**
+     * Whether the order already has an intent in one of {@code statuses}.
+     * (There was a {@code findByOrderId} returning one Optional here, unused;
+     * an order can have several intents -- failed ones and their
+     * replacement -- so it would have thrown on the first order that did.)
+     */
+    boolean existsByOrderIdAndStatusIn(UUID orderId, Collection<PaymentStatus> statuses);
+
+    /** A charge whose answer payment is still waiting for: the intent, and the reference the gateway knows it by. */
+    record ChargeInFlight(UUID intentId, UUID chargeReference, Instant since) {}
+
+    /**
+     * The intents that have been CHARGING since before {@code cutoff}, oldest
+     * first: the reconciler's work list.
+     *
+     * <p>updated_at is when the intent went CHARGING. Nothing writes a
+     * CHARGING intent except the step that settles it (the admin side is
+     * read-only), so its last write is the move into CHARGING.
+     *
+     * <p>An intent with no updated_at at all can only have been written by
+     * hand. It counts as old: the safe mistake is to ask the gateway about a
+     * charge too early (a void is final, and a charge still in flight then
+     * takes nothing), never to leave a charge unsettled for ever.
+     */
+    @Query("""
+            select new com.oriah.payment.repository.PaymentIntentRepository$ChargeInFlight(
+                       p.id, p.chargeReference, p.updatedAt)
+            from PaymentIntent p
+            where p.status = com.oriah.payment.model.PaymentStatus.CHARGING
+              and (p.updatedAt is null or p.updatedAt < :cutoff)
+            order by p.updatedAt asc nulls first
+            """)
+    List<ChargeInFlight> findChargingStartedBefore(@Param("cutoff") Instant cutoff);
 
     /**
      * Admin list. `deleted` is BaseEntity's soft-delete flag mapped to
