@@ -1,11 +1,13 @@
 package com.oriah.catalog.integration;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -55,7 +57,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class AdminVariantRepriceTest {
 
@@ -79,6 +81,17 @@ class AdminVariantRepriceTest {
 
     @BeforeEach
     void clean() {
+        products.deleteAll();
+    }
+
+    /**
+     * Leaves nothing behind either. This class shares its application, and so
+     * its database, with the event tests, and SKUs are unique catalogue-wide:
+     * a variant left here as AUR-1 would make the golden test's own AUR-1 a
+     * 409 if that test ran later.
+     */
+    @AfterEach
+    void cleanUp() {
         products.deleteAll();
     }
 

@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -41,7 +42,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * springdoc output rather than against the annotations, because the annotations
  * are not the contract — the generated document is.
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @SpringBootTest
 @AutoConfigureMockMvc
 // Deliberately the SAME annotations and properties as CatalogIntegrationTest,

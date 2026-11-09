@@ -54,6 +54,25 @@
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
+        <!--
+            The event log (shared/oriah-events, MVP_PLAN Phase 1): every
+            product and price change is appended to catalog's own outbox in
+            the transaction that makes it, and the relay publishes it to
+            catalog.product. Its test-jar carries the schema guards that prove
+            V4 copied the reference tables exactly.
+        -->
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-events</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.oriah</groupId>
+            <artifactId>oriah-events</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
 
         <!--
             Shared JPA base: AuditableEntity (@MappedSuperclass with
@@ -243,12 +262,11 @@
         </dependency>
 
         <!--
-            Spring Cloud Stream + Kafka binder. Catalog publishes
-            product.created / product.updated / product.deleted domain
-            events on a single 'catalog.product' topic via StreamBridge.
-            Spring Cloud Stream's functional model means we just declare
-            a destination in YAML and call StreamBridge.send — no
-            @StreamListener boilerplate.
+            Spring Cloud Stream + Kafka binder. Catalog's outbox relay
+            (oriah-events) publishes product.created / product.updated /
+            product.deleted on 'catalog.product' through it, sending each
+            outbox row to the topic named on the row, and answers replay
+            requests on oriah.outbox.replay-requests.
         -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>

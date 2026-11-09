@@ -2,33 +2,34 @@
  * Catalog domain events — what catalog tells the rest of the system has
  * happened.
  *
- * <p>Each event is a Java {@code record} (immutable, equals-by-value,
- * JSON-serializable by default via Jackson). Records are published via
- * {@link org.springframework.context.ApplicationEventPublisher} from
- * {@link com.oriah.catalog.service.ProductService} inside the transaction;
- * a separate {@link com.oriah.catalog.events.KafkaProductEventBridge}
- * listener picks them up on {@code AFTER_COMMIT} and forwards to Kafka via
- * Spring Cloud Stream's {@code StreamBridge}.
+ * <p>Each event is a Java {@code record} (immutable, equals-by-value). Its
+ * JSON is the payload consumers read, so these records ARE the contract:
+ * inventory and search depend on it, and {@code ProductEventGoldenTest} pins
+ * it byte for byte.
  *
- * <p>Why split publish (in-process) from forward (Kafka):
+ * <h2>How they are published</h2>
+ *
+ * {@link com.oriah.catalog.service.ProductService} appends each event to
+ * catalog's outbox table (shared/oriah-events) in the same transaction as the
+ * change it describes, and the outbox relay publishes the table to Kafka in
+ * the order it was written. So:
  * <ul>
- *   <li><b>Service tests don't need Kafka.</b> ProductService talks only to
- *       Spring's in-process event bus — assertions become trivial without
- *       a test binder.</li>
- *   <li><b>Don't publish on rollback.</b>
- *       {@code @TransactionalEventListener(phase = AFTER_COMMIT)} fires only
- *       when the surrounding transaction commits. A rolled-back create()
- *       never reaches Kafka.</li>
- *   <li><b>Honest about the dual-write problem.</b> Even with AFTER_COMMIT
- *       we can still commit-then-crash before publish; for true
- *       at-least-once delivery we'd add a transactional outbox + relay.
- *       Out of scope for this iteration — documented in
- *       {@code docs/ARCHITECTURE.md} as a future polish.</li>
+ *   <li><b>Nothing is announced that rolled back.</b> The event is a row in
+ *       the same transaction; a rollback removes both.</li>
+ *   <li><b>Nothing that committed is lost.</b> This replaced a send made after
+ *       the commit, where a crash between the two lost the message for good.
+ *       Now the row waits in the outbox until Kafka has it.</li>
+ *   <li><b>Consumers can apply each event once, in order.</b> Every message
+ *       carries an envelope: {@code event-id} to recognise a redelivery,
+ *       {@code seq} (1, 2, 3 within the product) to skip an older snapshot,
+ *       {@code aggregate-id} (the product id), the {@code actor} who made the
+ *       change. The Kafka key is the product id, so one product's events
+ *       stay on one partition, in order.</li>
  * </ul>
  *
- * <p>One topic, multiple event types: all three events land on
- * {@code catalog.product}. Each carries a {@code TYPE} string constant
- * mirroring the Kafka header {@code event-type} the bridge sets so
- * consumers can route within the topic without payload inspection.
+ * <p>One topic, several event types: all three land on
+ * {@code catalog.product}, and each carries a {@code TYPE} constant matching
+ * the {@code event-type} header, so a consumer can route within the topic
+ * without reading the payload.
  */
 package com.oriah.catalog.events;

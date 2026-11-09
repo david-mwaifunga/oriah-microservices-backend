@@ -1,15 +1,16 @@
 package com.oriah.catalog.service;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +38,8 @@ import com.oriah.catalog.model.Slug;
 import com.oriah.catalog.model.StorefrontFilter;
 import com.oriah.catalog.mapper.ProductMapper;
 import com.oriah.catalog.repository.ProductRepository;
+import com.oriah.events.EventDraft;
+import com.oriah.events.OutboxWriter;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -57,14 +60,56 @@ import lombok.extern.slf4j.Slf4j;
  *   <li><b>DEBUG</b> on read paths — these run on every page render in
  *       production, so info-level logging would be too noisy.</li>
  * </ul>
+ *
+ * <h2>The event log</h2>
+ * Every write that changes what inventory and search know about a product
+ * appends one event to catalog's outbox, in the same transaction, as its
+ * last write: a full snapshot of the product ({@code product.created},
+ * {@code product.updated}) or its id ({@code product.deleted}), with the
+ * member of staff who made the change as the actor. The relay publishes the
+ * outbox to {@code catalog.product}. Because the event commits with the
+ * change, a price change can never be lost between the commit and the send,
+ * and a change that rolls back is never announced.
+ *
+ * <p>Each such write on an existing product first locks the product's row
+ * ({@link ProductRepository#findByIdForUpdate}), then changes it, flushes,
+ * and appends. So two writes to one product take turns, and the snapshot
+ * recorded last always includes both changes. A deleted product refuses
+ * every such write ({@link #NOT_DELETED}), so product.deleted is always the
+ * last event a product has.
  */
 @Service
 @Slf4j
 public class ProductService {
 
+    /** The topic, the aggregate and the payload version of every product event. */
+    static final String TOPIC = "catalog.product";
+    static final String AGGREGATE = "product";
+    static final int SCHEMA_VERSION = 1;
+
+    /**
+     * Every write to an existing product applies this right after taking the
+     * product's lock, so a deleted product answers 404 to all of them.
+     *
+     * <p>product.deleted must stay the last event a product ever has. Search
+     * and inventory keep only the newest snapshot of a product, so a
+     * product.updated numbered after the delete would put the deleted product
+     * back on the storefront -- publish would even set it ACTIVE again. It is
+     * checked after the lock, not before it, because a write that waited for a
+     * delete to commit must see that delete.
+     */
+    private static final java.util.function.Predicate<Product> NOT_DELETED = product -> !product.isDeleted();
+
+    /**
+     * The lock every create takes before choosing a slug: the letters
+     * "CATSLUGS" read as one number, distinct from the outbox's own
+     * ("ORIAHOUT"). See {@link #lockSlugAssignment}.
+     */
+    static final long SLUG_LOCK_KEY = 0x4341_5453_4C55_4753L;
+
     private final ProductRepository repository;
     private final InventoryClient inventoryClient;
-    private final ApplicationEventPublisher eventPublisher;
+    private final OutboxWriter outbox;
     private final CatalogProperties props;
     private final CategoryService categoryService;
     // Resolving ids to entities is a read the CategoryService interface does
@@ -72,6 +117,9 @@ public class ProductService {
     // product.
     private final CategoryRepository categoryRepository;
     private final ProductImageService imageService;
+    // Joins the JPA transaction (JpaTransactionManager exposes its connection),
+    // so the slug lock below is held until that transaction ends.
+    private final JdbcTemplate jdbc;
 
     /**
      * How many readable discriminators to try before falling back to the id
@@ -83,18 +131,20 @@ public class ProductService {
     public ProductService(
             ProductRepository repository,
             InventoryClient inventoryClient,
-            ApplicationEventPublisher eventPublisher,
+            OutboxWriter outbox,
             CatalogProperties props,
             CategoryService categoryService,
             CategoryRepository categoryRepository,
-            ProductImageService imageService) {
+            ProductImageService imageService,
+            JdbcTemplate jdbc) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
-        this.eventPublisher = eventPublisher;
+        this.outbox = outbox;
         this.props = props;
         this.categoryService = categoryService;
         this.categoryRepository = categoryRepository;
         this.imageService = imageService;
+        this.jdbc = jdbc;
     }
 
     /**
@@ -262,12 +312,16 @@ public class ProductService {
      * exist, and the currency must match its siblings. A variant cannot check
      * any of those, because it cannot see the others.
      *
+     * @param actor who is making the change, {@code user:<keycloak subject>};
+     *              recorded on the event
      * @throws IllegalArgumentException on any of those violations, or an
      *         unknown product id; rendered as a 400 by the shared advice
      */
     @Transactional
-    public Optional<ProductResponse> addVariant(UUID productId, VariantCreateRequest request) {
-        return repository.findById(productId).map(product -> {
+    public Optional<ProductResponse> addVariant(UUID productId, VariantCreateRequest request, String actor) {
+        // Locked first, so a concurrent write to this product waits for this
+        // one and its snapshot includes this variant (see findByIdForUpdate).
+        return repository.findByIdForUpdate(productId).filter(NOT_DELETED).map(product -> {
             ProductVariant variant = new ProductVariant(
                     product,
                     request.sku(),
@@ -277,11 +331,11 @@ public class ProductService {
             product.addVariant(variant);
             log.info("Added variant sku=\"{}\" to product id={} price={} {}",
                     variant.sku(), productId, variant.unitPrice(), variant.currency());
-            // Emitted so inventory learns about the new variant. Without this,
+            // Recorded so inventory learns about the new variant. Without this,
             // a variant added after creation would never reach product_index
             // and the admin inventory screen would show a bare UUID with no
             // title -- or nothing at all.
-            eventPublisher.publishEvent(productUpdated(product));
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
             // The ADMIN projection: the caller needs to see the variant it
             // just created, which the list mapping omits.
             return ProductMapper.toAdminResponse(product);
@@ -307,6 +361,8 @@ public class ProductService {
      * the admin form to correct it with. A PATCH that omits a field leaves it
      * alone, so the variant's current currency is what gets passed.
      *
+     * @param actor who is making the change, {@code user:<keycloak subject>};
+     *              recorded on the event
      * @return empty when the product does not exist OR carries no such
      *         variant, so the caller can answer 404 for both. The aggregate
      *         reports an unknown variant as IllegalArgumentException, which
@@ -315,8 +371,13 @@ public class ProductService {
      */
     @Transactional
     public Optional<ProductResponse> repriceVariant(
-            UUID productId, UUID variantId, VariantUpdateRequest request) {
-        return repository.findById(productId).flatMap(product -> product.variants().stream()
+            UUID productId, UUID variantId, VariantUpdateRequest request, String actor) {
+        // Locked first: a concurrent reprice of another variant of this
+        // product waits for this one to commit, then reads this price, so
+        // whichever snapshot is recorded last carries both.
+        return repository.findByIdForUpdate(productId)
+                .filter(NOT_DELETED)
+                .flatMap(product -> product.variants().stream()
                 .filter(v -> v.id().equals(variantId))
                 .findFirst()
                 .map(variant -> {
@@ -330,12 +391,11 @@ public class ProductService {
                     log.info("Repriced variant id={} sku=\"{}\" on product id={} from {} to {} {}",
                             variantId, variant.sku(), productId, was,
                             variant.unitPrice(), variant.currency());
-                    // The same event addVariant publishes. Its VariantPayload
-                    // already carries unitPrice and currency, so a consumer
-                    // that reads a price sees the new one; inventory and
-                    // search ignore it today, which makes this a trap left
-                    // unarmed rather than a live need.
-                    eventPublisher.publishEvent(productUpdated(product));
+                    // The same event addVariant records. Its VariantPayload
+                    // carries unitPrice and currency, so the log holds every
+                    // price the product has ever had, and when -- prices
+                    // decide revenue, which is why this is a logged fact.
+                    record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
                     return ProductMapper.toAdminResponse(product);
                 }));
     }
@@ -349,19 +409,23 @@ public class ProductService {
      * it, publishing would have put the entire existing catalogue on sale for
      * nothing.
      *
+     * @param actor who is making the change, {@code user:<keycloak subject>};
+     *              recorded on the event
      * @throws IllegalStateException when the product is not publishable, which
      *         the shared advice renders as a 409 -- a conflict with the
      *         product's current state rather than a malformed request
      */
     @Transactional
-    public Optional<ProductResponse> publish(UUID productId) {
-        return repository.findById(productId).map(product -> {
+    public Optional<ProductResponse> publish(UUID productId, String actor) {
+        // A deleted product is archived; publishing it would set it ACTIVE
+        // again, in the database and in the log.
+        return repository.findByIdForUpdate(productId).filter(NOT_DELETED).map(product -> {
             product.publish();
             log.info("Published product id={} slug=\"{}\"", productId, product.slug());
             // Publication changes `status` on the event, which is how a
             // consumer can distinguish a live product from a draft without
             // asking catalog.
-            eventPublisher.publishEvent(productUpdated(product));
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
             return ProductMapper.toAdminResponse(product);
         });
     }
@@ -373,8 +437,8 @@ public class ProductService {
      * UUID at construction.
      */
     @Transactional
-    public ProductResponse create(String title, String description, List<String> tags) {
-        return create(title, description, tags, null, null, null, null);
+    public ProductResponse create(String title, String description, List<String> tags, String actor) {
+        return create(title, description, tags, null, null, null, null, actor);
     }
 
     /**
@@ -394,6 +458,8 @@ public class ProductService {
      *                   is preserved rather than made explicit
      * @param attributes validated against what the TYPE declares, so a carat
      *                   weight on a watch is refused rather than stored
+     * @param actor      who is creating it, {@code user:<keycloak subject>};
+     *                   recorded on the event
      * @throws com.oriah.catalog.model.AttributeValidationException
      *         the type is unknown, or one or more attributes are wrong -- 400,
      *         with every problem reported at once
@@ -401,7 +467,7 @@ public class ProductService {
     @Transactional
     public ProductResponse create(String title, String description, List<String> tags,
                                   String typeCode, Map<String, Object> attributes,
-                                  List<UUID> categoryIds, UUID primaryCategoryId) {
+                                  List<UUID> categoryIds, UUID primaryCategoryId, String actor) {
         // Tag-count logging is friendlier than printing the full list: keeps
         // the line scannable and avoids leaking large payloads at INFO.
         int tagCount = tags == null ? 0 : tags.size();
@@ -416,15 +482,17 @@ public class ProductService {
         if (categoryIds != null) {
             applyCategories(product, categoryIds, primaryCategoryId);
         }
+        // Taken after the checks above, so a refused create never queues
+        // behind others; held until this create commits.
+        lockSlugAssignment();
         product.assignSlug(freeSlugFor(product));
-        Product saved = saveResolvingSlugCollision(product);
+        Product saved = repository.saveAndFlush(product);
         log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);
-        // Publish via Spring's in-process event bus. The KafkaProductEventBridge
-        // listens with @TransactionalEventListener(phase = AFTER_COMMIT) and
-        // only forwards to Kafka after this @Transactional method commits.
-        // Tag list is copied via List.copyOf to decouple the event from the
-        // entity's mutable internal storage.
-        eventPublisher.publishEvent(new ProductCreatedEvent(
+        // No row lock to take first: the row was inserted by this transaction a
+        // moment ago, nobody else can see it until the commit, and the insert
+        // already holds it. Tag list is copied via List.copyOf to decouple
+        // the event from the entity's mutable internal storage.
+        record(saved, ProductCreatedEvent.TYPE, new ProductCreatedEvent(
                 saved.id(),
                 saved.title(),
                 saved.tags() == null ? List.of() : List.copyOf(saved.tags()),
@@ -437,7 +505,7 @@ public class ProductService {
                 // against yet. The variants arrive on the first
                 // product.updated after a variant is added.
                 variantPayloads(saved)
-        ));
+        ), actor);
         // Mapped inside the transaction like every other read path here. A
         // freshly constructed product would in fact survive mapping outside
         // it -- its collections are real collections, not Hibernate proxies --
@@ -466,6 +534,10 @@ public class ProductService {
      * is a URL someone can read, and the attempt is bounded -- past that, the
      * id suffix (the same shape V3 used) is guaranteed free, since ids are
      * unique.
+     *
+     * <p>Its answer holds only under {@link #lockSlugAssignment}: a check
+     * followed by an insert, and another create could otherwise take the same
+     * slug in between.
      */
     private String freeSlugFor(Product product) {
         String base = Slug.from(product.title());
@@ -487,24 +559,28 @@ public class ProductService {
     }
 
     /**
-     * Saves, and survives losing a race for the slug.
+     * Makes creates take turns at choosing a slug, until each commits.
      *
-     * <p>{@link #freeSlugFor} is a check-then-act: two concurrent creates of
-     * the same title both read "free" and one violates the constraint. Rather
-     * than hold a lock for a cosmetic URL, the loser retries once with the
-     * id-suffixed slug, which cannot collide. One retry is enough precisely
-     * because the fallback is not a guess.
+     * <p>{@link #freeSlugFor} is a check-then-act. Without this, two creates
+     * of the same title at the same moment both found the slug free (the
+     * first's insert is invisible to the second until it commits), and the
+     * second's insert broke the UNIQUE constraint. It used to catch that and
+     * save again with a fallback slug -- which could never work: Postgres
+     * refuses every further statement in a transaction once one has failed,
+     * and Spring had already marked the transaction to roll back. So the
+     * admin got an error.
+     *
+     * <p>With this lock the second create waits here until the first commits,
+     * then sees its slug taken and picks the next ({@code -2}). One lock for
+     * every create, not one per title: "Ring" (its {@code ring} taken, so
+     * trying {@code ring-2}) and "Ring 2" race for the same slug from
+     * different titles. Creates are rare admin actions, and each already
+     * waits for the outbox's lock at its end, so this costs nothing that
+     * matters. It is a transaction lock: Postgres lets it go at the commit or
+     * rollback, never earlier.
      */
-    private Product saveResolvingSlugCollision(Product product) {
-        try {
-            return repository.saveAndFlush(product);
-        } catch (DataIntegrityViolationException e) {
-            String fallback = idSuffixedSlug(Slug.from(product.title()), product.id());
-            log.warn("Slug collision on save for title=\"{}\"; retrying as slug=\"{}\"",
-                    product.title(), fallback);
-            product.assignSlug(fallback);
-            return repository.saveAndFlush(product);
-        }
+    private void lockSlugAssignment() {
+        jdbc.query("SELECT pg_advisory_xact_lock(?)", (RowCallbackHandler) row -> { }, SLUG_LOCK_KEY);
     }
 
     /**
@@ -516,11 +592,14 @@ public class ProductService {
      * persisted automatically by JPA dirty checking because this method
      * runs inside a {@code @Transactional} boundary and the entity is in
      * managed state.
+     *
+     * @param actor who is making the change, {@code user:<keycloak subject>};
+     *              recorded on the event
      */
     @Transactional
-    public Optional<ProductResponse> update(UUID id, ProductUpdateRequest request) {
-        Optional<ProductResponse> result = repository.findById(id)
-                .filter(product -> !product.isDeleted())
+    public Optional<ProductResponse> update(UUID id, ProductUpdateRequest request, String actor) {
+        Optional<ProductResponse> result = repository.findByIdForUpdate(id)
+                .filter(NOT_DELETED)
                 .map(product -> {
             // Track which fields actually changed so the log line is useful
             // when investigating "why did this product's title change?"
@@ -562,7 +641,7 @@ public class ProductService {
             // Snapshot the post-update state into the event. We send the
             // current values for *all* fields (not just changed ones) so
             // consumers don't need a prior read to reconstruct state.
-            eventPublisher.publishEvent(productUpdated(product));
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
             // Inside the transaction: the entity's categories, variants and
             // images are lazy, and mapping them in the controller threw
             // LazyInitializationException and answered 500.
@@ -625,14 +704,31 @@ public class ProductService {
     }
 
     /**
+     * Appends one product event to the outbox, in the caller's transaction,
+     * as its last write.
+     *
+     * <p>Flushed first, so the change itself reaches the database -- and any
+     * constraint it breaks fails here -- before the append takes the outbox's
+     * lock, which is then held only until the commit a moment later.
+     *
+     * <p>{@code occurredAt} is now: a catalog edit takes effect the moment it
+     * is made, so the time it happened and the time it is recorded are the
+     * same.
+     */
+    private void record(Product product, String eventType, Object payload, String actor) {
+        repository.flush();
+        outbox.append(new EventDraft(AGGREGATE, product.id().toString(), eventType, SCHEMA_VERSION, TOPIC,
+                Instant.now(), actor, payload));
+    }
+
+    /**
      * A full post-change snapshot, not a delta.
      *
      * <p>Consumers can then apply an update without having read the previous
-     * state, which matters because there is no ordering guarantee on the
-     * topic: no message key is set, so with more than one partition two
-     * updates for the same product could arrive out of order. A full snapshot
-     * applied twice, or applied in the wrong order and then corrected by the
-     * next one, converges. A delta would not.
+     * state. Each event also carries its {@code seq} within the product, so
+     * a consumer that receives an older snapshot after a newer one (a
+     * redelivery, a replay) can recognise it and skip it. A full snapshot
+     * applied twice converges; a delta would not.
      */
     private static ProductUpdatedEvent productUpdated(Product product) {
         return new ProductUpdatedEvent(
@@ -691,11 +787,14 @@ public class ProductService {
      * found and removed, false if no product had that id. The two-step
      * lookup-then-delete lets the controller return 204 vs 404 unambiguously
      * — {@code repository.deleteById} is silent when the id is missing.
+     *
+     * @param actor who is deleting it, {@code user:<keycloak subject>};
+     *              recorded on the event
      */
     @Transactional
-    public boolean deleteById(UUID id) {
-        boolean removed = repository.findById(id)
-                .filter(product -> !product.isDeleted())
+    public boolean deleteById(UUID id, String actor) {
+        boolean removed = repository.findByIdForUpdate(id)
+                .filter(NOT_DELETED)
                 .map(product -> {
                     // Image OBJECTS are still reclaimed: nobody will ever
                     // serve them again, and object storage is the one place
@@ -734,13 +833,17 @@ public class ProductService {
                     product.archive();
                     product.markDeleted();
                     repository.saveAndFlush(product);
+                    // Only the id, as product.deleted has always carried:
+                    // a consumer removes what it holds for it. Its seq is
+                    // what keeps a late, older snapshot from bringing the
+                    // product back in a consumer that skips older seqs.
+                    record(product, ProductDeletedEvent.TYPE, new ProductDeletedEvent(id), actor);
                     return true;
                 })
                 .orElse(false);
 
         if (removed) {
             log.info("Deleted product id={}", id);
-            eventPublisher.publishEvent(new ProductDeletedEvent(id));
         } else {
             log.debug("Delete skipped, product not found id={}", id);
         }

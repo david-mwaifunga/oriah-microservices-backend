@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.web.bind.annotation.ControllerAdvice;
@@ -51,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * auto-configuration — which is the thing that has to work, and is not the
  * thing the starter test exercises.
  */
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @SpringBootTest
 @TestPropertySource(properties = {
         // Same properties as CatalogServiceApplicationTests, so this shares its

@@ -16,6 +16,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.dto.ProductCreateRequest;
@@ -122,11 +124,12 @@ public class AdminProductController {
     @ApiResponse(responseCode = "400", description = "Validation failure; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                         schema = @Schema(implementation = ProblemDetail.class)))
-    public ResponseEntity<ProductResponse> create(@Valid @RequestBody ProductCreateRequest request) {
+    public ResponseEntity<ProductResponse> create(@Valid @RequestBody ProductCreateRequest request,
+                                                  @AuthenticationPrincipal Jwt jwt) {
         log.debug("POST /api/v1/admin/products title=\"{}\"", request.title());
         ProductResponse saved = service.create(request.title(), request.description(),
                 request.tags(), request.productType(), request.attributes(),
-                request.categoryIds(), request.primaryCategoryId());
+                request.categoryIds(), request.primaryCategoryId(), actor(jwt));
         // Location points at the public read endpoint, not the admin path.
         URI location = URI.create("/api/v1/products/" + saved.id());
         return ResponseEntity.created(location).body(saved);
@@ -143,9 +146,10 @@ public class AdminProductController {
                         schema = @Schema(implementation = ProblemDetail.class)))
     public ProductResponse update(
             @PathVariable("id") UUID id,
-            @Valid @RequestBody ProductUpdateRequest request) {
+            @Valid @RequestBody ProductUpdateRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
         log.debug("PATCH /api/v1/admin/products/{}", id);
-        return service.update(id, request)
+        return service.update(id, request, actor(jwt))
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 
@@ -197,9 +201,10 @@ public class AdminProductController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<ProductResponse> addVariant(
             @PathVariable("id") UUID id,
-            @Valid @RequestBody VariantCreateRequest request) {
+            @Valid @RequestBody VariantCreateRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
         log.debug("POST /api/v1/admin/products/{}/variants sku=\"{}\"", id, request.sku());
-        ProductResponse updated = service.addVariant(id, request)
+        ProductResponse updated = service.addVariant(id, request, actor(jwt))
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
         return ResponseEntity.status(HttpStatus.CREATED).body(updated);
     }
@@ -243,10 +248,11 @@ public class AdminProductController {
     public ProductResponse repriceVariant(
             @PathVariable("id") UUID id,
             @PathVariable("variantId") UUID variantId,
-            @Valid @RequestBody VariantUpdateRequest request) {
+            @Valid @RequestBody VariantUpdateRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
         log.debug("PATCH /api/v1/admin/products/{}/variants/{} price={}",
                 id, variantId, request.unitPrice());
-        return service.repriceVariant(id, variantId, request)
+        return service.repriceVariant(id, variantId, request, actor(jwt))
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Variant", "id", variantId.toString()));
     }
@@ -270,9 +276,9 @@ public class AdminProductController {
             description = "The product has no active variant priced above zero",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    public ProductResponse publish(@PathVariable("id") UUID id) {
+    public ProductResponse publish(@PathVariable("id") UUID id, @AuthenticationPrincipal Jwt jwt) {
         log.debug("POST /api/v1/admin/products/{}/publish", id);
-        return service.publish(id)
+        return service.publish(id, actor(jwt))
                 .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 
@@ -393,11 +399,20 @@ public class AdminProductController {
     @ApiResponse(responseCode = "404", description = "No product with that id",
             content = @Content(mediaType = "application/problem+json",
                         schema = @Schema(implementation = ProblemDetail.class)))
-    public ResponseEntity<Void> delete(@PathVariable("id") UUID id) {
+    public ResponseEntity<Void> delete(@PathVariable("id") UUID id, @AuthenticationPrincipal Jwt jwt) {
         log.debug("DELETE /api/v1/admin/products/{}", id);
-        if (!service.deleteById(id)) {
+        if (!service.deleteById(id, actor(jwt))) {
             throw new ResourceNotFoundException("Product", "id", id.toString());
         }
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Who made the change, as catalog's event log records it:
+     * {@code user:<keycloak subject>}. Taken from the verified token, never
+     * from the request, so nobody can write a change in someone else's name.
+     */
+    private static String actor(Jwt jwt) {
+        return "user:" + jwt.getSubject();
     }
 }

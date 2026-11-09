@@ -1,13 +1,35 @@
 package com.oriah.catalog.repository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
+import jakarta.persistence.LockModeType;
+
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import com.oriah.catalog.model.Product;
 
 public interface ProductRepository extends JpaRepository<Product, UUID>, ProductStorefrontQueries {
+
+    /**
+     * The product, with its row locked until the transaction ends
+     * (PESSIMISTIC_WRITE: {@code SELECT ... FOR UPDATE}).
+     *
+     * <p>Every write that records a snapshot of the product takes this
+     * first. Two writes to one product then run one after the other: the
+     * second waits here until the first commits, and only then reads the
+     * product -- with the first change in it. Without it, two staff
+     * repricing two sizes of one ring at once each recorded a snapshot that
+     * missed the other's price, and the one numbered last (which every
+     * consumer keeps) showed a price the database no longer held.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from Product p where p.id = :id")
+    Optional<Product> findByIdForUpdate(@Param("id") UUID id);
 
     /**
      * Products whose breadcrumb trail points at this category.
@@ -24,11 +46,11 @@ public interface ProductRepository extends JpaRepository<Product, UUID>, Product
      * Used to resolve a slug collision before insert.
      *
      * <p>This is a check-then-act, so it does not make the insert safe on its
-     * own -- two concurrent creates of the same title both see "free" and one
-     * loses. The UNIQUE constraint remains the actual guarantee, and
-     * ProductService retries with a collision-proof slug when it fires. The
-     * probe exists only so the common case produces a readable URL rather than
-     * an id-suffixed one.
+     * own -- two concurrent creates of the same title would both see "free"
+     * and one would break the UNIQUE constraint. ProductService therefore
+     * makes creates take turns (a transaction-scoped lock taken before this
+     * check), so the second sees the first's slug as taken. The UNIQUE
+     * constraint remains the backstop.
      */
     boolean existsBySlug(String slug);
 

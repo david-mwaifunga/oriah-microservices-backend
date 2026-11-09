@@ -68,20 +68,50 @@ spring:
         # the bean named in the @FeignClient(fallback = ...) attribute.
         enabled: true
     stream:
-      # Spring Cloud Stream functional model: we publish via
-      # StreamBridge.send("productEvents-out-0", message). The binding name
-      # 'productEvents-out-0' maps to the topic below; '-out-0' is the SCS
-      # convention for "first output channel of binding productEvents".
-      bindings:
-        productEvents-out-0:
-          destination: catalog.product
+      # No binding for catalog.product: the outbox relay (shared/oriah-events)
+      # sends each outbox row to the topic named on the row, which is how a
+      # dynamic destination works in Spring Cloud Stream. These defaults
+      # therefore apply to it, and to every profile and every test.
+      default:
+        contentType: application/json
       kafka:
+        default:
+          producer:
+            # A send returns only once Kafka has the record. Without it the
+            # binder answers "sent" as soon as the record is queued inside
+            # the service, the relay would move its cursor past an event Kafka
+            # never took, and that event would never be published. The relay
+            # refuses to start without it, in tests too.
+            sync: true
         binder:
           # Overridden in application-docker.yaml to the in-network broker.
           # Left as a localhost default so a developer running catalog
           # outside docker (mvnw spring-boot:run) hits a local Kafka if
           # they're testing the publish path manually.
           brokers: localhost:9092
+          # How long one send may wait for Kafka. While a send waits, the
+          # relay's round holds its transaction and its place in the log;
+          # with Kafka's own defaults a stopped broker would hold it for 60 to
+          # 120 seconds. With these the send fails in about 10 to 25, the
+          # cursor stays put, and the row goes out in a later round.
+          producer-properties:
+            max.block.ms: 10000         # waiting for the topic's details from the broker
+            request.timeout.ms: 5000    # one request to the broker
+            delivery.timeout.ms: 10000  # the whole send, retries included
+        bindings:
+          # The replay-request listener. The module binds it (destination
+          # oriah.outbox.replay-requests, group catalog); what Kafka does with
+          # a request catalog cannot answer is set here. A malformed request
+          # is refused, and a replay can fail part-way while Kafka is briefly
+          # down. Either way the binder retries it, and then parks it on its
+          # own dead-letter topic, named <topic>.dlq.<group> like every other.
+          # Without this the binder would log the last failure and skip past
+          # the request, and the consumer that asked (search, inventory) would
+          # wait for a replay that never comes. ReplayRequestBindingTest pins it.
+          outboxReplayRequests-in-0:
+            consumer:
+              enable-dlq: true
+              dlq-name: oriah.outbox.replay-requests.dlq.catalog
 
   security:
     oauth2:
@@ -206,6 +236,27 @@ resilience4j:
 # leak a stale value into the served response.
 # ---------------------------------------------------------------------------
 oriah:
+  # -------------------------------------------------------------------------
+  # The event log (shared/oriah-events, MVP_PLAN Phase 1).
+  #
+  # Every product and price change is appended to catalog's outbox table in
+  # the transaction that makes it; the relay publishes the outbox to Kafka in
+  # the order it was written; and a consumer that joins late can ask for the
+  # whole log again (replay). Catalog consumes no events, so the Inbox stays
+  # off -- answered replay requests are recorded in processed_event without it.
+  # Each switch is exactly true or false; anything else stops the service.
+  # -------------------------------------------------------------------------
+  events:
+    producer: catalog                 # sent with every message as the `producer` header
+    topics: catalog.product           # an append to any other topic is refused
+    outbox:
+      enabled: true
+    relay:
+      enabled: true
+    replay:
+      enabled: true
+    inbox:
+      enabled: false
   catalog:
     contact-info:
       message: "Catalog service contact details are unavailable - the Config Server could not be reached"

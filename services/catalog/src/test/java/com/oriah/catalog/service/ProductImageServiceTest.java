@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -46,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * intact would be asserting against a stub.
  */
 @SpringBootTest
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
         "eureka.client.enabled=false"
@@ -54,6 +55,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         // implementation. That is the configuration under test here.
 })
 class ProductImageServiceTest {
+
+    /** Who the event log records as making these changes (ProductOutboxTest covers the actor). */
+    private static final String STAFF = "user:catalog-test";
 
     @Autowired
     private ProductImageService service;
@@ -86,7 +90,7 @@ class ProductImageServiceTest {
         productRepository.deleteAll();
         ((InMemoryProductImageStorage) storage).clear();
 
-        draftProduct = products.create("Unreleased Ring", null, List.of()).id();
+        draftProduct = products.create("Unreleased Ring", null, List.of(), STAFF).id();
 
         // Seeded through the SERVICE, not the repository. @SpringBootTest is
         // not transactional, so a repository findById here hands back a
@@ -94,10 +98,10 @@ class ProductImageServiceTest {
         // LazyInitializationException the moment addVariant touches it. The
         // service methods own their transaction, which is also how the
         // production admin endpoints do this.
-        liveProduct = products.create("Aurelia Solitaire Ring", null, List.of()).id();
+        liveProduct = products.create("Aurelia Solitaire Ring", null, List.of(), STAFF).id();
         products.addVariant(liveProduct, new VariantCreateRequest(
-                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()));
-        products.publish(liveProduct);
+                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()), STAFF);
+        products.publish(liveProduct, STAFF);
     }
 
     @Test
@@ -262,7 +266,7 @@ class ProductImageServiceTest {
         service.upload(liveProduct, TestImages.jpeg(300, 300), "b.jpg", "image/jpeg", null);
         assertThat(((InMemoryProductImageStorage) storage).size()).isEqualTo(2);
 
-        products.deleteById(liveProduct);
+        products.deleteById(liveProduct, STAFF);
 
         // The OBJECTS are reclaimed; the ROWS survive. Both halves are
         // deliberate and they changed together.

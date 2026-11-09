@@ -1,6 +1,13 @@
 package com.oriah.catalog.service;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -8,12 +15,16 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.catalog.TestcontainersConfiguration;
+import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.repository.ProductRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,12 +53,15 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * nothing.
  */
 @SpringBootTest
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
         "eureka.client.enabled=false"
 })
 class ProductSlugCollisionTest {
+
+    /** Who the event log records as making these changes (ProductOutboxTest covers the actor). */
+    private static final String STAFF = "user:catalog-test";
 
     @Autowired
     private ProductService service;
@@ -57,6 +71,9 @@ class ProductSlugCollisionTest {
 
     @Autowired
     private JdbcTemplate jdbc;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @MockitoBean
     @SuppressWarnings("unused")
@@ -73,8 +90,8 @@ class ProductSlugCollisionTest {
     @Test
     @DisplayName("the same title twice succeeds, with distinct slugs")
     void identicalTitlesGetDistinctSlugs() {
-        var first = service.create("Aurelia Solitaire Ring", null, List.of());
-        var second = service.create("Aurelia Solitaire Ring", null, List.of());
+        var first = service.create("Aurelia Solitaire Ring", null, List.of(), STAFF);
+        var second = service.create("Aurelia Solitaire Ring", null, List.of(), STAFF);
 
         assertThat(first.slug()).isEqualTo("aurelia-solitaire-ring");
         assertThat(second.slug())
@@ -84,14 +101,81 @@ class ProductSlugCollisionTest {
     }
 
     @Test
+    @DisplayName("two creates of one title at the same moment both succeed, with distinct slugs and an event each")
+    void concurrentCreatesOfOneTitleBothSucceed() throws Exception {
+        // The race the slug check alone cannot see: the first create has
+        // inserted "aurelia-solitaire-ring" but not committed, so the second
+        // looks, finds it free, and takes it too. The test holds the first
+        // open until Postgres reports the second waiting for a lock, so the
+        // second has done all it can before the first commits.
+        ExecutorService staff = Executors.newFixedThreadPool(2);
+        try {
+            CountDownLatch firstCreated = new CountDownLatch(1);
+            CountDownLatch firstMayCommit = new CountDownLatch(1);
+
+            Future<ProductResponse> first = staff.submit(() -> new TransactionTemplate(transactionManager).execute(tx -> {
+                ProductResponse created = service.create("Aurelia Solitaire Ring", null, List.of(), STAFF);
+                firstCreated.countDown();
+                awaitQuietly(firstMayCommit);
+                return created;
+            }));
+            assertThat(firstCreated.await(10, TimeUnit.SECONDS)).as("the first create applied").isTrue();
+
+            Future<ProductResponse> second = staff.submit(() ->
+                    service.create("Aurelia Solitaire Ring", null, List.of(), STAFF));
+            awaitABlockedSession();
+            firstMayCommit.countDown();
+
+            ProductResponse one = first.get(10, TimeUnit.SECONDS);
+            ProductResponse two = second.get(10, TimeUnit.SECONDS);
+
+            assertThat(one.slug()).isEqualTo("aurelia-solitaire-ring");
+            assertThat(two.slug()).startsWith("aurelia-solitaire-ring-").isNotEqualTo(one.slug());
+            assertThat(repository.count()).isEqualTo(2);
+            // Each create committed whole: the product and its product.created.
+            for (ProductResponse created : List.of(one, two)) {
+                assertThat(jdbc.queryForList(
+                        "SELECT event_type FROM outbox WHERE aggregate_type = 'product' AND aggregate_id = ?",
+                        String.class, created.id().toString()))
+                        .containsExactly("product.created");
+            }
+        } finally {
+            staff.shutdownNow();
+        }
+    }
+
+    /** Waits until some session in this database is waiting for a lock. */
+    private void awaitABlockedSession() throws InterruptedException {
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
+        while (Instant.now().isBefore(deadline)) {
+            Long blocked = jdbc.queryForObject("""
+                    SELECT count(*) FROM pg_stat_activity
+                     WHERE datname = current_database() AND wait_event_type = 'Lock'""", Long.class);
+            if (blocked != null && blocked > 0) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("the second create never waited for the first: nothing was blocked within 10s");
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    @Test
     @DisplayName("titles differing only in punctuation or case collide and are still both accepted")
     void punctuationEquivalentTitlesCollide() {
         // All three reduce to "aurelia-ring" through Slug.from, which is the
         // non-obvious part: an admin would not expect these to clash.
-        service.create("Aurelia Ring", null, List.of());
-        assertThatCode(() -> service.create("Aurelia-Ring", null, List.of()))
+        service.create("Aurelia Ring", null, List.of(), STAFF);
+        assertThatCode(() -> service.create("Aurelia-Ring", null, List.of(), STAFF))
                 .doesNotThrowAnyException();
-        assertThatCode(() -> service.create("AURELIA RING", null, List.of()))
+        assertThatCode(() -> service.create("AURELIA RING", null, List.of(), STAFF))
                 .doesNotThrowAnyException();
 
         assertThat(repository.findAll()).extracting("slug").doesNotHaveDuplicates();
@@ -103,8 +187,8 @@ class ProductSlugCollisionTest {
     void punctuationOnlyTitlesCollide() {
         // Slug.from returns the literal "product" for a title with no
         // alphanumerics, so every such title collides with every other.
-        service.create("!!!", null, List.of());
-        assertThatCode(() -> service.create("???", null, List.of()))
+        service.create("!!!", null, List.of(), STAFF);
+        assertThatCode(() -> service.create("???", null, List.of(), STAFF))
                 .doesNotThrowAnyException();
 
         assertThat(repository.findAll()).extracting("slug").doesNotHaveDuplicates();
@@ -122,7 +206,7 @@ class ProductSlugCollisionTest {
                         'JEWELLERY', '{}'::jsonb, '{}', false)
                 """);
 
-        var created = service.create("Legacy Piece", null, List.of());
+        var created = service.create("Legacy Piece", null, List.of(), STAFF);
 
         assertThat(created.slug()).isNotEqualTo("legacy-piece").startsWith("legacy-piece-");
     }
@@ -130,7 +214,7 @@ class ProductSlugCollisionTest {
     @Test
     @DisplayName("the first product with a title keeps the clean slug, so URLs are not gratuitously ugly")
     void firstOneKeepsTheCleanSlug() {
-        var only = service.create("Meridian Dive 300", null, List.of());
+        var only = service.create("Meridian Dive 300", null, List.of(), STAFF);
         assertThat(only.slug()).isEqualTo("meridian-dive-300");
     }
 }

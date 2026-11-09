@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
@@ -56,12 +57,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  * services depend on survive.
  */
 @SpringBootTest
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
         "eureka.client.enabled=false"
 })
 class ProductDeletionTest {
+
+    /** Who the event log records as making these changes (ProductOutboxTest covers the actor). */
+    private static final String STAFF = "user:catalog-test";
 
     @Autowired
     private ProductService products;
@@ -92,17 +96,17 @@ class ProductDeletionTest {
         jdbc.update("UPDATE products SET primary_category_id = NULL");
         jdbc.update("DELETE FROM products");
 
-        productId = products.create("Aurelia Solitaire Ring", null, List.of("rings")).id();
+        productId = products.create("Aurelia Solitaire Ring", null, List.of("rings"), STAFF).id();
         var withVariant = products.addVariant(productId, new VariantCreateRequest(
-                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of())).orElseThrow();
+                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()), STAFF).orElseThrow();
         variantId = withVariant.variants().getFirst().id();
-        products.publish(productId);
+        products.publish(productId, STAFF);
     }
 
     @Test
     @DisplayName("the variant row SURVIVES a delete, because other databases key on its id")
     void variantRowSurvives() {
-        assertThat(products.deleteById(productId)).isTrue();
+        assertThat(products.deleteById(productId, STAFF)).isTrue();
 
         Integer variants = jdbc.queryForObject(
                 "SELECT count(*) FROM product_variants WHERE id = ?", Integer.class, variantId);
@@ -118,7 +122,7 @@ class ProductDeletionTest {
     @Test
     @DisplayName("a deleted product is flagged and archived, not physically removed")
     void deletedProductIsFlaggedAndArchived() {
-        products.deleteById(productId);
+        products.deleteById(productId, STAFF);
 
         var row = jdbc.queryForMap(
                 "SELECT is_deleted, status FROM products WHERE id = ?", productId);
@@ -138,7 +142,7 @@ class ProductDeletionTest {
                 StorefrontFilter.unfiltered(), ProductSort.NEWEST, 0, 50))
                 .contains(productId);
 
-        products.deleteById(productId);
+        products.deleteById(productId, STAFF);
 
         assertThat(repository.findStorefrontIds(
                 StorefrontFilter.unfiltered(), ProductSort.NEWEST, 0, 50))
@@ -149,14 +153,14 @@ class ProductDeletionTest {
     @Test
     @DisplayName("a deleted product 404s on the public read")
     void goneFromThePublicRead() {
-        products.deleteById(productId);
+        products.deleteById(productId, STAFF);
         assertThat(products.findByIdWithAvailability(productId)).isEmpty();
     }
 
     @Test
     @DisplayName("a deleted product is gone from the ADMIN read too, so it cannot be edited back")
     void goneFromTheAdminRead() {
-        products.deleteById(productId);
+        products.deleteById(productId, STAFF);
 
         // An operator who deleted a product should not find it in the admin
         // API either -- otherwise "deleted" means "hidden from customers", and
@@ -167,17 +171,17 @@ class ProductDeletionTest {
     @Test
     @DisplayName("deleting twice reports false the second time, as a hard delete did")
     void secondDeleteIsFalse() {
-        assertThat(products.deleteById(productId)).isTrue();
+        assertThat(products.deleteById(productId, STAFF)).isTrue();
         // The HTTP contract is unchanged: 204 then 404. A soft delete that
         // reported success forever would make DELETE non-idempotent in the
         // wrong direction.
-        assertThat(products.deleteById(productId)).isFalse();
+        assertThat(products.deleteById(productId, STAFF)).isFalse();
     }
 
     @Test
     @DisplayName("pricing answers UNPUBLISHED for a deleted product's variant, not UNKNOWN")
     void pricingStillDistinguishesWithdrawnFromUnknown() {
-        products.deleteById(productId);
+        products.deleteById(productId, STAFF);
 
         var entry = pricing.priceAll(List.of(variantId)).results().getFirst();
 
@@ -199,9 +203,9 @@ class ProductDeletionTest {
     @Test
     @DisplayName("a deleted product's slug stays taken, so a new product cannot silently inherit its URL")
     void slugRemainsReserved() {
-        products.deleteById(productId);
+        products.deleteById(productId, STAFF);
 
-        var replacement = products.create("Aurelia Solitaire Ring", null, List.of());
+        var replacement = products.create("Aurelia Solitaire Ring", null, List.of(), STAFF);
 
         // The row still exists, so the UNIQUE constraint still applies and the
         // collision resolver gives the new product a distinct slug. That is
@@ -217,7 +221,7 @@ class ProductDeletionTest {
         // The event remains the signal to inventory and search. What changes
         // is what inventory DOES with it -- it flags its reference rather than
         // deleting it, for the same reason the variant row survives here.
-        assertThat(products.deleteById(productId)).isTrue();
+        assertThat(products.deleteById(productId, STAFF)).isTrue();
         assertThat(products.findByIdWithAvailability(productId)).isEmpty();
     }
 }

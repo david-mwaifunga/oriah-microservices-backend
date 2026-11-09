@@ -56,6 +56,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class AdminProductControllerTest {
 
     /**
+     * The actor the controller hands the service: the token's subject, as
+     * catalog's event log records it. spring-security-test's jwt() signs as
+     * subject "user".
+     */
+    private static final String ACTOR = "user:user";
+
+    /**
      * Helper to attach a JWT with the CATALOG_ADMIN role to a MockMvc
      * request. {@code jwt()} comes from spring-security-test and skips
      * the real {@code JwtDecoder} entirely — the authentication object
@@ -111,7 +118,7 @@ class AdminProductControllerTest {
         // the compiler here because Mockito takes matchers, not a signature.
         when(service.create(eq("Aurelia Solitaire Ring"),
                 eq("A single-stone solitaire in 18k recycled gold."),
-                any(), any(), any(), any(), any())).thenReturn(ProductMapper.toResponse(saved));
+                any(), any(), any(), any(), any(), eq(ACTOR))).thenReturn(ProductMapper.toResponse(saved));
 
         String body = """
                 {
@@ -149,7 +156,7 @@ class AdminProductControllerTest {
                         .content(body))
                 .andExpect(status().isBadRequest());
 
-        verify(service, never()).create(any(), any(), any());
+        verify(service, never()).create(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -170,7 +177,7 @@ class AdminProductControllerTest {
                         .content(body))
                 .andExpect(status().isBadRequest());
 
-        verify(service, never()).create(any(), any(), any());
+        verify(service, never()).create(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -181,7 +188,7 @@ class AdminProductControllerTest {
                 "A single-stone solitaire in 18k recycled gold.",
                 List.of("rings", "engagement"));
 
-        when(service.update(eq(id), any(ProductUpdateRequest.class)))
+        when(service.update(eq(id), any(ProductUpdateRequest.class), eq(ACTOR)))
                 .thenReturn(Optional.of(ProductMapper.toResponse(updated)));
 
         String body = """
@@ -211,7 +218,7 @@ class AdminProductControllerTest {
                         .content(body))
                 .andExpect(status().isBadRequest());
 
-        verify(service, never()).update(any(), any());
+        verify(service, never()).update(any(), any(), any());
     }
 
     @Test
@@ -229,14 +236,14 @@ class AdminProductControllerTest {
                         .content(body))
                 .andExpect(status().isBadRequest());
 
-        verify(service, never()).update(any(), any());
+        verify(service, never()).update(any(), any(), any());
     }
 
     @Test
     @DisplayName("PATCH /api/v1/admin/products/{id} returns 404 when the product does not exist")
     void updateReturns404WhenNotFound() throws Exception {
         var id = UUID.fromString("77777777-7777-7777-7777-777777777777");
-        when(service.update(eq(id), any(ProductUpdateRequest.class)))
+        when(service.update(eq(id), any(ProductUpdateRequest.class), eq(ACTOR)))
                 .thenReturn(Optional.empty());
 
         String body = """
@@ -263,7 +270,7 @@ class AdminProductControllerTest {
     @DisplayName("DELETE /api/v1/admin/products/{id} returns 204 when the product exists")
     void deleteReturns204OnExistingProduct() throws Exception {
         var id = UUID.fromString("88888888-8888-8888-8888-888888888888");
-        when(service.deleteById(id)).thenReturn(true);
+        when(service.deleteById(id, ACTOR)).thenReturn(true);
 
         mvc.perform(delete("/api/v1/admin/products/{id}", id)
                         .with(jwt().authorities(CATALOG_ADMIN)))
@@ -274,7 +281,7 @@ class AdminProductControllerTest {
     @DisplayName("DELETE /api/v1/admin/products/{id} returns 404 when the product does not exist")
     void deleteReturns404WhenNotFound() throws Exception {
         var id = UUID.fromString("99999999-9999-9999-9999-999999999999");
-        when(service.deleteById(id)).thenReturn(false);
+        when(service.deleteById(id, ACTOR)).thenReturn(false);
 
         mvc.perform(delete("/api/v1/admin/products/{id}", id)
                         .with(jwt().authorities(CATALOG_ADMIN)))
@@ -299,7 +306,7 @@ class AdminProductControllerTest {
                                 """))
                 .andExpect(status().isUnauthorized());
 
-        verify(service, never()).create(any(), any(), any());
+        verify(service, never()).create(any(), any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -313,6 +320,6 @@ class AdminProductControllerTest {
                                 """))
                 .andExpect(status().isForbidden());
 
-        verify(service, never()).create(any(), any(), any());
+        verify(service, never()).create(any(), any(), any(), any(), any(), any(), any(), any());
     }
 }

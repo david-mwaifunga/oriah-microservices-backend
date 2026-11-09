@@ -1,0 +1,1 @@
+{"id":"{{productId}}","title":"Aurelia Ring","description":null,"tags":["rings","gold"],"productType":"JEWELLERY","status":"ACTIVE","variants":[{"variantId":"{{variantId}}","sku":"AUR-1","title":"Aurelia Ring","unitPrice":4600.50,"currency":"ZMW","active":true}]}

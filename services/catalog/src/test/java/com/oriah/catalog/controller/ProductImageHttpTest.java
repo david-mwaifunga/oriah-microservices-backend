@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -47,12 +48,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@Import(TestcontainersConfiguration.class)
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
         "eureka.client.enabled=false"
 })
 class ProductImageHttpTest {
+
+    /** Who the event log records as making these changes (ProductOutboxTest covers the actor). */
+    private static final String STAFF = "user:catalog-test";
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -81,12 +85,12 @@ class ProductImageHttpTest {
         imageRepository.deleteAll();
         productRepository.deleteAll();
 
-        draftProduct = products.create("Unreleased Ring", null, List.of()).id();
+        draftProduct = products.create("Unreleased Ring", null, List.of(), STAFF).id();
 
-        liveProduct = products.create("Aurelia Solitaire Ring", null, List.of()).id();
+        liveProduct = products.create("Aurelia Solitaire Ring", null, List.of(), STAFF).id();
         products.addVariant(liveProduct, new VariantCreateRequest(
-                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()));
-        products.publish(liveProduct);
+                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()), STAFF);
+        products.publish(liveProduct, STAFF);
     }
 
     /** Uploads through the real admin endpoint and returns the new image id. */
