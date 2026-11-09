@@ -1359,20 +1359,34 @@ foreach ($probe in $intentProbes) {
     }
 }
 # And the shape must still narrow the input rather than the feature: a
-# well-formed intent is created, in the currency it was asked for.
+# well-formed intent is created, in the currency it was asked for. On an
+# order of its own: an order has at most one live intent (payment V5), and
+# $orderId was paid by checkout, so a second intent for it is 409 by design.
+$goodOrder = New-ProbeOrder $aliceH 11      # 11 x 100.00 = 1100.00
 $goodIntent = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/payments/intents" `
     -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ orderId=$orderId; amount=4500.00; currency="ZMW" })
+    -Body (ConvertTo-Json @{ orderId=$goodOrder.id; amount=$goodOrder.total; currency="ZMW" })
 if ($goodIntent.currency -ne "ZMW" -or $goodIntent.status -ne "PENDING") {
     $intentFailures += "a well-formed intent came back currency=$($goodIntent.currency) status=$($goodIntent.status)"
+}
+# One live intent per order: checkout already paid $orderId, so a second
+# intent for it is refused -- otherwise the same order could be charged twice.
+try {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
+        -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ orderId=$orderId; amount=4500.00; currency="ZMW" }) | Out-Null
+    $intentFailures += "a second intent for an order already paid was ACCEPTED"
+} catch {
+    $code = Probe-Status $_
+    if ($code -ne 409) { $intentFailures += "second intent for a paid order gave $code, expected 409" }
 }
 if ($intentFailures.Count -gt 0) {
     $intentFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
     Write-Error "payment intent input surface regressed on $($intentFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent still created" -ForegroundColor Gray
+Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent still created; a second intent for a paid order refused 409" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green
