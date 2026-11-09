@@ -30,25 +30,31 @@ import com.oriah.payment.TestcontainersConfiguration;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Creating an intent now asks order whose order it is, and that call must
- * finish well inside the time checkout waits for payment.
+ * Creating an intent asks order whose order it is, and that call -- with room
+ * left for payment's own work after it -- must finish inside the time checkout
+ * waits for payment's create.
  *
  * <h2>Why the sum matters</h2>
  *
- * Checkout gives payment 15s to answer each call (its Feign
- * {@code readTimeout}, checkout {@code application.yaml}), and retries an
- * outage up to three attempts, 500ms apart. If payment's wait for order could
- * run past 15s, checkout would give up on an attempt while payment was still
- * working -- and payment might then write an intent nobody is waiting for.
- * Kept inside the 15s, checkout always hears payment's own answer: 201, the
- * 200 for an intent it already made, a 404, or a 503 it can retry.
+ * Checkout calls createIntent on a Feign client of its own, contextId
+ * {@code payment-create}, which gives payment 6s to answer each attempt
+ * (checkout {@code application.yaml}). Because the call is idempotent,
+ * checkout repeats an attempt whose answer did not come in time, up to three
+ * attempts, 500ms apart. So if payment's create could run past that wait,
+ * every attempt would be cut off while payment was still working: the
+ * shopper would get a 503 after three wasted attempts, for an intent payment
+ * may well have made. Kept inside it, checkout always hears payment's own
+ * answer: 201, the 200 for an intent it already made, a 404, a 409, or a 503.
  *
  * <p>The worst case -- order taking its full time to connect and its full time
- * to answer -- is asserted, not just described in a comment that the next
- * call added to this path makes untrue. Not counted: payment's own database
- * work after the call, which the 11s left over covers many times.
+ * to answer -- must leave at least {@link #PAYMENTS_OWN_WORK_MS} of checkout's
+ * wait for what payment does after it: one short transaction (look for the
+ * order's live intent, or insert one), normally milliseconds, plus room for a
+ * slow commit, a garbage-collection pause and the reply's way back. Asserted,
+ * not just described in a comment that the next call added to this path
+ * makes untrue.
  *
- * <p>The numbers are read the way Spring Cloud reads them: from the
+ * <p>Payment's numbers are read the way Spring Cloud reads them: from the
  * configuration keyed by the {@code @FeignClient} name. A misspelled key leaves
  * feign's 10s/60s defaults in place, which no budget could absorb, so the name
  * is asserted too.
@@ -56,10 +62,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Checkout's side is read from checkout's own files, not copied here: a
  * copy stays green when checkout's wait is shortened, which is exactly when
  * the budget stops fitting. Checkout's {@code application.yaml} and each of
- * its profile files are read, bound as Spring binds them, and the shortest
- * wait in any profile is the one payment must fit inside. Not read:
- * config-repo, which carries no Feign settings for checkout today -- a
- * timeout put there would override these files and is not caught.
+ * its profile files are read, bound as Spring binds them -- createIntent's
+ * own {@code payment-create} entry over checkout's {@code default} -- and the
+ * shortest wait in any profile is the one payment must fit inside. This test
+ * used to read checkout's {@code payment} client, which since createIntent got
+ * its own client governs only confirm: it stayed green with createIntent's real
+ * wait set too short to fit. Not read: config-repo, which carries no Feign
+ * settings for checkout today -- a timeout put there would override these
+ * files and is not caught.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -69,8 +79,20 @@ class CreateIntentBudgetTest {
     /** Where checkout's configuration lives, from the root of oriah-api. */
     private static final Path CHECKOUT_RESOURCES = Path.of("services", "checkout", "src", "main", "resources");
 
-    /** Checkout's own name for its payment client: {@code @FeignClient(name = "payment")}. */
-    private static final String CHECKOUTS_PAYMENT_CLIENT = "payment";
+    /**
+     * The client checkout calls createIntent with -- its {@code contextId},
+     * which is what Spring Cloud keys a client's settings by:
+     * {@code @FeignClient(name = "payment", contextId = "payment-create")}.
+     */
+    private static final String CHECKOUTS_CREATE_INTENT_CLIENT = "payment-create";
+
+    /**
+     * What payment's create does after order has answered must fit in what is
+     * left of checkout's wait: at least this much. The work is one short
+     * transaction -- normally milliseconds -- so 2s covers a slow commit, a
+     * garbage-collection pause and the reply's way back many times over.
+     */
+    private static final int PAYMENTS_OWN_WORK_MS = 2_000;
 
     /** feign-core's own read timeout, which governs when checkout configures none. */
     private static final int FEIGN_DEFAULT_READ_TIMEOUT_MS = 60_000;
@@ -131,33 +153,53 @@ class CreateIntentBudgetTest {
     }
 
     @Test
-    @DisplayName("the worst case of payment's call to order fits inside checkout's own wait for payment")
+    @DisplayName("payment's worst create -- order's full wait plus 2s of its own work -- fits inside checkout's wait for createIntent")
     void theCallToOrderFitsInsideCheckoutsWait() throws IOException {
         FeignClientProperties.FeignClientConfiguration config = config();
         int worst = config.getConnectTimeout() + config.getReadTimeout();
+        int checkoutsWait = checkoutsShortestWaitForCreateIntentMs();
 
-        assertThat(worst)
-                .as("order at its full connect and read time, inside one of checkout's attempts "
-                        + "(checkout's readTimeout for payment, read from its own files)")
-                .isLessThan(checkoutsShortestWaitForPaymentMs());
+        assertThat(checkoutsWait - worst)
+                .as("what is left of checkout's wait for createIntent (%d ms, its '%s' client, read from "
+                        + "checkout's own files) once order has taken its full connect and read time (%d ms): "
+                        + "payment's own work needs at least %d ms of it",
+                        checkoutsWait, CHECKOUTS_CREATE_INTENT_CLIENT, worst, PAYMENTS_OWN_WORK_MS)
+                .isGreaterThanOrEqualTo(PAYMENTS_OWN_WORK_MS);
+    }
+
+    @Test
+    @DisplayName("checkout's application.yaml names createIntent's own client, so nothing falls back to its default unseen")
+    void checkoutNamesCreateIntentsOwnClient() throws IOException {
+        // Without an entry under this name, the reading below would quietly
+        // measure checkout's default wait instead -- the very mistake this
+        // test used to make by reading the 'payment' client. If checkout
+        // renames the client, this goes red and the name above follows it.
+        FeignClientProperties feign = bind(documents(checkoutResources().resolve("application.yaml")));
+
+        assertThat(feign.getConfig().get(CHECKOUTS_CREATE_INTENT_CLIENT))
+                .as("spring.cloud.openfeign.client.config.%s in checkout's application.yaml",
+                        CHECKOUTS_CREATE_INTENT_CLIENT)
+                .isNotNull()
+                .extracting(FeignClientProperties.FeignClientConfiguration::getReadTimeout)
+                .isNotNull();
     }
 
     /**
-     * Checkout's read timeout for its calls to payment, in the profile where it
-     * is shortest: {@code application.yaml} alone, and with each
+     * Checkout's read timeout for createIntent, in the profile where it is
+     * shortest: {@code application.yaml} alone, and with each
      * {@code application-<profile>.yaml} laid over it, as Spring would.
      */
-    private static int checkoutsShortestWaitForPaymentMs() throws IOException {
+    private static int checkoutsShortestWaitForCreateIntentMs() throws IOException {
         Path resources = checkoutResources();
         List<PropertySource<?>> base = documents(resources.resolve("application.yaml"));
         assertThat(base).as("checkout's application.yaml has settings in it").isNotEmpty();
 
-        int shortest = checkoutsWaitForPaymentMs(base);
+        int shortest = checkoutsWaitForCreateIntentMs(base);
         try (Stream<Path> files = Files.list(resources)) {
             for (Path profile : files.filter(f -> f.getFileName().toString().matches("application-.+\\.ya?ml")).toList()) {
                 List<PropertySource<?>> layered = documents(profile);
                 layered.addAll(base);
-                shortest = Math.min(shortest, checkoutsWaitForPaymentMs(layered));
+                shortest = Math.min(shortest, checkoutsWaitForCreateIntentMs(layered));
             }
         }
         return shortest;
@@ -176,17 +218,22 @@ class CreateIntentBudgetTest {
     }
 
     /** First source wins, as in Spring's environment; the client's own entry over {@code default}. */
-    private static int checkoutsWaitForPaymentMs(List<PropertySource<?>> sources) {
-        FeignClientProperties feign = new Binder(ConfigurationPropertySources.from(sources))
-                .bind("spring.cloud.openfeign.client", FeignClientProperties.class)
-                .orElseGet(FeignClientProperties::new);
-        for (String name : List.of(CHECKOUTS_PAYMENT_CLIENT, feign.getDefaultConfig())) {
+    private static int checkoutsWaitForCreateIntentMs(List<PropertySource<?>> sources) {
+        FeignClientProperties feign = bind(sources);
+        for (String name : List.of(CHECKOUTS_CREATE_INTENT_CLIENT, feign.getDefaultConfig())) {
             FeignClientProperties.FeignClientConfiguration client = feign.getConfig().get(name);
             if (client != null && client.getReadTimeout() != null) {
                 return client.getReadTimeout();
             }
         }
         return FEIGN_DEFAULT_READ_TIMEOUT_MS;
+    }
+
+    /** Checkout's Feign settings as Spring binds them from these sources. */
+    private static FeignClientProperties bind(List<PropertySource<?>> sources) {
+        return new Binder(ConfigurationPropertySources.from(sources))
+                .bind("spring.cloud.openfeign.client", FeignClientProperties.class)
+                .orElseGet(FeignClientProperties::new);
     }
 
     /**

@@ -9,11 +9,15 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 
+/**
+ * payment's confirm endpoint -- the call that charges the card.
+ *
+ * <p>createIntent is on {@link PaymentCreateClient}, a client of its own, so
+ * that it can have shorter timeouts. The request and reply shapes the two
+ * endpoints share are declared here.
+ */
 @FeignClient(name = "payment", fallback = PaymentClientFallback.class)
 public interface PaymentClient {
-
-    @PostMapping("/api/v1/payments/intents")
-    IntentResponse createIntent(@RequestBody CreateIntentRequest body);
 
     /**
      * Charge the gateway and settle the intent.

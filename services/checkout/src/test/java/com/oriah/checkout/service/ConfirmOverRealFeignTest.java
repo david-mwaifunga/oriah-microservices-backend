@@ -75,8 +75,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * and every failure is a real one -- a reply that never comes, a connection
  * dropped after the request went out, a port with nothing listening.
  *
- * <p>Only the waits are shortened, so a timeout costs a test half a second
- * rather than fifteen; what is retried and what is not is unchanged.
+ * <p>Only the waits are shortened, so a timeout costs a test three seconds
+ * rather than fifteen (createIntent's own client: 1 s rather than 6 s, still
+ * the shorter of the two, as in application.yaml); what is retried and what is
+ * not is unchanged.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -87,8 +89,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         // The load balancer reads the instance list afresh, so a test can point
         // one service at a closed port and put it back afterwards.
         "spring.cloud.loadbalancer.cache.enabled=false",
+        // Shortened, but not too short: on a busy machine (a full build, other
+        // builds beside it) WireMock's first answers can take most of a second.
+        // At 1 s for every call and 300 ms for createIntent, that alone turned
+        // ordinary answers into timeouts -- the first test's cart call, every
+        // create -- and tests went red for a reason that is not checkout's. So
+        // 3 s here, and a test that needs a timeout makes the server wait 4 s.
         "spring.cloud.openfeign.client.config.default.connectTimeout=1000",
-        "spring.cloud.openfeign.client.config.default.readTimeout=500",
+        "spring.cloud.openfeign.client.config.default.readTimeout=3000",
+        // createIntent's own client waits less than every other call, as in
+        // application.yaml, so a test can tell the two apart: 1 s against 3 s.
+        "spring.cloud.openfeign.client.config.payment-create.connectTimeout=1000",
+        "spring.cloud.openfeign.client.config.payment-create.readTimeout=1000",
         "resilience4j.retry.configs.default.wait-duration=10ms"
 })
 class ConfirmOverRealFeignTest {
@@ -280,7 +292,7 @@ class ConfirmOverRealFeignTest {
         // The request reached order; only the reply is late. Order may have
         // saved the order, so a second attempt could save a second one.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders"))
-                .willReturn(okJson(order("CREATED", null)).withFixedDelay(2_000)));
+                .willReturn(okJson(order("CREATED", null)).withFixedDelay(4_000)));
 
         confirm().andExpect(status().isServiceUnavailable());
 
@@ -342,21 +354,87 @@ class ConfirmOverRealFeignTest {
     }
 
     @Test
-    @DisplayName("payment unable to make an intent (503, Retry-After) is retried, then checkout's own 503 naming payment")
-    void anUnavailableCreateIntentIsRetriedThenServiceUnavailable() throws Exception {
+    @DisplayName("createIntent waits only as long as its OWN client allows, not as long as confirm's")
+    void createIntentWaitsOnlyAsLongAsItsOwnClientAllows() throws Exception {
+        // Here createIntent's client gives payment 1 s to answer and every
+        // other client 3 s. Payment answers every create in 2 s: inside the
+        // shared wait, outside createIntent's own. So createIntent gives up on
+        // each attempt, and -- the reply being lost, and the call idempotent --
+        // tries three times, then answers 503; nothing is ever confirmed. Had
+        // createIntent shared confirm's client, the first answer would have
+        // been taken and the checkout completed.
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents"))
+                .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
+                        .withBody(intent("PENDING")).withFixedDelay(2_000)));
+
+        confirm().andExpect(status().isServiceUnavailable());
+
+        DOWNSTREAM.verify(3, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
+        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/payments/intents/.*/confirm")));
+    }
+
+    @Test
+    @DisplayName("payment unable to make an intent (503, Retry-After) is NOT repeated: checkout's own 503 naming payment")
+    void anUnavailableCreateIntentThatAsksForLaterIsNotRepeated() throws Exception {
         // Payment answers 503 with Retry-After when it cannot ask order whose
-        // order this is: nothing was made. The shopper is told which service
-        // -- by its name, not by the name of checkout's retry settings.
+        // order this is: nothing was made. It answers that only after waiting
+        // on order, and Retry-After says "not before 5 seconds" -- so checkout
+        // does not ask again half a second later. It used to, three times,
+        // which made this answer take up to three times as long. The shopper
+        // is told which service -- by its name, not by the name of checkout's
+        // retry settings -- and when to try again.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents")).willReturn(aResponse()
                 .withStatus(503).withHeader("Retry-After", "5")
                 .withHeader("Content-Type", "application/problem+json").withBody("{\"status\":503}")));
 
         confirm().andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"))
                 .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith(
                         "The payment service is temporarily unavailable. Nothing has been charged")));
 
-        DOWNSTREAM.verify(3, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
         DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/payments/intents/.*/confirm")));
+    }
+
+    // ------------------------------------- an answer that asks for later is not repeated
+
+    @Test
+    @DisplayName("order.place answered 503 with Retry-After is NOT repeated: one request, checkout's own 503")
+    void anOrderPlacementThatAsksForLaterIsNotRepeated() throws Exception {
+        // Order answers 503 with Retry-After when customer, Keycloak or
+        // shipping let it down -- after waiting on them, up to 13 s. Asking
+        // again 0.5 s later would wait all of that again, twice more, and lean
+        // on order while it says it is struggling.
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(aResponse()
+                .withStatus(503).withHeader("Retry-After", "5")
+                .withHeader("Content-Type", "application/problem+json").withBody("{\"status\":503}")));
+
+        confirm().andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"));
+
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
+        DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
+    }
+
+    @Test
+    @DisplayName("order.place answered 503 WITHOUT Retry-After is still repeated: three requests, then checkout's 503")
+    void anOrderPlacementAnswered503WithoutRetryAfterIsRepeated() throws Exception {
+        // A 503 that does not say when to come back is still worth another
+        // try: it means order did not do the work. This is exactly order's
+        // own answer when CATALOG lets it down -- order's
+        // GlobalExceptionHandler sends that 503 without Retry-After -- so that
+        // case IS repeated, asking customer and catalog again each time, up to
+        // about 20.5 s in all (NetworkFailures.askedToComeBackLater). Giving it
+        // a Retry-After is order's change to make.
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(aResponse()
+                .withStatus(503).withHeader("Content-Type", "application/problem+json")
+                .withBody("{\"status\":503}")));
+
+        confirm().andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"));
+
+        DOWNSTREAM.verify(3, postRequestedFor(urlEqualTo("/api/v1/orders")));
+        DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
     }
 
     // ------------------------------------------- payment.confirm: the call that moves money
@@ -370,7 +448,7 @@ class ConfirmOverRealFeignTest {
         // charged; retry", which would invite a second purchase. And it is not
         // sent again: confirm's retry repeats only a request that never left.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .willReturn(okJson(intent("SUCCEEDED")).withFixedDelay(2_000)));
+                .willReturn(okJson(intent("SUCCEEDED")).withFixedDelay(4_000)));
 
         confirm().andExpect(status().isBadGateway())
                 .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"));
@@ -395,18 +473,19 @@ class ConfirmOverRealFeignTest {
     }
 
     @Test
-    @DisplayName("confirm answered 503 'outcome unknown': sent again, payment refuses the repeat (409), shopper gets 502")
-    void anOutcomeUnknownConfirmIsSentAgainAndTheRepeatIsRefused() throws Exception {
+    @DisplayName("confirm answered 503 'outcome unknown': NOT sent again, shopper gets 502, order not marked paid")
+    void anOutcomeUnknownConfirmIsNotSentAgain() throws Exception {
         // Payment answers confirm 503 when its card gateway gave no answer: the
         // money MAY have been taken. Unlike every other 503 checkout sees, the
-        // work may have been done. Confirm is on the default retry, which
-        // repeats any 503 -- so the request to charge IS sent a second time.
-        // That is safe only because of payment: before charging it records the
-        // intent as CHARGING, and a repeat for an intent in that state is
-        // refused 409 and charges nothing (PaymentService.confirm). The repeat
-        // can never succeed. This pins checkout's half: the repeat is made, its
-        // 409 ends the checkout as the 502 "may or may not have gone through",
-        // and the order is never marked paid.
+        // work may have been done -- so confirm's retry repeats only a request
+        // that never arrived, and this answer is sent exactly once.
+        //
+        // This test used to expect TWO requests: confirm was on the default
+        // retry, which repeats any 503, and the repeat was safe only because
+        // payment refuses it (409, nothing charged -- the second stub below is
+        // kept for that reason: should checkout ever repeat it again, the
+        // repeat is refused and only the count goes red). A repeat that can
+        // never succeed is load and noise; one request is the behaviour now.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
                 .inScenario("outcome unknown")
                 .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
@@ -420,9 +499,16 @@ class ConfirmOverRealFeignTest {
                         .withBody("{\"status\":409,\"detail\":\"still in progress\"}")));
 
         confirm().andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"));
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"))
+                // Payment DID answer here -- with "not known yet" -- so the
+                // shopper is not told it "did not answer".
+                .andExpect(jsonPath("$.detail").value(
+                        "Your order is recorded, but its payment could not be confirmed (the payment "
+                                + "service gave no usable answer), so the charge may or may not have gone "
+                                + "through. Please do not pay again: the order shows as pending until the "
+                                + "payment has been checked. Contact us if you were charged."));
 
-        DOWNSTREAM.verify(2, postRequestedFor(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm")));
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm")));
         DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
     }
 
@@ -464,7 +550,7 @@ class ConfirmOverRealFeignTest {
         DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
         assertThat(Attempts.of("payment"))
                 .as("one create, then three confirm attempts that the load balancer answered itself -- "
-                        + "retried, as a 503 is, and safe to retry because none was sent")
+                        + "retried because none was sent, the one thing confirm's rule repeats")
                 .isEqualTo(4);
     }
 

@@ -25,6 +25,7 @@ import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
+import com.oriah.checkout.client.PaymentCreateClient;
 import com.oriah.checkout.client.ShippingClient;
 
 import feign.FeignException;
@@ -80,6 +81,7 @@ class DownstreamProblemPassThroughTest {
     @MockitoBean private CustomerClient customer;
     @MockitoBean private ShippingClient shipping;
     @MockitoBean private OrderClient order;
+    @MockitoBean private PaymentCreateClient paymentCreate;
     @MockitoBean private PaymentClient payment;
 
     @MockitoBean
@@ -164,7 +166,7 @@ class DownstreamProblemPassThroughTest {
                 .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/outside-delivery-area"));
 
         verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -191,7 +193,7 @@ class DownstreamProblemPassThroughTest {
                 .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/pricing-changed"))
                 .andExpect(content().string(not(containsString("/api/v1/orders"))));
 
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
         verify(payment, never()).confirm(any(), any(), any());
     }
 
@@ -216,6 +218,6 @@ class DownstreamProblemPassThroughTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/bag-not-purchasable"));
 
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 }

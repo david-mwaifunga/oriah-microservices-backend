@@ -12,8 +12,12 @@ import org.springframework.web.server.ResponseStatusException;
  *
  * <p>Nobody checked, so this is never the 404 "not your order": that would
  * tell an owner their own order is not theirs during an outage. Nothing has
- * been written or charged, so a retry is safe -- and checkout does retry a
- * 503 by itself, up to three attempts.
+ * been written or charged, so a retry is safe -- but not at once. This answer
+ * comes only after payment has already waited on order, and it carries
+ * {@code Retry-After}, so checkout does NOT repeat it (repeating it three times
+ * would wait on order three times over): checkout answers the shopper with its
+ * own 503, also carrying {@code Retry-After}, and the shopper tries again
+ * later.
  *
  * <p>A {@link ResponseStatusException}, so the shared error advice renders it
  * as a 503 problem with this detail and keeps the {@code Retry-After} header.

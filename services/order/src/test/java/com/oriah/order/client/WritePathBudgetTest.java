@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Placing an order makes four calls one after another, and together they must
- * fit inside the time checkout waits for order.
+ * leave room, inside the time checkout waits for order, for order's own work.
  *
  * <h2>Why the sum matters</h2>
  *
@@ -41,12 +41,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * checkout {@code application.yaml}). Inside that, order asks customer whose
  * address it is, catalog what the lines cost, Keycloak for its own token (when
  * the cached one has run out) and shipping what delivery costs -- in that
- * order, each waiting for the last. If the four can take longer than 15s,
- * checkout gives up and tells the shopper it failed while order is still
- * working, and may yet save an order nobody is waiting for. So the worst case
- * -- every call taking its full time to connect and its full time to answer --
- * is asserted, not just described in a comment that the next added call makes
- * untrue.
+ * order, each waiting for the last -- and then saves the order and answers.
+ * If all that can take longer than 15s, checkout gives up and tells the
+ * shopper it failed while order is still working, and order may yet save an
+ * order nobody is waiting for. So the worst case -- every call taking its full
+ * time to connect and its full time to answer -- is asserted to leave at least
+ * 2s for the save and the reply, not just described in a comment that the
+ * next added call makes untrue. (It used to be asserted only to fit, and fitted
+ * exactly: 15s of calls in a 15s wait, nothing left for the save.)
  *
  * <p>Each client's numbers are read the way Spring Cloud reads them: from the
  * configuration keyed by the {@code @FeignClient} name. A misspelled key leaves
@@ -87,6 +89,15 @@ class WritePathBudgetTest {
     private static final int TOKEN_WORST_MS = (int) (MachineIdentityConfig.TOKEN_CONNECT_TIMEOUT.toMillis()
             + MachineIdentityConfig.TOKEN_READ_TIMEOUT.toMillis());
 
+    /**
+     * What order does after the four calls must fit in what is left of
+     * checkout's wait: at least this much. It is one transaction -- the order,
+     * its lines and its event-log row -- and the reply, normally tens of
+     * milliseconds; 2s covers a slow commit, a garbage-collection pause and the
+     * reply's way back many times over.
+     */
+    private static final int ORDERS_OWN_WORK_MS = 2_000;
+
     /** The Feign clients on the placement path, by their @FeignClient name. */
     private static final Map<String, Class<?>> WRITE_PATH = Map.of(
             "customer", CustomerClient.class,
@@ -112,14 +123,37 @@ class WritePathBudgetTest {
     }
 
     @Test
-    @DisplayName("customer has its own timeouts: 1s to connect, 2s to answer")
+    @DisplayName("customer has its own timeouts: 0.5s to connect, 2s to answer")
     void customerHasItsOwnTimeouts() {
         // On the checkout path checkout read this same list moments earlier,
         // so customer is warm and the answer is a handful of rows: 2s is
-        // generous for it, and the budget has no more to give.
+        // generous for it, and the budget has no more to give. Half a second
+        // to connect: customer is on the same network, where a connection
+        // opens in a millisecond or two; the other half second went to
+        // shipping's answer (below).
         FeignClientProperties.FeignClientConfiguration config = configFor("customer");
 
-        assertThat(config.getConnectTimeout()).isEqualTo(1_000);
+        assertThat(config.getConnectTimeout()).isEqualTo(500);
+        assertThat(config.getReadTimeout()).isEqualTo(2_000);
+    }
+
+    @Test
+    @DisplayName("shipping has its own timeouts: 0.5s to connect, 2s to answer")
+    void shippingHasItsOwnTimeouts() {
+        // Shipping works out a price from settings it holds in memory: no
+        // database, no call of its own. Warm, it answers in milliseconds. But
+        // an order placed straight to order -- the smoke test's step 4b,
+        // Postman -- can be the first request on a freshly started stack that
+        // shipping must check a token for: it then fetches Keycloak's signing
+        // keys and runs its code for the first time, which 1s might not cover.
+        // So 2s to answer, paid for by connecting in half a second (here and
+        // for customer): a connection on the same network opens in a
+        // millisecond or two, so a shorter connect wait costs nothing while
+        // the network is healthy. It was 1s + 3s, which left order's own
+        // save and reply no time at all.
+        FeignClientProperties.FeignClientConfiguration config = configFor("shipping");
+
+        assertThat(config.getConnectTimeout()).isEqualTo(500);
         assertThat(config.getReadTimeout()).isEqualTo(2_000);
     }
 
@@ -132,28 +166,27 @@ class WritePathBudgetTest {
     }
 
     @Test
-    @DisplayName("the worst case of every call on the placement path fits inside checkout's own wait for order")
+    @DisplayName("the worst case of every call on the placement path leaves 2s of checkout's wait for order's own work")
     void theWritePathFitsInsideCheckoutsWait() throws IOException {
         int worst = TOKEN_WORST_MS;
         for (String client : WRITE_PATH.keySet()) {
             FeignClientProperties.FeignClientConfiguration config = configFor(client);
             worst += config.getConnectTimeout() + config.getReadTimeout();
         }
+        int checkoutsWait = checkoutsShortestWaitForOrderMs();
 
-        // At most, not less than: today the four calls' worst case is EXACTLY
-        // checkout's wait (customer 3s + catalog 4s + token 4s + shipping 4s =
-        // 15s, each connect plus read), with nothing left for
-        // order's own save and event-log append after them. So in the very
-        // worst case checkout can still give up first and order save an order
-        // nobody is waiting for -- order's application.yaml says so where the
-        // timeouts are set. Checkout never repeats a placement that timed out,
-        // so that order is not doubled, but it is left CREATED and unpaid.
-        // Leaving room means shortening one of order's own timeouts: the
-        // owner's call, not this test's.
-        assertThat(worst)
-                .as("customer + catalog + token + shipping, each at its full connect and read time, inside "
-                        + "checkout's readTimeout for order (read from checkout's own files)")
-                .isLessThanOrEqualTo(checkoutsShortestWaitForOrderMs());
+        // Not "at most": after the four calls order still has to save the
+        // order, append its event and send the reply. If the calls could take
+        // all of checkout's wait, then in the worst case checkout gives up
+        // first -- tells the shopper it failed -- while order goes on to save
+        // an order nobody is waiting for, left CREATED and unpaid. So the
+        // calls must leave room: at least ORDERS_OWN_WORK_MS.
+        assertThat(checkoutsWait - worst)
+                .as("what is left of checkout's wait for order (%d ms, read from checkout's own files) once "
+                        + "customer + catalog + token + shipping have each taken their full connect and read "
+                        + "time (%d ms): order's own save and reply need at least %d ms of it",
+                        checkoutsWait, worst, ORDERS_OWN_WORK_MS)
+                .isGreaterThanOrEqualTo(ORDERS_OWN_WORK_MS);
     }
 
     /**

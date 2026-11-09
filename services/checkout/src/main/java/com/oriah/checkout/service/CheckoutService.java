@@ -14,6 +14,7 @@ import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
+import com.oriah.checkout.client.PaymentCreateClient;
 import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.ConfirmResponse;
@@ -84,8 +85,13 @@ import lombok.extern.slf4j.Slf4j;
  * retry filter is GET-only, so a POST that moves money is never replayed for
  * the shopper. Resilience4j retries each <em>outbound</em> call -- but only
  * when a second attempt cannot do anything twice: a connection that was never
- * opened, or a 502, 503 or 504 (payment's createIntent, being idempotent, also
- * on a reply that was lost). So a 503 out of here means those already failed.
+ * opened, or a 502, 503 or 504 that did not ask to be tried later (no
+ * {@code Retry-After}). payment's createIntent, being idempotent, also repeats
+ * a reply that was lost; payment's confirm, which may have charged, repeats
+ * only a connection never opened. A 503 that asked for later is not repeated
+ * at all: checkout answers its own 503 instead, with its own
+ * {@code Retry-After}. So a 503 out of here means a dependency is down or
+ * asked for time.
  *
  * <p>This is still not a "real" saga with compensating actions across
  * services. A captured payment that cannot be attached to an order answers 500
@@ -105,12 +111,14 @@ public class CheckoutService {
     private final CatalogPricingClient catalog;
     private final CustomerClient customer;
     private final ShippingClient shipping;
+    private final PaymentCreateClient paymentCreate;
     private final PaymentClient payment;
     private final OrderClient order;
     private final ResilientFeignCaller resilient;
 
     public CheckoutService(CartClient cart, CatalogPricingClient catalog,
                            ShippingClient shipping,
+                           PaymentCreateClient paymentCreate,
                            PaymentClient payment, OrderClient order,
                            CustomerClient customer,
                            ResilientFeignCaller resilient) {
@@ -118,6 +126,7 @@ public class CheckoutService {
         this.catalog = catalog;
         this.customer = customer;
         this.shipping = shipping;
+        this.paymentCreate = paymentCreate;
         this.payment = payment;
         this.order = order;
         this.resilient = resilient;
@@ -459,7 +468,8 @@ public class CheckoutService {
      * about that would invite them to, for ever; and order.place is a POST, so
      * a 500 that came after the order was saved must not be retried into a
      * second one. The retry rule ({@code RetryForAnyCall}) repeats the same
-     * three statuses, and of "no answer" only a connection never opened.
+     * three statuses unless they carry {@code Retry-After}, and of "no answer"
+     * only a connection never opened.
      */
     private static boolean isOutage(int answered) {
         return answered < 0 || answered == 502 || answered == 503 || answered == 504;
@@ -527,8 +537,11 @@ public class CheckoutService {
         //    call, which no other call here may. And payment answers it 503
         //    whenever order is slow; on confirm's breaker those failures, from
         //    other shoppers, would stop a shopper confirming an intent just made.
+        //    And its own Feign client (PaymentCreateClient), with shorter
+        //    timeouts than confirm's, so that three attempts take about as long
+        //    as one used to (application.yaml, payment-create).
         BigDecimal total = placed.total();
-        var intent = mustCall(() -> payment.createIntent(
+        var intent = mustCall(() -> paymentCreate.createIntent(
                 new PaymentClient.CreateIntentRequest(placed.id(), total, priced.currency())),
                 "payment", "payment-create");
 
@@ -545,11 +558,15 @@ public class CheckoutService {
             throw new DownstreamUnavailableException("payment", e);
         } catch (RuntimeException e) {
             // 502, not 503 and not 402. The request reached payment at least
-            // once, and the charge may or may not have gone through, so this
-            // is the one ambiguous outcome: the order stays CREATED and the
-            // cart stays intact, which keeps it recoverable, and a retry is
-            // safe because confirmation is idempotent on the intent.
-            throw new PaymentConfirmationFailedException("the payment service did not answer", e);
+            // once -- its reply was lost, or it answered with something that is
+            // not a result, such as its 503 "the outcome is not known yet" --
+            // and the charge may or may not have gone through. The one
+            // ambiguous outcome: the order is already recorded (CREATED) and
+            // the cart stays intact, which keeps it recoverable. Not repeated
+            // (confirm's retry repeats only a request that never arrived); the
+            // shopper is told not to pay again, since trying again places a
+            // new order and the order list shows "Pending" either way.
+            throw new PaymentConfirmationFailedException("the payment service gave no usable answer", e);
         }
         if (confirmed == null) {
             throw new PaymentConfirmationFailedException("the payment service answered with no body", null);
@@ -571,8 +588,16 @@ public class CheckoutService {
             // and a burst of placement failures -- Keycloak or shipping briefly
             // down for other shoppers -- must never open the breaker in front of
             // the one call that turns a charged card into a paid order.
-            paid = mustCall(() -> order.pay(placed.id(),
-                    new OrderClient.AttachPaymentRequest(intent.id())), "order-pay");
+            //
+            // callOrThrow, not mustCall: mustCall turns an outage into checkout's
+            // 503, whose words are "Nothing has been charged; retry shortly" --
+            // and that became the cause logged below, for a card that HAS been
+            // charged. The failure is kept as it happened instead.
+            paid = resilient.callOrThrow("order-pay", () -> order.pay(placed.id(),
+                    new OrderClient.AttachPaymentRequest(intent.id())));
+            if (paid == null) {
+                throw new DownstreamRejectedException("order");
+            }
         } catch (RuntimeException e) {
             log.error("PAYMENT CAPTURED WITHOUT ORDER orderId={} intentId={} amount={} -- "
                             + "needs manual reconciliation (refund the intent or replay the transition)",

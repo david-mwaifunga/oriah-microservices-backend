@@ -75,7 +75,9 @@ public class CheckoutController {
      * charging again. Reuse the same value for every retry of one submission
      * and mint a new one only for a new submission. Without it, a retry after
      * a 502 is a second charge. Every failure carries a status, chosen so that the retryable ones
-     * are retryable: 503 and 502 are, 402, 409 and 422 deliberately are not,
+     * are retryable: 503 is (nothing was charged); 502 only after the shopper
+     * has checked their orders, because the order is already recorded and the
+     * charge may have gone through; 402, 409 and 422 deliberately are not,
      * because re-sending a declined card or an empty cart cannot succeed.
      */
     @Operation(operationId = "confirm", summary = "Run the checkout saga: reserve, pay, place the order")
@@ -92,7 +94,7 @@ public class CheckoutController {
     @ApiResponse(responseCode = "422", description = "A promotion code was sent (promotion-codes-not-accepted), or the address is outside Zambia (outside-delivery-area)",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "502", description = "The payment could not be confirmed, so whether the card was charged is unknown. The order stays unplaced and the cart intact; confirmation is idempotent, so a retry is safe",
+    @ApiResponse(responseCode = "502", description = "The payment could not be confirmed, so whether the card was charged is unknown. The order IS recorded (status CREATED, unpaid) and the cart is left intact. Do not offer to pay again: trying again places a new order and can charge the shopper twice, and the order stays CREATED until the payment has been checked, so the order list cannot say whether the charge went through. Tell the shopper to contact the shop if they were charged",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "503", description = "A dependency is temporarily unavailable and nothing has been charged. Carries Retry-After",

@@ -22,13 +22,18 @@ import org.springframework.web.server.ResponseStatusException;
  *   <li><strong>Checkout has already done what it can.</strong> Its own
  *       Resilience4j instances retry each outbound call up to 3 times, 500ms
  *       apart, when a second attempt cannot do anything twice: a connection
- *       never opened, or a 502, 503 or 504 -- never a 4xx, never a 500, and
- *       (except for payment's idempotent createIntent) never a reply that was
- *       lost. Or it made no attempt at all, because the circuit breaker was
- *       open or the rate limiter refused: those protect a service that is
- *       already struggling, and are the reason to wait. Either way a 503
- *       reaching the client means another immediate try is pointless —
- *       which is why {@code Retry-After} is seconds and not milliseconds.</li>
+ *       never opened, or a 502, 503 or 504 that did not ask for later -- never
+ *       a 4xx, never a 500, and (except for payment's idempotent createIntent)
+ *       never a reply that was lost. A 502, 503 or 504 that carries
+ *       {@code Retry-After} is not repeated at all: the service has said it
+ *       needs time, and checkout answers with this 503 and its own
+ *       {@code Retry-After} (always the 5 seconds below; the downstream's
+ *       value is not copied). Or it made no attempt at all,
+ *       because the circuit breaker was open or the rate limiter refused:
+ *       those protect a service that is already struggling, and are the
+ *       reason to wait. Either way a 503 reaching the client means another
+ *       immediate try is pointless — which is why {@code Retry-After} is
+ *       seconds and not milliseconds.</li>
  *   <li><strong>The gateway does not retry this.</strong> Its retry filter is
  *       {@code setMethods(HttpMethod.GET)}, so {@code POST /confirm} is never
  *       replayed at the edge. Deliberate: auto-replaying a POST that moves

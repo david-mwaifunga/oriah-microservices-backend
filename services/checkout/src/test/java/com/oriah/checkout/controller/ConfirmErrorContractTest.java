@@ -216,10 +216,39 @@ class ConfirmErrorContractTest {
     @DisplayName("an unconfirmable payment is 502, which is not the same answer as a decline")
     void unconfirmablePaymentIsBadGateway() throws Exception {
         when(service.confirm(any(), any())).thenThrow(
-                new PaymentConfirmationFailedException("the payment service did not answer", null));
+                new PaymentConfirmationFailedException("the payment service gave no usable answer", null));
 
         confirm().andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "payment-confirmation-failed"));
+                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "payment-confirmation-failed"))
+                // The truth, in the shopper's terms. By the time confirm runs
+                // the order IS placed (CREATED, unpaid), and the card may or
+                // may not have been charged. This used to say "Your order has
+                // not been placed; check your payment method before retrying"
+                // -- false on both counts, and an invitation to a second order.
+                // Nor "check your orders before trying again": the order shows
+                // as pending whether or not the charge went through, so that
+                // check cannot tell the shopper anything, and trying again
+                // can charge them twice.
+                .andExpect(jsonPath("$.detail").value(
+                        "Your order is recorded, but its payment could not be confirmed (the payment "
+                                + "service gave no usable answer), so the charge may or may not have gone through. "
+                                + "Please do not pay again: the order shows as pending until the payment has been "
+                                + "checked. Contact us if you were charged."));
+    }
+
+    @Test
+    @DisplayName("the API description of the 502 says the order is recorded, not that it stays unplaced")
+    void theDocumented502SaysTheOrderIsRecorded() throws Exception {
+        // The storefront's types and the Postman collection are generated from
+        // this description, so it must be as true as the problem detail.
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.paths['/api/v1/checkout/confirm'].post.responses['502'].description").value(
+                        org.hamcrest.Matchers.allOf(
+                                org.hamcrest.Matchers.containsString("The order IS recorded"),
+                                org.hamcrest.Matchers.containsString("Do not offer to pay again"),
+                                org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("Check the shopper's orders")),
+                                org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("unplaced")))));
     }
 
     @Test

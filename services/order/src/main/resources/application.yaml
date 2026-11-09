@@ -59,32 +59,52 @@ spring:
       client:
         config:
           # catalog is called SYNCHRONOUSLY on the write path, inside a request
-          # checkout makes and cuts off at 15s (checkout application.yaml:44).
-          # feign-core's library defaults are 10s connect / 60s read, so an
-          # unconfigured client can hang for four times checkout's whole
-          # budget -- and the only symptom checkout can report is a downstream
-          # outage for a catalog that is merely slow.
+          # checkout makes and cuts off at 15s (checkout's application.yaml,
+          # its default readTimeout). feign-core's library defaults are 10s
+          # connect / 60s read, so an unconfigured client can hang for four
+          # times checkout's whole budget -- and the only symptom checkout can
+          # report is a downstream outage for a catalog that is merely slow.
           #
-          # A placement makes FOUR calls, one after another, and all of them
-          # have to fit inside checkout's 15s together. In order:
+          # A placement makes FOUR calls, one after another, and then saves the
+          # order. All of it has to fit inside checkout's 15s. In order:
           #
-          #   customer  1s + 2s   is this address the caller's?
-          #   catalog   1s + 3s   what do the lines cost?
-          #   token     1s + 3s   order's own token, when the cached one has
-          #                       run out (set in MachineIdentityConfig)
-          #   shipping  1s + 3s   what does the chosen delivery cost?
-          #   --------------------
-          #   15s worst case -- every call taking its full time to connect
-          #   and its full time to answer. That is ALL of checkout's 15s:
-          #   there is no slack, so a further call on this path must take its
-          #   time from these, not add to them. Past 15s checkout gives up
-          #   while order is still working, and order may yet save an order
-          #   nobody is waiting for. WritePathBudgetTest adds these up (the
-          #   token's from MachineIdentityConfig's own constants) and fails
-          #   when they no longer fit. Not counted: the save and the event-log
-          #   append after these calls, so in the very worst case -- all four
-          #   at their full timeouts -- checkout can still give up first. That
-          #   was already so before customer was added.
+          #   customer  0.5s + 2s   is this address the caller's?
+          #   catalog   1s   + 3s   what do the lines cost?
+          #   token     1s   + 3s   order's own token, when the cached one has
+          #                         run out (set in MachineIdentityConfig)
+          #   shipping  0.5s + 2s   what does the chosen delivery cost?
+          #   ----------------------
+          #   13s worst case for the calls -- every call taking its full time
+          #   to connect and its full time to answer -- which leaves 2s of
+          #   checkout's 15s for order's own work: one transaction (the order,
+          #   its lines, its event-log row) and the reply. That is normally
+          #   tens of milliseconds; 2s covers a slow commit or a
+          #   garbage-collection pause. Without that room checkout could give
+          #   up first, in the very worst case, and order save an order nobody
+          #   is waiting for -- left CREATED and unpaid. WritePathBudgetTest
+          #   adds the calls up (the token's from MachineIdentityConfig's own
+          #   constants) and fails unless they leave those 2s. A further call
+          #   on this path must take its time from these, not add to them.
+          #
+          # Where those 2s came from (the four calls used to take exactly
+          # 15s): shipping's answer went from 3s to 2s, and customer's and
+          # shipping's connect from 1s to 0.5s.
+          #   - Shipping works out a price from settings it holds in memory --
+          #     no database, no call of its own -- so warm, it answers in
+          #     milliseconds. It keeps 2s, not 1s, for the cold case: an order
+          #     placed straight to order (the smoke test's step 4b, Postman)
+          #     can be the first request on a fresh stack that shipping checks
+          #     a token for, and it then fetches Keycloak's signing keys and
+          #     runs its code for the first time.
+          #   - A connection to a service on the same network opens in a
+          #     millisecond or two, so half a second to connect costs nothing
+          #     while the network is healthy; when it is not, giving up sooner
+          #     is better anyway.
+          #   - Customer and catalog each read a database, and Keycloak signs a
+          #     token, so their answers kept their time. (Catalog's and the
+          #     token's connect could give 0.5s each too -- room for shipping's
+          #     old 3s -- but CatalogClientTimeoutTest pins catalog's 1s and the
+          #     token's is set in MachineIdentityConfig.)
           #
           # Every value is read under the client's NAME (CatalogClientTimeoutTest
           # explains why that is asserted): Spring Cloud builds a context per
@@ -95,22 +115,26 @@ spring:
           # customer gets 2s to answer: on the checkout path checkout has just
           # read this same list, so customer is warm, and the answer is a few
           # rows for one shopper. OutboundIdentityTest.aHangingCustomerTimesOut
-          # pins it.
+          # shows a hanging customer is given up on in time;
+          # WritePathBudgetTest.customerHasItsOwnTimeouts pins the numbers.
           customer:
-            connect-timeout: 1000
+            connect-timeout: 500
             read-timeout: 2000
           # catalog was 2s/5s while it shared the path with only the token and
-          # shipping; adding customer would have made 18s, so it now has 1s/3s like
-          # shipping and the token, which is still ample for one batch of at
-          # most 100 ids -- and checkout priced the same bag from catalog
-          # moments earlier, so catalog is warm too.
+          # shipping; adding customer would have made 18s, so it now has 1s/3s,
+          # like the token, which is still ample for one batch of at most 100
+          # ids -- and checkout priced the same bag from catalog moments
+          # earlier, so catalog is warm too. CatalogClientTimeoutTest pins it.
           catalog:
             connect-timeout: 1000
             read-timeout: 3000
-          # OutboundIdentityTest.aHangingShippingTimesOut pins this one.
+          # 0.5s to connect, 2s to answer: see "Where those 2s came from"
+          # above. WritePathBudgetTest.shippingHasItsOwnTimeouts pins the
+          # numbers; OutboundIdentityTest.aHangingShippingTimesOut shows a
+          # hanging shipping is given up on in time.
           shipping:
-            connect-timeout: 1000
-            read-timeout: 3000
+            connect-timeout: 500
+            read-timeout: 2000
     stream:
       # No producer binding: order no longer sends to Kafka itself. Every event
       # is a row in the outbox, and the relay (shared/oriah-events) sends each

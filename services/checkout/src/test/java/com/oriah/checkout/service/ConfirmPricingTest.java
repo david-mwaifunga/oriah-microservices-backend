@@ -16,6 +16,7 @@ import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
+import com.oriah.checkout.client.PaymentCreateClient;
 import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.ConfirmResponse;
@@ -102,6 +103,7 @@ class ConfirmPricingTest {
     private CartClient cart;
     private CatalogPricingClient catalog;
     private ShippingClient shipping;
+    private PaymentCreateClient paymentCreate;
     private PaymentClient payment;
     private OrderClient order;
     private CustomerClient customer;
@@ -112,6 +114,7 @@ class ConfirmPricingTest {
         cart = mock(CartClient.class);
         catalog = mock(CatalogPricingClient.class);
         shipping = mock(ShippingClient.class);
+        paymentCreate = mock(PaymentCreateClient.class);
         payment = mock(PaymentClient.class);
         order = mock(OrderClient.class);
         customer = mock(CustomerClient.class);
@@ -120,7 +123,7 @@ class ConfirmPricingTest {
                 CircuitBreakerRegistry.ofDefaults(),
                 RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
                 RateLimiterRegistry.of(RateLimiterConfig.ofDefaults()));
-        service = new CheckoutService(cart, catalog, shipping, payment, order, customer, resilient);
+        service = new CheckoutService(cart, catalog, shipping, paymentCreate, payment, order, customer, resilient);
 
         // A bag whose stored line and subtotal both claim one cent. This is
         // what a pre-fix cart would have handed over, and what a compromised or
@@ -169,7 +172,7 @@ class ConfirmPricingTest {
     }
 
     private void intentSucceeds() {
-        when(payment.createIntent(any())).thenReturn(new PaymentClient.IntentResponse(
+        when(paymentCreate.createIntent(any())).thenReturn(new PaymentClient.IntentResponse(
                 INTENT_ID, ORDER_ID, REAL_PRICE, "ZMW", "PENDING", null));
         when(payment.confirm(any(), any(), any())).thenReturn(new PaymentClient.IntentResponse(
                 INTENT_ID, ORDER_ID, REAL_PRICE, "ZMW", "SUCCEEDED", null));
@@ -230,7 +233,7 @@ class ConfirmPricingTest {
     private BigDecimal chargedAmount() {
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
                 ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
+        verify(paymentCreate).createIntent(intent.capture());
         return intent.getValue().amount();
     }
 
@@ -243,7 +246,7 @@ class ConfirmPricingTest {
 
     private void nothingWasOrderedOrCharged() {
         verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     // ------------------------------------------------------------- the price
@@ -276,7 +279,7 @@ class ConfirmPricingTest {
         assertThat(placement().currency()).isEqualTo("ZMW");
         ArgumentCaptor<PaymentClient.CreateIntentRequest> intent =
                 ArgumentCaptor.forClass(PaymentClient.CreateIntentRequest.class);
-        verify(payment).createIntent(intent.capture());
+        verify(paymentCreate).createIntent(intent.capture());
         assertThat(intent.getValue().currency()).as("a ZMW bag must not become a USD intent").isEqualTo("ZMW");
     }
 
@@ -498,7 +501,7 @@ class ConfirmPricingTest {
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
                 .isInstanceOf(PricingChangedException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -509,7 +512,7 @@ class ConfirmPricingTest {
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
                 .isInstanceOf(DownstreamRejectedException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -523,7 +526,7 @@ class ConfirmPricingTest {
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
                 .isInstanceOf(BagNotPurchasableException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -534,7 +537,7 @@ class ConfirmPricingTest {
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
                 .isInstanceOf(MixedCurrencyException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -546,7 +549,7 @@ class ConfirmPricingTest {
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
                 .isInstanceOf(DownstreamRejectedException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -801,7 +804,7 @@ class ConfirmPricingTest {
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-7"))
                 .isInstanceOf(BagNotPurchasableException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test

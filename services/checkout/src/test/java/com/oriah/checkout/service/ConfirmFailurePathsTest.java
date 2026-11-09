@@ -14,6 +14,7 @@ import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
 import com.oriah.checkout.client.PaymentClient;
+import com.oriah.checkout.client.PaymentCreateClient;
 import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.exception.CartEmptyException;
@@ -92,6 +93,7 @@ class ConfirmFailurePathsTest {
     private final CartClient cart = mock(CartClient.class);
     private final ShippingClient shipping = mock(ShippingClient.class);
     private final OrderClient order = mock(OrderClient.class);
+    private final PaymentCreateClient paymentCreate = mock(PaymentCreateClient.class);
     private final PaymentClient payment = mock(PaymentClient.class);
 
     /**
@@ -123,7 +125,7 @@ class ConfirmFailurePathsTest {
     private final CustomerClient customer = mock(CustomerClient.class);
 
     private final CheckoutService service = new CheckoutService(
-            cart, catalog, shipping, payment, order, customer, resilient);
+            cart, catalog, shipping, paymentCreate, payment, order, customer, resilient);
 
     /**
      * The quote digest matching what cartHasOneItem() makes catalog answer,
@@ -175,7 +177,7 @@ class ConfirmFailurePathsTest {
     }
 
     private void intentIsCreated() {
-        when(payment.createIntent(any())).thenReturn(new PaymentClient.IntentResponse(
+        when(paymentCreate.createIntent(any())).thenReturn(new PaymentClient.IntentResponse(
                 INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD",
                 "REQUIRES_CONFIRMATION", null));
     }
@@ -194,7 +196,7 @@ class ConfirmFailurePathsTest {
                 .isInstanceOf(CartEmptyException.class);
 
         verify(order, never()).place(any());
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     // ------------------------------------------------------------------
@@ -219,7 +221,7 @@ class ConfirmFailurePathsTest {
                                 + "nothing could see that it had failed")
                         .isEqualTo(503));
 
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -228,7 +230,7 @@ class ConfirmFailurePathsTest {
         cartHasOneItem();
         shippingIsFree();
         orderIsPlaced();
-        when(payment.createIntent(any())).thenThrow(new RuntimeException("connection refused"));
+        when(paymentCreate.createIntent(any())).thenThrow(new RuntimeException("connection refused"));
 
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(DownstreamUnavailableException.class);
@@ -245,7 +247,7 @@ class ConfirmFailurePathsTest {
         cartHasOneItem();
         shippingIsFree();
         orderIsPlaced();
-        when(payment.createIntent(any())).thenThrow(answeredWith(503));
+        when(paymentCreate.createIntent(any())).thenThrow(answeredWith(503));
 
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(DownstreamUnavailableException.class)
@@ -267,7 +269,7 @@ class ConfirmFailurePathsTest {
         cartHasOneItem();
         shippingIsFree();
         orderIsPlaced();
-        when(payment.createIntent(any())).thenThrow(answeredWith(404));
+        when(paymentCreate.createIntent(any())).thenThrow(answeredWith(404));
 
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(DownstreamRejectedException.class)
@@ -340,12 +342,12 @@ class ConfirmFailurePathsTest {
     void anOpenBreakerInFrontOfConfirmIsServiceUnavailable() {
         // An open breaker refuses the call inside checkout: nothing went to
         // payment. The 502 says "the charge may or may not have gone through"
-        // and tells the shopper to check their payment method -- untrue here,
+        // and tells the shopper not to pay again -- untrue here,
         // and it withholds the retry the storefront offers only on a 503.
         cartHasOneItem();
         shippingIsFree();
         orderIsPlaced();
-        when(payment.createIntent(any())).thenAnswer(inv -> {
+        when(paymentCreate.createIntent(any())).thenAnswer(inv -> {
             // Other shoppers' failed confirms opened it a moment ago.
             breakers.circuitBreaker("payment").transitionToOpenState();
             return new PaymentClient.IntentResponse(INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD",
@@ -369,7 +371,7 @@ class ConfirmFailurePathsTest {
         limiters.rateLimiter("payment", RateLimiterConfig.custom()
                 .limitForPeriod(1).limitRefreshPeriod(java.time.Duration.ofHours(1))
                 .timeoutDuration(java.time.Duration.ZERO).build()).acquirePermission();
-        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, payment, order, customer,
+        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, paymentCreate, payment, order, customer,
                 new ResilientFeignCaller(breakers, RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
                         limiters));
         cartHasOneItem();
@@ -409,7 +411,12 @@ class ConfirmFailurePathsTest {
         // may have been taken. The retry then finds the breaker open. The
         // failure checkout ends with is the open breaker -- but the FIRST
         // attempt reached payment, so "nothing was charged" would be a lie.
-        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, payment, order, customer,
+        //
+        // Confirm's real rule (RetryForChargingCall) no longer repeats an
+        // answered 503 at all; this test keeps a rule that does, on purpose,
+        // to guard ResilientFeignCaller itself: once ANY attempt may have
+        // arrived, no later failure may be reported as "nothing was sent".
+        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, paymentCreate, payment, order, customer,
                 new ResilientFeignCaller(breakers, RetryRegistry.of(RetryConfig.custom().maxAttempts(3)
                         .waitDuration(java.time.Duration.ofMillis(1))
                         .retryOnException(new com.oriah.checkout.resilience.RetryForAnyCall()).build()),
@@ -461,6 +468,58 @@ class ConfirmFailurePathsTest {
         verify(cart, never()).clearMyCart();
     }
 
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    @DisplayName("captured without order: neither the cause nor the log says 'nothing has been charged'")
+    void capturedWithoutOrderNeverSaysNothingWasCharged(org.springframework.boot.test.system.CapturedOutput output) {
+        // The card HAS been charged here. The cause this failure carries -- in
+        // the ERROR log an operator reconciles from, and in the 500 handler's
+        // log -- used to be checkout's 503 exception, reading "The order-pay
+        // service is temporarily unavailable. Nothing has been charged; retry
+        // shortly." Untrue, and the opposite of what the operator must know.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        intentIsCreated();
+        when(payment.confirm(any(), any(), any())).thenReturn(new PaymentClient.IntentResponse(
+                INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD", "SUCCEEDED", null));
+        when(order.pay(any(), any())).thenThrow(answeredWith(503));
+
+        Throwable thrown = org.assertj.core.api.Assertions.catchThrowable(() -> service.confirm(request(), KEY));
+
+        assertThat(thrown).isInstanceOf(PaymentCapturedWithoutOrderException.class);
+        for (Throwable c = thrown.getCause(); c != null; c = c.getCause()) {
+            assertThat(c).as("a cause of the captured-without-order failure")
+                    .isNotInstanceOf(DownstreamUnavailableException.class);
+            assertThat(String.valueOf(c.getMessage())).as("the message of %s", c.getClass().getSimpleName())
+                    .doesNotContain("Nothing has been charged");
+        }
+        assertThat(output.getAll())
+                .contains("PAYMENT CAPTURED WITHOUT ORDER")
+                .doesNotContain("Nothing has been charged");
+    }
+
+    @Test
+    @DisplayName("captured, and order answers the pay call with no body: still 'captured without order', naming the intent")
+    void capturedAndAnEmptyPayAnswerIsStillCapturedWithoutOrder() {
+        // order answered, but with nothing checkout can read: whether the order
+        // is now PAID is unknown, and the card has been charged. That is the
+        // reconcile-by-hand case, not a bare NullPointerException.
+        cartHasOneItem();
+        shippingIsFree();
+        orderIsPlaced();
+        intentIsCreated();
+        when(payment.confirm(any(), any(), any())).thenReturn(new PaymentClient.IntentResponse(
+                INTENT_ID, ORDER_ID, new BigDecimal("100.00"), "USD", "SUCCEEDED", null));
+        when(order.pay(any(), any())).thenReturn(null);
+
+        assertThatThrownBy(() -> service.confirm(request(), KEY))
+                .isInstanceOf(PaymentCapturedWithoutOrderException.class)
+                .satisfies(ex -> assertThat(((PaymentCapturedWithoutOrderException) ex).paymentIntentId())
+                        .isEqualTo(INTENT_ID));
+        verify(cart, never()).clearMyCart();
+    }
+
 
     /**
      * The exception a Feign client really throws when a downstream answers
@@ -496,7 +555,7 @@ class ConfirmFailurePathsTest {
                 .isInstanceOf(DownstreamRejectedException.class)
                 .isNotInstanceOf(DownstreamUnavailableException.class);
 
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
 
@@ -514,7 +573,7 @@ class ConfirmFailurePathsTest {
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(DownstreamRejectedException.class)
                 .isNotInstanceOf(DownstreamUnavailableException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -526,7 +585,7 @@ class ConfirmFailurePathsTest {
 
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(DownstreamUnavailableException.class);
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
     @Test
@@ -570,14 +629,14 @@ class ConfirmFailurePathsTest {
         CircuitBreakerRegistry asConfigured = CircuitBreakerRegistry.of(
                 io.github.resilience4j.circuitbreaker.CircuitBreakerConfig.custom()
                         .slidingWindowSize(10).failureRateThreshold(50).build());
-        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, payment, order, customer,
+        CheckoutService checkout = new CheckoutService(cart, catalog, shipping, paymentCreate, payment, order, customer,
                 new ResilientFeignCaller(asConfigured, RetryRegistry.of(RetryConfig.custom().maxAttempts(1).build()),
                         RateLimiterRegistry.of(RateLimiterConfig.ofDefaults())));
         cartHasOneItem();
         shippingIsFree();
         orderIsPlaced();
         java.util.concurrent.atomic.AtomicBoolean othersAreCheckingOut = new java.util.concurrent.atomic.AtomicBoolean();
-        when(payment.createIntent(any())).thenAnswer(inv -> {
+        when(paymentCreate.createIntent(any())).thenAnswer(inv -> {
             if (othersAreCheckingOut.get()) {
                 throw answeredWith(503);   // payment could not ask order in time
             }
@@ -621,7 +680,7 @@ class ConfirmFailurePathsTest {
         assertThatThrownBy(() -> service.confirm(request(), KEY))
                 .isInstanceOf(DownstreamRejectedException.class);
 
-        verify(payment, never()).createIntent(any());
+        verify(paymentCreate, never()).createIntent(any());
     }
 
 
