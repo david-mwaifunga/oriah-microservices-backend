@@ -464,10 +464,13 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   `SearchResultResponse.Hit.from(e)` returns that same value twice,
   deliberately.
 - ✅ **FIXED in Phase 1 (2026-11-10): the append-only event log.** Order,
-  catalog and payment write every change to an `outbox` table in the same
-  transaction (the database refuses updates, deletes and truncates), a relay
+  catalog write every change, and payment every charge outcome
+  (`payment.succeeded` / `payment.failed`), to an `outbox` table in the same
+  transaction (the database refuses updates, deletes and truncates); a relay
   publishes it, a late consumer can ask for the whole history, and notification,
-  search and inventory apply each event once. Phase 1's status block in
+  search and inventory apply each event once. **Payment's outbox holds charge
+  outcomes only:** creating an intent and starting a charge are not recorded,
+  so a replay shows what the money did, not each step of an intent. Phase 1's status block in
   `docs/MVP_PLAN.md` has the commits, the numbers every service must keep and
   what is accepted for the MVP.
 

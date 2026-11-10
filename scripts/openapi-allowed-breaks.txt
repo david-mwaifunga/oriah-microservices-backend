@@ -347,14 +347,18 @@ order|property became required|PlaceOrderRequest.quoteDigest
 # state of the money, so both status lists gain the value.
 #
 # It cannot be done additively: adding an enum value is the whole change, and
-# a reader with a closed list of statuses fails on a value it does not know.
-# oriah-web was checked. src/lib/api/schemas/admin.ts lists the four old
-# statuses in a z.enum (PaymentStatusSchema), so the admin payments list WOULD
-# throw on a CHARGING row, and src/components/admin/AdminPaymentsClient.tsx
-# has the same list for its filter. That is recorded for the frontend stage in
-# docs/FRONTEND_WORK.md (Phase 1, admin screens), with the summary's new
-# chargingCount. The storefront never reads the intent's status: it holds
-# only paymentIntentId (schemas/checkout.ts, schemas/order.ts).
+# a reader with a closed list of statuses can fail on a value it does not know.
+# oriah-web was checked, and it does not fail on this one, which is worse in
+# its own way: AdminPaymentSchema reads status as a plain string, so a CHARGING
+# row parses, shows in a fallback colour (AdminPaymentsClient) and cannot be
+# filtered for, because the filter lists the four old values;
+# PaymentStatusSchema, the four-value enum, is used by a test only; and
+# AdminPaymentSummarySchema, a plain z.object, silently drops the new
+# chargingCount. The cost is a status nobody can see or count, not a crash.
+# That is recorded for the frontend stage in docs/FRONTEND_WORK.md (Phase 1,
+# admin screens), with the contract tests to write first. The storefront never
+# reads the intent's status: it holds only paymentIntentId (schemas/checkout.ts,
+# schemas/order.ts).
 #
 # Reviewed and accepted 2026-11-10.
 

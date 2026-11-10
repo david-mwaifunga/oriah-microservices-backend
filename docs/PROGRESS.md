@@ -23,8 +23,10 @@ update this before ending and read it at the start.
 ## CURRENT STATE — 2026-11-10 (MVP_PLAN Phase 1 complete: the event log)
 
 Phase 1 of `MVP_PLAN.md` — "the event log convention" — is built, tested,
-reviewed and committed (**not pushed**). Order, catalog and payment write every
-change to an append-only `outbox` in the same transaction; a relay publishes it;
+reviewed and committed (**not pushed**). Order and catalog write every change,
+and payment every charge outcome, to an append-only `outbox` in the same
+transaction (payment records succeeded and failed charges only, not the creation
+of an intent or the start of a charge); a relay publishes it;
 a late consumer can ask for the whole history; notification, search and
 inventory apply each event once; and an event that cannot be applied is parked
 on a dead-letter topic, never silently lost. Strict test-first throughout; every
@@ -103,7 +105,8 @@ touched there.
 - **The storefront must be changed before go-live** (`FRONTEND_WORK.md`, Phase 1):
   its 502 copy says "Your order has not been placed", which is false; its 30 s
   proxy timeout is shorter than checkout's worst confirm; and the admin payments
-  list needs the new `CHARGING` status or it will fail to parse such a row.
+  screen shows a `CHARGING` row in the fallback colour, cannot filter for it and
+  silently drops `chargingCount` — nothing fails, so the contract tests come first.
 
 ---
 

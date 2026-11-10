@@ -894,9 +894,13 @@ no step here needs an interim business arrangement.
 > (smoke test).
 >
 > **What is true now.**
-> - Every fact is a row in the service's `outbox`, written **in the same
->   transaction** as the change, never updated or deleted (the database refuses
->   both, and a truncate). Each row has a global, ever-increasing position and
+> - Every fact a service publishes is a row in its `outbox`, written **in the
+>   same transaction** as the change, never updated or deleted (the database
+>   refuses both, and a truncate). Which facts: **order** every status change;
+>   **catalog** every product change; **payment** every charge *outcome*
+>   (`payment.succeeded` or `payment.failed`) — not the creation of an intent or
+>   the start of a charge, which are not yet something the money did. Refunds
+>   are Phase 12's. Each row has a global, ever-increasing position and
 >   a per-aggregate `seq`, `occurred_at` (when it happened) beside `recorded_at`
 >   (when it was written), the actor, and the payload. The relay publishes the
 >   rows **at least once**; rows are never purged.
