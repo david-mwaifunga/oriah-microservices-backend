@@ -117,6 +117,15 @@ public class Supplier extends BaseEntity {
         this.active = true;
     }
 
+    /**
+     * Is this an ISO 3166-1 alpha-2 country code ("zm" and " ZM " count; "UK",
+     * "XX" and "Zambia" do not)? The one list, used by the aggregate itself and
+     * by request validation.
+     */
+    public static boolean isCountryCode(String value) {
+        return value != null && COUNTRIES.contains(value.strip().toUpperCase(Locale.ROOT));
+    }
+
     public UUID id() {
         return id;
     }

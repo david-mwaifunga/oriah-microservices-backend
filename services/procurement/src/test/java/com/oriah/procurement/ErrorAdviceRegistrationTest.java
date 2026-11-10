@@ -12,7 +12,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 
 import com.oriah.observability.OriahExceptionHandlerSupport;
-import com.oriah.observability.ProblemDetailExceptionHandler;
+import com.oriah.procurement.exception.GlobalExceptionHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,8 +39,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class ErrorAdviceRegistrationTest {
 
-    /** Starts as the shared default; changes when the service gets handlers of its own. */
-    private static final Class<?> EXPECTED_ADVICE = ProblemDetailExceptionHandler.class;
+    /**
+     * The service's own advice, because it has a rule the shared default does not:
+     * one specific database failure (two live suppliers with the same name) is a
+     * 409, and every other integrity failure stays a 500. The shared starter backs
+     * off when a service declares its own.
+     */
+    private static final Class<?> EXPECTED_ADVICE = GlobalExceptionHandler.class;
 
     @Autowired
     private ApplicationContext context;
