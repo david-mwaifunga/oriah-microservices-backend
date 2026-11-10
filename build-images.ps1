@@ -22,10 +22,16 @@
 # module = ~10 min).
 #
 # Run image: paketobuildpacks/run-noble-base (Ubuntu Noble, has bash +
-# curl + coreutils). The default `run-jammy-tiny` is more secure (no
+# coreutils). The default `run-jammy-tiny` is more secure (no
 # shell, no utilities) but compose healthchecks can't exec into it --
-# they need at least bash or curl. For dev, base is the right tradeoff;
+# they need at least bash. For dev, base is the right tradeoff;
 # for prod we would revisit.
+#
+# The builder, the run image and the JVM version (25) are set in ONE place, the
+# parent pom.xml (spring-boot-maven-plugin, <image>), and the two images are
+# pinned there by digest, so a rebuild never picks up a changed base by
+# accident. This script deliberately passes none of them: a second copy here
+# would drift from the pom and quietly build something else.
 #
 # NOTE on ASCII: this file deliberately avoids non-ASCII characters
 # (em-dashes, arrows, etc.). PowerShell 5.1 -- the default Windows
@@ -34,8 +40,6 @@
 # string literals can corrupt token pairing and trip the parser.
 
 $ErrorActionPreference = "Stop"
-
-$runImage = "paketobuildpacks/run-noble-base:latest"
 
 $modules = @(
     @{ Path = "infra/configserver";    Image = "oriah/configserver:dev"  },
@@ -72,7 +76,6 @@ foreach ($m in $modules) {
         Write-Host "==> Building $($m.Image) from $($m.Path) (attempt $attempt/$maxAttempts)" -ForegroundColor Cyan
         & .\mvnw.cmd -ntp -pl $m.Path -DskipTests=true `
             "-Dspring-boot.build-image.imageName=$($m.Image)" `
-            "-Dspring-boot.build-image.runImage=$runImage" `
             spring-boot:build-image
         if ($LASTEXITCODE -eq 0) {
             $built = $true

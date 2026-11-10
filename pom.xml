@@ -58,6 +58,7 @@
 
         <!-- Maven plugin versions (pin so the build is reproducible regardless of what Maven defaults to). -->
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
+        <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
         <!--
             Testcontainers version is managed by Spring Boot 4's BOM (its 2.x line,
             which renamed artifacts to testcontainers-* and packages to org.testcontainers.<module>).
@@ -138,6 +139,47 @@
                                 <artifactId>lombok</artifactId>
                             </exclude>
                         </excludes>
+                        <!--
+                            How every service image is built (spring-boot:build-image).
+
+                            BP_JVM_VERSION=25: the JRE inside the image is 25, the
+                            same as the JDK the build is held to (maven-enforcer
+                            below). Left unset, the Java buildpack picks its own
+                            default, which moves when the buildpack is updated and
+                            is not the JDK the code was tested on. The language
+                            level stays 21 (java.version), which 25 runs.
+
+                            Builder and run image are pinned by DIGEST, not by the
+                            moving :latest tag. A digest names exact bytes, so two
+                            builds a month apart produce the same base, and a base
+                            update (a new JRE patch, a changed memory calculator)
+                            reaches the stack as a visible commit that changes these
+                            two lines, never silently on somebody's next rebuild.
+                            To update: docker pull the new tag, read its digest from
+                            the RepoDigests field of docker image inspect, change both
+                            lines, rebuild all 16 images, run the smoke test.
+
+                            run-noble-base (not the smaller default run image)
+                            because the compose healthchecks need bash. See
+                            build-images.ps1.
+
+                            pullPolicy IF_NOT_PRESENT: bytes named by a digest never
+                            change, so there is nothing to re-check on every build,
+                            and a build no longer depends on the registry being
+                            reachable (the "unexpected EOF" pull failures that
+                            build-images.ps1 retries around).
+
+                            Merged, not replaced, by a module's own image block:
+                            the gateway adds its JAVA_TOOL_OPTIONS beside this.
+                        -->
+                        <image>
+                            <builder>paketobuildpacks/builder-noble-java-tiny@sha256:8da9782949bb9f39f4b9d8079216531fe2791286fe33bbf450e533949cfbcc91</builder>
+                            <runImage>paketobuildpacks/run-noble-base@sha256:d16d0d825f312fc0d5534466c5f8ae5277c97cc73fc97a9998bd29af89f27284</runImage>
+                            <pullPolicy>IF_NOT_PRESENT</pullPolicy>
+                            <env>
+                                <BP_JVM_VERSION>25</BP_JVM_VERSION>
+                            </env>
+                        </image>
                     </configuration>
                     <executions>
                         <execution>
@@ -223,6 +265,40 @@
             is evaluated.
         -->
         <plugins>
+            <!--
+                Refuse to build on any JDK but 25.
+
+                The language level stays 21 (java.version / release above): the
+                code is written to run on 21 and a second target is cheap to keep.
+                But the JDK that BUILDS and the JRE that RUNS must be one version,
+                not whatever each machine happens to have, or a service passes its
+                tests on one JDK and runs on another. The images run JDK 25
+                (BP_JVM_VERSION, in the plugin configuration above), so the build
+                is held to 25 too. [25,26) is "25.x and nothing else": a newer
+                JDK is a decision to make, not an accident to discover.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>${maven-enforcer-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>enforce-build-jdk</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireJavaVersion>
+                                    <version>[25,26)</version>
+                                    <message>This project builds on JDK 25 (language level 21, build and runtime JDK 25). Point JAVA_HOME at a JDK 25.</message>
+                                </requireJavaVersion>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
