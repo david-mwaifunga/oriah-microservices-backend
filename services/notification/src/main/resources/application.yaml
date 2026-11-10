@@ -24,25 +24,40 @@ spring:
           destination: oriah.order
           group: notification
           consumer:
+            # The body reaches the consumer as the raw bytes Kafka holds. The
+            # oriah-events module needs that: when it dead-letters an event it
+            # publishes those very bytes again, so its startup check refuses
+            # use-native-decoding: true on this binding.
             use-native-decoding: false
             # An event the consumer cannot apply throws (it is never
-            # swallowed): the binder tries it again, pausing 1 s and then
-            # doubling the pause, at most 10 s. Spring Cloud Stream 5.0 hands
-            # max-attempts to Spring's RetryPolicy as the number of RETRIES
-            # after the first try, so 3 here is up to four tries in all
-            # (pauses of 1, 2 and 4 s) ...
+            # swallowed). oriah.order is read through the Inbox
+            # (oriah.events.inbox.topics, below), so it is the oriah-events
+            # module -- not the Kafka binder -- that deals with the failure:
+            # it delivers the event again, pausing 1 s and then 2 s (each
+            # pause double the one before, never more than 10 s).
+            # max-attempts counts the deliveries IN ALL, the first one
+            # included: 3 here means three deliveries. (The binder's own
+            # retry, which this binding used before, counted retries after
+            # the first try: four tries for the same number.) Each delivery
+            # after the first is a new poll of the same event -- the module
+            # moves the partition back to it -- not a loop inside one poll.
+            # OrderEventBindingTest works the deliveries out.
             max-attempts: 3
             back-off-initial-interval: 1000
             back-off-multiplier: 2.0
+            # Also how long the module waits before it tries again when the
+            # dead-letter topic does not take an event (see below).
             back-off-max-interval: 10000
             # ... except a refusal, which fails the same way every time: a
-            # type, payload version or envelope header the Inbox does not
-            # accept, or a body that breaks the contract (all
-            # IllegalArgumentException), and a body Jackson cannot read
+            # type, payload version, aggregate or envelope header the Inbox
+            # does not accept, or a body that breaks the contract -- about
+            # another order than the envelope names, say (all
+            # IllegalArgumentException) -- and a body Jackson cannot read
             # (JsonProcessingException, found inside the
-            # UncheckedIOException the consumer wraps it in). Retrying those
-            # cannot change the answer and only holds up the orders behind
-            # them, so they go to the dead-letter topic on the first try.
+            # UncheckedIOException the consumer wraps it in: the module looks
+            # through the causes). Retrying those cannot change the answer and
+            # only holds up the orders behind them, so they go to the
+            # dead-letter topic on their first delivery.
             # (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup
             # rejects a bracketed key with capitals and the app won't start.)
             retryable-exceptions:
@@ -54,36 +69,59 @@ spring:
         bindings:
           orderEvents-in-0:
             consumer:
-              # Then the binder publishes it to a dead-letter topic of its
-              # own, named <topic>.dlq.<group>, and moves on to the orders
-              # behind it. Nothing was recorded for it, so it could still be
-              # sent later -- but today nothing does that:
-              #  * nothing reads oriah.order.dlq.notification, and
-              #    notification has no replay listener. A database outage
-              #    that outlasts the retries parks every order event of
-              #    that time there, unsent.
-              #  * the publish is best effort: if the dead-letter topic does
-              #    not take it, the binder only logs an error, the offset is
-              #    committed, and that message to the customer is lost.
+              # Then the module publishes it to a dead-letter topic of its
+              # own, named <topic>.dlq.<group>, and only once that topic has
+              # it does it commit the event and move on to the orders behind
+              # it. (shared/oriah-events README, "When a message keeps
+              # failing".)
+              #  * If that publish fails (the topic is missing, the broker
+              #    refuses it), the event is NOT committed, so it is not lost:
+              #    it is delivered again after a pause and the module tries
+              #    the dead-letter topic again, until it lands. Meanwhile every
+              #    order event behind it waits, and the log shows one ERROR
+              #    from DeadLetterThrottle every 10 to 35 s (the 10 s pause,
+              #    plus up to 25 s the failed publish itself can take). That
+              #    ERROR and the notification group's lag growing are the
+              #    signs to alert on.
+              #  * Delivery to the dead-letter topic is at least once: if the
+              #    service stops between the publish and the commit, the event
+              #    is delivered again and lands there twice.
+              #  * Nothing was recorded for a dead-lettered event, so it could
+              #    still be sent later -- but today nothing does that: nothing
+              #    reads oriah.order.dlq.notification, and notification has no
+              #    replay listener (no CatchUp). A database outage that outlasts
+              #    the three deliveries parks every order event of that time
+              #    there, unsent.
               enable-dlq: true
               dlq-name: oriah.order.dlq.notification
               configuration:
-                # The binder retries in the thread that polls Kafka. Kafka
-                # takes the partition away if the next poll is more than
-                # max.poll.interval.ms (5 min) away, and the batch in hand
-                # then comes back to be failed all over again -- for ever,
-                # with every order behind it waiting. One event per poll keeps
-                # the worst poll (the database away: four tries of up to 30 s
-                # each, 7 s of pauses, up to 122 s waiting on the dead-letter
-                # send) inside it, and commits each event's offset as it is
-                # done. OrderEventBindingTest adds it up.
+                # Kafka takes the partition away if the next poll is more than
+                # max.poll.interval.ms (5 min) away, and the event in hand then
+                # comes back to be failed all over again, with every order
+                # behind it waiting. One event per poll keeps the worst poll
+                # to one event's worst: one try (the database away: up to the
+                # pool's 30 s connection timeout), then either the pause
+                # before its next delivery (2 s at most here) or the
+                # dead-letter publish (up to about 25 s) and, if that fails,
+                # the 10 s pause after it -- about 65 s in all. It also
+                # commits each event's offset as soon as it is done.
+                # OrderEventBindingTest adds it up.
                 max.poll.records: 1
 
 # The event log convention (shared/oriah-events). Notification only receives:
 # the Inbox records each order event it has sent (processed_event) in the same
-# transaction as the notification, so a redelivered event is never sent twice.
-# Notification publishes nothing, so outbox, relay and replay stay off.
+# transaction as the notification, so a redelivered event is never sent twice,
+# and the message goes out only after that transaction commits
+# (OrderEventConsumer). Notification publishes nothing, so outbox, relay and
+# replay stay off.
 oriah.events.inbox.enabled: true
+# The topics notification reads through the Inbox; required while the Inbox
+# is on. Their bindings -- here orderEvents-in-0 -- are the ones the module
+# takes over for retries and dead-lettering (above); any other binding would
+# keep the binder's own, which drops a message when its dead-letter publish
+# fails. The service refuses to start if a topic listed here is not read by
+# exactly one input binding, so a typo cannot leave oriah.order without it.
+oriah.events.inbox.topics: oriah.order
 
 server:
   port: 8090

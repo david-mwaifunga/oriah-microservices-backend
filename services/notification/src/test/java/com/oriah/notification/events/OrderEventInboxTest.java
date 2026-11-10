@@ -12,6 +12,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -28,6 +30,8 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.events.EventHeaders;
 import com.oriah.notification.TestcontainersConfiguration;
@@ -48,13 +52,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * all.
  *
  * <p>What cannot be applied is refused loudly instead of skipped: the
- * exception leaves the consumer and no marker is left behind. The binder
- * publishes it to the dead-letter topic -- on the first try for a refusal,
- * which would fail the same way again, and after its retries for a failure
- * that may pass, such as the database being away.
+ * exception leaves the consumer and no marker is left behind. On Kafka the
+ * oriah-events module's error handler then publishes it to the dead-letter
+ * topic -- on its first delivery for a refusal, which would fail the same way
+ * again, and after three deliveries in all for a failure that may pass, such
+ * as the database being away -- and commits it only once that topic has it.
+ *
+ * <p>The "through the binder" tests run on Spring Cloud Stream's test binder,
+ * which has no Kafka container, so the module's handler is not in play there:
+ * the test binder retries with the binder's own retry, reading the same
+ * retryable-exceptions, and keeps the last error where Kafka would
+ * dead-letter. What they prove is which failures are tried again and which
+ * are not; OrderEventBindingTest works out how many deliveries Kafka makes.
  */
 @SpringBootTest
-@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
+@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class,
+        RecordingSender.InPlaceOfTheRealSender.class})
 @TestPropertySource(properties = {
         "eureka.client.enabled=false",
         "spring.cloud.function.definition=orderEvents",
@@ -62,6 +75,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 })
 class OrderEventInboxTest {
 
+    @Autowired
+    private RecordingSender sender;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
     @Autowired
     private InputDestination input;
     @Autowired
@@ -87,6 +104,7 @@ class OrderEventInboxTest {
     @BeforeEach
     void clean() {
         notifications.deleteAll();
+        sender.clear();
         binder.resetLastError();
         countTries();
     }
@@ -111,6 +129,87 @@ class OrderEventInboxTest {
         assertThat(notifications.findAll())
                 .as("a redelivered event is the same event: the customer gets one 'payment received', not two")
                 .hasSize(1);
+        assertThat(markers(eventId)).isEqualTo(1);
+    }
+
+    // ---- Sent only once the transaction has committed ----------------------
+    //
+    // Sending is the one step that cannot be taken back: a message that has
+    // gone out stays out. So it must happen only for a notification whose
+    // row and "applied" marker are committed. Sent inside the transaction, a
+    // commit that then failed would leave a message out with nothing
+    // recorded -- and Kafka's redelivery would send it a second time.
+
+    @Test
+    @DisplayName("a transaction that rolls back after the notification row is written sends nothing")
+    void rolledBackTransactionSendsNothing() {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Message<byte[]> paid = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId)).build();
+
+        new TransactionTemplate(transactionManager).executeWithoutResult(transaction -> {
+            orderEvents.accept(paid); // joins this transaction, as it joins the listener's own
+            assertThat(notifications.count()).as("the row is written, inside the transaction").isEqualTo(1);
+            transaction.setRollbackOnly(); // and then the transaction does not commit
+        });
+
+        assertThat(sender.sent()).as("nothing is sent for a transaction that never committed").isEmpty();
+        assertThat(notifications.count()).isZero();
+        assertThat(markers(eventId)).isZero();
+    }
+
+    @Test
+    @DisplayName("an event whose transaction commits is sent exactly once, after its row is committed")
+    void committedEventIsSentOnceAfterTheCommit() {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+
+        input.send(Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId)).build(), "oriah.order");
+
+        assertThat(sender.sent()).singleElement().satisfies(sent -> {
+            assertThat(sent.notification().orderId()).isEqualTo(orderId);
+            assertThat(sent.notification().keycloakId()).isEqualTo("kc-alice");
+            assertThat(sent.notification().subject()).contains("Payment");
+            assertThat(sent.committedWhenSent())
+                    .as("the row was already committed -- visible to another connection -- when it was sent")
+                    .isTrue();
+        });
+        assertThat(markers(eventId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a redelivery of an event already sent sends nothing")
+    void redeliveryOfAnAppliedEventSendsNothing() {
+        UUID orderId = UUID.randomUUID();
+        Message<byte[]> paid = Relayed.orderEvent(UUID.randomUUID(), "order.paid", orderId, 2, payload(orderId))
+                .build();
+        input.send(paid, "oriah.order");
+        assertThat(sender.sent()).hasSize(1);
+        sender.clear();
+
+        input.send(paid, "oriah.order");
+
+        assertThat(sender.sent()).as("the Inbox finds it applied, so nothing is sent again").isEmpty();
+        assertThat(notifications.count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("an event whose first transaction rolled back is sent exactly once when it is delivered again")
+    void redeliveryAfterARollbackSendsOnce() {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Message<byte[]> paid = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId)).build();
+        new TransactionTemplate(transactionManager).executeWithoutResult(transaction -> {
+            orderEvents.accept(paid);
+            transaction.setRollbackOnly(); // say the commit failed: Kafka will deliver it again
+        });
+
+        input.send(paid, "oriah.order");
+
+        assertThat(sender.sent())
+                .as("one message: none for the transaction that rolled back, one for the one that committed")
+                .singleElement()
+                .satisfies(sent -> assertThat(sent.committedWhenSent()).isTrue());
         assertThat(markers(eventId)).isEqualTo(1);
     }
 
@@ -154,6 +253,88 @@ class OrderEventInboxTest {
 
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId)).isZero();
+    }
+
+    /**
+     * Every order event is about an order: order writes aggregate-type
+     * "order" (OrderEvent.AGGREGATE_TYPE), in lower case, on every one. A
+     * message of an order type that says it is about something else -- or
+     * spells it "Order" -- is not one notification knows how to read, so the
+     * Inbox refuses it before anything is recorded, and on Kafka it goes to the
+     * dead-letter topic on its first delivery.
+     */
+    @ParameterizedTest(name = "aggregate-type ''{0}''")
+    @ValueSource(strings = {"Order", "payment_intent", "product"})
+    @DisplayName("an order event that says it is about something other than an order is refused, and nothing is recorded")
+    void anotherAggregateIsRefused(String aggregateType) {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Message<byte[]> misfiled = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId))
+                .setHeader(EventHeaders.AGGREGATE_TYPE, aggregateType).build();
+
+        assertThatThrownBy(() -> orderEvents.accept(misfiled))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("aggregate 'order'")
+                .hasMessageContaining("aggregate-type '" + aggregateType + "'");
+
+        input.send(misfiled, "oriah.order");
+        assertThat(tries(eventId))
+                .as("through the binder: a refusal fails the same way every time, so it is never tried again")
+                .isEqualTo(1);
+        assertThat(binder.getLastError()).as("it is dead-lettered").isNotNull();
+        assertThat(notifications.count()).isZero();
+        assertThat(markers(eventId)).isZero();
+        assertThat(sender.sent()).as("nothing is sent").isEmpty();
+    }
+
+    /**
+     * The envelope names the order the event is about (aggregate-id), and the
+     * body is meant to be that order's snapshot. A body about another order
+     * would tell one customer about somebody else's order, so it is refused
+     * before anything is recorded or sent -- and, being a refusal that fails
+     * the same way every time, it goes to the dead-letter topic on its first
+     * delivery.
+     */
+    @Test
+    @DisplayName("an event whose body is about another order than its envelope names is refused, and nothing is recorded")
+    void bodyAboutAnotherOrderIsRefused() {
+        UUID envelopeOrder = UUID.randomUUID();
+        UUID bodyOrder = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Message<byte[]> mismatched = Relayed.orderEvent(eventId, "order.paid", envelopeOrder, 2, payload(bodyOrder))
+                .build();
+
+        assertThatThrownBy(() -> orderEvents.accept(mismatched))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(bodyOrder.toString())
+                .hasMessageContaining(envelopeOrder.toString());
+
+        input.send(mismatched, "oriah.order");
+        assertThat(tries(eventId))
+                .as("through the binder: the same body is about the same wrong order on every delivery")
+                .isEqualTo(1);
+        assertThat(binder.getLastError()).as("it is dead-lettered").isNotNull();
+        assertThat(notifications.count()).isZero();
+        assertThat(markers(eventId)).isZero();
+        assertThat(sender.sent()).as("nobody is told about another order").isEmpty();
+    }
+
+    @Test
+    @DisplayName("an event whose body names no order is refused, and nothing is recorded")
+    void bodyWithoutAnOrderIsRefused() {
+        UUID eventId = UUID.randomUUID();
+        byte[] noOrder = """
+                {"keycloakId":"kc-alice","previousStatus":"CREATED","newStatus":"PAID",
+                 "total":4625.00,"currency":"ZMW"}""".getBytes(StandardCharsets.UTF_8);
+        Message<byte[]> anonymous = Relayed.orderEvent(eventId, "order.paid", UUID.randomUUID(), 2, noOrder).build();
+
+        assertThatThrownBy(() -> orderEvents.accept(anonymous))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("orderId");
+
+        assertThat(notifications.count()).isZero();
+        assertThat(markers(eventId)).isZero();
+        assertThat(sender.sent()).as("nothing is sent").isEmpty();
     }
 
     @Test
@@ -214,9 +395,9 @@ class OrderEventInboxTest {
         Message<byte[]> refunded = Relayed.orderEvent(eventId, "order.refunded", UUID.randomUUID(), 3,
                 payload(UUID.randomUUID())).build();
 
-        // The binder hands the message to its error handling -- on Kafka, the
-        // dead-letter topic. The test binder cannot run a DLQ; it keeps the
-        // last error instead.
+        // The binder hands the failure to the error handling -- on Kafka, the
+        // oriah-events module's, which dead-letters it. The test binder cannot
+        // run a DLQ; it keeps the last error instead.
         input.send(refunded, "oriah.order");
 
         assertThat(binder.getLastError())
@@ -226,7 +407,7 @@ class OrderEventInboxTest {
     }
 
     @Test
-    @DisplayName("through the binder: a refused event goes to the dead-letter topic on its first try")
+    @DisplayName("through the binder: a refused event goes to the dead-letter topic on its first delivery")
     void refusalIsNotRetried() {
         UUID eventId = UUID.randomUUID();
 
@@ -242,7 +423,7 @@ class OrderEventInboxTest {
     }
 
     @Test
-    @DisplayName("through the binder: a body that cannot be read goes to the dead-letter topic on its first try")
+    @DisplayName("through the binder: a body that cannot be read goes to the dead-letter topic on its first delivery")
     void unreadableBodyIsNotRetried() {
         UUID eventId = UUID.randomUUID();
         byte[] unreadable = """

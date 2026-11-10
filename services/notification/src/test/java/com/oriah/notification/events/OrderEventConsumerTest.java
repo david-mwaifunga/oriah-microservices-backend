@@ -104,8 +104,8 @@ class OrderEventConsumerTest {
     @DisplayName("a body that is not JSON is refused: the exception leaves the consumer and nothing is sent")
     void malformedPayloadIsRefused() {
         // It used to be logged and swallowed, which lost the event for good.
-        // Now it fails, and the binder dead-letters it (on the first try: no
-        // retry could read it either).
+        // Now it fails, and on Kafka the oriah-events module dead-letters it
+        // (on its first delivery: no later delivery could read it either).
         Message<byte[]> garbage = Relayed.orderEvent("order.paid", UUID.randomUUID(), 2,
                 "not-json".getBytes(StandardCharsets.UTF_8));
 

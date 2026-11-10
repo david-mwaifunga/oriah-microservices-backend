@@ -9,21 +9,23 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.Message;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.events.EventHeaders;
 import com.oriah.events.Inbox;
 import com.oriah.events.InboxConsumer;
+import com.oriah.notification.delivery.NotificationSender;
 import com.oriah.notification.model.NotificationLog;
 import com.oriah.notification.repository.NotificationLogRepository;
-
-import lombok.extern.slf4j.Slf4j;
 
 /**
  * Subscribes to the {@code oriah.order} Kafka topic. Every state
  * change publishes one event there (CREATED, PAID, SHIPPED, etc.); we
- * translate to a customer-facing notification and "deliver" (log line +
- * notification_log row).
+ * translate it to a customer-facing notification, record it (a
+ * notification_log row) and, once that is committed, deliver it
+ * ({@link NotificationSender}: today a log line).
  *
  * <p>One consumer dispatches by the {@code event-type} message header.
  *
@@ -36,53 +38,70 @@ import lombok.extern.slf4j.Slf4j;
  * event is one message to a person -- a fact, not a copy of the order's
  * state -- so it goes through {@link Inbox#once}: the record that it was sent
  * (processed_event) commits in the same transaction as its notification_log
- * row, and a second delivery finds the record and sends nothing.
+ * row, and a second delivery finds the record and sends nothing. The message
+ * itself goes out only after that transaction commits (see
+ * {@code Handler.sendAfterCommit}), so a transaction that rolls back never
+ * sends.
  *
  * <h2>Nothing is swallowed</h2>
  *
  * An event that cannot be applied -- a type or payload version this consumer
- * does not declare, a missing or garbled envelope header, a body that breaks
- * the contract -- throws. The transaction rolls back with its record, and the
- * binder publishes it to {@code oriah.order.dlq.notification}: on the first
- * try for a refusal like these, which would fail the same way again, and after
- * its retries for anything else, such as the database being away
- * (application.yaml). Logging and carrying on, as this consumer once did,
- * lost such an event for good.
+ * does not declare, an aggregate that is not an order, a missing or garbled
+ * envelope header, a body that breaks the contract -- throws. The transaction
+ * rolls back with its record, and the oriah-events module's error handler
+ * publishes it to {@code oriah.order.dlq.notification}: on its first delivery
+ * for a refusal like these, which would fail the same way again, and after
+ * three deliveries in all for anything else, such as the database being away
+ * (application.yaml). It commits the event only once that topic has it, so a
+ * failed dead-letter publish keeps the event instead of dropping it. Logging
+ * and carrying on, as this consumer once did, lost such an event for good.
  */
 @Configuration
-@Slf4j
 public class OrderEventConsumer {
+
+    /**
+     * What every order event is about, spelled exactly as order writes it in
+     * the aggregate-type header (OrderEvent.AGGREGATE_TYPE, "order", lower
+     * case). The Inbox refuses an order event that says it is about anything
+     * else -- "Order" included -- before anything is recorded: notification
+     * reads its aggregate-id as an order's id, so it must be one.
+     */
+    static final String ORDER = "order";
 
     /**
      * Every type order publishes on oriah.order -- {@code order.<status>} for
      * each OrderStatus -- and each has a message to send, so all are handled
-     * and none is ignored. Payload version 1 is the full order snapshot
-     * ({@link OrderEventPayload}).
+     * and none is ignored. Each is about an order. Payload version 1 is the
+     * full order snapshot ({@link OrderEventPayload}).
      */
     static final InboxConsumer NOTIFICATION = InboxConsumer.named("notification")
-            .handles("order.created", 1)
-            .handles("order.paid", 1)
-            .handles("order.fulfilled", 1)
-            .handles("order.shipped", 1)
-            .handles("order.delivered", 1)
-            .handles("order.cancelled", 1);
+            .handles(ORDER, "order.created", 1)
+            .handles(ORDER, "order.paid", 1)
+            .handles(ORDER, "order.fulfilled", 1)
+            .handles(ORDER, "order.shipped", 1)
+            .handles(ORDER, "order.delivered", 1)
+            .handles(ORDER, "order.cancelled", 1);
 
     @Bean
     public Consumer<Message<byte[]>> orderEvents(
             Inbox inbox,
             NotificationLogRepository repository,
+            NotificationSender sender,
             ObjectMapper objectMapper) {
-        return new Handler(inbox, repository, objectMapper);
+        return new Handler(inbox, repository, sender, objectMapper);
     }
 
     static class Handler implements Consumer<Message<byte[]>> {
         private final Inbox inbox;
         private final NotificationLogRepository repository;
+        private final NotificationSender sender;
         private final ObjectMapper objectMapper;
 
-        Handler(Inbox inbox, NotificationLogRepository repository, ObjectMapper objectMapper) {
+        Handler(Inbox inbox, NotificationLogRepository repository, NotificationSender sender,
+                ObjectMapper objectMapper) {
             this.inbox = inbox;
             this.repository = repository;
+            this.sender = sender;
             this.objectMapper = objectMapper;
         }
 
@@ -96,15 +115,49 @@ public class OrderEventConsumer {
         private void notify(Message<byte[]> message) {
             String type = header(message, EventHeaders.EVENT_TYPE);
             OrderEventPayload payload = read(message.getPayload());
+            requireAboutTheEnvelopesOrder(message, payload);
 
             var template = renderTemplate(type, payload);
-            NotificationLog log = new NotificationLog(
-                    payload.orderId(), payload.keycloakId(), type, "email", template.subject(), template.body()
-            );
-            repository.save(log);
-            OrderEventConsumer.log.info(
-                    "[EMAIL STUB] to={} subject=\"{}\" body=\"{}\"",
-                    payload.keycloakId(), template.subject(), template.body());
+            NotificationLog notification = repository.save(new NotificationLog(
+                    payload.orderId(), payload.keycloakId(), type, "email", template.subject(), template.body()));
+            sendAfterCommit(notification);
+        }
+
+        /**
+         * Arranges for the notification to be sent only after this
+         * transaction has committed -- when its notification_log row and the
+         * Inbox's "applied" marker are saved for good. If the transaction
+         * rolls back, the arrangement is dropped with it.
+         *
+         * <p>Why wait for the commit: a message that has gone out cannot be
+         * called back. Sent inside the transaction, a commit that then failed
+         * (the database went away, the transaction timed out) would leave a
+         * customer with a message and nothing recorded; Kafka would deliver the
+         * event again, the Inbox would find no marker, and the customer would
+         * get it twice. Sent after the commit, a transaction that rolls back
+         * sends nothing, and the redelivery that follows sends it once.
+         *
+         * <p>What this does not cover: the service dying between the commit and
+         * the send. The row and the marker are saved, so a redelivery of the
+         * event finds it applied and sends nothing -- that one message is lost.
+         * The same if the send itself throws: the exception leaves the consumer
+         * after the commit, the event is delivered again, the Inbox finds it
+         * applied, and that message is lost too. Today's sender only writes a
+         * log line, so this is narrow. Phase 11, which brings real email,
+         * WhatsApp and SMS, adds a delivery status to each notification and a
+         * sweeper that retries the ones never marked delivered.
+         *
+         * <p>The send runs on the listener's thread before it returns, so its
+         * time counts in the poll budget (OrderEventBindingTest): a real
+         * sender in Phase 11 needs a timeout of its own.
+         */
+        private void sendAfterCommit(NotificationLog notification) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    sender.send(notification);
+                }
+            });
         }
 
         private OrderEventPayload read(byte[] body) {
@@ -112,6 +165,32 @@ public class OrderEventConsumer {
                 return objectMapper.readValue(body, OrderEventPayload.class);
             } catch (IOException e) {
                 throw new UncheckedIOException("order event body does not match the contract", e);
+            }
+        }
+
+        /**
+         * The body must be a snapshot of the order the envelope names
+         * (aggregate-id). A body about another order -- or about no order at
+         * all -- would send one customer news of somebody else's order, so it
+         * is refused (an IllegalArgumentException, which the binding never
+         * retries: it goes to the dead-letter topic on its first delivery).
+         *
+         * <p>This is the first thing the effect does, before anything of
+         * notification's own is written or any delivery is arranged. The
+         * Inbox inserted its "applied" marker a moment earlier, in this same
+         * transaction, so the refusal rolls the marker back with it: nothing
+         * is recorded and nothing is sent. (It runs after the Inbox's own
+         * checks on purpose: an event of a type or payload version
+         * notification does not read is refused for that reason, rather than
+         * for a body this record cannot make sense of.) Search and inventory
+         * check their product snapshots the same way.
+         */
+        private static void requireAboutTheEnvelopesOrder(Message<byte[]> message, OrderEventPayload payload) {
+            String aggregateId = header(message, EventHeaders.AGGREGATE_ID);
+            if (payload.orderId() == null || !payload.orderId().toString().equals(aggregateId)) {
+                throw new IllegalArgumentException("order event body has orderId " + payload.orderId()
+                        + " but arrived in an envelope for order " + aggregateId
+                        + "; refused, so no customer is told about another order");
             }
         }
 
