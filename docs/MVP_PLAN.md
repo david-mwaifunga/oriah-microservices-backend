@@ -1005,7 +1005,8 @@ Gateway route (the matcher has existed since Phase 0). Nothing is seeded.
 > settled decision 9), so it is not built here; `procurement` owns suppliers,
 > purchase orders, consignments, cost lines and the allocator (settled
 > decision 5). Phase 2 is suppliers only. The design, the two Codex review
-> rounds and the final amendments are in `.codex-tmp/p2-plan-*.md`; this
+> rounds and the final amendments are in `../.codex-tmp/p2-plan-*.md` (the
+> workspace folder above `oriah-api`, which is not in any git repository); this
 > section gets a status block when the phase is built.
 
 ### Phase 3 — Catalog holds packaging; the product exists before the stock
@@ -1827,7 +1828,8 @@ through admin endpoints.
 
 This is deliberate and it buys something: it makes `smoke-test.ps1` the proof
 that the admin surface actually works end to end. The current smoke test (20
-numbered steps plus 4b, 5b, 6b and 20b since Phase 0) grows into an admin-driven setup — create supplier, create product and
+numbered steps plus 4b, 5b, 6b and 20b since Phase 0, and 20c since Phase 2, which
+already drives the supplier lifecycle through the gateway) grows into an admin-driven setup — create supplier, create product and
 variants, record consignment with costs, receive it, assert the landed cost to
 the ngwee (Part 4's `UNITS` default case), price it, publish it, then run the existing customer saga against
 stock that was genuinely procured.

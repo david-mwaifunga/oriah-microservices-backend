@@ -77,7 +77,7 @@ Prerequisites: **JDK 25** (exactly 25: the build refuses any other version with 
 .\mvnw.cmd -ntp -pl services/catalog spring-boot:test-run
 ```
 
-### The whole stack (~36 containers)
+### The whole stack (~39 containers)
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\build-images.ps1

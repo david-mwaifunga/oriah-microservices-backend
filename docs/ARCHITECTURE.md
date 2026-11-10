@@ -556,7 +556,11 @@ in $PATH`. The tiny image strips out **everything** non-essential — no
 inspection is impossible without `grep`.
 
 For dev we switched to `paketobuildpacks/run-noble-base` (~150MB, has
-bash + curl + coreutils):
+bash + coreutils; it has no curl). **Since 2026-11-10 the run image, the builder
+and the JVM version are set in one place, the root `pom.xml`
+(`spring-boot-maven-plugin`, `<image>`), and the two images are pinned by
+digest, so nothing is passed on the command line any more**; the command below
+is how it was first done:
 
 ```powershell
 .\mvnw spring-boot:build-image `
@@ -602,13 +606,15 @@ finished initializing.
 ### Postgres: one instance per service, not one with many schemas
 
 > Written when there were two services. The principle held and scaled: the
-> stack now runs **ten** Postgres containers on host ports **5433–5442** —
-> catalog, inventory, customer, cart, payment, order, promotion,
-> notification, review, search. (`checkout` and `shipping` are stateless and
-> own no database, which is why 12 services need only 10 instances.)
+> stack now runs **eleven** Postgres containers for the domain services on host
+> ports **5433–5442** and **5444** — catalog, inventory, customer, cart,
+> payment, order, promotion, notification, review, search and procurement
+> (5444, Phase 2) — plus Keycloak's own on 5443. (`checkout` and `shipping` are
+> stateless and own no database, which is why 13 services need only 11
+> instances.)
 >
 > ⚠️ Consequence worth stating plainly: **`docker compose down -v` destroys
-> all eleven databases** — these ten *and* Keycloak's own
+> all twelve databases** — these eleven *and* Keycloak's own
 > (`postgres-keycloak`). The realm imports only when it does not yet exist, so
 > to apply a realm edit remove **only** Keycloak's volume — steps under
 > "Realm import on first start" above. Never `down -v` for that.

@@ -95,7 +95,7 @@ services you started):
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\local-dev-test.ps1 -Running -Services cart,catalog
 ```
 
-Without `-Running` it starts all 15 apps from source itself, checks each and
+Without `-Running` it starts all 16 apps (the 3 platform apps and the 13 services) from source itself, checks each and
 stops them again (about 30 minutes) — the proof that this setup works at all.
 
 ---
