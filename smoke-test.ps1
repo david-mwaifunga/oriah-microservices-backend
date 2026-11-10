@@ -50,8 +50,10 @@
 #      context extraction at the edge -- rather than scraping the backend
 #      afterwards for "the most recent trace that looks like a saga".
 #   [13/20] Prometheus scrapes every service. Phase 4 observability:
-#      up == 1 for catalog/inventory/customer/cart/payment/order/
-#      promotion/shipping/checkout/notification/review/search.
+#      up == 1 for every service in $expected (catalog, inventory, customer,
+#      cart, payment, order, promotion, shipping, checkout, notification,
+#      review, search, procurement). The count in the printed line is the
+#      length of that list, never a typed number.
 #   [14/20] Gateway proxy body-size sanity (10x each, no 0-byte 200s):
 #      10x /api/v1/products/{id} and 10x /reviews/aggregate, each response
 #      must carry > 0 bytes. Catches the failure mode where the gateway
@@ -59,9 +61,11 @@
 #      Paketo's memory calculator was leaving Netty with only 10MB of direct
 #      memory). Existing checks above use Invoke-RestMethod which tolerates
 #      empty bodies silently as $null.
-#   [15/20] Readiness + liveness probes on all 12 services. Kubernetes-style
-#      probes: /actuator/health/readiness and /actuator/health/liveness
-#      report UP on all 12 services. These are health GROUPS, not endpoint
+#   [15/20] Readiness + liveness probes on every service in $servicePorts.
+#      Kubernetes-style probes: /actuator/health/readiness and
+#      /actuator/health/liveness report UP on every one of them (the printed
+#      N/N is worked out from the table: two probes per service). These are
+#      health GROUPS, not endpoint
 #      ids -- they appear only when
 #      management.endpoint.health.probes.enabled is on, which is why this
 #      is asserted over HTTP rather than trusted from the YAML. Compose
@@ -69,7 +73,7 @@
 #      Paketo run image ships no curl or wget, so the container cannot
 #      probe HTTP itself.
 #   [16/20] /actuator/info carries app + build provenance: the name,
-#      version, artifact and build time on all 12 services, so a running
+#      version, artifact and build time on every service, so a running
 #      container can be traced back to the commit that produced it.
 #   [17/20] Loki has lines shipped by Alloy (shipper-qualified), labelled
 #      {shipper="alloy"}. The label remains asserted after Promtail's
@@ -78,7 +82,7 @@
 #      ever added again.
 #   [18/20] Gateway's own actuator is not exposed on the public edge: the
 #      gateway's OWN actuator is not an information-disclosure surface on
-#      the public edge port. The 12 services inherit a curated exposure list
+#      the public edge port. The domain services inherit a curated exposure list
 #      from config-repo, but the gateway sets include: '*' in its own
 #      application.yaml AND serves actuator on 8080 -- the port the browser
 #      talks to. env / beans / configprops / mappings / threaddump were all
@@ -106,12 +110,56 @@
 #      intent (409, one live intent per order); and an order checkout has
 #      already paid takes none either (409, it is no longer waiting for
 #      payment).
+#   [20c/20] Procurement: suppliers. maya creates a supplier under a random
+#      name (so the step can re-run on a live stack), reads it back by id and
+#      finds it in the list, patches it (paymentNotes, and "active": false); a
+#      second create with the same name in a different letter case is 409; the
+#      stopped supplier is still readable; she deletes it (204) and a read is
+#      then 404. alice, a plain customer, is refused 403 on the list and on
+#      create, and a request with no token is 401.
 
+# Before ANYTHING touches the stack, scripts/check_service_registry.py runs and
+# must exit 0. It proves every service is in every list this script walks
+# ($routeProbes, $expected, $servicePorts) with the right port; without it, a
+# service left out of those lists leaves the run green and wrong. Every count
+# this script prints is worked out from those lists, never typed.
+#
 # A pre-flight block ahead of step 1 waits for the gateway to resolve every
 # service through Eureka; see the comment there for why container health is not
 # sufficient.
 
 $ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------------------
+# REGISTRY GUARD. Runs before anything touches the stack, and stops the script
+# if a service is missing from a list this script (or any other tool) walks.
+# Python is required, and there is no way around it: skipping the guard when
+# python is missing would bring back exactly the silent green run it prevents.
+# ---------------------------------------------------------------------------
+$registryGuard = Join-Path $PSScriptRoot "scripts\check_service_registry.py"
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Error ("python was not found on PATH. smoke-test.ps1 starts by running " +
+                 "scripts\check_service_registry.py (it proves every service is in every list " +
+                 "this script uses), so it cannot go on without Python 3. Install Python 3 or " +
+                 "put it on PATH, then run the smoke test again.")
+    exit 1
+}
+# docker/python write to stderr freely and 5.1 turns that into a terminating
+# error under "Stop", so the call is made under "Continue" and judged by its
+# exit code.
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try { $registryOut = @(& python $registryGuard 2>&1 | ForEach-Object { "$_" }) }
+finally { $ErrorActionPreference = $previousPreference }
+$registryCode = $LASTEXITCODE
+if ($registryCode -ne 0) {
+    $registryOut | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+    Write-Error ("scripts\check_service_registry.py exited $registryCode. If the lines above are PROBLEM " +
+                 "lines, a service is missing from a list: fix those first, the smoke test means " +
+                 "nothing until they agree. If they say Python was not found, install Python 3.")
+    exit 1
+}
+Write-Host "[registry] $($registryOut | Select-Object -Last 1)" -ForegroundColor Gray
 
 function Get-Jwt($Username) {
     $r = Invoke-RestMethod -Method POST `
@@ -213,8 +261,14 @@ if ($golden -ne "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802
 # Any status other than 503 means routing worked -- 401 (needs a token), 405
 # (wrong verb for the probe) and 200 are all fine here. We are testing
 # discoverability, not the endpoint.
+#
+# That rule has a blind spot. Every probe below except catalog's and search's
+# needs a token, and the gateway's security chain answers 401 BEFORE it routes
+# anything, so those probes pass for a service the gateway cannot find at all.
+# procurement is therefore probed through /v3/api-docs/procurement, which is
+# permit-all and routed by the gateway's procurement-docs route: there a 503
+# really does mean "no instance registered".
 # ---------------------------------------------------------------------------
-Write-Host "[pre-flight] Waiting for the gateway to resolve all 12 services..." -ForegroundColor Cyan
 $routeProbes = [ordered]@{
     catalog      = '/api/v1/products'
     inventory    = '/api/v1/admin/inventory'
@@ -228,7 +282,9 @@ $routeProbes = [ordered]@{
     notification = '/api/v1/notifications/me'
     review       = '/api/v1/reviews/me'
     search       = '/api/v1/search'
+    procurement  = '/v3/api-docs/procurement'
 }
+Write-Host "[pre-flight] Waiting for the gateway to resolve all $($routeProbes.Count) services..." -ForegroundColor Cyan
 $unresolved = @($routeProbes.Keys)
 foreach ($attempt in 1..60) {
     $stillUnresolved = @()
@@ -255,7 +311,7 @@ if ($unresolved.Count -gt 0) {
                  "own ports but not discoverable through lb://.")
     exit 1
 }
-Write-Host "    all 12 services resolvable through the gateway" -ForegroundColor Gray
+Write-Host "    all $($routeProbes.Count) services resolvable through the gateway" -ForegroundColor Gray
 
 # Variant SKUs are globally UNIQUE (V3: `sku TEXT NOT NULL UNIQUE`), so a
 # fixed one makes this script runnable exactly once -- the second run gets a
@@ -812,7 +868,7 @@ Write-Host "[13/20] Prometheus scrapes every service..." -ForegroundColor Cyan
 $up = Invoke-RestMethod -Method GET -Uri "http://localhost:9090/api/v1/query?query=up"
 $expected = @("catalog:8081","inventory:8082","customer:8083","cart:8084","payment:8085",
               "order:8086","promotion:8087","shipping:8088","checkout:8089",
-              "notification:8090","review:8091","search:8092")
+              "notification:8090","review:8091","search:8092","procurement:8093")
 $downServices = @()
 foreach ($svc in $expected) {
     $hit = $up.data.result | Where-Object { $_.metric.instance -eq $svc }
@@ -824,7 +880,7 @@ if ($downServices.Count -gt 0) {
     Write-Error "Prometheus: these services are not up == 1: $($downServices -join ', ')"
     exit 1
 }
-Write-Host "    all 12 services up=1 in Prometheus" -ForegroundColor Gray
+Write-Host "    all $($expected.Count) services up=1 in Prometheus" -ForegroundColor Gray
 
 Write-Host "[14/20] Gateway proxy body-size sanity (10x each, no 0-byte 200s)..." -ForegroundColor Cyan
 # Invoke-WebRequest (not Invoke-RestMethod) so we can read the raw
@@ -856,11 +912,12 @@ Write-Host "    20 proxied responses, all carrying > 0 bytes" -ForegroundColor G
 # Host port for each service, used for the direct-to-service actuator probes
 # below. We deliberately do NOT go through the gateway here: the gateway routes
 # no /actuator/** downstream (asserted in RouteSnapshotTest), because exposing
-# 12 services' actuators at the edge would be a real security regression.
+# every service's actuator at the edge would be a real security regression.
 $servicePorts = [ordered]@{
     catalog = 8081; inventory = 8082; customer = 8083; cart = 8084
     payment = 8085; order = 8086; promotion = 8087; shipping = 8088
     checkout = 8089; notification = 8090; review = 8091; search = 8092
+    procurement = 8093
 }
 
 # Retries only CONNECTION-level failures, never a bad status. A single 10s
@@ -891,11 +948,15 @@ function Test-Probe($Uri) {
     }
 }
 
-Write-Host "[15/20] Readiness + liveness probes on all 12 services..." -ForegroundColor Cyan
+Write-Host "[15/20] Readiness + liveness probes on all $($servicePorts.Count) services..." -ForegroundColor Cyan
+$probeGroups = @("readiness", "liveness")
+$probeTotal = $probeGroups.Count * $servicePorts.Count
+$probesChecked = 0
 $probeFailures = @()
 foreach ($svc in $servicePorts.Keys) {
-    foreach ($group in @("readiness", "liveness")) {
+    foreach ($group in $probeGroups) {
         $uri = "http://localhost:$($servicePorts[$svc])/actuator/health/$group"
+        $probesChecked++
         $result = Test-Probe $uri
         if (-not $result.Ok) {
             $probeFailures += "${svc}/${group}: $($result.Detail)"
@@ -908,7 +969,7 @@ if ($probeFailures.Count -gt 0) {
     Write-Error "readiness/liveness probes missing or not UP on $($probeFailures.Count) endpoint(s)"
     exit 1
 }
-Write-Host "    24/24 probe endpoints UP (12 services x readiness+liveness)" -ForegroundColor Gray
+Write-Host "    $probesChecked/$probeTotal probe endpoints UP ($($servicePorts.Count) services x readiness+liveness)" -ForegroundColor Gray
 
 Write-Host "[16/20] /actuator/info carries app + build provenance..." -ForegroundColor Cyan
 $infoFailures = @()
@@ -945,7 +1006,7 @@ if ($infoFailures.Count -gt 0) {
     Write-Error "/actuator/info incomplete on $($infoFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    all 12 services report app.name + build.{version,artifact,time}" -ForegroundColor Gray
+Write-Host "    all $($servicePorts.Count) services report app.name + build.{version,artifact,time}" -ForegroundColor Gray
 
 Write-Host "[17/20] Loki has lines shipped by Alloy (shipper-qualified)..." -ForegroundColor Cyan
 $alloyLines = 0
@@ -1461,5 +1522,140 @@ if ($intentFailures.Count -gt 0) {
 }
 Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent created, and the same create again handed it back (200); another customer's create 404; a second intent beside a charged one 409; an intent for a paid order 409" -ForegroundColor Gray
 
+Write-Host "[20c/20] Procurement: suppliers..." -ForegroundColor Cyan
+# The supplier list is staff-only (PROCUREMENT_ADMIN, which maya holds through
+# OWNER; alice holds only USER). The name is random because a live supplier name
+# is unique, ignoring letter case: a fixed one would make the second run of this
+# script a 409, the same reason $sku is randomised. The row this step adds is
+# deleted again by the step itself.
+#
+# One helper, so a refusal comes back as a status and a problem body instead of
+# an exception: with $ErrorActionPreference = "Stop" a raw WebException would end
+# the script before it could say which check failed. Read-Problem reads the
+# chunked error body that 5.1 leaves out of ErrorDetails.
+function Invoke-Supplier($Method, $Uri, $Headers, $Body) {
+    $p = @{ Method = $Method; Uri = $Uri; UseBasicParsing = $true }
+    if ($Headers) { $p.Headers = $Headers }
+    if ($null -ne $Body) { $p.ContentType = "application/json"; $p.Body = (ConvertTo-Json $Body -Depth 6) }
+    try {
+        $r = Invoke-WebRequest @p
+        $content = $r.Content
+        if ($content -is [byte[]]) { $content = [Text.Encoding]::UTF8.GetString($content) }
+        $json = $null
+        if ($content) { try { $json = $content | ConvertFrom-Json } catch { $json = $null } }
+        # ContainsKey first: asking a dictionary for a header that is not there
+        # must not be able to throw into the catch below and look like a refusal.
+        $location = $null
+        if ($r.Headers.ContainsKey("Location")) { $location = "$($r.Headers['Location'])" }
+        return @{ Status = [int]$r.StatusCode; Json = $json; Location = $location }
+    }
+    catch {
+        return @{ Status = [int](Probe-Status $_); Json = (Read-Problem $_); Location = $null }
+    }
+}
+
+$supplierBase = "http://localhost:8080/api/v1/admin/procurement/suppliers"
+$supplierName = "Smoke Supplier " + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
+$supplierNotes = "Changed by the smoke test"
+$supplierFailures = @()
+$supplierId = $null
+
+# maya adds a supplier. The country goes in lower case on purpose: it is stored
+# upper case.
+$created = Invoke-Supplier "POST" $supplierBase $mayaH @{
+    name = $supplierName; country = "cn"; contactName = "Smoke Tester"
+    contactDetails = "no phone"; paymentNotes = "Bank transfer, in full" }
+if ($created.Status -ne 201) {
+    $supplierFailures += "maya's create gave $($created.Status), expected 201"
+}
+else {
+    $supplierId = $created.Json.id
+    if (-not $supplierId) { $supplierFailures += "the create's reply carries no id" }
+    if ($created.Json.country -ne "CN") { $supplierFailures += "country was stored as '$($created.Json.country)', expected upper case CN" }
+    if ($created.Json.active -ne $true) { $supplierFailures += "a new supplier came back active=$($created.Json.active), expected true" }
+    if (-not $created.Location -or -not "$($created.Location)".EndsWith("/suppliers/$supplierId")) {
+        $supplierFailures += "the Location header '$($created.Location)' does not point at /suppliers/$supplierId"
+    }
+}
+
+if ($supplierId) {
+    # Read back by id, and found in the list (filtered by its own name so the
+    # first page is enough, whatever else is in the table).
+    $one = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+    if ($one.Status -ne 200 -or $one.Json.name -ne $supplierName) {
+        $supplierFailures += "reading it back by id gave $($one.Status) name '$($one.Json.name)', expected 200 '$supplierName'"
+    }
+    $listed = Invoke-Supplier "GET" "${supplierBase}?q=$([uri]::EscapeDataString($supplierName))&size=100" $mayaH $null
+    $rows = @()
+    if ($listed.Json) {
+        if ($null -ne $listed.Json.content) { $rows = @($listed.Json.content) } else { $rows = @($listed.Json) }
+    }
+    $inList = @($rows | Where-Object { $_.id -eq $supplierId })
+    if ($listed.Status -ne 200 -or $inList.Count -ne 1) {
+        $supplierFailures += "the list (status $($listed.Status)) held $($inList.Count) row(s) for the new supplier, expected exactly 1"
+    }
+
+    # The same name in another letter case is a duplicate of a LIVE supplier.
+    $dup = Invoke-Supplier "POST" $supplierBase $mayaH @{ name = $supplierName.ToLower(); country = "CN" }
+    if ($dup.Status -ne 409) {
+        $supplierFailures += "a duplicate name in a different letter case gave $($dup.Status), expected 409"
+    }
+
+    # Edit: only the fields sent change. "active": false stops using the
+    # supplier without deleting it.
+    $patched = Invoke-Supplier "PATCH" "$supplierBase/$supplierId" $mayaH @{ paymentNotes = $supplierNotes; active = $false }
+    if ($patched.Status -ne 200 -or $patched.Json.paymentNotes -ne $supplierNotes -or $patched.Json.active -ne $false) {
+        $supplierFailures += "the patch gave $($patched.Status) paymentNotes '$($patched.Json.paymentNotes)' active=$($patched.Json.active), expected 200 '$supplierNotes' false"
+    }
+
+    # A stopped supplier is still a real record: readable, name unchanged, and
+    # listed under active=false.
+    $stopped = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+    $stoppedOk = ($stopped.Status -eq 200) -and ($stopped.Json.active -eq $false) -and
+                 ($stopped.Json.name -eq $supplierName) -and ($stopped.Json.paymentNotes -eq $supplierNotes)
+    if (-not $stoppedOk) {
+        $supplierFailures += "the stopped supplier read back as $($stopped.Status) active=$($stopped.Json.active) notes '$($stopped.Json.paymentNotes)'"
+    }
+    $stoppedList = Invoke-Supplier "GET" "${supplierBase}?active=false&q=$([uri]::EscapeDataString($supplierName))&size=100" $mayaH $null
+    $stoppedRows = @()
+    if ($stoppedList.Json) {
+        if ($null -ne $stoppedList.Json.content) { $stoppedRows = @($stoppedList.Json.content) } else { $stoppedRows = @($stoppedList.Json) }
+    }
+    if (@($stoppedRows | Where-Object { $_.id -eq $supplierId }).Count -ne 1) {
+        $supplierFailures += "the stopped supplier is missing from the active=false list (status $($stoppedList.Status))"
+    }
+
+    # Delete it: 204, and then it is gone.
+    $deleted = Invoke-Supplier "DELETE" "$supplierBase/$supplierId" $mayaH $null
+    if ($deleted.Status -ne 204) {
+        $supplierFailures += "deleting it gave $($deleted.Status), expected 204 (supplier $supplierId is still in the table)"
+    }
+    $after = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+    if ($after.Status -ne 404) {
+        $supplierFailures += "reading it after the delete gave $($after.Status), expected 404"
+    }
+}
+
+# alice (USER only) is refused the list; an anonymous caller is not even identified.
+$aliceList = Invoke-Supplier "GET" $supplierBase $aliceH $null
+if ($aliceList.Status -ne 403) {
+    $supplierFailures += "alice listing suppliers gave $($aliceList.Status), expected 403"
+}
+$anonList = Invoke-Supplier "GET" $supplierBase $null $null
+if ($anonList.Status -ne 401) {
+    $supplierFailures += "an anonymous list gave $($anonList.Status), expected 401"
+}
+
+if ($supplierFailures.Count -gt 0) {
+    $supplierFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "the procurement supplier surface regressed on $($supplierFailures.Count) check(s)"
+    exit 1
+}
+# alice may not CREATE either. Last, and through Expect-Refusal (which sends
+# alice's token and stops the script if the call is anything but a 403).
+Expect-Refusal $supplierBase @{ name = "$supplierName (alice)"; country = "CN" } 403 $null `
+    "a plain customer creating a supplier"
+Write-Host "    created 201 (country upper-cased), read back by id and in the list, a duplicate name in another letter case 409, patched (paymentNotes + active=false), still readable while stopped, deleted 204 then 404; alice 403 on list and create; anonymous 401" -ForegroundColor Gray
+
 Write-Host ""
-Write-Host "FULL BACKEND SMOKE TEST PASSED - 12 services + observability stack end-to-end" -ForegroundColor Green
+Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

@@ -52,7 +52,8 @@ $modules = @(
     @{ Path = "services/checkout";     Image = "oriah/checkout:dev"      },
     @{ Path = "services/notification"; Image = "oriah/notification:dev"  },
     @{ Path = "services/review";       Image = "oriah/review:dev"        },
-    @{ Path = "services/search";       Image = "oriah/search:dev"        }
+    @{ Path = "services/search";       Image = "oriah/search:dev"        },
+    @{ Path = "services/procurement";  Image = "oriah/procurement:dev"   }
 )
 
 # Per-module retry. On Windows + Docker Desktop, Buildpacks' "Saving

@@ -32,6 +32,7 @@ from pathlib import Path
 SERVICES = [
     "catalog", "inventory", "customer", "cart", "payment", "order",
     "promotion", "shipping", "checkout", "notification", "review", "search",
+    "procurement",
 ]
 
 METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
@@ -58,6 +59,12 @@ NON_200_SUCCESS = {
     ("order", "post", "/api/v1/orders"): "201",
     ("promotion", "post", "/api/v1/admin/promotions"): "201",
     ("review", "post", "/api/v1/products/{productId}/reviews"): "201",
+    # procurement: a supplier is added with 201 + Location and deleted (a soft
+    # delete, correcting a mistake) with 204. springdoc cannot see inside
+    # ResponseEntity.created(...), so without these two entries the audit would
+    # accept a document that wrongly says "200".
+    ("procurement", "post", "/api/v1/admin/procurement/suppliers"): "201",
+    ("procurement", "delete", "/api/v1/admin/procurement/suppliers/{id}"): "204",
 }
 
 # The one auto-numbered id in the contract, pinned deliberately rather than

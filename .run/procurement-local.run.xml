@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="procurement :8093 (local)" type="Application" factoryName="Application" folderName="Oriah local">
+    <envs>
+      <env name="SPRING_PROFILES_ACTIVE" value="local" />
+    </envs>
+    <option name="MAIN_CLASS_NAME" value="com.oriah.procurement.ProcurementServiceApplication" />
+    <module name="procurement" />
+    <option name="VM_PARAMETERS" value="-Xmx512m" />
+    <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>

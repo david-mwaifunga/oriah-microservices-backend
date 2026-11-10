@@ -4,7 +4,7 @@
     app started from source with Spring profile `local` -- what you do in the IDE.
 
 .DESCRIPTION
-    Docker holds only what you never debug: the 11 Postgres databases, Keycloak,
+    Docker holds only what you never debug: the 12 Postgres databases, Keycloak,
     Kafka, Redis and the image store (.\scripts\dev-stack.ps1 starts them).
     Every Java app runs on this PC, so they all find each other on localhost.
 
@@ -42,7 +42,7 @@
 #>
 param(
     [string[]] $Services = @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order',
-                             'promotion', 'shipping', 'checkout', 'notification', 'review', 'search'),
+                             'promotion', 'shipping', 'checkout', 'notification', 'review', 'search', 'procurement'),
     [int] $StartTimeoutSec = 300,
     [switch] $KeepRunning,
     [switch] $Running
@@ -54,7 +54,8 @@ Set-Location $root
 
 $Platform = [ordered]@{ configserver = 8888; eurekaserver = 8761; gatewayserver = 8080 }
 $Ports = @{ catalog = 8081; inventory = 8082; customer = 8083; cart = 8084; payment = 8085; order = 8086
-            promotion = 8087; shipping = 8088; checkout = 8089; notification = 8090; review = 8091; search = 8092 }
+            promotion = 8087; shipping = 8088; checkout = 8089; notification = 8090; review = 8091; search = 8092
+            procurement = 8093 }
 $NoDatabase = @('shipping', 'checkout')
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -91,7 +92,7 @@ function Invoke-Http([string] $url, [hashtable] $headers = @{}, [string] $method
 }
 
 # Each app is a Maven launcher plus the app's own JVM; keep the launcher small
-# so all fifteen fit beside Docker.
+# so all sixteen fit beside Docker.
 $env:MAVEN_OPTS = '-Xmx256m'
 
 $started = New-Object System.Collections.Generic.List[object]
@@ -137,7 +138,7 @@ try {
     # --- [0] backing services ---------------------------------------------------
     Write-Host "[0] Backing services in Docker are healthy" -ForegroundColor Cyan
     $backing = @('oriah-keycloak', 'oriah-kafka', 'oriah-redis', 'oriah-s3', 'oriah-postgres-keycloak') +
-               @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search' |
+               @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search', 'procurement' |
                  ForEach-Object { "oriah-postgres-$_" })
     $bad = @($backing | Where-Object { ((Invoke-Native { docker inspect -f '{{.State.Health.Status}}' $_ }) -join '') -ne 'healthy' })
     if ($bad.Count) {

@@ -62,6 +62,7 @@ from pathlib import Path
 SERVICES = [
     "catalog", "inventory", "customer", "cart", "payment", "order",
     "promotion", "shipping", "checkout", "notification", "review", "search",
+    "procurement",
 ]
 
 METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
@@ -323,6 +324,19 @@ def run(baseline_dir, current_dir, services=None, allowlist=None):
         base_file = baseline_dir / (service + ".json")
         cur_file = current_dir / (service + ".json")
         if not base_file.exists():
+            # A declared service with no baseline is a FAILURE, never a skip: a
+            # silent skip let a new service go ungated, and the run still said
+            # "PASS: additions only". Appended directly (not through broke()) so
+            # the allowlist cannot waive it. The other services are still
+            # compared below, so the tool stays usable while one baseline is
+            # missing, and the message says exactly which file to create.
+            f.breaking.append((service, "baseline missing",
+                               str(base_file) + " does not exist -- " + service
+                               + "'s contract is not gated. Once its contract is accepted, run "
+                               "capture-openapi.ps1 (it writes .codex-tmp/current/openapi) and copy "
+                               "ONLY " + service + ".json into " + str(baseline_dir) + ". Do NOT "
+                               "point capture-openapi.ps1 -OutDir at the baseline folder: that "
+                               "overwrites every other service's reference with the live spec."))
             continue
         if not cur_file.exists():
             f.broke(service, "spec missing",
@@ -378,7 +392,13 @@ def report(f, checked, baseline_dir, current_dir):
         for service, kind, detail in sorted(f.breaking):
             print("  ! [{0}] {1}: {2}".format(service, kind, detail))
         print()
-        print("FAIL: the contract regressed.")
+        unbaselined = [b for b in f.breaking if b[1] == "baseline missing"]
+        if len(unbaselined) < len(f.breaking):
+            print("FAIL: the contract regressed.")
+        if unbaselined:
+            print("FAIL: {0} declared service(s) have no baseline ({1}) -- nothing is gated for "
+                  "them until one is captured.".format(
+                      len(unbaselined), ", ".join(s for s, _, _ in unbaselined)))
     elif f.allowed:
         print("PASS: additions only, plus {0} waived break(s) -- read the reasons in "
               "scripts/openapi-allowed-breaks.txt.".format(len(f.allowed)))
@@ -581,8 +601,10 @@ def self_test(baseline_dir):
 
     failures = []
 
-    # 1. Identity: the baseline against itself must be completely clean.
-    f, checked = run(baseline_dir, baseline_dir)
+    # 1. Identity: the baseline against itself must be completely clean. Only
+    # the services that HAVE a baseline file: this checks the diff engine, and
+    # a declared service with no baseline is its own check further down.
+    f, checked = run(baseline_dir, baseline_dir, services=[p.stem for p in specs])
     if f.breaking or f.additive:
         failures.append("identity diff was not clean")
         print("  FAIL  identity (baseline vs itself): {0} breaking, {1} additive"
@@ -661,7 +683,32 @@ def self_test(baseline_dir):
         failures.append("allowlist matched something it does not name")
         print("  FAIL  an unrelated allowlist entry waived a finding")
 
-    total = 4 + len(_breaking_mutations()) + len(_additive_mutations())
+    # A service the tool DECLARES but has no baseline for must FAIL, and say which
+    # baseline is missing. It used to be skipped silently, so a brand-new service
+    # (procurement) was never gated until someone remembered to capture a
+    # baseline, and the run still ended "PASS: additions only". The other
+    # services must still be compared (the tool stays usable), and no allowlist
+    # line may waive it: a waiver would bring the silent skip back.
+    miss_base, miss_cur = tempfile.mkdtemp(), tempfile.mkdtemp()
+    for d in (miss_base, miss_cur):
+        Path(d, service + ".json").write_text(
+            json.dumps(original, sort_keys=True, indent=2), encoding="utf-8")
+    ghost = "ghost-service"
+    f, checked = run(miss_base, miss_cur, services=[service, ghost])
+    missing = [(s, d) for s, k, d in f.breaking if k == "baseline missing"]
+    waiver = {(ghost, "baseline missing", missing[0][1].split(" -- ")[0].strip())} if missing else set()
+    f2, _ = run(miss_base, miss_cur, services=[service, ghost], allowlist=waiver)
+    if (len(missing) == 1 and missing[0][0] == ghost and ghost + ".json" in missing[0][1]
+            and checked == [service]
+            and any(k == "baseline missing" for _, k, _ in f2.breaking)):
+        print("  ok    a declared service with no baseline fails, names the missing file, "
+              "cannot be waived, and the others are still compared")
+    else:
+        failures.append("a declared service with no baseline did not fail")
+        print("  FAIL  a declared service with no baseline: breaking=%s checked=%s"
+              % ([(s, k) for s, k, _ in f.breaking], checked))
+
+    total = 5 + len(_breaking_mutations()) + len(_additive_mutations())
     print()
     if failures:
         print("SELF-TEST FAILED: {0}/{1} checks bad".format(len(failures), total))

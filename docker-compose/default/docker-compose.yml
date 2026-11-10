@@ -25,7 +25,7 @@
 # service names are DNS hostnames):
 #
 #   ┌─────────── data tier (no deps) ───────────┐
-#   │  postgres-* ×11   keycloak   kafka         │
+#   │  postgres-* ×12   keycloak   kafka         │
 #   │  redis   loki   prometheus   tempo   alloy  │
 #   └─────────────────────────────────────────────┘
 #                  │                │
@@ -43,7 +43,7 @@
 #                                      ▼
 #   ┌─── domain tier (waits: configserver, eurekaserver, keycloak, ───┐
 #   │    plus its own postgres, plus kafka where it is an event       │
-#   │    producer/consumer) ×12                                       │
+#   │    producer/consumer) ×13                                       │
 #   │  checkout additionally waits on the 6 services it calls: cart,  │
 #   │  catalog, customer, order, payment and shipping                 │
 #   └──────────────────────────────────────────────────────────────────┘
@@ -71,6 +71,7 @@
 #   5441 → postgres-review:5432
 #   5442 → postgres-search:5432
 #   5443 → postgres-keycloak:5432     # Keycloak's own store (logins, roles)
+#   5444 → postgres-procurement:5432  # suppliers (the 13th service, Phase 2)
 #   6379 → redis:6379
 #   8333 → oriah-s3:8333               # S3 API for product images
 #   7080 → keycloak:8080
@@ -87,6 +88,7 @@
 #   8090 → notification:8090
 #   8091 → review:8091
 #   8092 → search:8092
+#   8093 → procurement:8093
 #   8761 → eurekaserver:8761
 #   8888 → configserver:8888
 #   9090 → prometheus:9090
@@ -100,7 +102,7 @@ services:
 
   # ─────────────────────────── data tier ───────────────────────────
   #
-  # Schema per service: ten Postgres instances, each owned by exactly one
+  # Schema per service: eleven Postgres instances, each owned by exactly one
   # service. No service reads another's tables; cross-service reads go
   # through HTTP or Kafka. Shared settings come from postgres-base-config.
 
@@ -264,6 +266,25 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U search -d search"]
 
+  # procurement's database: the suppliers Oriah buys from. Host port 5444 is the
+  # next free one after Keycloak's 5443 -- services/procurement's
+  # application-local.yaml connects to it when the app runs from the IDE.
+  postgres-procurement:
+    extends:
+      file: ../common-config.yml
+      service: postgres-base-config
+    container_name: oriah-postgres-procurement
+    environment:
+      POSTGRES_DB: procurement
+      POSTGRES_USER: procurement
+      POSTGRES_PASSWORD: procurement
+    ports:
+      - "127.0.0.1:5444:5432"
+    volumes:
+      - postgres-procurement-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U procurement -d procurement"]
+
   # Keycloak's own database. Not a domain service's: it holds every login --
   # the owner, each hire's job role, every customer who registered -- so it
   # must outlive the keycloak container. Before this, Keycloak kept its data
@@ -409,7 +430,7 @@ services:
     # then restart order (docker compose restart order) -- its cached machine
     # token was signed by the old keys. Removing that one volume wipes dev
     # logins, never the ten domain databases. Never `docker compose down -v`
-    # (it wipes all eleven databases); never a console edit (it drifts from the
+    # (it wipes all twelve databases); never a console edit (it drifts from the
     # committed files).
     # After go-live a realm change is applied by an idempotent admin-API step
     # instead.
@@ -733,7 +754,7 @@ services:
       CONFIG_REPO_URI: file:///workspace/config-repo
       CONFIG_REPO_BRANCH: master
       # Tracing endpoint set directly here because configserver can't
-      # bootstrap from itself — the 12 service modules inherit these
+      # bootstrap from itself — the 13 service modules inherit these
       # values via config-repo/application.yaml, but the platform tier
       # has to be told via env.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
@@ -828,7 +849,7 @@ services:
 
   # ───────────────────────── domain tier ───────────────────────────
   #
-  # All 12 take microservice-keycloak-config, which supplies the
+  # All 13 take microservice-keycloak-config, which supplies the
   # configserver + eurekaserver + keycloak dependency triple, the docker
   # profile, the network and the healthcheck cadence. Each adds only what is
   # genuinely its own: its Postgres, Kafka if it produces or consumes events,
@@ -1084,6 +1105,28 @@ services:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8092"]
       start_period: 90s
 
+  procurement:
+    # Suppliers only for now (Phase 2), so it waits for its own Postgres and
+    # nothing else. Kafka joins depends_on in the phase where procurement first
+    # publishes an event (consignment.received); until then it would only delay
+    # the start of a service that never touches it.
+    extends:
+      file: ../common-config.yml
+      service: microservice-keycloak-config
+    image: oriah/procurement:dev
+    container_name: oriah-procurement
+    environment:
+      SPRING_DATASOURCE_USERNAME: procurement
+      SPRING_DATASOURCE_PASSWORD: procurement
+    ports:
+      - "127.0.0.1:8093:8093"
+    depends_on:
+      postgres-procurement:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8093"]
+      start_period: 90s
+
   # ─────────────────────────── frontend tier ───────────────────────────
 
   oriah-web:
@@ -1177,6 +1220,7 @@ volumes:
   postgres-notification-data:
   postgres-review-data:
   postgres-search-data:
+  postgres-procurement-data:
   postgres-keycloak-data:
   prometheus-data:
   grafana-data:

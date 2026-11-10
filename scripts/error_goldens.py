@@ -79,12 +79,18 @@ CASES = [
     # it returned 201 and CREATED A PRODUCT every time the goldens were
     # captured. A golden capture must not mutate state.
     ("403-admin-products-as-plain-user", "GET", "/api/v1/admin/products", "user", None),
+    # procurement (Phase 2): the supplier list is PROCUREMENT_ADMIN only. Also a
+    # GET, so capturing it creates nothing.
+    ("403-procurement-suppliers-as-plain-user", "GET", "/api/v1/admin/procurement/suppliers", "user", None),
 
     # --- 404: the Tier 5 bodies, through the gateway ----------------------
     ("404-unknown-product", "GET", "/api/v1/products/" + MISSING, None, None),
     ("404-unknown-order", "GET", "/api/v1/orders/" + MISSING, "user", None),
     ("404-unknown-payment-intent", "GET", "/api/v1/payments/intents/" + MISSING, "user", None),
     ("404-unknown-promotion", "GET", "/api/v1/promotions/NOSUCHCODE", "user", None),
+    # procurement: "admin" is maya (OWNER, so she holds PROCUREMENT_ADMIN). A
+    # well-formed id that no supplier has is a 404, not the 400 a malformed id gets.
+    ("404-unknown-supplier", "GET", "/api/v1/admin/procurement/suppliers/" + MISSING, "admin", None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

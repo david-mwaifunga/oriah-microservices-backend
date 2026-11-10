@@ -12,7 +12,7 @@
     a renamed operationId silently renames a client method and breaks the build
     at a site far from the change.
 
-    Specs are fetched through the gateway's 12 /v3/api-docs/<svc> routes rather
+    Specs are fetched through the gateway's 13 /v3/api-docs/<svc> routes rather
     than from each service's own port, so this also exercises the aggregation
     routes themselves.
 
@@ -65,7 +65,7 @@ $ErrorActionPreference = "Stop"
 
 $services = @(
     "catalog", "inventory", "customer", "cart", "payment", "order",
-    "promotion", "shipping", "checkout", "notification", "review", "search"
+    "promotion", "shipping", "checkout", "notification", "review", "search", "procurement"
 )
 
 if (-not (Test-Path $OutDir)) {

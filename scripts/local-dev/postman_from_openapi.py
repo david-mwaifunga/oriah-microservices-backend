@@ -1,13 +1,13 @@
 """Builds the Postman collection for local development from the running apps.
 
-Every endpoint of the 12 services, read from their own OpenAPI descriptions
+Every endpoint of the 13 services, read from their own OpenAPI descriptions
 (through the gateway's /v3/api-docs/<service>), so the collection is never
 hand-maintained and never drifts. Each request goes through the gateway --
 the path the storefront uses -- unless the gateway does not route that path,
 in which case it goes straight to the service's port and says so. Every
 request sends the token stored by the "0. Log in" requests.
 
-Needs the platform and all 12 services running (docs/LOCAL_DEV.md).
+Needs the platform and all 13 services running (docs/LOCAL_DEV.md).
 
     python scripts/local-dev/postman_from_openapi.py            # write the collection
     python scripts/local-dev/postman_from_openapi.py --check    # also call every
@@ -28,7 +28,7 @@ GATEWAY = 'http://localhost:8080'
 PLATFORM = {'configserver': 8888, 'eurekaserver': 8761, 'gatewayserver': 8080}
 SERVICES = {'catalog': 8081, 'inventory': 8082, 'customer': 8083, 'cart': 8084, 'payment': 8085,
             'order': 8086, 'promotion': 8087, 'shipping': 8088, 'checkout': 8089,
-            'notification': 8090, 'review': 8091, 'search': 8092}
+            'notification': 8090, 'review': 8091, 'search': 8092, 'procurement': 8093}
 ROUTES_SRC = ROOT / 'infra' / 'gatewayserver' / 'src' / 'main' / 'java' / 'com' / 'oriah' / \
     'gatewayserver' / 'config' / 'GatewayRoutesConfig.java'
 

@@ -19,7 +19,7 @@
 # A service picks the layer matching how much of the platform it needs:
 # configserver and eurekaserver bootstrap nothing, so they take
 # `microservice-base-config`; gatewayserver needs service discovery but not
-# the Config Server, so it declares its own eureka dependency; the 12 domain
+# the Config Server, so it declares its own eureka dependency; the 13 domain
 # services take `microservice-keycloak-config` and add only what is theirs
 # (their own Postgres, and Kafka where they produce or consume).
 #
@@ -44,7 +44,7 @@ services:
     networks:
       - oriah
 
-  # Common to all 15 Spring Boot modules.
+  # Common to all 16 Spring Boot modules.
   #
   # SPRING_PROFILES_ACTIVE=docker selects application-docker.yaml in each
   # module, which is where the in-container hostnames live (as opposed to the
@@ -53,7 +53,7 @@ services:
   # The healthcheck cadence is shared; the probe itself is not (see the note
   # at the top of this file). `retries: 30` at `interval: 10s` gives a service
   # five minutes past its start_period before compose marks it unhealthy,
-  # which matters on a cold Docker Desktop start where ten Postgres
+  # which matters on a cold Docker Desktop start where twelve Postgres
   # containers, Keycloak and Kafka are all competing for IO.
   microservice-base-config:
     extends:
@@ -96,7 +96,7 @@ services:
       keycloak:
         condition: service_healthy
 
-  # Common to the 10 per-service Postgres instances (schema-per-service: each
+  # Common to the 11 per-service Postgres instances (schema-per-service: each
   # service owns its own database and no service reads another's tables).
   # Database name, user, password, host port and volume stay per-instance, as
   # does the pg_isready probe that names them.

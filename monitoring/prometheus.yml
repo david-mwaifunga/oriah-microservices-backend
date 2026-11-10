@@ -6,7 +6,7 @@
 # the resulting time series.
 #
 # Three service classes here:
-#   - 12 domain services on ports 8081..8092
+#   - 13 domain services on ports 8081..8093
 #   - 3 infra services (configserver/eurekaserver/gatewayserver)
 #   - prometheus itself (loopback) for meta-monitoring
 #
@@ -53,5 +53,6 @@ scrape_configs:
           - 'notification:8090'
           - 'review:8091'
           - 'search:8092'
+          - 'procurement:8093'
         labels:
           tier: services
