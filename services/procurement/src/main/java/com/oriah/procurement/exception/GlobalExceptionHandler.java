@@ -64,6 +64,16 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
         return unhandled(ex);
     }
 
+    /** The same 400 {@code validation} body {@code @Valid} produces, for the edit's per-field checks. */
+    @ExceptionHandler(InvalidFieldsException.class)
+    public ProblemDetail invalidFields(InvalidFieldsException ex) {
+        log.debug("400 validation failure on {} field(s)", ex.fieldErrors().size());
+        ProblemDetail pd = problem(HttpStatus.BAD_REQUEST, TYPE_VALIDATION, "Validation Failed",
+                "Request validation failed");
+        pd.setProperty("fieldErrors", ex.fieldErrors());
+        return pd;
+    }
+
     /** Both the error code and the index name must match, anywhere along the cause chain. */
     private static boolean isLiveNameCollision(Throwable failure) {
         for (Throwable t = failure; t != null; t = t.getCause()) {

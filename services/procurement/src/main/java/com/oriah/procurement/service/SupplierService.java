@@ -1,5 +1,7 @@
 package com.oriah.procurement.service;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -8,13 +10,19 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.oriah.observability.OriahExceptionHandlerSupport.FieldErrorView;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.procurement.dto.CreateSupplierRequest;
+import com.oriah.procurement.dto.UpdateSupplierRequest;
+import com.oriah.procurement.exception.InvalidFieldsException;
 import com.oriah.procurement.model.Supplier;
 import com.oriah.procurement.repository.SupplierRepository;
 
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Validator;
+
 /**
- * Suppliers: add, read, delete (list and edit follow). Every rule about a single
+ * Suppliers: add, read, list, edit, delete. Every rule about a single
  * supplier lives in the {@link Supplier} aggregate; what lives here is what needs
  * the database: is the name taken, does it exist.
  */
@@ -23,9 +31,11 @@ import com.oriah.procurement.repository.SupplierRepository;
 public class SupplierService {
 
     private final SupplierRepository repository;
+    private final Validator validator;
 
-    public SupplierService(SupplierRepository repository) {
+    public SupplierService(SupplierRepository repository, Validator validator) {
         this.repository = repository;
+        this.validator = validator;
     }
 
     /**
@@ -79,6 +89,79 @@ public class SupplierService {
     /** '!' is the repository's escape character: put it before the three that would otherwise act. */
     private static String escapeForLike(String text) {
         return text.replace("!", "!!").replace("%", "!%").replace("_", "!_");
+    }
+
+    /**
+     * Changes the fields that were sent and leaves the rest alone.
+     *
+     * <p>Every field that was sent is checked first, against the same rules as
+     * adding a supplier, and all the problems are reported together; nothing is
+     * looked up or changed until they are fixed. A field that was left out is not
+     * checked: whatever is stored passed the rules when it was stored.
+     *
+     * <p>The name is compared with every <em>other</em> live supplier, so a supplier
+     * can change the letter case of its own name. As on adding, that check and the
+     * write are not one atomic step: the unique index decides a race and
+     * {@code saveAndFlush} makes the loser fail here, inside the request, so the
+     * procurement advice answers it as a 409. The {@code @Version} column does the
+     * same for two edits of one supplier at once (409 {@code concurrent-update}).
+     * An edit that changes nothing writes nothing, so the version does not move.
+     */
+    public Supplier update(UUID id, UpdateSupplierRequest request) {
+        rejectInvalidFields(request);
+        Supplier supplier = live(id);
+
+        String name = request.hasName() ? request.getName() : supplier.name();
+        String country = request.hasCountry() ? request.getCountry() : supplier.country();
+        String contactName = request.hasContactName() ? request.getContactName() : supplier.contactName();
+        String contactDetails = request.hasContactDetails() ? request.getContactDetails() : supplier.contactDetails();
+        String paymentNotes = request.hasPaymentNotes() ? request.getPaymentNotes() : supplier.paymentNotes();
+
+        if (request.hasName() && repository.existsOtherLiveName(name.strip(), id)) {
+            throw new IllegalStateException("A supplier named '" + name.strip() + "' already exists");
+        }
+
+        // The aggregate re-checks everything and tidies it (trim, upper-case, blank to null).
+        supplier.change(name, country, contactName, contactDetails, paymentNotes);
+        if (request.hasActive()) {
+            if (request.getActive()) {
+                supplier.activate();
+            } else {
+                supplier.deactivate();
+            }
+        }
+        return repository.saveAndFlush(supplier);
+    }
+
+    /**
+     * Each field that was sent is held to the rules the add form's request carries:
+     * the same annotations, so there is one set. A name or country sent as null or
+     * blank fails there ({@code @NotBlank}); an optional field sent as null or blank
+     * passes, and that is how it is cleared.
+     */
+    private void rejectInvalidFields(UpdateSupplierRequest request) {
+        List<FieldErrorView> problems = new ArrayList<>();
+        check(problems, "name", request.hasName(), request.getName());
+        check(problems, "country", request.hasCountry(), request.getCountry());
+        check(problems, "contactName", request.hasContactName(), request.getContactName());
+        check(problems, "contactDetails", request.hasContactDetails(), request.getContactDetails());
+        check(problems, "paymentNotes", request.hasPaymentNotes(), request.getPaymentNotes());
+        if (request.hasActive() && request.getActive() == null) {
+            problems.add(new FieldErrorView("active", "must be true or false"));
+        }
+        if (!problems.isEmpty()) {
+            throw new InvalidFieldsException(problems);
+        }
+    }
+
+    private void check(List<FieldErrorView> problems, String field, boolean sent, String value) {
+        if (!sent) {
+            return;
+        }
+        for (ConstraintViolation<CreateSupplierRequest> violation
+                : validator.validateValue(CreateSupplierRequest.class, field, value)) {
+            problems.add(new FieldErrorView(field, violation.getMessage()));
+        }
     }
 
     /**

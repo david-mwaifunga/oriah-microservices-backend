@@ -32,6 +32,15 @@ public interface SupplierRepository extends JpaRepository<Supplier, UUID> {
     @Query("select count(s) > 0 from Supplier s where lower(s.name) = lower(:name) and s.deleted = false")
     boolean existsLiveName(@Param("name") String name);
 
+    /**
+     * Is a live supplier <em>other than this one</em> already called this, in any
+     * letter case? For a rename: a supplier is not in conflict with itself, so
+     * changing "Fycargo" to "FYCARGO" is fine.
+     */
+    @Query("select count(s) > 0 from Supplier s where lower(s.name) = lower(:name) and s.deleted = false "
+            + "and s.id <> :id")
+    boolean existsOtherLiveName(@Param("name") String name, @Param("id") UUID id);
+
     // The list, in four explicit queries instead of one with optional parameters:
     // "(:active is null or s.active = :active)" makes PostgreSQL guess the type of a
     // null parameter, which it cannot always do, and a query per combination is

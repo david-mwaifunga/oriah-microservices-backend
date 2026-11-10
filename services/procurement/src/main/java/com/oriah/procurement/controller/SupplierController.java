@@ -10,6 +10,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -17,10 +18,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import com.oriah.procurement.dto.CreateSupplierRequest;
 import com.oriah.procurement.dto.SupplierResponse;
+import com.oriah.procurement.dto.UpdateSupplierRequest;
 import com.oriah.procurement.service.SupplierService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -41,7 +42,7 @@ import jakarta.validation.Valid;
  * call each other directly and the ports are only closed in production.
  */
 @RestController
-@RequestMapping("/api/v1/admin/procurement/suppliers")
+@RequestMapping(SupplierController.BASE_PATH)
 @PreAuthorize("hasRole('PROCUREMENT_ADMIN')")
 @Tag(name = "Suppliers", description = "Who Oriah buys from")
 @ApiResponses({
@@ -56,6 +57,8 @@ import jakarta.validation.Valid;
                         schema = @Schema(implementation = ProblemDetail.class)))
 })
 public class SupplierController {
+
+    static final String BASE_PATH = "/api/v1/admin/procurement/suppliers";
 
     private static final int DEFAULT_PAGE_SIZE = 50;
     private static final int MAX_PAGE_SIZE = 100;
@@ -77,8 +80,9 @@ public class SupplierController {
     @PostMapping
     public ResponseEntity<SupplierResponse> create(@Valid @RequestBody CreateSupplierRequest request) {
         SupplierResponse created = SupplierResponse.from(service.create(request));
-        URI location = ServletUriComponentsBuilder.fromCurrentRequest().path("/{id}")
-                .buildAndExpand(created.id()).toUri();
+        // A path, as every other service answers. Not built from the request: behind the
+        // gateway that would name this service's own host, which a browser cannot reach.
+        URI location = URI.create(BASE_PATH + "/" + created.id());
         return ResponseEntity.created(location).body(created);
     }
 
@@ -128,6 +132,29 @@ public class SupplierController {
     @GetMapping("/{id}")
     public SupplierResponse get(@PathVariable UUID id) {
         return SupplierResponse.from(service.get(id));
+    }
+
+    @Operation(operationId = "updateSupplier",
+            summary = "Change a supplier: send only the fields that change",
+            description = "A field left out is unchanged. contactName, contactDetails and paymentNotes are "
+                    + "cleared by sending null or blank text. name, country and active cannot be empty. "
+                    + "\"active\": false stops using a supplier without deleting it.")
+    @ApiResponse(responseCode = "200", description = "The supplier as it is now")
+    @ApiResponse(responseCode = "400", description = "A field breaks a rule, or is empty when it cannot be; "
+            + "see fieldErrors. Nothing is changed.",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such supplier (a deleted one counts as none)",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409",
+            description = "Another live supplier has this name (letter case ignored), or someone else changed "
+                    + "this supplier at the same moment (reload and try again)",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @PatchMapping("/{id}")
+    public SupplierResponse update(@PathVariable UUID id, @RequestBody UpdateSupplierRequest request) {
+        return SupplierResponse.from(service.update(id, request));
     }
 
     @Operation(operationId = "deleteSupplier",

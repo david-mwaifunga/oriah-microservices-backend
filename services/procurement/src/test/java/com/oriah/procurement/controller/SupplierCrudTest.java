@@ -108,7 +108,10 @@ class SupplierCrudTest {
                 .andReturn();
 
         String id = JsonPath.read(result.getResponse().getContentAsString(), "$.id");
-        assertThat(result.getResponse().getHeader("Location")).endsWith(PATH + "/" + id);
+        // A path, exactly as every other service answers. Not an absolute URL built from the
+        // request: behind the gateway that would name the service's own host (procurement:8093),
+        // which a browser outside the network cannot reach.
+        assertThat(result.getResponse().getHeader("Location")).isEqualTo(PATH + "/" + id);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM suppliers", Integer.class)).isEqualTo(1);
     }
 
