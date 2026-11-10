@@ -3,6 +3,7 @@ package com.oriah.procurement.controller;
 import java.net.URI;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -13,6 +14,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
@@ -22,6 +24,7 @@ import com.oriah.procurement.dto.SupplierResponse;
 import com.oriah.procurement.service.SupplierService;
 
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -54,6 +57,9 @@ import jakarta.validation.Valid;
 })
 public class SupplierController {
 
+    private static final int DEFAULT_PAGE_SIZE = 50;
+    private static final int MAX_PAGE_SIZE = 100;
+
     private final SupplierService service;
 
     public SupplierController(SupplierService service) {
@@ -74,6 +80,41 @@ public class SupplierController {
         URI location = ServletUriComponentsBuilder.fromCurrentRequest().path("/{id}")
                 .buildAndExpand(created.id()).toUri();
         return ResponseEntity.created(location).body(created);
+    }
+
+    @Operation(operationId = "listSuppliers",
+            summary = "The suppliers, by name, optionally only those in use or those stopped, or matching some text")
+    @ApiResponse(responseCode = "200", description = "A page of suppliers")
+    @ApiResponse(responseCode = "400",
+            description = "size outside 1-100, a negative page, a malformed active, or a sort parameter "
+                    + "(this endpoint is fixed to name order)",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping
+    public Page<SupplierResponse> list(
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "" + DEFAULT_PAGE_SIZE) int size,
+            @Parameter(description = "true: only suppliers in use; false: only those we have stopped using; absent: both")
+            @RequestParam(name = "active", required = false) Boolean active,
+            @Parameter(description = "Names containing this text, ignoring letter case. % and _ are ordinary characters.")
+            @RequestParam(name = "q", required = false) String q,
+            @RequestParam(name = "sort", required = false) String sort) {
+
+        // IllegalArgumentException is what the shared advice renders as a 400
+        // RFC 7807 body, so every refusal below arrives in the platform's shape.
+        // Refused, not clamped or ignored: a quietly changed request hides the
+        // caller's mistake.
+        if (sort != null) {
+            throw new IllegalArgumentException("This endpoint is always ordered by name, ignoring letter case, "
+                    + "and does not accept a 'sort' parameter. Remove it.");
+        }
+        if (page < 0) {
+            throw new IllegalArgumentException("page must be 0 or greater, was " + page);
+        }
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new IllegalArgumentException("size must be between 1 and " + MAX_PAGE_SIZE + ", was " + size);
+        }
+        return service.list(page, size, active, q).map(SupplierResponse::from);
     }
 
     @Operation(operationId = "getSupplier", summary = "One supplier")

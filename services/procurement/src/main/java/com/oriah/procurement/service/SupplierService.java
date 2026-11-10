@@ -2,6 +2,9 @@ package com.oriah.procurement.service;
 
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,6 +52,33 @@ public class SupplierService {
     @Transactional(readOnly = true)
     public Supplier get(UUID id) {
         return live(id);
+    }
+
+    /**
+     * One page of live suppliers, ordered by name ignoring letter case.
+     *
+     * @param active {@code null} for both, otherwise only suppliers we are
+     *               using ({@code true}) or have stopped using ({@code false})
+     * @param q      text the name must contain, ignoring letter case; blank means
+     *               no filter. {@code %}, {@code _} and {@code !} are ordinary
+     *               characters here, not wildcards.
+     */
+    @Transactional(readOnly = true)
+    public Page<Supplier> list(int page, int size, Boolean active, String q) {
+        Pageable pageable = PageRequest.of(page, size);
+        String text = q == null ? "" : q.strip();
+        if (text.isEmpty()) {
+            return active == null ? repository.findLive(pageable) : repository.findLiveByActive(active, pageable);
+        }
+        String pattern = "%" + escapeForLike(text) + "%";
+        return active == null
+                ? repository.findLiveByName(pattern, pageable)
+                : repository.findLiveByActiveAndName(active, pattern, pageable);
+    }
+
+    /** '!' is the repository's escape character: put it before the three that would otherwise act. */
+    private static String escapeForLike(String text) {
+        return text.replace("!", "!!").replace("%", "!%").replace("_", "!_");
     }
 
     /**
