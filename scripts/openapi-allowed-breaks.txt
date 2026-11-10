@@ -336,3 +336,27 @@ checkout|schema property removed|PreviewResponse.appliedPromotion
 checkout|schema property removed|PreviewResponse.pricingVersion
 order|property became required|PlaceOrderRequest.deliveryOption
 order|property became required|PlaceOrderRequest.quoteDigest
+
+# ---------------------------------------------------------------------------
+# Phase 1: a payment intent can now be CHARGING.
+# ---------------------------------------------------------------------------
+#
+# A card is charged once per intent. From the moment the charge is started
+# until its outcome is known the intent is CHARGING, and payment's reconciler
+# settles one whose answer never arrived (MVP_PLAN Phase 1). That is a real
+# state of the money, so both status lists gain the value.
+#
+# It cannot be done additively: adding an enum value is the whole change, and
+# a reader with a closed list of statuses fails on a value it does not know.
+# oriah-web was checked. src/lib/api/schemas/admin.ts lists the four old
+# statuses in a z.enum (PaymentStatusSchema), so the admin payments list WOULD
+# throw on a CHARGING row, and src/components/admin/AdminPaymentsClient.tsx
+# has the same list for its filter. That is recorded for the frontend stage in
+# docs/FRONTEND_WORK.md (Phase 1, admin screens), with the summary's new
+# chargingCount. The storefront never reads the intent's status: it holds
+# only paymentIntentId (schemas/checkout.ts, schemas/order.ts).
+#
+# Reviewed and accepted 2026-11-10.
+
+payment|schema property type changed|AdminPaymentResponse.status: {"enum": ["PENDING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"} -> {"enum": ["PENDING", "CHARGING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"}
+payment|schema property type changed|PaymentIntentResponse.status: {"enum": ["PENDING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"} -> {"enum": ["PENDING", "CHARGING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"}

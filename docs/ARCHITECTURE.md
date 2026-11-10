@@ -347,6 +347,16 @@ The existing synchronous catalog→inventory Feign call for availability
 
 ### Producer pattern: ApplicationEventPublisher + AFTER_COMMIT bridge
 
+> ⚠ **Superseded by Phase 1 (2026-11-09/10).** This is how iteration 8 was
+> built, kept for its reasoning. Catalog no longer has the bridge:
+> `ProductService` appends every event to an `outbox` table **in the same
+> transaction** as the change; a relay publishes the rows to
+> `catalog.product` with a full envelope (event id, aggregate type and id,
+> a per-aggregate `seq`, who and when); and the rows are kept, so a late
+> consumer can ask for a replay. Point 3 below, the "future polish", is
+> built. Order and payment publish the same way. The design is in
+> `MVP_PLAN.md` (Phase 1) and `shared/oriah-events/README.md`.
+
 `ProductService.create()` publishes via Spring's in-process
 `ApplicationEventPublisher`. A separate `KafkaProductEventBridge` has
 three `@TransactionalEventListener(phase = AFTER_COMMIT)` methods —
@@ -370,7 +380,7 @@ one per event type — that forward the in-process event to Kafka via
    true at-least-once delivery we'd add a **transactional outbox**:
    write events to an `outbox` table inside the same transaction, then
    a separate relay reads the table and publishes. Documented as a
-   future polish — out of scope for this iteration.
+   future polish at the time -- **built in Phase 1** (see the note above).
 
 ### Consumer pattern: one `@Bean Consumer<Message<byte[]>>`, header-dispatched
 
@@ -397,6 +407,15 @@ each message is consumed by exactly one instance — same horizontal
 scaling pattern we'd want in production.
 
 ### Idempotency via PK-upsert
+
+> ⚠ **Superseded by the Inbox (Phase 1).** Inventory, search and
+> notification no longer rely on an upsert being harmless to repeat. Each
+> keeps a `processed_event` table and applies an event only once, in the
+> same transaction as its effect; inventory and search also keep the newest
+> `seq` seen per aggregate, so an older snapshot arriving late is ignored. An
+> event that cannot be applied is retried (three deliveries in all), then
+> parked on a dead-letter topic of its own and never dropped. The text
+> below is the iteration-8 reasoning.
 
 At-least-once delivery (Kafka's default) means a replayed message
 must not corrupt state. `ProductRef`'s primary key is `variant_id`,

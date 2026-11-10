@@ -448,17 +448,20 @@ Each phase ends green with its tests run and counts quoted. Flyway versions
 below are the **real next number** for each service, verified against the files
 on disk — four earlier designs each assumed they owned `orders` V4, and only
 one migration can have that number. **Updated after Phase 0 (2026-11-09):**
-Phase 0 used order **V4** and inventory **V5**, so their next free numbers are
-now order **V5** and inventory **V6**.
+Phase 0 used order **V4** and inventory **V5**, so their next free numbers were
+order **V5** and inventory **V6**. **Updated after Phase 1 (2026-11-10):** Phase 1
+used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
+**V3** and notification **V3** — the table below is what is on disk now.
 
 | Service | Highest now | Next free |
 |---|---|---|
-| catalog | V3 | **V4** |
-| inventory | **V5** — USED by Phase 0's `@Version` | **V6** — Phase 5's `cost_lot` |
-| order | **V4** — USED by Phase 0's authoritative totals | **V5** |
+| catalog | **V4** — USED by Phase 1's outbox | **V5** — Phase 3's `kind` |
+| inventory | **V6** — USED by Phase 1's `processed_event` (V5 is Phase 0's `@Version`) | **V7** — Phase 5's `cost_lot` |
+| order | **V5** — USED by Phase 1's event log (V4 is Phase 0's authoritative totals) | **V6** |
 | cart | V3 | V4 |
-| payment | V4 | V5 |
-| promotion / customer / review / search / notification | V2 | V3 |
+| payment | **V5** — USED by Phase 1: one charge per intent, and the event log | **V6** |
+| search / notification | **V3** — USED by Phase 1's `processed_event` | **V4** |
+| promotion / customer / review | V2 | V3 |
 | checkout | *(stateless, no DB)* | — |
 | shipping | *(stateless today)* | **V1** — gains a database in Phase 7 for provinces, towns and delivery prices |
 | procurement, finance | *(new services)* | **V1** |
@@ -582,7 +585,8 @@ no step here needs an interim business arrangement.
    - The storefront's first step is now **Delivery**: an option picker, and an
      address only when the option delivers.
 3. **Atomic stock changes — `@Version` on `Inventory`**, in inventory **V5**
-   (`version BIGINT NOT NULL DEFAULT 0`); Phase 5's `cost_lot` moves to **V6**.
+   (`version BIGINT NOT NULL DEFAULT 0`); Phase 5's `cost_lot` moves to **V6**
+   (and then to **V7**, since Phase 1 took V6 for `processed_event`).
    `reserve`, `release`, `confirm` and `restock` all go through one
    find-and-mutate path (`applyMutation`, saved by dirty checking), so the
    version covers all four — and the conflict surfaces **at commit**, so the
@@ -874,6 +878,87 @@ no step here needs an interim business arrangement.
 
 ### Phase 1 — The event log convention
 
+> **Status: built, 2026-11-09/10.** The event log is the shared module
+> `shared/oriah-events`, and every service that sends or reads events uses it.
+> Committed (not pushed). Commits in `oriah-api`: `d7e3107` the module (outbox,
+> relay, replay, inbox, catch-up); `e2acbc7` order, `c3857ea` catalog and
+> `3cad2cf` payment publish through it; `5cc469b` notification, search and
+> inventory apply each event once; `02f6976` and `445503b` the module's
+> dead-letter handling and startup checks; `7819acd` notification, `950957d`
+> search, `ae5da55` inventory, `d46ffdf` catalog, `e9c5297` order and
+> `fcd713d` payment each meet those checks. Found by the reviews and fixed in
+> this phase: `ffa3187` (payment makes an intent only for the caller's own
+> order, and a repeated create gets the same intent back), `6f096d0`,
+> `5ef2830` and `bc66736` (checkout repeats only what cannot happen twice),
+> `ef6c522` (a deleted product takes no image upload or delete), `d0b0489`
+> (smoke test).
+>
+> **What is true now.**
+> - Every fact is a row in the service's `outbox`, written **in the same
+>   transaction** as the change, never updated or deleted (the database refuses
+>   both, and a truncate). Each row has a global, ever-increasing position and
+>   a per-aggregate `seq`, `occurred_at` (when it happened) beside `recorded_at`
+>   (when it was written), the actor, and the payload. The relay publishes the
+>   rows **at least once**; rows are never purged.
+> - **A late consumer can ask for the whole history** (`CatchUp`). The producer
+>   answers in **steps of 10 rows** so one answer is never so long that Kafka
+>   thinks the listener is dead; every request and continuation is keyed by its
+>   request id, so the steps of one replay stay in order on one partition. A
+>   catch-up asks from `replayed_through + 1` — the first request too.
+> - **Every consumer applies an event once.** `processed_event` records each
+>   event id in the same transaction as its effect, and inventory and search
+>   also keep the newest `seq` per aggregate, so an older snapshot arriving late
+>   is ignored. An event whose aggregate type is not the one the consumer
+>   declared is refused.
+> - **A message that cannot be applied is never silently lost.** It is tried
+>   three times in all (not four), then published to a dead-letter topic of its
+>   own, `<topic>.dlq.<group>`, and the offset moves on only once that topic
+>   has it. If that publish fails the event stays where it is, an ERROR is
+>   logged every 10–35 s and the partition waits: **alert on that ERROR and on
+>   the group's lag.** Delivery to the dead-letter topic is at least once. Nothing
+>   reads those topics yet.
+> - **Notification sends only after its record commits**, and only for the
+>   order the event's envelope names (Phase 11 below says what that leaves).
+> - **Payment keeps the build trap below**: the event is appended last, and a
+>   card is charged once per intent.
+>
+> **The numbers each service must keep.** Most are enforced: the service
+> refuses to start otherwise, naming every problem at once. The module does
+> not check the back-off times or `max.poll.records: 1`; the services set them
+> and their binding tests pin them.
+> - **Producers** (catalog, order, payment): `max.block.ms: 10000` and
+>   `delivery.timeout.ms: 10000` under
+>   `spring.cloud.stream.kafka.binder.producer-properties`; `sync: true`.
+> - **The replay step rule:**
+>   `(chunk-size + 1) x (max.block.ms + delivery.timeout.ms) + 25 s +
+>   back-off-max-interval < max.poll.interval.ms` — with the house settings
+>   11 x 20 s + 25 s + 10 s = 255 s of the listener's 300 s. The module sets the
+>   replay listener itself (its dead-letter topic
+>   `oriah.outbox.replay-requests.dlq.<service>`, one request per poll, 300 s);
+>   a service sets **none** of it.
+> - **Readers:** `oriah.events.inbox.topics` lists the topics read through the
+>   Inbox, each read by exactly one binding; `max-attempts: 3` (three
+>   deliveries in all; 2 or more is required), back-off 1 s doubling to at
+>   most 10 s, `max.poll.records: 1`; and the pause after a failed dead-letter
+>   publish plus that publish (25 s) may use **at most half** of
+>   `max.poll.interval.ms`.
+> - **Refused outright:** a binding with no group, with `enable-dlq` off, with no
+>   `dlq-name` or one equal to the topic it reads, in batch mode, with native
+>   decoding, a non-byte deserializer or Kafka transactions; more than one
+>   binder, or one that is not Kafka or has an `environment` block; each of
+>   the four switches set to anything but `true` or `false`.
+> - **Payment's reconciler** settles an intent whose charge answer never
+>   arrived: `charging-age: 120s`, `delay: 30000`, on in every profile. Payment
+>   runs two scheduled jobs (the relay and the reconciler), so its scheduling
+>   pool is 2 — add a thread for any further `@Scheduled` job.
+>
+> **Operating notes — accepted for the MVP.** A producer answers every replay
+> request it gets, including one a consumer has replaced by restarting during
+> its catch-up, so a restart mid-catch-up can cost up to one more full replay,
+> and replays add `processed_event` rows that are never deleted. History is
+> small until the later phases fill it; revisit when a producer's outbox is
+> large.
+
 Shared module, introduced before anything moves money so nothing is
 retrofitted: an append-only `financial_event` / `outbox` table per money-moving
 service, with `occurred_at`, `recorded_at`, a per-aggregate monotonic `seq`,
@@ -906,7 +991,7 @@ packaging types. Gateway route and matcher. Nothing is seeded.
 
 ### Phase 3 — Catalog holds packaging; the product exists before the stock
 
-`catalog` **V4**: `kind` (`SELLABLE` | `PACKAGING`). `search` **V3**: index
+`catalog` **V5** (V4 is Phase 1's outbox): `kind` (`SELLABLE` | `PACKAGING`). `search` **V4** (V3 is Phase 1's `processed_event`): index
 only sellable-and-published.
 
 This is the answer to the sequencing question — **the real-world order is**:
@@ -965,7 +1050,7 @@ Settled by the client (`CLIENT_DECISIONS.md` §3, §4.1):
 
 ### Phase 5 — Cost-bearing inventory
 
-`inventory` **V6** (V5 is Phase 0's `@Version`): `cost_lot`. Consume `consignment.received` → create lots
+`inventory` **V7** (V5 is Phase 0's `@Version`, V6 is Phase 1's `processed_event`): `cost_lot`. Consume `consignment.received` → create lots
 and increment `on_hand`. FIFO drain **in the same transaction** as the stock
 decrement. Write the COGS row with the basis and method recorded on it. **The
 consumer starts from the beginning**, through the Phase 1 replay, so a
@@ -1111,6 +1196,34 @@ and otherwise the money is held for the customer (below). Every step retries by
 `event_id` until it settles, and a saga stuck for N minutes — money recorded,
 no stock outcome — alerts staff. Tests: a crash between each pair of steps
 leaves money and stock consistent after redelivery.
+
+> **Three gaps in today's checkout that Phase 1's reviews found — each is a
+> required test here (recorded 2026-11-10).** None can be closed earlier:
+> each needs `order` to react to what `payment` records, which is this phase.
+> 1. **A charge that goes through after checkout answered 502.** When
+>    checkout cannot tell whether the card was charged it answers 502 (the
+>    shopper is told not to pay again). Nothing then moves the order out of
+>    `CREATED`: payment's reconciler settles the *intent* and records
+>    `payment.succeeded`, but `order` does not read payment's events, so the
+>    order list shows "Pending" whether or not the shopper was charged. Test:
+>    confirm times out after the charge; the reconciler settles the intent;
+>    `order` consumes `payment.succeeded` and becomes `PAID`; the shopper's
+>    order list says so.
+> 2. **An order cancelled after its payment intent was made.** Payment asks
+>    `order` when an intent is **created**: the order must be the caller's and
+>    still waiting for payment, or the create is refused (404 / 409). It does
+>    not ask again when the intent is **confirmed**. So an order cancelled
+>    between the two still has a `PENDING` intent; confirming it charges the
+>    card, and `order` then refuses the payment: money taken for an order that
+>    cannot be paid. Test: an order cancelled while its intent is `PENDING`
+>    closes that intent (from `order.cancelled`), and a confirm for an intent
+>    whose order is no longer payable is refused before the card is charged.
+> 3. **A second confirm after a page reload.** Confirm is idempotent only on
+>    the `Idempotency-Key` the browser sent, and a reload sends a new one, so
+>    it places a second order and a second charge attempt for the same cart.
+>    Test: two confirms for one cart with different keys leave at most one
+>    live order (the second is refused, or answered with the first); and for
+>    a one-of-a-kind piece the second stock hold is refused with 409.
 
 > **Delivery is priced here, by admin, per town, and there is no awaiting-quote
 > state** (rounds 4 and 5, `CLIENT_DECISIONS.md` §1.3–§1.4). `shipping` gains its
@@ -1461,6 +1574,23 @@ MVP.
 Email first, then WhatsApp, then SMS. `notification_log.keycloak_id` is
 `NOT NULL`, which blocks notifying a phone-order buyer who has no account —
 fix that when phone orders need confirming.
+
+**What Phase 1 leaves for this phase (2026-11-10).** Notification records each
+message and sends it only after that record is saved, so a message is never
+sent for a change that rolled back, and a repeated event never sends twice.
+The price: if the service stops between the save and the send, or the send
+itself throws, **that one message is lost** — a repeat of the event finds it
+already applied and sends nothing. Today's sender only writes a log line, so
+this is narrow. Real email, WhatsApp and SMS must come with:
+- a **delivery status** on each notification (recorded, sent, failed) and a
+  **sweeper** that retries the ones never marked sent;
+- `delivered_at` is stamped when the row is written, before the send, so it
+  really means "recorded at": rename it or split it from the new status;
+- `/notifications/me` lists a row even when its send was lost: it must show
+  the status;
+- a **timeout of its own on the real sender**: the send runs on the thread
+  that polls Kafka, so its time counts against the poll interval
+  (`OrderEventBindingTest` adds the worst poll up).
 
 ### Phase 12 — Returns, refunds and exchanges *(new — the client pulled this in)*
 

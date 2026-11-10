@@ -2155,7 +2155,7 @@
           }
         },
         {
-          "name": "Create a payment intent for an order",
+          "name": "Create a payment intent for one of the caller's orders",
           "request": {
             "method": "POST",
             "header": [],

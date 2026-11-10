@@ -121,20 +121,32 @@ owner's words arrive.
 
 **Admin screens**
 
-- None. Phase 1 is a backend convention: an append-only outbox in each service that moves money, a processed_event (inbox) table in each consumer, and a relay that can replay. The plan names no screen for it.
+- **Payments list and summary: a new status, `CHARGING`.** Phase 1 made a card charge happen once per intent. An intent is `CHARGING` from the moment the charge is started until its outcome is known, and a payment whose answer never arrived is settled by payment's reconciler (it asks the gateway about intents stuck for 2 minutes, every 30 s). The status list in `oriah-web/src/lib/api/schemas/admin.ts` (and its tests, `admin.test.ts` and `uuid-tolerance.test.ts`) and the status filter and badge in `src/components/admin/AdminPaymentsClient.tsx` must include `CHARGING`, with a warning colour. `GET /api/v1/admin/payments/summary` gains **`chargingCount`**: show it beside the other counts ("charging now"). A `CHARGING` row older than a few minutes means the reconciler cannot reach the gateway. The generated `src/lib/api/generated/payment.ts` has neither: run `npm run codegen` in the frontend stage.
+- Phase 1 itself (the outbox in each service that moves money, a processed_event inbox in each consumer, a relay that can replay) names no screen.
 - Decide whether any screen reads this record. Assumption 17 asks that every movement of money and stock be 'recorded permanently, in order, with who and when'. Phase 1 builds the log and Phase 5 the reason-coded stock movements, but the plan names no screen that shows either, so nobody in the shop could look at the record.
 
 **Storefront**
 
-- None. Shoppers see no change, because the outbox sits behind actions that already exist.
+The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed changed what checkout answers when payment goes wrong. The storefront must follow:
+
+- **The 502 copy is now false and must change.** `POST /api/v1/checkout/confirm` answers **502** when the request to charge reached payment and no usable answer came back, so whether the card was charged is unknown. By then the order **is recorded** (status `CREATED`, unpaid) and the cart is left as it was. `src/lib/api/checkoutErrors.ts` (the `case 502`, around line 184) still says "Your order has not been placed. Check your order history before trying again" — untrue on both counts: the order exists, and the order list shows "Pending" whether or not the shopper was charged, so checking it cannot settle anything. New copy, in the shopper's words: *"Your order is recorded, but we could not confirm the payment, so we do not know whether your card was charged. Please do not pay again: your order shows as pending until we have checked. Contact us if you were charged."* `canRetry` stays `false` (a second confirm places a second order). The same text is the backend's `detail`. Update the test at `checkoutErrors.test.ts` (~line 73): it only looks for "order history", "support" or "do not", so pin the new meaning instead (recorded, do not pay again, contact us). `src/lib/api/generated/checkout.ts` (~line 310) still carries the old 502 description: regenerate it.
+- **A confirm that ends with no problem+json body is the same case as 502.** If something between the browser and checkout cuts the confirm off (the proxy timeout below, a dropped connection), the storefront has no status of checkout's own. It must show the 502 copy, never "try again".
+- **`503` from confirm now always means nothing was charged** (it carries `Retry-After`); the "outcome unknown" answer is always 502. The existing 503 copy stays.
+- **Must-do — the proxy timeout.** The Next.js rewrite proxy in front of checkout (Next 15.5.18) ends a request after **30 s** by default, and `oriah-web` sets none. Checkout can take longer: placing the order alone can use 13 s, and creating the payment intent up to 22 s when replies are lost, so about 35 s can pass before the card is charged. Either set the proxy timeout explicitly, above checkout's worst confirm, or give checkout an overall deadline (a Phase 7 decision, since the saga changes there). Until then the previous bullet is what protects the shopper.
+- **`POST /api/v1/payments/intents` (create an intent) changed its answers.** Checkout calls it, not the storefront, so no screen breaks; the contract for the frontend stage: **200** (an intent already made for this order and amount is handed back), **201** (created), **400**, **404** (the order is not found, or is not the caller's), **409** (the order is no longer waiting for payment — cancelled or already paid — or it already has an intent that is pending, being charged or paid; a pending one for a different amount or currency is not handed back), **503 with `Retry-After`** (payment could not ask order), **500** (a set-up fault). Regenerate `generated/payment.ts`.
 
 **What it breaks in oriah-web today**
 
-- Nothing in oriah-web or e2e/*.spec.ts. The one trap the plan names is backend-only: the audit insert must not sit inside payment's post-charge transaction, or a retried checkout 'charges again'. The storefront's Idempotency-Key on confirm stays as it is.
+- **No Playwright spec** (`e2e/*.spec.ts`) depends on any of this: nothing matches on the old backend text, because the storefront ignores the 502 `detail` and shows its own copy.
+- **A unit test passes by accident today:** `checkoutErrors.test.ts` (~line 73) accepts the old and any similar copy. It must be rewritten with the copy above or it will not notice the next wrong sentence.
+- The admin payment status list and the summary reply (above) will fail their schema tests as soon as the API types are regenerated, until `CHARGING` and `chargingCount` are added.
+- The one trap the plan names is backend-only and held: the audit insert is not inside payment's post-charge transaction. The storefront's Idempotency-Key on confirm stays as it is.
+- **An observation, not a break:** `e2e/storefront-happy-path.spec.ts` runs under Playwright's 30 s limit for the whole test. On 2026-11-10 its first run on a freshly started stack timed out waiting for "Place order" to become enabled (the button waits for the quote to settle). The same spec then passed alone (36.8 s of wall time) and in the full suite (6/6). It also leaves alice's item in her cart when it fails, so the next run sees a doubled bag (K 275.00, not K 137.50) and fails for that reason: clear her cart (`DELETE /api/v1/carts/me`) before re-running. In the frontend stage, raise this test's timeout and clear the cart in its setup.
 
 **Needs from the owner**
 
-- None.
+- Whether the new 502 copy reads right for shoppers (it must not invite a second payment).
+- The proxy-timeout choice above: a longer proxy timeout, or a deadline inside checkout.
 
 ### Phase 2 — Suppliers and the procurement service is born
 

@@ -232,8 +232,15 @@ promotion, shipping, customer, review, search, notification.
 own git repo, with **its own `CLAUDE.md` — read that before touching it.**
 It is built and running, not pending.
 
-**Kafka topics (only two today):** `catalog.product` (catalog → inventory,
-search) and `oriah.order` (order → notification).
+**Kafka topics (Phase 1, 2026-11-10):** `catalog.product` (catalog →
+inventory, search), `oriah.order` (order → notification) and `oriah.payment`
+(payment's `payment.succeeded` / `payment.failed`; nothing reads it yet). Three
+more serve the event log itself: `oriah.outbox.replay-requests` (a late
+consumer asks a producer to send its history again),
+`oriah.replay.<consumer>` (the answer, one topic per consumer) and the
+dead-letter topics `<topic>.dlq.<group>` (an event that cannot be applied is
+parked there, never dropped). Every event goes through the shared module
+**`shared/oriah-events`**; its `README.md` is the reference.
 
 ---
 
@@ -442,8 +449,8 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   order refuses a payment whose amount is not that total — too little and too
   much alike. Orders from before V4 have NULL there (unknown) and stay
   payable.
-- **`@Version` exists only on `Inventory`** (Phase 0 item 3, `95d5b63`,
-  inventory V5): reserve/release/confirm/restock go through one path, and the
+- **`@Version` exists on `Inventory`, `Order` and `PaymentIntent`** (Phase 0
+  item 3, `95d5b63`, inventory V5, then Phase 1: order V5 and payment V5): the
   losing writer of a race gets 409. **Every other aggregate still has no
   `@Version`** — no optimistic locking, so read-modify-write updates there can
   still race.
@@ -456,9 +463,37 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   column is named `variant_id` but holds the **product** id, and
   `SearchResultResponse.Hit.from(e)` returns that same value twice,
   deliberately.
-- **No append-only business event log**, so there is no reliable order of
-  events for reconciliation or debugging — the thing a money-moving app most
-  needs. Phase 1 of `docs/MVP_PLAN.md`.
+- ✅ **FIXED in Phase 1 (2026-11-10): the append-only event log.** Order,
+  catalog and payment write every change to an `outbox` table in the same
+  transaction (the database refuses updates, deletes and truncates), a relay
+  publishes it, a late consumer can ask for the whole history, and notification,
+  search and inventory apply each event once. Phase 1's status block in
+  `docs/MVP_PLAN.md` has the commits, the numbers every service must keep and
+  what is accepted for the MVP.
+
+Follow-ups found during Phase 1 — **fixed 2026-11-10**:
+
+- **payment makes an intent only for the caller's own order.** Creating an
+  intent asks order who owns the order and whether it is still waiting for
+  payment (404 / 409), with the caller's own token; order down is 503 with
+  `Retry-After`. A repeated create for the same order and amount gets the same
+  intent back (200, not 201), so checkout can repeat a create whose reply was
+  lost.
+- **checkout repeats only what cannot happen twice** (`NetworkFailures`, the
+  three retry rules in its `application.yaml`). A 502/503/504 that carries
+  `Retry-After` is never repeated; confirm (the call that charges the card) is
+  repeated only when the request never arrived; creating an intent has its own
+  client with its own timeouts (1 s to connect, 6 s to answer). A confirm whose
+  outcome is unknown is **502**, and its message tells the shopper not to pay
+  again (`FRONTEND_WORK.md` has the copy). **The storefront's 30 s proxy
+  timeout is shorter than checkout's worst confirm** — a must-do recorded there.
+- **payment runs two scheduled jobs** (the outbox relay and the reconciler that
+  settles intents stuck `CHARGING`), so its scheduling pool is 2. Add a thread
+  for any further `@Scheduled` job.
+- **Still open, owned by Phase 7:** a charge that goes through after a 502 never
+  reaches the order (it stays `CREATED`); an order cancelled while its intent is
+  pending can still be charged; a page reload sends a new `Idempotency-Key`.
+  Each is a required test in Phase 7 of `docs/MVP_PLAN.md`.
 
 Follow-ups found during Phase 0 — **fixed 2026-11-09**:
 
@@ -469,7 +504,10 @@ Follow-ups found during Phase 0 — **fixed 2026-11-09**:
   down is 503. The placement path's four calls (customer, catalog, the
   machine token, shipping) fit inside the 15 s checkout waits for order —
   `WritePathBudgetTest` adds them up; catalog went from 2 s/5 s to 1 s/3 s to
-  make room. Smoke step 20 (g) proves it live.
+  make room. **Since Phase 1 they total 13 s** (customer and shipping 0.5 s +
+  2 s), which leaves 2 s for order's own save, and the test fails unless that
+  margin holds; order's call to payment on the pay path (0.5 s + 3 s) has its own
+  test, `PayPathBudgetTest`. Smoke step 20 (g) proves it live.
 - **The storefront's admin gate is `isStaff`** — any of the 14 capabilities,
   from one list (`oriah-web/src/lib/auth/capabilities.ts`) that a test keeps
   equal to the realm file — not `endsWith("_ADMIN")`.
@@ -496,6 +534,9 @@ breaks. A failing spec not listed there is a regression.
   out), the **Zambian tax law with primary sources (§12)**, and only **one
   point still open (§8.4, for ZRA or an adviser), none blocking.** It wins over every other document in
   this repo. Read it before the plan.
+- **`shared/oriah-events/README.md`** — the event log module (outbox, relay,
+  replay, inbox, dead-letter handling, every startup refusal). Read it before
+  adding a producer or a consumer.
 - **`docs/FRONTEND_WORK.md`** — the frontend half of the plan: every admin
   screen and storefront change, phase by phase, and the content only the owner
   can supply. Each backend phase updates it in the same commit.

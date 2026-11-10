@@ -20,6 +20,93 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-10 (MVP_PLAN Phase 1 complete: the event log)
+
+Phase 1 of `MVP_PLAN.md` — "the event log convention" — is built, tested,
+reviewed and committed (**not pushed**). Order, catalog and payment write every
+change to an append-only `outbox` in the same transaction; a relay publishes it;
+a late consumer can ask for the whole history; notification, search and
+inventory apply each event once; and an event that cannot be applied is parked
+on a dead-letter topic, never silently lost. Strict test-first throughout; every
+commit below had a Codex review, and every confirmed finding was fixed before
+the next step. **`oriah-web` and `config-repo` were not changed** (the plan's
+rule: the frontend is built after the backend), so nothing was pushed or
+touched there.
+
+| What | Commits |
+|---|---|
+| The shared module `shared/oriah-events`: outbox, relay, replay, inbox, catch-up | `d7e3107` |
+| Order, catalog and payment publish through it (payment: a card is charged once) | `e2acbc7`, `c3857ea`, `3cad2cf` |
+| Notification, search and inventory apply each event once | `5cc469b` |
+| The module's dead-letter handling, replays in steps, events checked against their aggregate | `02f6976` |
+| Each service meets the module's startup checks | `7819acd` notification, `950957d` search, `ae5da55` inventory, `d46ffdf` catalog, `e9c5297` order, `fcd713d` payment |
+| The module counts a failing step's dead-letter publish and pause; an inbox binding's pause leaves half the poll interval | `445503b`, then comment fixes in `9b95e8f` |
+| Found by the reviews and fixed: payment makes an intent only for the caller's own order and hands the same one back on a repeat; checkout repeats only what cannot happen twice; a deleted product takes no image | `ffa3187`, `6f096d0`, `5ef2830`, `bc66736`, `ef6c522`, `d0b0489` |
+
+### Verified on 2026-11-10
+
+- **Every module, one `clean install`: BUILD SUCCESS, 1,903 tests, 0 failures,
+  0 errors, 0 skipped** (37 min). Per module: oriah-events 348, catalog 352,
+  checkout 251, order 199, payment 192, gateway 186, inventory 78, cart 53,
+  search 40, notification 37, shipping 37, observability starter 36, quote 23,
+  promotion 23, customer 17, review 13, money 9, jpa-base 4, eureka 3, config 2.
+- **Live stack (all 15 images rebuilt, 37 containers, Eureka showed 14 apps UP):**
+  smoke test **24/24** (steps 1–20 plus 4b, 5b, 6b, 20b — the last covers the
+  create-intent changes: same create → 200, another customer → 404, a second
+  intent beside a charged one → 409); error goldens **15/15**; Postman check
+  PASS (one summary renamed in the collection, regenerated and committed); both
+  validators PASS (roles; realm); OpenAPI diff PASS — 41 additions and **22
+  waived breaks, two new**: `AdminPaymentResponse.status` and
+  `PaymentIntentResponse.status` gained `CHARGING`, each waived with its reason
+  in `scripts/openapi-allowed-breaks.txt`.
+- **Playwright 6/6 — on the second full run.** The first run failed once: the
+  storefront purchase spec hit its 30 s limit waiting for "Place order" on a
+  freshly started stack. A rerun alone then failed for a different reason (the
+  first run had left an item in alice's cart, so the bag read K 275.00), and
+  after clearing the cart it passed alone and then in the full suite. The
+  original failure did not reproduce in either clean run; recorded in
+  `FRONTEND_WORK.md`.
+- **Not rerun, deliberately:** the Keycloak persistence and go-live tests —
+  they proved Phase 0's realm changes, and this phase did not touch Keycloak.
+
+### Things worth knowing that the code does not say
+
+- **The stack can fail to start on a cold, memory-starved PC, and the failures
+  look like code bugs.** Two different start-up failures on 2026-11-10, neither
+  from the code. First, with the PC short of memory, seven services (including
+  customer, cart and promotion, which this phase never touched) exited with
+  code 1: the config server answered too slowly (`Read timed out` on
+  `GET /customer/docker`) and each service gives up on that. Second, after a
+  restart `s3-init` (it creates catalog's image bucket) ran before SeaweedFS's
+  filer accepted connections and failed once, so catalog and then checkout,
+  which wait on it, never started. Fix both by starting the infrastructure
+  first (`docker compose up -d configserver eurekaserver`), checking
+  `http://localhost:8888/customer/docker` answers in under a few seconds, then
+  `docker compose up -d`, and again if `s3-init` failed. The Docker VM took
+  about half of 23.8 GB; close other apps first.
+- **`mvn clean` fails if a shell is standing in `target/`** (Windows will not
+  delete a folder in use), and a mutation check that is killed halfway leaves its
+  mutation behind — in source files and in `target/classes`. Before trusting a
+  tree after a stopped run, search for "mutat" and read every diff against its
+  own comments (that found seven leftovers this time, in payment, order, search
+  and inventory; one, a 30 s send timeout in payment's docker profile, would
+  have stopped payment starting).
+- **Three gaps are written into Phase 7 as required tests**, because each needs
+  `order` to react to what `payment` records: a charge that goes through after
+  checkout answered 502 never moves the order out of `CREATED`; an order
+  cancelled while its intent is pending can still be charged; and a page reload
+  sends a new `Idempotency-Key`, so it places a second order.
+- **Operating notes accepted for the MVP** (in `MVP_PLAN.md`, Phase 1): a
+  restart during a catch-up can cost one more full replay, and `processed_event`
+  rows are never deleted. Notification can lose one message if the service stops
+  between saving it and sending it; Phase 11 adds a delivery status and a sweeper.
+- **The storefront must be changed before go-live** (`FRONTEND_WORK.md`, Phase 1):
+  its 502 copy says "Your order has not been placed", which is false; its 30 s
+  proxy timeout is shorter than checkout's worst confirm; and the admin payments
+  list needs the new `CHARGING` status or it will fail to parse such a row.
+
+---
+
 ## CURRENT STATE — 2026-11-09 (MVP_PLAN Phase 0 complete: what was live and wrong is fixed)
 
 Phase 0 of `MVP_PLAN.md` — "fix what is live and wrong" — is built, tested,
