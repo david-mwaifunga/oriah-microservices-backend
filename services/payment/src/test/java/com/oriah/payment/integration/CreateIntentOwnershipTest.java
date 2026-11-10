@@ -352,8 +352,9 @@ class CreateIntentOwnershipTest {
         create(alice(), ALICES_ORDER, "4500.00", "ZMW").andExpect(status().isServiceUnavailable());
         long tookMs = (System.nanoTime() - began) / 1_000_000;
 
-        // Read timeout 3s (application.yaml), well inside the 15s checkout
-        // waits for payment. Feign's own default would wait 60s.
+        // Read timeout 3s (application.yaml), inside the 6s checkout waits for
+        // payment's create (its payment-create client). Feign's own default
+        // would wait 60s.
         assertThat(tookMs).isLessThan(5_500);
         assertThat(intentsFor(ALICES_ORDER)).isEmpty();
     }

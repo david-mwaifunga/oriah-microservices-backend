@@ -44,15 +44,39 @@ spring:
       client:
         config:
           # Creating an intent asks order whose order it is (OrderOwnership),
-          # inside a request checkout makes and cuts off at 15 s per attempt
-          # (checkout application.yaml, readTimeout). Feign's own defaults are
-          # 10 s to connect and 60 s to answer -- four times checkout's whole
-          # wait. With these, a hanging order costs at most 1 s + 3 s, and
-          # checkout hears payment's 503 well before it would give up on its
-          # own; it then retries (three attempts, 500 ms apart). The read is
-          # one order by id, so 3 s is generous. CreateIntentBudgetTest adds
-          # it up and fails if it stops fitting; a further call on this path
-          # must fit in the same 15 s.
+          # while checkout waits for payment's answer. Checkout sends that
+          # create on a Feign client of its own (payment-create, in checkout's
+          # application.yaml) and gives each attempt 1 s to connect to payment
+          # and 6 s for payment's answer. Feign's own defaults here would give
+          # order 10 s to connect and 60 s to answer -- far longer than
+          # checkout waits -- so checkout would give up on payment while
+          # payment was still waiting on order. With these, a hanging order
+          # costs payment at most 1 s + 3 s = 4 s, which leaves 2 s of
+          # checkout's 6 s for payment's own work (one short database write)
+          # and the reply's way back.
+          #
+          # What checkout then does (its payment-create retry rule,
+          # RetryForIdempotentCall):
+          #   - payment's 503 "we could not check this order" (order hung, was
+          #     down or failed) is NOT asked again. It carries Retry-After
+          #     (OrderUnavailableException), which tells checkout to come back
+          #     later rather than wait on a struggling order all over again.
+          #     The shopper gets checkout's own 503, also with Retry-After, and
+          #     tries again later.
+          #   - no answer within the 6 s, or a reply lost on the way, IS asked
+          #     again: creating an intent is safe to repeat (a repeat gets the
+          #     intent already made). Three attempts in all, 500 ms apart: at
+          #     most 3 x (1 s + 6 s) + 2 x 0.5 s = 22 s, and then a 503. That
+          #     is why payment must answer inside the 6 s -- an attempt cut off
+          #     while payment is still waiting on order is wasted.
+          #   - any other answer (201, 200, a 4xx, a 500) comes back the same
+          #     every time, so it is not repeated either.
+          #
+          # The read is one order by id, so 3 s is generous.
+          # CreateIntentBudgetTest reads checkout's payment-create client from
+          # checkout's own files and fails unless order's 1 s + 3 s leaves at
+          # least 2 s of it; a further call on this path must fit in the same
+          # 6 s.
           #
           # Keyed by the client's NAME (@FeignClient(name = "order")): Spring
           # Cloud silently uses the defaults for a name it has no config for,
@@ -62,11 +86,13 @@ spring:
             connect-timeout: 1000
             read-timeout: 3000
     stream:
-      # Kafka is the outbox relay's only use of the binder today: it publishes
-      # payment.succeeded / payment.failed to oriah.payment, and answers replay
-      # requests (shared/oriah-events/README.md). These are set here, not per
-      # profile, so every profile and every test runs with them -- the relay
-      # refuses to start without sync=true.
+      # Only the event log uses Kafka here (shared/oriah-events/README.md):
+      # the outbox relay publishes payment.succeeded / payment.failed to
+      # oriah.payment, and the replayer reads replay requests from
+      # oriah.outbox.replay-requests and answers them. These are set here, not
+      # per profile, so every profile and every test runs with them -- the
+      # relay refuses to start without sync=true, and the replayer without
+      # the send timeouts below.
       default:
         contentType: application/json
       kafka:
@@ -83,10 +109,29 @@ spring:
           # Kafka's own defaults a stopped broker holds it for 60 to 120
           # seconds, with these the send fails in about 10 to 25 and the row
           # goes out in a later round.
+          #
+          # They also limit how long one replay step can take. A step sends up
+          # to 10 rows and then one continuation or end-of-replay marker, one
+          # after another, and each send can wait max.block.ms and then
+          # delivery.timeout.ms before it fails. The event-log module refuses
+          # to start payment unless that fits inside the 5 minutes Kafka
+          # allows the replay listener between two polls:
+          # (10 + 1) x (10 s + 10 s) = 220 s, under 300 s. If the two together
+          # ever reach about 27.3 s (11 x 27.3 s = 300 s), payment will not
+          # start. StartupChecksPerProfileTest checks it in every profile.
           producer-properties:
             "[max.block.ms]": 10000
             "[request.timeout.ms]": 5000
             "[delivery.timeout.ms]": 10000
+        # Nothing here for the replay-request listener (outboxReplayRequests-in-0)
+        # on purpose. The event-log module binds it and sets all of its Kafka
+        # settings itself: a request that keeps failing is delivered 3 times
+        # in all and then parked on oriah.outbox.replay-requests.dlq.payment
+        # (never dropped, even when parking it fails at first), and the
+        # listener reads one request per poll. Its values win over anything
+        # written here, because the way a replay is answered depends on them,
+        # so a copy here would decide nothing. ReplayRequestBindingTest pins
+        # what the listener gets.
 
 server:
   port: 8085
@@ -109,9 +154,12 @@ eureka:
 #
 # Payment is a producer: each charge outcome is appended to its outbox in the
 # same transaction that records it (outbox), published to Kafka in order
-# (relay), and sent again to a late consumer that asks (replay). It consumes
-# nothing yet, so the Inbox stays off; replay requests are still deduplicated,
-# in processed_event, without it. Each switch is exactly true or false.
+# (relay), and sent again to a late consumer that asks (replay) -- in steps of
+# up to 10 rows (oriah.events.replay.chunk-size, left at the module's
+# default), so no single step can outlast the time Kafka allows it. It
+# consumes nothing yet, so the Inbox stays off; each replay step is still
+# answered once, its id recorded in processed_event, without it. Each switch
+# is exactly true or false.
 # ---------------------------------------------------------------------------
 oriah:
   events:

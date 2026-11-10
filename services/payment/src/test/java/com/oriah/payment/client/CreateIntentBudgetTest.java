@@ -37,14 +37,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h2>Why the sum matters</h2>
  *
  * Checkout calls createIntent on a Feign client of its own, contextId
- * {@code payment-create}, which gives payment 6s to answer each attempt
- * (checkout {@code application.yaml}). Because the call is idempotent,
- * checkout repeats an attempt whose answer did not come in time, up to three
- * attempts, 500ms apart. So if payment's create could run past that wait,
- * every attempt would be cut off while payment was still working: the
- * shopper would get a 503 after three wasted attempts, for an intent payment
- * may well have made. Kept inside it, checkout always hears payment's own
- * answer: 201, the 200 for an intent it already made, a 404, a 409, or a 503.
+ * {@code payment-create}, which gives payment 1s to connect and 6s to answer
+ * each attempt (checkout {@code application.yaml}). Because the call is
+ * idempotent, checkout repeats an attempt whose answer did not come in time,
+ * up to three attempts, 500ms apart. So if payment's create could run past
+ * that wait, every attempt would be cut off while payment was still working:
+ * the shopper would get a 503 after three wasted attempts, for an intent
+ * payment may well have made. Kept inside it, checkout always hears payment's
+ * own answer, once: 201, the 200 for an intent it already made, a 4xx or a
+ * 500 -- none of which it repeats -- or the 503 for an order payment could not
+ * check. That 503 carries {@code Retry-After} ({@code OrderUnavailableException}),
+ * so checkout does not repeat it either: it answers the shopper with its own
+ * 503 rather than wait on order all over again.
  *
  * <p>The worst case -- order taking its full time to connect and its full time
  * to answer -- must leave at least {@link #PAYMENTS_OWN_WORK_MS} of checkout's
