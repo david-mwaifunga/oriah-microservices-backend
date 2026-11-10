@@ -420,12 +420,12 @@ class ConfirmOverRealFeignTest {
     @DisplayName("order.place answered 503 WITHOUT Retry-After is still repeated: three requests, then checkout's 503")
     void anOrderPlacementAnswered503WithoutRetryAfterIsRepeated() throws Exception {
         // A 503 that does not say when to come back is still worth another
-        // try: it means order did not do the work. This is exactly order's
-        // own answer when CATALOG lets it down -- order's
-        // GlobalExceptionHandler sends that 503 without Retry-After -- so that
-        // case IS repeated, asking customer and catalog again each time, up to
-        // about 20.5 s in all (NetworkFailures.askedToComeBackLater). Giving it
-        // a Retry-After is order's change to make.
+        // try: it means order did not do the work, and nothing asked to be
+        // left alone (NetworkFailures.askedToComeBackLater). Order's own 503s
+        // all carry Retry-After now, catalog's included, so this is the
+        // answer of something else in front of order -- a proxy, say. Each
+        // attempt would ask customer and catalog again, up to about 20.5 s in
+        // all.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(aResponse()
                 .withStatus(503).withHeader("Content-Type", "application/problem+json")
                 .withBody("{\"status\":503}")));

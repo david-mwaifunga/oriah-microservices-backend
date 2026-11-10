@@ -72,12 +72,12 @@ spring:
             #       before the wait runs out each time:
             #       3 x 20s + 2 x 0.5s                            up to 61s
             #                                              (about 46s)
-            #     The real case: order's own 503 when CATALOG lets it down
-            #       carries no Retry-After (order's GlobalExceptionHandler), so
-            #       order.place is repeated; each attempt waits on customer and
-            #       catalog again, up to 2.5s + 4s = 6.5s:
+            #     Order's and payment's own 503s do carry Retry-After (order's
+            #       one for catalog since the same phase that wrote this), so
+            #       the real cases are a proxy's or an unexpected 503. For
+            #       order.place each attempt would wait on customer and catalog
+            #       again, up to 2.5s + 4s = 6.5s:
             #       3 x 6.5s + 2 x 0.5s                           up to 20.5s
-            #       Giving that 503 a Retry-After is order's change to make.
             #     createIntent: 3 x 7s + 2 x 0.5s                 up to 22s
             #     confirm: never repeated                         up to 20s
             #   the request never arrived (refused, no instance): three quick
@@ -270,10 +270,10 @@ resilience4j:
         # (order.place's slow 503 grew from about 15s to about 46s, past the
         # storefront's 30s) and leans on a service that has just said it is
         # struggling. The shopper gets checkout's own 503, with checkout's own
-        # Retry-After, instead. Not every 503 of theirs says it: order's when
-        # catalog lets it down does not, so that one IS repeated (up to about
-        # 20.5s, worked out above). Payment's confirm 503 does not either, but
-        # confirm repeats no answer at all (its own rule, below).
+        # Retry-After, instead. (Order's 503 when catalog lets it down says it
+        # too.) A 503 without it IS repeated (up to about 20.5s for order.place,
+        # worked out above). Payment's confirm 503 carries none, but confirm
+        # repeats no answer at all (its own rule, below).
         # NEVER a read timeout, a reset, or a connection closed without an
         # answer: the request may have arrived and the order been saved, and
         # only the reply was lost. Never a 500: the downstream's own failure,

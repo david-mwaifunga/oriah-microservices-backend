@@ -193,16 +193,16 @@ public final class NetworkFailures {
      * sent -- {@link #madeUpByTheLoadBalancer}), and a 502, 503 or 504 that does
      * not say when to come back.
      *
-     * <p>Not every 503 order and payment send says when to come back. Order's
-     * 503 when CATALOG lets it down carries no {@code Retry-After} (order's
-     * {@code GlobalExceptionHandler.upstream}), so checkout still repeats
-     * order.place then: each attempt asks customer and catalog again -- up to
-     * 2.5 s and 4 s by order's own timeouts -- so three attempts take up to
-     * about 3 x 6.5 s + 2 x 0.5 s = 20.5 s, and catalog is asked three times
-     * while it struggles. Giving that
-     * 503 a {@code Retry-After} is order's change to make. Payment's confirm
-     * 503 ("the outcome is not known yet") carries none either, but confirm's
-     * rule repeats no answer at all.
+     * <p>Order's 503s all say when to come back: the one for customer,
+     * Keycloak or shipping and the one for catalog (order's
+     * {@code GlobalExceptionHandler}, both {@code Retry-After: 5}). That
+     * mattered for catalog: that 503 used to carry none, so checkout repeated
+     * order.place three times, each attempt asking customer and catalog again
+     * (up to 20.5 s in all) while catalog struggled. A 503 without
+     * {@code Retry-After} still comes from somewhere -- a proxy, a service
+     * that does not send it -- and is repeated. Payment's confirm 503 ("the
+     * outcome is not known yet") carries none, but confirm's rule repeats no
+     * answer at all.
      *
      * <p>Read from the header itself, not from Feign's {@code retryAfter()}:
      * when the value cannot be read as seconds or a date, Feign's error decoder

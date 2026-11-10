@@ -22,8 +22,9 @@ import java.util.function.Predicate;
  * only after waiting on their own dependencies, so repeating it multiplies a
  * long wait and leans on a service that has just said it is struggling. The
  * shopper gets checkout's own 503, with checkout's own {@code Retry-After},
- * instead. Not all of their 503s say it: order's when catalog lets it down
- * does not, so that one is still repeated (NetworkFailures has the wait).
+ * instead. A 503 that does not say it is still repeated: it means the service
+ * did not do the work, and nothing asked to be left alone (NetworkFailures
+ * says which of their answers carry it).
  *
  * <p>Never a read timeout, a reset, or a connection closed without an answer:
  * the request may have arrived and been acted on. Never a 500: that is the
