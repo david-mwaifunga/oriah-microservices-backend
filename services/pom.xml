@@ -33,5 +33,6 @@
         <module>notification</module>
         <module>review</module>
         <module>search</module>
+        <module>procurement</module>
     </modules>
 </project>

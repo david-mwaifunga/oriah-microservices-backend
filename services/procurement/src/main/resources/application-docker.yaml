@@ -1,0 +1,18 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-procurement:5432/procurement
+    username: ${SPRING_DATASOURCE_USERNAME:procurement}
+    password: ${SPRING_DATASOURCE_PASSWORD:procurement}
+  config:
+    import: "configserver:http://configserver:8888"
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eurekaserver:8761/eureka/
