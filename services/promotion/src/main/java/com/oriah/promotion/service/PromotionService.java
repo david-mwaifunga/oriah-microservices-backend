@@ -30,7 +30,11 @@ public class PromotionService {
     public Promotion create(CreatePromotionRequest req) {
         Promotion p = new Promotion(req.code(), req.type(), req.amount(), req.description(),
                 req.validUntil(), req.maxRedemptions() == null ? 0 : req.maxRedemptions());
-        Promotion saved = repository.save(p);
+        // saveAndFlush, not save: a code that already exists is refused by the database's
+        // UNIQUE, and a plain save would let that happen at commit, after this method
+        // returned. Flushing here makes the refusal happen inside the request, where
+        // GlobalExceptionHandler turns it into a 409.
+        Promotion saved = repository.saveAndFlush(p);
         log.info("Created promotion code={} type={} amount={}", saved.code(), saved.type(), saved.amount());
         return saved;
     }
