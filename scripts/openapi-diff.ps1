@@ -11,7 +11,7 @@
 
     Three steps:
       1. capture-openapi.ps1 into a CURRENT directory (through the gateway,
-         so the 12 /v3/api-docs/<svc> aggregation routes are exercised too);
+         so the 13 /v3/api-docs/<svc> aggregation routes are exercised too);
       2. openapi_diff.py BASELINE CURRENT, which classifies every difference
          as breaking or additive;
       3. exit non-zero if anything breaking is found.

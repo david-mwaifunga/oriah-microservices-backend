@@ -111,12 +111,20 @@
 #      already paid takes none either (409, it is no longer waiting for
 #      payment).
 #   [20c/20] Procurement: suppliers. maya creates a supplier under a random
-#      name (so the step can re-run on a live stack), reads it back by id and
-#      finds it in the list, patches it (paymentNotes, and "active": false); a
-#      second create with the same name in a different letter case is 409; the
-#      stopped supplier is still readable; she deletes it (204) and a read is
+#      name (so the step can re-run on a live stack): 201, the Location a
+#      relative path, the name stored as sent and the country upper-cased
+#      (compared with -cne, because -ne ignores letter case). She reads it back
+#      by id and finds it in the list, patches it (paymentNotes, and "active":
+#      false); a second create with the same name in a different letter case is
+#      409; the stopped supplier is still readable. An edit carrying the current
+#      "version" is 200 with the version up by one; one carrying an older
+#      version is 409 (concurrent-update) and changes nothing. A list page whose
+#      offset overflows is 400 (bad-request). She deletes it (204) and a read is
 #      then 404. alice, a plain customer, is refused 403 on the list and on
-#      create, and a request with no token is 401.
+#      create, and a request with no token is 401. A try/finally deletes any
+#      supplier this step made that is still live, even when a check failed.
+#      The step starts by taking fresh tokens for maya and alice: the realm's
+#      access tokens last 30 minutes and step 1's may have expired by now.
 
 # Before ANYTHING touches the stack, scripts/check_service_registry.py runs and
 # must exit 0. It proves every service is in every list this script walks
@@ -268,6 +276,16 @@ if ($golden -ne "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802
 # procurement is therefore probed through /v3/api-docs/procurement, which is
 # permit-all and routed by the gateway's procurement-docs route: there a 503
 # really does mean "no instance registered".
+#
+# A docs probe is held to a stricter rule than the others: it must answer 200.
+# It needs no token, so nothing else can explain any other answer. A 404 in
+# particular means the gateway has no route for it -- an image built before the
+# procurement-docs route existed, still running -- or that the service's own
+# /v3/api-docs answers 404 (the gateway passes a downstream 404 through). The
+# first is by far the likelier, so it is reported at once, as most likely a stale
+# gateway image, instead of many steps later as "maya's create gave 404".
+# Probes of paths that need a token are not held to this: they answer 401
+# whatever the routing.
 # ---------------------------------------------------------------------------
 $routeProbes = [ordered]@{
     catalog      = '/api/v1/products'
@@ -286,6 +304,8 @@ $routeProbes = [ordered]@{
 }
 Write-Host "[pre-flight] Waiting for the gateway to resolve all $($routeProbes.Count) services..." -ForegroundColor Cyan
 $unresolved = @($routeProbes.Keys)
+$staleRoutes = @()
+$docsStatus = @{}    # api-docs probes not yet 200: the LAST status each one gave ("no answer" if none)
 foreach ($attempt in 1..60) {
     $stillUnresolved = @()
     foreach ($svc in $unresolved) {
@@ -298,17 +318,53 @@ foreach ($attempt in 1..60) {
         catch {
             $code = $_.Exception.Response.StatusCode.value__
         }
-        # 503 (or no response at all) means the gateway could not resolve it.
-        if (-not $code -or $code -eq 503) { $stillUnresolved += $svc }
+        $isDocsProbe = $routeProbes[$svc].StartsWith("/v3/api-docs/", [StringComparison]::Ordinal)
+        if (-not $code -or $code -eq 503) {
+            # 503 (or no response at all) means the gateway could not resolve it.
+            $stillUnresolved += $svc
+            # An api-docs probe remembers THIS answer too, so the final message names the
+            # last status seen, not an older one (502 once, then 503 or silence until the end).
+            if ($isDocsProbe) { $docsStatus[$svc] = $(if ($code) { "$code" } else { "no answer" }) }
+        }
+        elseif ($isDocsProbe -and $code -eq 404) {
+            # No route for it, or the service's own spec answers 404 (the gateway passes that
+            # through): most likely a stale gateway image. Waiting will not fix it.
+            $staleRoutes += $svc
+        }
+        elseif ($isDocsProbe -and $code -ne 200) {
+            # Routed, but not serving its spec (yet): keep waiting, and remember what it said.
+            $stillUnresolved += $svc
+            $docsStatus[$svc] = $code
+        }
+        elseif ($isDocsProbe) {
+            $docsStatus.Remove($svc)    # 200: routed and serving
+        }
     }
     $unresolved = $stillUnresolved
+    if ($staleRoutes.Count -gt 0) { break }
     if ($unresolved.Count -eq 0) { break }
     Start-Sleep -Seconds 5
 }
+if ($staleRoutes.Count -gt 0) {
+    Write-Error ("The gateway answered 404 for the public api-docs path of: $($staleRoutes -join ', '). " +
+                 "Either the gateway has no route for it (<service>-docs) or the service's own " +
+                 "/v3/api-docs answers 404 (the gateway passes a downstream 404 through). Most likely this " +
+                 "gateway image is STALE: it was built before that route was added, or it was rebuilt and " +
+                 "its container never recreated. Rebuild it with build-images.ps1 " +
+                 "(powershell.exe -ExecutionPolicy Bypass -File .\build-images.ps1) and recreate the " +
+                 "container (docker compose up -d gatewayserver), then run this script again. If it " +
+                 "still answers 404, check the service's own /v3/api-docs.")
+    exit 1
+}
 if ($unresolved.Count -gt 0) {
+    $detail = ""
+    if ($docsStatus.Count -gt 0) {
+        $detail = " Last status seen on each api-docs probe that never answered 200: " +
+                  (@($docsStatus.Keys | ForEach-Object { "$_=$($docsStatus[$_])" }) -join ", ") + " (expected 200)."
+    }
     Write-Error ("Gateway still cannot resolve after 5min: $($unresolved -join ', '). " +
                  "Check Eureka at http://localhost:8761 -- the instances are healthy on their " +
-                 "own ports but not discoverable through lb://.")
+                 "own ports but not discoverable through lb://." + $detail)
     exit 1
 }
 Write-Host "    all $($routeProbes.Count) services resolvable through the gateway" -ForegroundColor Gray
@@ -795,7 +851,7 @@ Write-Host "[12/20] Tempo has the saga trace spanning the chain..." -ForegroundC
 #    NOT have -- an empty object, not a 404. Truthiness of the response proves
 #    nothing, so spans have to be counted. A first version passed on that empty
 #    body.
-# 2. A trace ASSEMBLES over time. Twelve services each batch their spans before
+# 2. A trace ASSEMBLES over time. Every service batches its spans before
 #    exporting over OTLP, so the saga's spans land in Tempo across several
 #    seconds. A version of this check that broke out of the loop on the first
 #    non-empty response, and only then asserted all four saga services, failed
@@ -1523,6 +1579,15 @@ if ($intentFailures.Count -gt 0) {
 Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent created, and the same create again handed it back (200); another customer's create 404; a second intent beside a charged one 409; an intent for a paid order 409" -ForegroundColor Gray
 
 Write-Host "[20c/20] Procurement: suppliers..." -ForegroundColor Cyan
+# Fresh tokens first. $maya and $alice were taken at step 1 and the realm's access
+# tokens live 1800 s (30 minutes); this is among the last steps, so a slow run (a cold
+# stack, a retry loop) can arrive with expired ones, and every check below and the
+# cleanup in the finally block would answer 401. The two header tables that this step
+# (and its cleanup) send are rebuilt from the new tokens.
+$maya  = Get-Jwt "maya"
+$alice = Get-Jwt "alice"
+$mayaH  = @{ Authorization = "Bearer $maya" }
+$aliceH = @{ Authorization = "Bearer $alice" }
 # The supplier list is staff-only (PROCUREMENT_ADMIN, which maya holds through
 # OWNER; alice holds only USER). The name is random because a live supplier name
 # is unique, ignoring letter case: a fixed one would make the second run of this
@@ -1554,108 +1619,208 @@ function Invoke-Supplier($Method, $Uri, $Headers, $Body) {
     }
 }
 
-$supplierBase = "http://localhost:8080/api/v1/admin/procurement/suppliers"
+# The "version" a supplier reply carries, as a number; $null when it carries none.
+function Get-SupplierVersion($Json) {
+    if ($null -eq $Json -or $null -eq $Json.version) { return $null }
+    return [long]$Json.version
+}
+
+# Every row this step makes is recorded here by id, and whatever is still here
+# when the step ends -- however it ends -- is deleted by the finally block below.
+# A check that goes wrong can leave a row behind on purpose: the lower-cased
+# duplicate when the 409 was really a 201, alice's supplier when her create was
+# really accepted. Those rows are cleaned up too, and reported.
+$liveSuppliers = @{}
+function Add-LiveSupplier($Reply, $What) {
+    if ($Reply.Status -ge 200 -and $Reply.Status -lt 300 -and $Reply.Json -and $Reply.Json.id) {
+        $liveSuppliers["$($Reply.Json.id)"] = $What
+    }
+}
+
+$supplierPath = "/api/v1/admin/procurement/suppliers"
+$supplierBase = "http://localhost:8080$supplierPath"
 $supplierName = "Smoke Supplier " + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 $supplierNotes = "Changed by the smoke test"
+$supplierContact = "Edited from the current version"
+$concurrentType = "https://oriah.dev/problems/concurrent-update"
+$badRequestType = "https://oriah.dev/problems/bad-request"
 $supplierFailures = @()
 $supplierId = $null
+$leftBehind = @()
 
-# maya adds a supplier. The country goes in lower case on purpose: it is stored
-# upper case.
-$created = Invoke-Supplier "POST" $supplierBase $mayaH @{
-    name = $supplierName; country = "cn"; contactName = "Smoke Tester"
-    contactDetails = "no phone"; paymentNotes = "Bank transfer, in full" }
-if ($created.Status -ne 201) {
-    $supplierFailures += "maya's create gave $($created.Status), expected 201"
+# No Write-Error and no exit inside the try: with $ErrorActionPreference = "Stop"
+# a Write-Error there is a terminating error, and it would skip the rest of the
+# checks. Failures are collected and reported once, after the finally.
+try {
+    # maya adds a supplier. The country goes in lower case on purpose: it is stored
+    # upper case. Every comparison where letter case is the point uses -cne / -ceq:
+    # PowerShell's -ne and -eq ignore case, so "cn" -ne "CN" is False and a check
+    # written with -ne passes whether or not the service upper-cased anything.
+    $created = Invoke-Supplier "POST" $supplierBase $mayaH @{
+        name = $supplierName; country = "cn"; contactName = "Smoke Tester"
+        contactDetails = "no phone"; paymentNotes = "Bank transfer, in full" }
+    Add-LiveSupplier $created "the supplier this step created"
+    if ($created.Status -ne 201) {
+        $supplierFailures += "maya's create gave $($created.Status), expected 201"
+    }
+    else {
+        $supplierId = $created.Json.id
+        if (-not $supplierId) { $supplierFailures += "the create's reply carries no id" }
+        if ($created.Json.country -cne "CN") { $supplierFailures += "country was stored as '$($created.Json.country)', expected upper case CN" }
+        if ($created.Json.name -cne $supplierName) { $supplierFailures += "the name came back as '$($created.Json.name)', expected it stored as sent, '$supplierName'" }
+        if ($created.Json.active -ne $true) { $supplierFailures += "a new supplier came back active=$($created.Json.active), expected true" }
+        # The Location is a RELATIVE path, exactly the supplier's own address on
+        # this API: not an absolute URL, which would name the service's own host
+        # and port (8093) instead of the gateway the caller used.
+        $wantLocation = "$supplierPath/$supplierId"
+        if (-not $created.Location -or "$($created.Location)" -cne $wantLocation) {
+            $supplierFailures += "the Location header '$($created.Location)' is not the relative path '$wantLocation'"
+        }
+    }
+
+    if ($supplierId) {
+        # Read back by id, and found in the list (filtered by its own name so the
+        # first page is enough, whatever else is in the table).
+        $one = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+        if ($one.Status -ne 200 -or $one.Json.name -cne $supplierName) {
+            $supplierFailures += "reading it back by id gave $($one.Status) name '$($one.Json.name)', expected 200 '$supplierName'"
+        }
+        $listed = Invoke-Supplier "GET" "${supplierBase}?q=$([uri]::EscapeDataString($supplierName))&size=100" $mayaH $null
+        $rows = @()
+        if ($listed.Json) {
+            if ($null -ne $listed.Json.content) { $rows = @($listed.Json.content) } else { $rows = @($listed.Json) }
+        }
+        $inList = @($rows | Where-Object { $_.id -eq $supplierId })
+        if ($listed.Status -ne 200 -or $inList.Count -ne 1) {
+            $supplierFailures += "the list (status $($listed.Status)) held $($inList.Count) row(s) for the new supplier, expected exactly 1"
+        }
+
+        # The same name in another letter case is a duplicate of a LIVE supplier.
+        # If it is wrongly accepted the row exists, so it is tracked for cleanup.
+        $dup = Invoke-Supplier "POST" $supplierBase $mayaH @{ name = $supplierName.ToLower(); country = "CN" }
+        Add-LiveSupplier $dup "the lower-cased duplicate of the supplier's name"
+        if ($dup.Status -ne 409) {
+            $supplierFailures += "a duplicate name in a different letter case gave $($dup.Status), expected 409"
+        }
+
+        # Edit: only the fields sent change. "active": false stops using the
+        # supplier without deleting it. No version in the body: it is optional.
+        $patched = Invoke-Supplier "PATCH" "$supplierBase/$supplierId" $mayaH @{ paymentNotes = $supplierNotes; active = $false }
+        if ($patched.Status -ne 200 -or $patched.Json.paymentNotes -cne $supplierNotes -or $patched.Json.active -ne $false) {
+            $supplierFailures += "the patch gave $($patched.Status) paymentNotes '$($patched.Json.paymentNotes)' active=$($patched.Json.active), expected 200 '$supplierNotes' false"
+        }
+
+        # A stopped supplier is still a real record: readable, name unchanged, and
+        # listed under active=false.
+        $stopped = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+        $stoppedOk = ($stopped.Status -eq 200) -and ($stopped.Json.active -eq $false) -and
+                     ($stopped.Json.name -ceq $supplierName) -and ($stopped.Json.paymentNotes -ceq $supplierNotes)
+        if (-not $stoppedOk) {
+            $supplierFailures += "the stopped supplier read back as $($stopped.Status) active=$($stopped.Json.active) notes '$($stopped.Json.paymentNotes)'"
+        }
+        $stoppedList = Invoke-Supplier "GET" "${supplierBase}?active=false&q=$([uri]::EscapeDataString($supplierName))&size=100" $mayaH $null
+        $stoppedRows = @()
+        if ($stoppedList.Json) {
+            if ($null -ne $stoppedList.Json.content) { $stoppedRows = @($stoppedList.Json.content) } else { $stoppedRows = @($stoppedList.Json) }
+        }
+        if (@($stoppedRows | Where-Object { $_.id -eq $supplierId }).Count -ne 1) {
+            $supplierFailures += "the stopped supplier is missing from the active=false list (status $($stoppedList.Status))"
+        }
+
+        # Optimistic locking: a PATCH body may carry "version", the version of
+        # the supplier the edit was made FROM. An edit made from the current
+        # version is applied and the version goes up by one; an edit made from an
+        # older one is refused 409 (concurrent-update) and changes nothing. The
+        # unchanged field is shown by reading the supplier back afterwards.
+        $v1 = Get-SupplierVersion $patched.Json
+        if ($null -eq $v1) {
+            $supplierFailures += "the patch's reply carries no version, so the version checks cannot run"
+        }
+        else {
+            $edited = Invoke-Supplier "PATCH" "$supplierBase/$supplierId" $mayaH @{ contactName = $supplierContact; version = $v1 }
+            $v2 = Get-SupplierVersion $edited.Json
+            $editedOk = ($edited.Status -eq 200) -and ($edited.Json.contactName -ceq $supplierContact) -and ($null -ne $v2) -and ($v2 -eq ($v1 + 1))
+            if (-not $editedOk) {
+                $supplierFailures += "an edit made from the current version $v1 gave $($edited.Status) contactName '$($edited.Json.contactName)' version $v2, expected 200 '$supplierContact' version $($v1 + 1)"
+            }
+            else {
+                # $v1 is now an older version than the supplier's own.
+                $stale = Invoke-Supplier "PATCH" "$supplierBase/$supplierId" $mayaH @{ contactName = "Stale write, must not land"; version = $v1 }
+                if ($stale.Status -ne 409) {
+                    $supplierFailures += "an edit made from the older version $v1 (the supplier is at $v2) gave $($stale.Status), expected 409"
+                }
+                elseif ($stale.Json.type -cne $concurrentType) {
+                    $supplierFailures += "the stale edit's 409 carries problem type '$($stale.Json.type)', expected '$concurrentType'"
+                }
+                $unchanged = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+                if ($unchanged.Status -ne 200 -or $unchanged.Json.contactName -cne $supplierContact -or (Get-SupplierVersion $unchanged.Json) -ne $v2) {
+                    $supplierFailures += "after the refused stale edit the supplier reads contactName '$($unchanged.Json.contactName)' version $(Get-SupplierVersion $unchanged.Json), expected '$supplierContact' version $v2 (the refused edit must change nothing)"
+                }
+            }
+        }
+
+        # Delete it: 204, and then it is gone.
+        $deleted = Invoke-Supplier "DELETE" "$supplierBase/$supplierId" $mayaH $null
+        if ($deleted.Status -ne 204) {
+            $supplierFailures += "deleting it gave $($deleted.Status), expected 204 (supplier $supplierId is still in the table)"
+        }
+        else {
+            $liveSuppliers.Remove("$supplierId")
+        }
+        $after = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
+        if ($after.Status -ne 404) {
+            $supplierFailures += "reading it after the delete gave $($after.Status), expected 404"
+        }
+    }
+
+    # A page so far in that its row offset (page x size) overflows an int is a
+    # 400 problem, not a 500 and not an empty page. 1073741824 is 2^30, and
+    # 2^30 x 2 is 2^31.
+    $overflow = Invoke-Supplier "GET" "${supplierBase}?page=1073741824&size=2" $mayaH $null
+    if ($overflow.Status -ne 400) {
+        $supplierFailures += "a list page whose offset overflows gave $($overflow.Status), expected 400"
+    }
+    elseif ($overflow.Json.type -cne $badRequestType) {
+        $supplierFailures += "the overflowing page's 400 carries problem type '$($overflow.Json.type)', expected '$badRequestType'"
+    }
+
+    # alice (USER only) is refused the list; an anonymous caller is not even identified.
+    $aliceList = Invoke-Supplier "GET" $supplierBase $aliceH $null
+    if ($aliceList.Status -ne 403) {
+        $supplierFailures += "alice listing suppliers gave $($aliceList.Status), expected 403"
+    }
+    $anonList = Invoke-Supplier "GET" $supplierBase $null $null
+    if ($anonList.Status -ne 401) {
+        $supplierFailures += "an anonymous list gave $($anonList.Status), expected 401"
+    }
+
+    # alice may not CREATE either. If her create is wrongly accepted the row
+    # exists, so it is tracked and the finally block deletes it (as maya).
+    $aliceCreate = Invoke-Supplier "POST" $supplierBase $aliceH @{ name = "$supplierName (alice)"; country = "CN" }
+    Add-LiveSupplier $aliceCreate "the supplier alice's create wrongly made"
+    if ($aliceCreate.Status -ne 403) {
+        $supplierFailures += "a plain customer creating a supplier gave $($aliceCreate.Status), expected 403"
+    }
 }
-else {
-    $supplierId = $created.Json.id
-    if (-not $supplierId) { $supplierFailures += "the create's reply carries no id" }
-    if ($created.Json.country -ne "CN") { $supplierFailures += "country was stored as '$($created.Json.country)', expected upper case CN" }
-    if ($created.Json.active -ne $true) { $supplierFailures += "a new supplier came back active=$($created.Json.active), expected true" }
-    if (-not $created.Location -or -not "$($created.Location)".EndsWith("/suppliers/$supplierId")) {
-        $supplierFailures += "the Location header '$($created.Location)' does not point at /suppliers/$supplierId"
+finally {
+    # Whatever is still live is deleted, whether the step passed, failed a check
+    # or threw. 404 is fine (already gone). A failed cleanup is reported with the
+    # id, because a row left in the table is a real cost: the name stays taken.
+    foreach ($leftId in @($liveSuppliers.Keys)) {
+        $gone = Invoke-Supplier "DELETE" "$supplierBase/$leftId" $mayaH $null
+        if ($gone.Status -ne 204 -and $gone.Status -ne 404) {
+            $leftBehind += "cleanup: $($liveSuppliers[$leftId]) ($leftId) could not be deleted (status $($gone.Status)); delete it by hand"
+        }
     }
 }
 
-if ($supplierId) {
-    # Read back by id, and found in the list (filtered by its own name so the
-    # first page is enough, whatever else is in the table).
-    $one = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
-    if ($one.Status -ne 200 -or $one.Json.name -ne $supplierName) {
-        $supplierFailures += "reading it back by id gave $($one.Status) name '$($one.Json.name)', expected 200 '$supplierName'"
-    }
-    $listed = Invoke-Supplier "GET" "${supplierBase}?q=$([uri]::EscapeDataString($supplierName))&size=100" $mayaH $null
-    $rows = @()
-    if ($listed.Json) {
-        if ($null -ne $listed.Json.content) { $rows = @($listed.Json.content) } else { $rows = @($listed.Json) }
-    }
-    $inList = @($rows | Where-Object { $_.id -eq $supplierId })
-    if ($listed.Status -ne 200 -or $inList.Count -ne 1) {
-        $supplierFailures += "the list (status $($listed.Status)) held $($inList.Count) row(s) for the new supplier, expected exactly 1"
-    }
-
-    # The same name in another letter case is a duplicate of a LIVE supplier.
-    $dup = Invoke-Supplier "POST" $supplierBase $mayaH @{ name = $supplierName.ToLower(); country = "CN" }
-    if ($dup.Status -ne 409) {
-        $supplierFailures += "a duplicate name in a different letter case gave $($dup.Status), expected 409"
-    }
-
-    # Edit: only the fields sent change. "active": false stops using the
-    # supplier without deleting it.
-    $patched = Invoke-Supplier "PATCH" "$supplierBase/$supplierId" $mayaH @{ paymentNotes = $supplierNotes; active = $false }
-    if ($patched.Status -ne 200 -or $patched.Json.paymentNotes -ne $supplierNotes -or $patched.Json.active -ne $false) {
-        $supplierFailures += "the patch gave $($patched.Status) paymentNotes '$($patched.Json.paymentNotes)' active=$($patched.Json.active), expected 200 '$supplierNotes' false"
-    }
-
-    # A stopped supplier is still a real record: readable, name unchanged, and
-    # listed under active=false.
-    $stopped = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
-    $stoppedOk = ($stopped.Status -eq 200) -and ($stopped.Json.active -eq $false) -and
-                 ($stopped.Json.name -eq $supplierName) -and ($stopped.Json.paymentNotes -eq $supplierNotes)
-    if (-not $stoppedOk) {
-        $supplierFailures += "the stopped supplier read back as $($stopped.Status) active=$($stopped.Json.active) notes '$($stopped.Json.paymentNotes)'"
-    }
-    $stoppedList = Invoke-Supplier "GET" "${supplierBase}?active=false&q=$([uri]::EscapeDataString($supplierName))&size=100" $mayaH $null
-    $stoppedRows = @()
-    if ($stoppedList.Json) {
-        if ($null -ne $stoppedList.Json.content) { $stoppedRows = @($stoppedList.Json.content) } else { $stoppedRows = @($stoppedList.Json) }
-    }
-    if (@($stoppedRows | Where-Object { $_.id -eq $supplierId }).Count -ne 1) {
-        $supplierFailures += "the stopped supplier is missing from the active=false list (status $($stoppedList.Status))"
-    }
-
-    # Delete it: 204, and then it is gone.
-    $deleted = Invoke-Supplier "DELETE" "$supplierBase/$supplierId" $mayaH $null
-    if ($deleted.Status -ne 204) {
-        $supplierFailures += "deleting it gave $($deleted.Status), expected 204 (supplier $supplierId is still in the table)"
-    }
-    $after = Invoke-Supplier "GET" "$supplierBase/$supplierId" $mayaH $null
-    if ($after.Status -ne 404) {
-        $supplierFailures += "reading it after the delete gave $($after.Status), expected 404"
-    }
-}
-
-# alice (USER only) is refused the list; an anonymous caller is not even identified.
-$aliceList = Invoke-Supplier "GET" $supplierBase $aliceH $null
-if ($aliceList.Status -ne 403) {
-    $supplierFailures += "alice listing suppliers gave $($aliceList.Status), expected 403"
-}
-$anonList = Invoke-Supplier "GET" $supplierBase $null $null
-if ($anonList.Status -ne 401) {
-    $supplierFailures += "an anonymous list gave $($anonList.Status), expected 401"
-}
-
+foreach ($note in $leftBehind) { $supplierFailures += $note }
 if ($supplierFailures.Count -gt 0) {
     $supplierFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
     Write-Error "the procurement supplier surface regressed on $($supplierFailures.Count) check(s)"
     exit 1
 }
-# alice may not CREATE either. Last, and through Expect-Refusal (which sends
-# alice's token and stops the script if the call is anything but a 403).
-Expect-Refusal $supplierBase @{ name = "$supplierName (alice)"; country = "CN" } 403 $null `
-    "a plain customer creating a supplier"
-Write-Host "    created 201 (country upper-cased), read back by id and in the list, a duplicate name in another letter case 409, patched (paymentNotes + active=false), still readable while stopped, deleted 204 then 404; alice 403 on list and create; anonymous 401" -ForegroundColor Gray
+Write-Host "    created 201 (Location a relative path, name stored as sent, country upper-cased), read back by id and in the list, a duplicate name in another letter case 409, patched (paymentNotes + active=false), still readable while stopped; an edit from the current version 200 with the version up by one, an edit from an older version 409 concurrent-update and nothing changed; a page past the offset limit 400 bad-request; deleted 204 then 404; alice 403 on list and create; anonymous 401" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

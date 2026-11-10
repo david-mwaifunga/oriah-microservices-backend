@@ -17,8 +17,11 @@ directories under services/ (each holds a pom.xml), which must equal the
 service's OWN files:
 
   * its port         <- src/main/resources/application.yaml (server.port)
-  * owns a database  <- at least one Flyway migration AND a flyway dependency
-                        in its pom (a folder alone proves nothing)
+  * owns a database  <- at least one Flyway migration AND, in its pom, a direct
+                        spring-boot-starter-flyway dependency that is not test
+                        or provided scope (a folder alone proves nothing, and
+                        neither does a pom that merely has "flyway" in an
+                        artifact name)
   * its database     <- application-local.yaml (host port, database, user,
                         password) and application-docker.yaml (host name)
   * its main class   <- the class annotated @SpringBootApplication
@@ -29,6 +32,26 @@ without any hand-kept "these are stateless" list in this file.
 
 The checks are EXACT, not "is it mentioned somewhere": each list must hold every
 service, with the right port, and nothing extra and nothing twice.
+
+A COMMENT IS NOT AN ENTRY. Taking a service out of a list "for now" usually means
+commenting its entry out, so every watched file is read with its comments removed
+(strip_comments: PowerShell and Python "#", <# #>, YAML "#", XML <!-- -->, Java
+// and /* */; one-line strings are left alone, so a "#" inside a URL or a value
+survives). NEITHER IS A MULTI-LINE STRING: the body of a Python triple-quoted
+string, a PowerShell here-string (@' '@, @" "@) and a Java text block is blanked
+too (delimiters and line breaks kept), so an entry moved into a docstring does
+not count, and an old copy of a whole list quoted in a docstring above the real
+one is not found first. No watched list is written as a multi-line string.
+Likewise a flyway artifact only counts as a dependency when it is a real,
+direct <dependency> of the service that runs the migrations (has_main_flyway):
+spring-boot-starter-flyway, in a scope other than test and provided. Spring
+Boot 4 turns Flyway on only through that starter (its auto-configuration lives in
+spring-boot-flyway, which the starter brings), so bare flyway-core does NOT make
+a service run its migrations. The -test starter,
+flyway-database-postgresql on its own (the driver module, not a switch) and
+anything inside a comment do not make a service a database owner. A config-repo
+file counts only when it holds at least one top-level key (an empty file, or one
+of nothing but comments, serves the service nothing).
 
 USAGE
     python scripts/check_service_registry.py              # check the tree
@@ -44,12 +67,67 @@ copies the tree to a temp folder and, for every service and every watched list,
 removes that service's entry (and, for ports, corrupts the port), then runs
 this script as a SUBPROCESS on the damaged copy and requires a non-zero exit
 and a new problem line naming that service and that list. It also proves the
-guard exits 0 on an untouched copy.
+guard exits 0 on an untouched copy. The damage comes in kinds, counted in the
+summary: remove (the entry is deleted), comment (the entry is commented out,
+in every list whose file can hold a comment, and the whole config-repo file),
+port / health (a wrong number), empty (a config-repo file with nothing in it),
+herestring / docstring / textblock (the entry moved into a
+PowerShell here-string, a Python triple-quoted string or a Java text block, in
+every list of a file of that language; docstring-copy quotes an old copy of the
+whole list above the real one, which lost the entry), and flyway-test-only /
+flyway-commented / flyway-no-starter / flyway-provided / flyway-test-unscoped
+(the service's own flyway dependencies are taken away leaving only the test-scope
+one, are wrapped in a comment, lose only the starter, go provided, or leave an
+un-scoped -test starter behind).
 
 The part that damages the files (the MUTATOR, below the line marked "SELF-TEST")
 shares NO parsing code with the guard above that line: it uses plain line
 deletion and text substitution. If both used the same parser, one blind spot
 would hide a missing entry from both of them.
+
+KNOWN GAPS
+----------
+Six ways to read a file differently from its own language, or to count prose as
+an entry, are known and NOT closed, on purpose:
+
+  (a) XML CDATA sections are not blanked in has_main_flyway. A <dependency>
+      written inside <![CDATA[ ... ]]> in a pom is text to Maven but a
+      dependency to this guard.
+  (b) The PowerShell line-comment rule (a "#" starts a comment only when the
+      character before it is not a word character, "$", ":", "/", "\\", "." or
+      "-") disagrees with PowerShell's own parser for a "#" glued to the end of
+      a token: in "search = 8092#; procurement = 8093" PowerShell reads
+      "#; procurement = 8093" as a comment, this guard does not strip it.
+  (c) The PowerShell double-quote rule does not understand "$( )" nesting with a
+      quote of the OTHER kind inside: in "a $('it"s') b" # c the string is
+      closed one quote too early, so the quote pairing after it is off by one
+      and a trailing comment can be left in (or a "#" inside a string taken as
+      one).
+  (d) An entry written INSIDE an ordinary string still counts as an element: the
+      list readers take any quoted word, so `'skip "procurement" for now'` in
+      $JavaApps reads as a procurement entry. An ordinary string that runs over a
+      line break is NOT blanked either. That was tried and removed: together
+      with (c) it turned valid PowerShell into a hard false red that blocks
+      honest work, while hiding an entry that way takes a deliberate, odd edit.
+      (Here-strings, Python triple-quoted strings and Java text blocks, which
+      are written to hold prose, ARE blanked.)
+  (e) A flyway starter that exists only inside a <profiles> block of a pom counts
+      as a live dependency, although Maven puts it on the classpath only when
+      the profile is active.
+  (f) A config-repo file is held to block-style YAML with an unindented key, so
+      a valid file written as a flow mapping, or indented as a whole, is refused
+      with "holds no top-level key" (loud, never silent).
+
+Why they are accepted: this guard exists to catch an honestly forgotten entry,
+not an entry hidden on purpose, and each of the six needs an edit nobody
+makes by accident (or fails loudly, which (f) does). On the REAL tree the stripper agrees exactly with the
+languages' own tokenizers, and that is differential-tested rather than assumed:
+every comment of every watched .ps1 is compared with PowerShell's own parser
+(System.Management.Automation.Language.Parser), every comment and every
+triple-quoted string of the .py files with Python's tokenize, and every comment
+and text block of the repo's .java files with an independent Java lexer, with no
+difference (the test harness is not part of the repo). Run such a comparison
+again when a new kind of watched file, or a new quoting style in one, appears.
 """
 
 import argparse
@@ -157,7 +235,7 @@ class Ctx:
         p = self.root / rel
         if not p.is_file():
             return None
-        return p.read_text(encoding="utf-8-sig")
+        return read_code(p)
 
     @property
     def owners(self):
@@ -218,7 +296,7 @@ def find_main_class(mod_dir):
     files = [Path(d) / f for d, _, names in os.walk(str(src)) for f in names if f.endswith(".java")]
     files.sort(key=lambda p: (not p.name.endswith("Application.java"), str(p)))
     for f in files:
-        t = f.read_text(encoding="utf-8", errors="replace")
+        t = strip_comments(f.read_text(encoding="utf-8", errors="replace"), "java")
         if "@SpringBootApplication" in t:
             pkg = re.search(r"^package\s+([\w.]+)\s*;", t, re.M)
             return (pkg.group(1) + "." if pkg else "") + f.stem
@@ -234,8 +312,199 @@ def module_dirs(base):
 
 
 def pom_modules(text):
+    # (read through read_code(), so the comments are already gone; kept for a raw string)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     return re.findall(r"<module>\s*([^<\s]+)\s*</module>", text)
+
+
+# ---- comments are not entries -------------------------------------------------
+# Every list below is read from a file that people edit by hand, and the usual
+# way to take a service out of a list "for now" is to comment its entry out. A
+# comment must therefore never count as an entry: every watched file is read
+# through strip_comments() first, and only then searched.
+#
+# The scan is token based, not a bare "from # to the end of the line", because a
+# "#" or a "//" or a "/*" can sit inside a string: a URL fragment, a compose
+# value, the gateway path "/api/v1/**". Strings are therefore matched first
+# and left alone; only what is left outside a string and starts a comment goes.
+#
+# A MULTI-LINE STRING IS NOT AN ENTRY EITHER. A Python triple-quoted string, a
+# PowerShell here-string and a Java text block are written to hold prose or a
+# sample (a docstring that quotes the old list, say), never one of the watched
+# lists, and no watched list is written as one. Left in, they let an entry that
+# is only text pass as a live one ("procurement", moved into a docstring, still
+# reads as a list element), and let an old copy of a whole list sit above the
+# real one, where the first-match search of region() would pick it. Their
+# BODY is therefore blanked (delimiters and line breaks kept) before any
+# search; ordinary strings are untouched, including one that runs over a line
+# break (see KNOWN GAPS for why that is not blanked).
+_PS_TOKENS = re.compile(r"""
+      (?P<block><\#.*?\#>)
+    | (?P<here>@(?P<q>['"])[ \t]*\r?\n(?P<hbody>(?:.*?\r?\n)??)(?P=q)@)
+    | (?P<str>'[^']*(?:''[^']*)*'|"(?:`.|[^"`])*")
+    | (?P<line>(?<![\w$:/\\.-])\#[^\r\n]*)
+""", re.X | re.S)
+
+_PY_TOKENS = re.compile(r"""
+      (?P<tstr>'''(?:\\.|[^\\])*?'''|\"\"\"(?:\\.|[^\\])*?\"\"\")
+    | (?P<str>'(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*")
+    | (?P<line>\#[^\r\n]*)
+""", re.X | re.S)
+
+_JAVA_TOKENS = re.compile(r"""
+      (?P<tstr>\"\"\"(?:\\.|[^\\])*?\"\"\")
+    | (?P<str>"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])+')
+    | (?P<block>/\*.*?\*/)
+    | (?P<line>//[^\r\n]*)
+""", re.X | re.S)
+
+
+def _blank(body):
+    """`body` with every character gone except its line breaks (lines stay lines)."""
+    return re.sub(r"[^\r\n]", "", body)
+
+
+def _drop_comments(pattern, text):
+    """Comments go, multi-line strings keep only their delimiters, one-line strings stay.
+
+    A block comment becomes a blank, a line comment nothing; a triple-quoted
+    string, here-string or text block keeps its opening and closing delimiter
+    and its line breaks but loses everything between them.
+    """
+    def sub(m):
+        g = m.groupdict()
+        if g.get("block") is not None:
+            return " "
+        if g.get("line") is not None:
+            return ""
+        if g.get("tstr") is not None:
+            s = m.group(0)
+            return s[:3] + _blank(s[3:-3]) + s[-3:]
+        if g.get("here") is not None:
+            s = m.group(0)
+            return (s[:m.start("hbody") - m.start(0)] + _blank(m.group("hbody"))
+                    + s[m.end("hbody") - m.start(0):])
+        # An ordinary string is left exactly as written, even one that runs over a line break
+        # (legal in PowerShell). Blanking those too was tried and REMOVED: combined with the
+        # known quote-pairing gap (c) below it turned valid PowerShell into a hard false red
+        # that blocks honest work, whereas hiding an entry in such a string takes a deliberate,
+        # odd edit. See KNOWN GAPS.
+        return m.group(0)
+    return pattern.sub(sub, text)
+
+
+def _yaml_quote_end(line, i):
+    """Index just past the quoted scalar that opens at line[i], or len(line) if it never closes."""
+    q = line[i]
+    j = i + 1
+    while j < len(line):
+        c = line[j]
+        if q == '"' and c == "\\":
+            j += 2
+            continue
+        if c == q:
+            if q == "'" and line[j + 1:j + 2] == "'":
+                j += 2
+                continue
+            return j + 1
+        j += 1
+    return len(line)
+
+
+def _strip_yaml(text):
+    """YAML: "#" starts a comment at the start of a line or after a blank, outside a quoted scalar.
+
+    A quote opens a scalar only where a scalar can begin (line start, after ": ", "- ",
+    "[", "{" or ","), so the apostrophe in "it's" does not hide a comment behind it.
+    """
+    out = []
+    for line in text.split("\n"):
+        if "#" in line:
+            i, prev = 0, None
+            while i < len(line):
+                c = line[i]
+                if c in "\"'" and (prev is None or prev in ":-[{,?"):
+                    i = _yaml_quote_end(line, i)
+                    prev = c
+                    continue
+                if c == "#" and (i == 0 or line[i - 1] in " \t"):
+                    line = line[:i].rstrip()
+                    break
+                if c not in " \t":
+                    prev = c
+                i += 1
+        out.append(line)
+    return "\n".join(out)
+
+
+def strip_comments(text, kind):
+    """`text` without its comments (None or an unknown kind: unchanged).
+
+    kind: "ps" (# and <# #>, here-strings), "py", "yaml", "xml" (<!-- -->), "java" (// and /* */).
+    Lines stay lines, so a line anchored with ^ still means the same line.
+    For "ps", "py" and "java" the body of a here-string, triple-quoted string or
+    text block is blanked too (see the note above _PS_TOKENS).
+    """
+    if kind == "ps":
+        return _drop_comments(_PS_TOKENS, text)
+    if kind == "py":
+        return _drop_comments(_PY_TOKENS, text)
+    if kind == "java":
+        return _drop_comments(_JAVA_TOKENS, text)
+    if kind == "yaml":
+        return _strip_yaml(text)
+    if kind == "xml":
+        return re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    return text
+
+
+_KIND_BY_SUFFIX = {".ps1": "ps", ".py": "py", ".yml": "yaml", ".yaml": "yaml",
+                   ".xml": "xml", ".java": "java"}
+
+
+def read_code(path):
+    """A watched file's text with its comments removed."""
+    p = Path(path)
+    return strip_comments(p.read_text(encoding="utf-8-sig"), _KIND_BY_SUFFIX.get(p.suffix.lower()))
+
+
+# The artifact that makes a service run its own Flyway migrations. Spring Boot 4
+# switches Flyway on through its STARTER (spring-boot-starter-flyway), whose
+# auto-configuration lives in the spring-boot-flyway module the starter brings.
+# flyway-core on its own is only the plain library: with it and no starter the
+# migrations are never run at start-up, so it does NOT make a service a database
+# owner. Everything else with "flyway" in its name is NOT enough either:
+# flyway-database-postgresql is only the database driver module, and the -test
+# starter is a test helper. Matched on the whole artifactId, so
+# spring-boot-starter-flyway-test never counts.
+FLYWAY_OWNER_ARTIFACTS = ("spring-boot-starter-flyway",)
+# A dependency in one of these scopes is not on the service's runtime classpath.
+FLYWAY_IGNORED_SCOPES = ("test", "provided")
+
+
+def has_main_flyway(pom):
+    """True when the pom has a flyway dependency of its own that runs the migrations.
+
+    That is a direct <dependency> on spring-boot-starter-flyway
+    (FLYWAY_OWNER_ARTIFACTS) whose scope is not test and not provided.
+
+    Not counted: a dependency in a comment (read_code has removed those), one in
+    <dependencyManagement> or a plugin's own dependencies (<build>), an
+    <exclusion>, any other artifact that merely has "flyway" in its name
+    (flyway-database-postgresql alone, spring-boot-starter-flyway-test), and one in
+    test or provided scope.
+    """
+    pom = re.sub(r"<dependencyManagement>.*?</dependencyManagement>|<build>.*?</build>", "", pom, flags=re.S)
+    for dep in re.findall(r"<dependency>(.*?)</dependency>", pom, re.S):
+        dep = re.sub(r"<exclusions>.*?</exclusions>", "", dep, flags=re.S)
+        a = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", dep)
+        if not a or a.group(1) not in FLYWAY_OWNER_ARTIFACTS:
+            continue
+        s = re.search(r"<scope>\s*([^<\s]+)\s*</scope>", dep)
+        if s and s.group(1).lower() in FLYWAY_IGNORED_SCOPES:
+            continue
+        return True
+    return False
 
 
 def region(text, start_re, end_re):
@@ -314,24 +583,29 @@ def discover(ctx, rep):
         res = mod / "src" / "main" / "resources"
         app = (res / "application.yaml")
         if app.is_file():
-            port = yaml_child(app.read_text(encoding="utf-8-sig"), "server", "port")
+            port = yaml_child(read_code(app), "server", "port")
             svc.port = int(port) if port and port.isdigit() else None
         if svc.port is None:
             rep.add(name, "service-facts", "services/%s/src/main/resources/application.yaml" % name,
                     "no server.port found")
         mig = res / "db" / "migration"
         svc.migrations = sorted(p.name for p in mig.glob("V*__*.sql")) if mig.is_dir() else []
-        pom = (mod / "pom.xml").read_text(encoding="utf-8-sig")
-        svc.flyway = re.search(r"<artifactId>[^<]*flyway[^<]*</artifactId>", pom) is not None
+        pom = read_code(mod / "pom.xml")
+        svc.flyway = has_main_flyway(pom)
         svc.owns_db = bool(svc.migrations) and svc.flyway
         if bool(svc.migrations) != svc.flyway:
             rep.add(name, "service-facts", "services/%s/pom.xml" % name,
-                    "%s: it has %d migration file(s) but %s a flyway dependency; a database owner has both"
-                    % (name, len(svc.migrations), "has" if svc.flyway else "NO"))
+                    "%s: it has %d migration file(s) but %s; a database owner has both"
+                    % (name, len(svc.migrations),
+                       "a flyway dependency" if svc.flyway
+                       else "no spring-boot-starter-flyway dependency of its own "
+                            "(test and provided scope, comments, flyway-core and "
+                            "flyway-database-postgresql alone do not count: Spring Boot 4 runs "
+                            "the migrations through the starter)"))
         if svc.owns_db:
             loc = res / "application-local.yaml"
             dock = res / "application-docker.yaml"
-            lt = loc.read_text(encoding="utf-8-sig") if loc.is_file() else ""
+            lt = read_code(loc) if loc.is_file() else ""
             m = re.search(r"jdbc:postgresql://localhost:(\d+)/(\w+)", lt)
             if m:
                 svc.db_host_port, svc.db_name = int(m.group(1)), m.group(2)
@@ -342,7 +616,7 @@ def discover(ctx, rep):
             if svc.db_host_port is None or not svc.db_user or not svc.db_password:
                 rep.add(name, "service-facts", "services/%s/src/main/resources/application-local.yaml" % name,
                         "no jdbc url, username and password for the local database")
-            dt = dock.read_text(encoding="utf-8-sig") if dock.is_file() else ""
+            dt = read_code(dock) if dock.is_file() else ""
             m = re.search(r"jdbc:postgresql://([\w-]+):5432/(\w+)", dt)
             if m:
                 svc.docker_db_host, svc.docker_db_name = m.group(1), m.group(2)
@@ -361,7 +635,7 @@ def discover(ctx, rep):
         s = Svc(name)
         app = ctx.root / "infra" / name / "src" / "main" / "resources" / "application.yaml"
         if app.is_file():
-            port = yaml_child(app.read_text(encoding="utf-8-sig"), "server", "port")
+            port = yaml_child(read_code(app), "server", "port")
             s.port = int(port) if port and port.isdigit() else None
         s.main_class = find_main_class(ctx.root / "infra" / name)
         ctx.infra[name] = s
@@ -885,7 +1159,7 @@ def check_gateway(ctx, rep):
         rep.add("(all)", "gateway-docs", GATEWAY_ROUTES_DIR, "GatewayRoutesConfig.java not found (or not unique)")
     else:
         rel = routes.relative_to(ctx.root).as_posix()
-        t = routes.read_text(encoding="utf-8-sig")
+        t = read_code(routes)
         r = region(t, r"DOCS_SERVICES\s*=\s*List\.of\(", r"\)\s*;")
         if r is None:
             rep.add("(all)", "gateway-docs", rel, "no DOCS_SERVICES list found")
@@ -898,15 +1172,34 @@ def check_gateway(ctx, rep):
                     {n: "/v3/api-docs/%s" % n for n in ctx.services}, "springdoc.swagger-ui.urls")
 
 
+# A top-level YAML key: starts in column 0 (not a comment, a list dash or a
+# document marker) and is followed by a colon and a blank or the end of the line.
+_YAML_TOP_KEY = re.compile(r"""^(?:[A-Za-z_][\w.-]*|"[^"\r\n]+"|'[^'\r\n]+')[ \t]*:(?:[ \t]|$)""")
+
+
 def check_config_repo(ctx, rep):
     if not ctx.cfg.is_dir():
         rep.add("(all)", "config-repo", "../config-repo", "the config-repo folder was not found next to oriah-api")
         return
     present = {p.name[:-len(".yaml")] for p in ctx.cfg.glob("*.yaml")}
     for n in ctx.services:
+        rel = "../config-repo/%s.yaml" % n
         if n not in present:
-            rep.add(n, "config-repo", "../config-repo/%s.yaml" % n,
+            rep.add(n, "config-repo", rel,
                     "no configuration file for %s (the Config Server serves committed files only)" % n)
+            continue
+        # A file that exists is not yet a configuration: an empty one, or one that
+        # holds only comments, serves the service nothing. Read it as the other
+        # watched files are (comments removed) and require a top-level key.
+        try:
+            body = read_code(ctx.cfg / (n + ".yaml"))
+        except (OSError, UnicodeDecodeError) as exc:
+            rep.add(n, "config-repo", rel, "cannot read the configuration file for %s: %s" % (n, exc))
+            continue
+        if not any(_YAML_TOP_KEY.match(line) for line in body.splitlines()):
+            rep.add(n, "config-repo", rel,
+                    "the configuration file for %s holds no top-level key (it is empty, or only blank lines "
+                    "and comments), so the Config Server would serve it nothing" % n)
     for n in sorted(present - {"application"} - set(ctx.services)):
         rep.add(n, "config-repo", "../config-repo/%s.yaml" % n, "a configuration file for a service that does not exist")
 
@@ -1034,6 +1327,284 @@ def m_replace(pattern, group_fn, region=None):
     return _with_region(region, op)
 
 
+def _span(text, region_spec):
+    """(lo, hi) of the window a region spec names; the start must match once."""
+    if region_spec is None:
+        return 0, len(text)
+    starts = list(re.finditer(region_spec[0], text, re.M))
+    if len(starts) != 1:
+        raise MutationError("region start %r matches %d times" % (region_spec[0], len(starts)))
+    lo = starts[0].end()
+    e = re.search(region_spec[1], text[lo:], re.S)
+    return lo, lo + (e.start() if e else len(text) - lo)
+
+
+def m_comment_token(token_re, marker, region_spec=None):
+    """Comment one list element out: it moves to a line of its own behind `marker`.
+
+    The element keeps its trailing separator inside the comment. Whatever shared
+    its line (the opening bracket before it, the closing bracket after it) stays
+    live on lines of their own, so only the entry stops counting.
+    """
+    def fn(text):
+        lo, hi = _span(text, region_spec)
+        pat = re.compile(r"(?:" + token_re + r")[ \t]*[,;]?[ \t]*")
+        hits = list(pat.finditer(text, lo, hi))
+        if len(hits) != 1:
+            raise MutationError("%d elements match %r" % (len(hits), token_re))
+        m = hits[0]
+        ls = text.rfind("\n", 0, m.start()) + 1
+        le = text.find("\n", m.end())
+        le = len(text) if le < 0 else le
+        indent = re.match(r"[ \t]*", text[ls:]).group(0)
+        before = text[ls:m.start()].rstrip(" \t")
+        after = text[m.end():le].strip()
+        pieces = []
+        if before.strip():
+            pieces.append(before)
+        pieces.append(indent + marker + m.group(0).strip())
+        if after:
+            pieces.append(indent + after)
+        return text[:ls] + "\n".join(pieces) + text[le:]
+    return fn
+
+
+def m_comment_line(line_re, marker="# "):
+    """Put a line comment marker in front of the one line that matches."""
+    def fn(text):
+        ls = text.split("\n")
+        hits = [i for i, l in enumerate(ls) if re.search(line_re, l)]
+        if len(hits) != 1:
+            raise MutationError("%d lines match %r" % (len(hits), line_re))
+        i = hits[0]
+        indent = re.match(r"[ \t]*", ls[i]).group(0)
+        ls[i] = indent + marker + ls[i][len(indent):]
+        return "\n".join(ls)
+    return fn
+
+
+def m_comment_block(header_re):
+    """Comment a two-space-indented YAML block out, header line to just before the next key."""
+    def fn(text):
+        ls = text.split("\n")
+        hits = [i for i, l in enumerate(ls) if re.match(header_re, l)]
+        if len(hits) != 1:
+            raise MutationError("%d lines match %r" % (len(hits), header_re))
+        i = hits[0]
+        j = i + 1
+        while j < len(ls) and not re.match(r"^ {0,2}\S", ls[j]):
+            j += 1
+        for k in range(i, j):
+            if ls[k].strip():
+                ls[k] = "#" + ls[k]
+        return "\n".join(ls)
+    return fn
+
+
+def m_wrap_line(line_re):
+    """Wrap the one line that matches in an XML comment."""
+    def fn(text):
+        ls = text.split("\n")
+        hits = [i for i, l in enumerate(ls) if re.search(line_re, l)]
+        if len(hits) != 1:
+            raise MutationError("%d lines match %r" % (len(hits), line_re))
+        i = hits[0]
+        indent = re.match(r"[ \t]*", ls[i]).group(0)
+        ls[i] = indent + "<!-- " + ls[i].strip() + " -->"
+        return "\n".join(ls)
+    return fn
+
+
+def m_wrap_file(text):
+    """The whole file inside one XML comment."""
+    return "<!--\n" + text.rstrip("\n") + "\n-->\n"
+
+
+_DEPENDENCY = re.compile(r"[ \t]*<dependency>.*?</dependency>[ \t]*\n?", re.S)
+
+
+def m_flyway_main(mode):
+    """Take the main flyway dependencies out of a pom, leaving the -test one as a decoy.
+
+    mode "remove": delete them. mode "comment": wrap each in an XML comment (the
+    dependency is still in the file, but it is not a dependency). Either way the
+    service has migrations and no flyway dependency of its own.
+    """
+    def fn(text):
+        deps = list(_DEPENDENCY.finditer(text))
+        main = [m for m in deps if "flyway" in m.group(0) and "<scope>test</scope>" not in m.group(0)]
+        decoy = [m for m in deps if "flyway" in m.group(0) and "<scope>test</scope>" in m.group(0)]
+        if not main:
+            raise MutationError("no main flyway dependency in the pom")
+        if not decoy:
+            raise MutationError("no test-scope flyway dependency to leave behind as the decoy")
+        out, pos = [], 0
+        for m in main:
+            out.append(text[pos:m.start()])
+            if mode == "comment":
+                body = m.group(0)
+                indent = body[:len(body) - len(body.lstrip())]
+                out.append(indent + "<!-- " + body.strip() + " -->\n")
+            pos = m.end()
+        out.append(text[pos:])
+        return "".join(out)
+    return fn
+
+
+def m_flyway_variant(mode):
+    """Damage a pom's flyway dependencies in one of the ways that only LOOKS like a database owner.
+
+    "no-starter":      delete only spring-boot-starter-flyway; the driver module
+                       (flyway-database-postgresql) and the -test starter stay, so the
+                       word "flyway" is still all over the pom but Spring Boot 4 has
+                       no Flyway auto-configuration and the migrations never run.
+    "provided":        <scope>provided</scope> on the starter and the driver module.
+    "test-unscoped":   delete the starter and the driver module and drop the
+                       <scope>test</scope> from the -test starter (a test helper
+                       that now sits on the main classpath).
+    """
+    def fn(text):
+        deps = list(_DEPENDENCY.finditer(text))
+        starter = [m for m in deps if "<artifactId>spring-boot-starter-flyway</artifactId>" in m.group(0)]
+        driver = [m for m in deps if "<artifactId>flyway-database-postgresql</artifactId>" in m.group(0)]
+        helper = [m for m in deps if "<artifactId>spring-boot-starter-flyway-test</artifactId>" in m.group(0)]
+        if not starter:
+            raise MutationError("no spring-boot-starter-flyway dependency in the pom")
+        if mode in ("no-starter", "provided") and not driver:
+            raise MutationError("no flyway-database-postgresql dependency to leave behind as the decoy")
+        if mode == "test-unscoped" and not helper:
+            raise MutationError("no spring-boot-starter-flyway-test dependency in the pom")
+        edits = []                                   # (match, replacement text)
+        if mode == "no-starter":
+            edits = [(m, "") for m in starter]
+        elif mode == "provided":
+            for m in starter + driver:
+                if "<scope>" in m.group(0):
+                    raise MutationError("a flyway dependency already has a scope")
+                edits.append((m, m.group(0).replace("</dependency>", "<scope>provided</scope></dependency>")))
+        elif mode == "test-unscoped":
+            edits = [(m, "") for m in starter + driver]
+            edits += [(m, m.group(0).replace("<scope>test</scope>", "")) for m in helper]
+        else:
+            raise MutationError("unknown flyway mode " + mode)
+        out, pos = [], 0
+        for m, new in sorted(edits, key=lambda e: e[0].start()):
+            out.append(text[pos:m.start()])
+            out.append(new)
+            pos = m.end()
+        out.append(text[pos:])
+        return "".join(out)
+    return fn
+
+
+# ---- multi-line strings: the entry (or a whole old copy of the list) is moved into one ----
+def _wrap_delims(lang, content):
+    """(opener, closer, closer must start in column 0) of a multi-line string in `lang`."""
+    if lang == "ps":
+        return "@'", "'@", True                      # a here-string closes only in column 0
+    if lang == "java":
+        return '"""', '"""', False                   # a text block
+    if lang == "psq":                                # an ordinary PowerShell string that runs over lines
+        if '"' in content and "'" in content:
+            raise MutationError("the text uses both quote kinds, so no plain string can hold it")
+        q = "'" if '"' in content else '"'
+        return q, q, False
+    q = "'''" if '"' in content else '"""'           # python: the quote style the content does not use
+    return q, q, False
+
+
+def m_wrap_token(token_re, lang, region_spec=None):
+    """Move one list element into a multi-line string on lines of its own.
+
+    lang "ps": a here-string, "psq": an ordinary PowerShell string that runs over
+    lines, "py": a triple-quoted string, "java": a text block.
+    The element's separator (the comma or semicolon) is left after the closing
+    delimiter, so the list around the string keeps its shape. The element is no
+    longer a list element: it is the text of a string.
+    """
+    def fn(text):
+        lo, hi = _span(text, region_spec)
+        pat = re.compile(r"(?:" + token_re + r")[ \t]*[,;]?[ \t]*")
+        hits = list(pat.finditer(text, lo, hi))
+        if len(hits) != 1:
+            raise MutationError("%d elements match %r" % (len(hits), token_re))
+        m = hits[0]
+        ls = text.rfind("\n", 0, m.start()) + 1
+        le = text.find("\n", m.end())
+        le = len(text) if le < 0 else le
+        indent = re.match(r"[ \t]*", text[ls:]).group(0)
+        before = text[ls:m.start()].rstrip(" \t")
+        after = text[m.end():le].strip()
+        elem = m.group(0).strip()
+        sep = ""
+        if elem and elem[-1] in ",;":
+            sep, elem = elem[-1], elem[:-1].rstrip()
+        opener, closer, flush = _wrap_delims(lang, elem)
+        pieces = []
+        if before.strip():
+            pieces.append(before)
+        pieces.append(indent + opener)
+        pieces.append(indent + elem)
+        pieces.append((closer if flush else indent + closer) + sep)
+        if after:
+            pieces.append(indent + after)
+        return text[:ls] + "\n".join(pieces) + text[le:]
+    return fn
+
+
+def m_herestring_line(line_re, lang="ps"):
+    """Wrap the one line that matches in a PowerShell here-string (lang "ps") or multi-line plain string ("psq")."""
+    def fn(text):
+        ls = text.split("\n")
+        hits = [i for i, l in enumerate(ls) if re.search(line_re, l)]
+        if len(hits) != 1:
+            raise MutationError("%d lines match %r" % (len(hits), line_re))
+        i = hits[0]
+        indent = re.match(r"[ \t]*", ls[i]).group(0)
+        opener, closer, flush = _wrap_delims(lang, ls[i])
+        ls[i:i + 1] = [indent + opener, ls[i], closer if flush else indent + closer]
+        return "\n".join(ls)
+    return fn
+
+
+def m_stale_copy(start_re, end_re, token_re, lang):
+    """An old copy of the whole list sits in a multi-line string above the real list, which lost the entry.
+
+    The statement from the start match to the end match is quoted verbatim in a
+    triple-quoted string (or here-string or text block) in front of itself; the
+    real statement then has the element taken out. A reader that searches for
+    the FIRST `SERVICES = [` finds the stale copy, which still holds the entry.
+    """
+    def fn(text):
+        starts = list(re.finditer(start_re, text, re.M))
+        if len(starts) != 1:
+            raise MutationError("region start %r matches %d times" % (start_re, len(starts)))
+        s = starts[0]
+        e = re.search(end_re, text[s.end():], re.S)
+        if not e:
+            raise MutationError("region end %r not found" % end_re)
+        a = text.rfind("\n", 0, s.start()) + 1
+        b = s.end() + e.end()
+        stmt = text[a:b]
+        pat = re.compile(r"(?:" + token_re + r")[ \t]*[,;]?[ \t]*")
+        if len(pat.findall(stmt)) != 1:
+            raise MutationError("%d elements match %r" % (len(pat.findall(stmt)), token_re))
+        real = pat.sub("", stmt, count=1)
+        opener, closer, _ = _wrap_delims(lang, stmt)
+        return text[:a] + opener + "\n" + stmt + "\n" + closer + "\n" + real + text[b:]
+    return fn
+
+
+def m_comment_all(text):
+    """Every non-blank line of a file commented out with a YAML/PowerShell '#'."""
+    return "\n".join(("# " + l) if l.strip() else l for l in text.split("\n"))
+
+
+def m_empty(text):
+    """The file is still there, but holds nothing."""
+    return ""
+
+
 def _facts_for_mutator(root):
     """Port and database facts, read with their own small regexes (not the guard's)."""
     out = OrderedDict()
@@ -1067,6 +1638,12 @@ def build_mutations(root):
 
     def add(svc, lid, kind, rel, fn):
         muts.append((svc, lid, kind, rel, fn))
+
+    def ps_wrapped(svc, lid, rel, token_re=None, region_spec=None, line_re=None):
+        """A PowerShell list entry moved into a here-string (a plain string that runs over lines is a known gap)."""
+        for kind, lang in (("herestring", "ps"),):
+            fn = m_herestring_line(line_re, lang) if line_re else m_wrap_token(token_re, lang, region_spec)
+            add(svc, lid, kind, rel, fn)
 
     for s, f in facts.items():
         e = re.escape(s)
@@ -1111,6 +1688,82 @@ def build_mutations(root):
         add(s, "gateway-swagger", "remove", A + "infra/gatewayserver/src/main/resources/application.yaml",
             m_delete_line(r"-\s*\{\s*name:\s*%s\s*," % e))
         add(s, "config-repo", "remove", "config-repo/%s.yaml" % s, None)
+        # --- commented out, every list that can hold a comment -------------
+        # A comment is not an entry. (postman-env and pgadmin are JSON, which has no
+        # comments; config-repo is a file name, not a list.)
+        add(s, "pom-modules", "comment", A + "services/pom.xml", m_wrap_line(r"<module>%s</module>" % e))
+        add(s, "compose-service", "comment", A + "docker-compose/default/docker-compose.yml",
+            m_comment_block(r"^  %s:\s*$" % e))
+        add(s, "build-images", "comment", A + "build-images.ps1",
+            m_comment_line(r'Path\s*=\s*"services/%s"' % e))
+        add(s, "prometheus", "comment", A + "monitoring/prometheus.yml",
+            m_comment_line(r"^\s*-\s*'%s:\d+'\s*$" % e))
+        add(s, "dev-stack-apps", "comment", A + "scripts/dev-stack.ps1",
+            m_comment_token(r"'%s'" % e, "# ", (r"^\s*\$JavaApps\s*=\s*@\(", r"\)")))
+        add(s, "local-test-services", "comment", A + "scripts/local-dev-test.ps1",
+            m_comment_token(r"'%s'" % e, "# ", (r"\$Services\s*=\s*@\(", r"\)")))
+        add(s, "local-test-ports", "comment", A + "scripts/local-dev-test.ps1",
+            m_comment_token(r"\b%s\s*=\s*\d+" % e, "# ", (r"^\s*\$Ports\s*=\s*@\{", r"\}")))
+        add(s, "capture-openapi", "comment", A + "scripts/capture-openapi.ps1",
+            m_comment_token(r'"%s"' % e, "# ", (r"^\s*\$services\s*=\s*@\(", r"\)")))
+        add(s, "openapi-audit", "comment", A + "scripts/openapi_audit.py",
+            m_comment_token(r'"%s"' % e, "# ", (r"^SERVICES\s*=\s*\[", r"\]")))
+        add(s, "openapi-diff", "comment", A + "scripts/openapi_diff.py",
+            m_comment_token(r'"%s"' % e, "# ", (r"^SERVICES\s*=\s*\[", r"\]")))
+        add(s, "postman-services", "comment", A + "scripts/local-dev/postman_from_openapi.py",
+            m_comment_token(r"'%s'\s*:\s*\d+" % e, "# ", (r"^SERVICES\s*=\s*\{", r"\}")))
+        add(s, "smoke-routeprobes", "comment", A + "smoke-test.ps1",
+            m_comment_line(r"^\s*%s\s*=\s*'/" % e))
+        add(s, "smoke-expected", "comment", A + "smoke-test.ps1",
+            m_comment_token(r'"%s:\d+"' % e, "# ", (r"^\s*\$expected\s*=\s*@\(", r"\)")))
+        add(s, "smoke-ports", "comment", A + "smoke-test.ps1",
+            m_comment_token(r"\b%s\s*=\s*\d+" % e, "# ", (r"^\s*\$servicePorts\s*=\s*\[ordered\]@\{", r"\}")))
+        add(s, "run-compound", "comment", A + ".run/2-services-local.run.xml",
+            m_wrap_line(r'<toRun\s+name="%s :\d+ \(local\)"' % e))
+        add(s, "run-file", "comment", A + ".run/%s-local.run.xml" % s, m_wrap_file)
+        add(s, "gateway-docs", "comment",
+            A + "infra/gatewayserver/src/main/java/com/oriah/gatewayserver/config/GatewayRoutesConfig.java",
+            m_comment_token(r'"%s"' % e, "// ", (r"DOCS_SERVICES\s*=\s*List\.of\(", r"\)\s*;")))
+        add(s, "gateway-swagger", "comment", A + "infra/gatewayserver/src/main/resources/application.yaml",
+            m_comment_line(r"-\s*\{\s*name:\s*%s\s*," % e))
+        # a configuration file that exists but says nothing (config-repo is a folder next
+        # to oriah-api; "comment" here comments the WHOLE file out, "empty" empties it)
+        add(s, "config-repo", "comment", "config-repo/%s.yaml" % s, m_comment_all)
+        add(s, "config-repo", "empty", "config-repo/%s.yaml" % s, m_empty)
+        # --- the entry moved into a multi-line string: text, not a list element ---------
+        # herestring: PowerShell here-strings; docstring: Python triple-quoted strings
+        # (docstring-copy: an old copy of the whole list quoted above the real one, which
+        # lost the entry); textblock: the Java text block. A comment is not an entry, and
+        # neither is the body of a multi-line string.
+        ps_wrapped(s, "build-images", A + "build-images.ps1", line_re=r'Path\s*=\s*"services/%s"' % e)
+        ps_wrapped(s, "dev-stack-apps", A + "scripts/dev-stack.ps1",
+                   r"'%s'" % e, (r"^\s*\$JavaApps\s*=\s*@\(", r"\)"))
+        ps_wrapped(s, "local-test-services", A + "scripts/local-dev-test.ps1",
+                   r"'%s'" % e, (r"\$Services\s*=\s*@\(", r"\)"))
+        ps_wrapped(s, "local-test-ports", A + "scripts/local-dev-test.ps1",
+                   r"\b%s\s*=\s*\d+" % e, (r"^\s*\$Ports\s*=\s*@\{", r"\}"))
+        ps_wrapped(s, "capture-openapi", A + "scripts/capture-openapi.ps1",
+                   r'"%s"' % e, (r"^\s*\$services\s*=\s*@\(", r"\)"))
+        ps_wrapped(s, "smoke-routeprobes", A + "smoke-test.ps1", line_re=r"^\s*%s\s*=\s*'/" % e)
+        ps_wrapped(s, "smoke-expected", A + "smoke-test.ps1",
+                   r'"%s:\d+"' % e, (r"^\s*\$expected\s*=\s*@\(", r"\)"))
+        ps_wrapped(s, "smoke-ports", A + "smoke-test.ps1",
+                   r"\b%s\s*=\s*\d+" % e, (r"^\s*\$servicePorts\s*=\s*\[ordered\]@\{", r"\}"))
+        add(s, "openapi-audit", "docstring", A + "scripts/openapi_audit.py",
+            m_wrap_token(r'"%s"' % e, "py", (r"^SERVICES\s*=\s*\[", r"\]")))
+        add(s, "openapi-diff", "docstring", A + "scripts/openapi_diff.py",
+            m_wrap_token(r'"%s"' % e, "py", (r"^SERVICES\s*=\s*\[", r"\]")))
+        add(s, "postman-services", "docstring", A + "scripts/local-dev/postman_from_openapi.py",
+            m_wrap_token(r"'%s'\s*:\s*\d+" % e, "py", (r"^SERVICES\s*=\s*\{", r"\}")))
+        add(s, "openapi-audit", "docstring-copy", A + "scripts/openapi_audit.py",
+            m_stale_copy(r"^SERVICES\s*=\s*\[", r"\]", r'"%s"' % e, "py"))
+        add(s, "openapi-diff", "docstring-copy", A + "scripts/openapi_diff.py",
+            m_stale_copy(r"^SERVICES\s*=\s*\[", r"\]", r'"%s"' % e, "py"))
+        add(s, "postman-services", "docstring-copy", A + "scripts/local-dev/postman_from_openapi.py",
+            m_stale_copy(r"^SERVICES\s*=\s*\{", r"\}", r"'%s'\s*:\s*\d+" % e, "py"))
+        add(s, "gateway-docs", "textblock",
+            A + "infra/gatewayserver/src/main/java/com/oriah/gatewayserver/config/GatewayRoutesConfig.java",
+            m_wrap_token(r'"%s"' % e, "java", (r"DOCS_SERVICES\s*=\s*List\.of\(", r"\)\s*;")))
         # --- wrong port, every service ------------------------------------
         add(s, "compose-service", "port", A + "docker-compose/default/docker-compose.yml",
             m_replace(r'"127\.0\.0\.1:%d:%d"' % (p, p), lambda m, w=w, p=p: '"127.0.0.1:%d:%d"' % (p, w)))
@@ -1149,6 +1802,29 @@ def build_mutations(root):
                 m_remove_token(r"'%s'" % e, (r"^\s*\$backing\s*=", r"ForEach-Object")))
             add(s, "pgadmin", "remove", A + "local-dev/pgadmin-servers.json",
                 m_delete_line(r'"Name":\s*"%s"\s*,' % e, json_commas=True))
+            add(s, "compose-postgres", "comment", A + "docker-compose/default/docker-compose.yml",
+                m_comment_block(r"^  postgres-%s:\s*$" % e))
+            add(s, "compose-volume", "comment", A + "docker-compose/default/docker-compose.yml",
+                m_comment_line(r"^  postgres-%s-data:\s*$" % e))
+            add(s, "dev-stack-backing", "comment", A + "scripts/dev-stack.ps1",
+                m_comment_token(r"'postgres-%s'" % e, "# ", (r"^\s*\$Backing\s*=\s*@\(", r"\)")))
+            add(s, "local-test-postgres", "comment", A + "scripts/local-dev-test.ps1",
+                m_comment_token(r"'%s'" % e, "# ", (r"^\s*\$backing\s*=", r"ForEach-Object")))
+            # The Flyway dependency is what makes a service a database owner. A -test
+            # dependency (test scope) is not one, and neither is one in a comment.
+            add(s, "service-facts", "flyway-test-only", A + "services/%s/pom.xml" % s, m_flyway_main("remove"))
+            add(s, "service-facts", "flyway-commented", A + "services/%s/pom.xml" % s, m_flyway_main("comment"))
+            # Having "flyway" in the pom is not enough: Spring Boot 4 runs the migrations
+            # through spring-boot-starter-flyway only. Take only the starter
+            # away, make the dependencies provided, or leave only an un-scoped -test starter.
+            add(s, "service-facts", "flyway-no-starter", A + "services/%s/pom.xml" % s, m_flyway_variant("no-starter"))
+            add(s, "service-facts", "flyway-provided", A + "services/%s/pom.xml" % s, m_flyway_variant("provided"))
+            add(s, "service-facts", "flyway-test-unscoped", A + "services/%s/pom.xml" % s,
+                m_flyway_variant("test-unscoped"))
+            ps_wrapped(s, "dev-stack-backing", A + "scripts/dev-stack.ps1",
+                       r"'postgres-%s'" % e, (r"^\s*\$Backing\s*=\s*@\(", r"\)"))
+            ps_wrapped(s, "local-test-postgres", A + "scripts/local-dev-test.ps1",
+                       r"'%s'" % e, (r"^\s*\$backing\s*=", r"ForEach-Object"))
             add(s, "compose-postgres", "port", A + "docker-compose/default/docker-compose.yml",
                 m_replace(r'"127\.0\.0\.1:%d:5432"' % h, lambda m, hw=hw: '"127.0.0.1:%d:5432"' % hw))
             add(s, "pgadmin", "port", A + "local-dev/pgadmin-servers.json",
@@ -1157,6 +1833,10 @@ def build_mutations(root):
         else:
             add(s, "local-test-nodb", "remove", A + "scripts/local-dev-test.ps1",
                 m_remove_token(r"'%s'" % e, (r"^\s*\$NoDatabase\s*=\s*@\(", r"\)")))
+            add(s, "local-test-nodb", "comment", A + "scripts/local-dev-test.ps1",
+                m_comment_token(r"'%s'" % e, "# ", (r"^\s*\$NoDatabase\s*=\s*@\(", r"\)")))
+            ps_wrapped(s, "local-test-nodb", A + "scripts/local-dev-test.ps1",
+                       r"'%s'" % e, (r"^\s*\$NoDatabase\s*=\s*@\(", r"\)"))
     return muts
 
 
@@ -1278,6 +1958,10 @@ def selftest(root):
             pairs = sorted(set((m[0], m[1]) for m in skipped))
             print("selftest: %d mutation(s) not run because the guard already reports a problem there: %s"
                   % (len(skipped), ", ".join("[%s] %s" % p for p in pairs[:8]) + (" ..." if len(pairs) > 8 else "")))
+        kinds_caught = Counter(j[2] for j, ok, _ in results if ok)
+        kinds_all = Counter(j[2] for j in jobs)
+        print("selftest: by kind: " + ", ".join("%s %d/%d" % (k, kinds_caught.get(k, 0), kinds_all[k])
+                                                for k in sorted(kinds_all)))
         print("selftest: %d/%d mutations caught" % (caught, len(jobs)))
         return 0 if (caught == len(jobs) and ok_untouched and jobs) else 1
     finally:
