@@ -51,7 +51,7 @@ public class UpdateSupplierRequest {
     private Boolean active;
 
     @Schema(description = "A new name. Unique among live suppliers, ignoring letter case. Cannot be empty.",
-            example = "Fycargo", maxLength = 120, nullable = false)
+            example = "Fycargo", maxLength = 120)
     public String getName() {
         return name;
     }
@@ -62,7 +62,7 @@ public class UpdateSupplierRequest {
     }
 
     @Schema(description = "A new country, as an ISO 3166-1 alpha-2 code. Cannot be empty.",
-            example = "CN", minLength = 2, maxLength = 2, nullable = false)
+            example = "CN", minLength = 2, maxLength = 2)
     public String getCountry() {
         return country;
     }
@@ -73,7 +73,7 @@ public class UpdateSupplierRequest {
     }
 
     @Schema(description = "Who you deal with there. Send null or blank text to clear it.",
-            example = "Mr Li", maxLength = 120, nullable = true)
+            example = "Mr Li", maxLength = 120, types = {"string", "null"})
     public String getContactName() {
         return contactName;
     }
@@ -84,7 +84,7 @@ public class UpdateSupplierRequest {
     }
 
     @Schema(description = "How to reach them. Send null or blank text to clear it.",
-            example = "WhatsApp +86 000 0000", maxLength = 500, nullable = true)
+            example = "WhatsApp +86 000 0000", maxLength = 500, types = {"string", "null"})
     public String getContactDetails() {
         return contactDetails;
     }
@@ -96,7 +96,7 @@ public class UpdateSupplierRequest {
 
     @Schema(description = "How you pay them, in words. Send null or blank text to clear it. A description, "
             + "not a payment record.", example = "Bank transfer, in full, on shipping", maxLength = 500,
-            nullable = true)
+            types = {"string", "null"})
     public String getPaymentNotes() {
         return paymentNotes;
     }
@@ -106,8 +106,7 @@ public class UpdateSupplierRequest {
         this.paymentNotesSent = true;
     }
 
-    @Schema(description = "false: Oriah has stopped using this supplier; true: using it again. Cannot be empty.",
-            nullable = false)
+    @Schema(description = "false: Oriah has stopped using this supplier; true: using it again. Cannot be empty.")
     public Boolean getActive() {
         return active;
     }
