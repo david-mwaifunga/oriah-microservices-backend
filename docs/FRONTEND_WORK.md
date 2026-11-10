@@ -154,7 +154,7 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 
 - New Suppliers screen (PROCUREMENT_ADMIN, under /api/v1/admin/procurement/**) to create, list and edit suppliers with the fields CLIENT_DECISIONS §4.1 names: 'Name, country, who you deal with there, how you pay them.' It starts empty ('Nothing is seeded').
 - 'How you pay them' is a description on the supplier, not a payment record. Supplier deposits and part-payments are ruled out (§6, Q1), and what was paid is each consignment line's all-in bank total (Phase 4). Build no supplier-payments ledger, even though Part 3 lists 'supplier invoices and payments' under procurement. The invoice is the Phase 4 upload.
-- The Phase 2 line also says 'packaging types' and gives no detail, while Phase 3 makes packaging a catalog entry of kind = PACKAGING. Settle which service and screen own packaging types before building, so two are not built.
+- **Settled 2026-11-10: there is no packaging screen in this phase.** The plan's Phase 2 line used to say 'packaging types'; packaging is a **catalog** entry of kind = PACKAGING (Phase 3), so it is built there and shown on the catalog screens. Phase 2's Suppliers screen is suppliers only.
 - New sidebar entry gated on PROCUREMENT_ADMIN, which OWNER and MANAGER hold.
 
 **Storefront**

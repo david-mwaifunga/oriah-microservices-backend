@@ -258,7 +258,11 @@ boundary is drawn in a particular place for a particular reason.
 
 Owns: suppliers · purchase orders · consignments · consignment lines (goods
 **and** packaging) · cost lines (`treatment`, `basis`) · the allocator ·
-supplier invoices and payments.
+supplier invoices (attached to the purchase order or consignment, Phase 4).
+**There is no supplier-payments ledger** — the client ruled out deposits and
+part-payments (`CLIENT_DECISIONS.md` §6, Q1); what was paid is each line's
+all-in bank total, and "how you pay them" is a description on the supplier.
+(This line used to say "supplier invoices and payments"; corrected 2026-11-10.)
 
 A genuinely separate bounded context: its language is "purchase order",
 "consignment", "supplier invoice", not "stock on hand". Different actors
@@ -990,8 +994,16 @@ beginning, not from whatever Kafka still holds.
 
 ### Phase 2 — Suppliers and the procurement service is born
 
-New `procurement` module + Postgres instance + `V1`. Suppliers CRUD (admin),
-packaging types. Gateway route and matcher. Nothing is seeded.
+New `procurement` module + Postgres instance + `V1`. Suppliers CRUD (admin).
+Gateway route (the matcher has existed since Phase 0). Nothing is seeded.
+
+> **Corrected 2026-11-10, before building.** This phase used to say "packaging
+> types". Packaging is a **catalog** entry of `kind = PACKAGING` (Phase 3,
+> settled decision 9), so it is not built here; `procurement` owns suppliers,
+> purchase orders, consignments, cost lines and the allocator (settled
+> decision 5). Phase 2 is suppliers only. The design, the two Codex review
+> rounds and the final amendments are in `.codex-tmp/p2-plan-*.md`; this
+> section gets a status block when the phase is built.
 
 ### Phase 3 — Catalog holds packaging; the product exists before the stock
 
@@ -1017,6 +1029,18 @@ path, either way.
 `procurement` **V2**: consignment, consignment_line, cost_line
 (`treatment`, `basis`), supplier_invoice. The allocator from Part 4 —
 **test first, at the unit level**. Receiving emits `consignment.received`.
+
+> **What Phase 2 hands to this phase (recorded 2026-11-10).**
+> - **Suppliers.** An *inactive* supplier is one we have stopped using: it must
+>   get no new purchase orders. `DELETE` only corrects an unused record, so it
+>   must **refuse** a supplier referenced by a purchase order (the answer is
+>   "stop using it"), purchase-order creation and supplier deletion must be
+>   serialized in one transaction, and historical reads must still resolve a
+>   deleted supplier by its id.
+> - **Events.** Procurement has no outbox, Kafka or events module until here:
+>   supplier CRUD publishes nothing. Add the `shared/oriah-events` dependency, the
+>   outbox schema, the Kafka dependency, the `oriah.events.*` settings and the
+>   startup guards as **one tested slice** with `consignment.received`.
 
 Settled by the client (`CLIENT_DECISIONS.md` §3, §4.1):
 
