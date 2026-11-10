@@ -78,16 +78,19 @@ public class CustomerController {
     @PostMapping
     public ResponseEntity<CustomerResponse> selfProvision(@AuthenticationPrincipal Jwt jwt) {
         log.debug("POST /me sub={}", jwt.getSubject());
-        boolean existed = service.findByKeycloakId(jwt.getSubject()).isPresent();
-        Customer c = service.getOrCreate(
+        // The service says whether THIS call created the profile. Asking "did it exist?" first
+        // and creating after is not the same: two first calls at once would both be told "no"
+        // and both answer 201 for one profile.
+        CustomerService.Provisioned provisioned = service.provision(
                 jwt.getSubject(),
                 claim(jwt, "email", "unknown@oriah.local"),
                 claim(jwt, "given_name", "Unknown"),
                 claim(jwt, "family_name", "Unknown")
         );
-        return existed
-                ? ResponseEntity.ok(CustomerResponse.from(c))
-                : ResponseEntity.created(URI.create("/api/v1/customers/me")).body(CustomerResponse.from(c));
+        CustomerResponse body = CustomerResponse.from(provisioned.customer());
+        return provisioned.created()
+                ? ResponseEntity.created(URI.create("/api/v1/customers/me")).body(body)
+                : ResponseEntity.ok(body);
     }
 
     /**

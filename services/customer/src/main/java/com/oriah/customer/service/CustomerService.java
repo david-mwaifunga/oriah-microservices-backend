@@ -4,10 +4,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.hibernate.exception.ConstraintViolationException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.customer.dto.AddressRequest;
 import com.oriah.customer.dto.CustomerResponse;
@@ -22,27 +26,70 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class CustomerService {
 
-    private final CustomerRepository repository;
+    /** PostgreSQL's SQLSTATE for a unique violation. */
+    private static final String UNIQUE_VIOLATION = "23505";
 
-    public CustomerService(CustomerRepository repository) {
+    /** The name PostgreSQL gave the {@code UNIQUE} on {@code keycloak_id} in V1__create_customers.sql. */
+    private static final String KEYCLOAK_ID_CONSTRAINT = "customers_keycloak_id_key";
+
+    private final CustomerRepository repository;
+    private final TransactionTemplate transactions;
+
+    public CustomerService(CustomerRepository repository, PlatformTransactionManager transactionManager) {
         this.repository = repository;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
+    /** A customer, and whether THIS call is the one that created the profile. */
+    public record Provisioned(Customer customer, boolean created) {}
+
     /**
-     * Idempotent self-provisioning: returns the existing customer for
-     * the given Keycloak sub, or creates one if this is the first time
-     * we've seen them. The first POST /me bootstraps the row from the
-     * caller's JWT claims; subsequent POSTs just return it.
+     * Idempotent self-provisioning: returns the existing customer for the given
+     * Keycloak sub, or creates one if this is the first time we have seen them. The
+     * first POST /me bootstraps the row from the caller's JWT claims; later POSTs
+     * just return it.
+     *
+     * <p>Two first calls at the same moment (two tabs, a double click) both look,
+     * both find nothing and both insert, and the database's UNIQUE on
+     * {@code keycloak_id} refuses the second. That one must not fail: the profile
+     * exists, which is what it wanted, so it returns the winner's profile and says
+     * it created nothing ({@code created = false}). The caller turns that into 200
+     * rather than 201.
+     *
+     * <p>Not itself {@code @Transactional}, on purpose. After a refused insert the
+     * transaction is dead (PostgreSQL aborts it) and cannot be used to read the
+     * winner's row, so the insert runs in a short transaction of its own and the
+     * read afterwards in a fresh one.
      */
-    @Transactional
-    public Customer getOrCreate(String keycloakId, String email, String firstName, String lastName) {
-        return repository.findByKeycloakId(keycloakId)
-                .orElseGet(() -> {
-                    Customer created = new Customer(keycloakId, email, firstName, lastName);
-                    Customer saved = repository.save(created);
-                    log.info("Created customer id={} keycloakId={}", saved.id(), keycloakId);
-                    return saved;
-                });
+    public Provisioned provision(String keycloakId, String email, String firstName, String lastName) {
+        Optional<Customer> existing = repository.findByKeycloakId(keycloakId);
+        if (existing.isPresent()) {
+            return new Provisioned(existing.get(), false);
+        }
+        try {
+            Customer saved = transactions.execute(status ->
+                    repository.saveAndFlush(new Customer(keycloakId, email, firstName, lastName)));
+            log.info("Created customer id={} keycloakId={}", saved.id(), keycloakId);
+            return new Provisioned(saved, true);
+        } catch (DataIntegrityViolationException refused) {
+            if (!isDuplicateKeycloakId(refused)) {
+                throw refused;
+            }
+            log.info("Customer for keycloakId={} was created by a simultaneous call; returning it", keycloakId);
+            return new Provisioned(repository.findByKeycloakId(keycloakId).orElseThrow(() -> refused), false);
+        }
+    }
+
+    /** Both the error code and the constraint name must match, anywhere along the cause chain. */
+    private static boolean isDuplicateKeycloakId(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause()) {
+            if (t instanceof ConstraintViolationException violation
+                    && UNIQUE_VIOLATION.equals(violation.getSQLState())
+                    && KEYCLOAK_ID_CONSTRAINT.equals(violation.getConstraintName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)
