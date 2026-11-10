@@ -116,9 +116,12 @@ spring:
           # delivery.timeout.ms before it fails. The event-log module refuses
           # to start payment unless that fits inside the 5 minutes Kafka
           # allows the replay listener between two polls:
-          # (10 + 1) x (10 s + 10 s) = 220 s, under 300 s. If the two together
-          # ever reach about 27.3 s (11 x 27.3 s = 300 s), payment will not
-          # start. StartupChecksPerProfileTest checks it in every profile.
+          # (10 + 1) x (10 s + 10 s) = 220 s, and the module adds what a
+          # failing step also spends (25 s for its dead-letter publish, 10 s
+          # for the pause after a failed one): 255 s, under 300 s. If the two
+          # timeouts together ever reach about 24 s (11 x 24 s + 35 s = 299 s),
+          # payment will not start. StartupChecksPerProfileTest checks it in
+          # every profile.
           producer-properties:
             "[max.block.ms]": 10000
             "[request.timeout.ms]": 5000

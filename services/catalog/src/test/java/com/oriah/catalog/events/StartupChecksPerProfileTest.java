@@ -191,9 +191,10 @@ class StartupChecksPerProfileTest {
         assertThat(deliveryTimeout).as("delivery.timeout.ms").isEqualTo(10_000);
         // The module's own value for the listener (see ReplayRequestBindingTest).
         assertThat(pollInterval).as("max.poll.interval.ms").isEqualTo(300_000);
-        // (10 + 1) x (10 s + 10 s) = 220 s, under 300 s. The 80 s left over
-        // covers what the rule does not count: a failing step's pauses and
-        // its dead-letter publish (up to about 25 s, then a 10 s pause).
+        // (10 + 1) x (10 s + 10 s) = 220 s of sends. The module adds what a
+        // failing step spends too -- its dead-letter publish (25 s) and the
+        // 10 s pause after a failed one -- and refuses to start unless the
+        // 255 s together are under 300 s (ReplayStepTime).
         assertThat((chunkSize + 1L) * (maxBlock + deliveryTimeout))
                 .isEqualTo(220_000)
                 .isLessThan(pollInterval);

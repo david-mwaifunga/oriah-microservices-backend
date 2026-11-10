@@ -196,8 +196,10 @@ spring:
           # delivery.timeout.ms before it fails. The event-log module refuses
           # to start order unless that fits inside the 5 minutes Kafka
           # allows the replay listener between two polls:
-          # (10 + 1) x (10 s + 10 s) = 220 s, under 300 s. Raise them past that
-          # and order will not start. StartupChecksPerProfileTest checks it in
+          # (10 + 1) x (10 s + 10 s) = 220 s, plus 35 s for what a failing
+          # step also spends (its dead-letter publish and the pause after a
+          # failed one) = 255 s, under 300 s. Raise them past about 24 s
+          # together and order will not start. StartupChecksPerProfileTest checks it in
           # every profile.
           producer-properties:
             max.block.ms: 10000         # waiting for the topic's details from the broker
