@@ -531,7 +531,7 @@ prices delivery by calling shipping with client credentials (`0e24a94`).
 
 Import only runs on first start (when the realm doesn't already exist). ~~To
 re-seed, `docker compose down -v` (drops the volume) then `up` again.~~
-**Wrong now — `down -v` wipes all eleven databases.** To apply a realm edit in
+**Wrong now — `down -v` wipes all twelve databases** (eleven when this was written). To apply a realm edit in
 dev, remove **only** Keycloak's volume and start again:
 
 ```powershell

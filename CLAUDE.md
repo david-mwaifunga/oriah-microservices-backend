@@ -210,7 +210,7 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 
 | Concern | Choice |
 |---|---|
-| Language | Java 21 |
+| Language | Java: **language level 21, build and runtime JDK 25** (maven-enforcer refuses any other build JDK; the images run JDK 25 via `BP_JVM_VERSION`, with the builder and run image pinned by digest in the root `pom.xml`) |
 | Framework | Spring Boot **4.0.6** (see `docs/ARCHITECTURE.md` for why the new major) |
 | Build | Maven multi-module; root parent POM imports BOMs |
 | DB | PostgreSQL 16, **one instance per service**, Flyway migrations |
@@ -222,9 +222,10 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 
 ### Services
 
-**12 domain services:** catalog, inventory, cart, checkout, order, payment,
-promotion, shipping, customer, review, search, notification.
-`checkout` and `shipping` are **stateless** and own no database.
+**13 domain services:** catalog, inventory, cart, checkout, order, payment,
+promotion, shipping, customer, review, search, notification, **procurement**
+(Phase 2, 2026-11-10: suppliers so far; purchase orders and consignments come
+in Phase 4). `checkout` and `shipping` are **stateless** and own no database.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -291,7 +292,7 @@ connections and the Postman collection (`local-dev/postman/`, generated from
 the services' OpenAPI by `scripts/local-dev/postman_from_openapi.py`).
 
 ```powershell
-.\scripts\dev-stack.ps1      # 11 Postgres, Keycloak, Kafka, Redis, SeaweedFS
+.\scripts\dev-stack.ps1      # 12 Postgres, Keycloak, Kafka, Redis, SeaweedFS
 ```
 
 Then run **1. Platform (local)** and **2. All services (local)** from `.run/`.
@@ -314,9 +315,9 @@ docker compose up -d
 powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 ```
 
-**~37 containers:** 11 Postgres instances (host ports 5433–5443 — the last is Keycloak's), Keycloak,
+**~39 containers:** 12 Postgres instances (host ports 5433–5444: procurement's is 5444, and Keycloak's is 5443), Keycloak,
 Kafka, Redis, SeaweedFS + its init job, Prometheus, Grafana, Loki, Tempo,
-Alloy, the 3 infra modules, all 12 domain services, and `oriah-web`.
+Alloy, the 3 infra modules, all 13 domain services (ports 8081–8093), and `oriah-web`.
 
 The stack lives in `docker-compose/default/docker-compose.yml` with shared
 fragments in `docker-compose/common-config.yml`; the root `docker-compose.yml`
@@ -324,8 +325,8 @@ just `include`s it, so plain `docker compose` commands still work — and it pin
 the project name to `default`, so both entry points run the same stack and
 volumes.
 
-> ⚠️ **`docker compose down -v` destroys all eleven Postgres volumes** — the
-> ten domain databases *and* Keycloak's own (`postgres-keycloak`, added
+> ⚠️ **`docker compose down -v` destroys all twelve Postgres volumes** — the
+> eleven domain databases *and* Keycloak's own (`postgres-keycloak`, added
 > 2026-11-08 so logins survive a restart; `scripts/keycloak-persistence-test.ps1`
 > proves it). The realm is imported **only when it does not yet exist in that
 > database**, so in development a realm edit to
@@ -336,8 +337,9 @@ volumes.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b and 20b**, not a quick
-probe: the full admin + customer saga through the gateway (product, inventory,
+`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 20b and 20c**, not a quick
+probe (it starts by running `scripts/check_service_registry.py`, which stops it if
+any list that names the services is missing one): the full admin + customer saga through the gateway (product, inventory,
 cart, checkout **quote then commit**, order transitions, Kafka-driven search
 index, reviews, notifications, 401-without-token), plus a Tempo trace
 assertion, Prometheus scrape coverage, gateway body-size limits, and
@@ -410,7 +412,7 @@ docker compose up -d keycloak
 ```
 
 Then **restart `order`** — its cached machine token was signed by the old
-keys. Never `down -v` (that wipes all eleven databases); never a console edit
+keys. Never `down -v` (that wipes all twelve databases); never a console edit
 (it drifts from the committed files). Both files are imported only when the
 realm does not yet exist.
 

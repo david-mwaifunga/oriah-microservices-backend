@@ -38,10 +38,10 @@ All of the above is built and running. Still later: Kubernetes / Helm.
 oriah-api/
 ├── pom.xml                 Root parent: BOM imports, plugin management,
 │                           shared properties. Every module inherits.
-├── services/               12 domain services, each its own module:
+├── services/               13 domain services, each its own module:
 │                             catalog, inventory, cart, checkout, order,
 │                             payment, promotion, shipping, customer,
-│                             review, search, notification
+│                             review, search, notification, procurement
 │                           (checkout and shipping are stateless — no DB)
 ├── infra/                  configserver, eurekaserver, gatewayserver
 ├── shared/                 oriah-jpa-base, oriah-observability-starter,
@@ -55,7 +55,7 @@ oriah-api/
 ├── monitoring/             Prometheus, Grafana, Loki, Tempo, Alloy config
 ├── scripts/, s3-config/    helper scripts, SeaweedFS bucket setup
 ├── build-images.ps1        Buildpacks image build for every service
-├── smoke-test.ps1          20 numbered steps (plus 4b, 5b, 6b, 20b), full
+├── smoke-test.ps1          20 numbered steps (plus 4b, 5b, 6b, 20b, 20c), full
 │                           admin + customer saga
 ├── mvnw, mvnw.cmd, .mvn/   Maven wrapper — use this, not system Maven
 └── docs/                   ARCHITECTURE.md, MVP_PLAN.md, PROGRESS.md
@@ -94,8 +94,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 Keycloak admin console http://localhost:7080 (admin/admin) · storefront
 http://localhost:4000 · Grafana for traces.
 
-> ⚠️ **`docker compose down -v` destroys all eleven Postgres volumes** — the
-> ten domain databases *and* Keycloak's. Never use it to apply a realm change.
+> ⚠️ **`docker compose down -v` destroys all twelve Postgres volumes** — the
+> eleven domain databases *and* Keycloak's. Never use it to apply a realm change.
 > The realm (and, in dev, `keycloak/dev/oriah-users-0.json`) is imported only
 > when the realm does not yet exist, so after editing either file remove
 > **only** Keycloak's volume and start it again, then restart `order` (its

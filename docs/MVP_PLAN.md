@@ -455,7 +455,9 @@ one migration can have that number. **Updated after Phase 0 (2026-11-09):**
 Phase 0 used order **V4** and inventory **V5**, so their next free numbers were
 order **V5** and inventory **V6**. **Updated after Phase 1 (2026-11-10):** Phase 1
 used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
-**V3** and notification **V3** — the table below is what is on disk now.
+**V3** and notification **V3**. **Updated after Phase 2 (2026-11-10):** the new
+`procurement` service used its **V1** (`suppliers`) and nothing else changed — the
+table below is what is on disk now.
 
 | Service | Highest now | Next free |
 |---|---|---|
@@ -468,7 +470,8 @@ used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
 | promotion / customer / review | V2 | V3 |
 | checkout | *(stateless, no DB)* | — |
 | shipping | *(stateless today)* | **V1** — gains a database in Phase 7 for provinces, towns and delivery prices |
-| procurement, finance | *(new services)* | **V1** |
+| procurement | **V1** — USED by Phase 2's `suppliers` | **V2** — Phase 4's consignments, cost lines and invoices |
+| finance | *(new service, Phase 10)* | **V1** |
 
 ### Phase 0 — Fix what is live and wrong
 

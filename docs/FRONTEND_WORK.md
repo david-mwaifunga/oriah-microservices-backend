@@ -152,10 +152,29 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 
 **Admin screens**
 
-- New Suppliers screen (PROCUREMENT_ADMIN, under /api/v1/admin/procurement/**) to create, list and edit suppliers with the fields CLIENT_DECISIONS §4.1 names: 'Name, country, who you deal with there, how you pay them.' It starts empty ('Nothing is seeded').
-- 'How you pay them' is a description on the supplier, not a payment record. Supplier deposits and part-payments are ruled out (§6, Q1), and what was paid is each consignment line's all-in bank total (Phase 4). Build no supplier-payments ledger, even though Part 3 lists 'supplier invoices and payments' under procurement. The invoice is the Phase 4 upload.
+- **New Suppliers screen**, gated on the `PROCUREMENT_ADMIN` capability (`OWNER` and `MANAGER` hold it; `SALES`, `DISPATCH` and `BOOKKEEPER` do not): list, add, edit, stop using, delete. New sidebar entry on the same capability. It starts empty ("Nothing is seeded").
+- **The five calls**, all under `/api/v1/admin/procurement/suppliers`, through the gateway. Every error is `application/problem+json` with a `traceId` (show it to the person: it is what finds the request in the logs).
+
+  | Screen action | Call | Success |
+  |---|---|---|
+  | Add | `POST /suppliers` | **201**, the supplier, and a `Location` header that is a relative path (`/api/v1/admin/procurement/suppliers/<id>`) |
+  | List | `GET /suppliers?page=&size=&active=&q=` | **200**, a page (below) |
+  | Open one | `GET /suppliers/{id}` | **200** |
+  | Change, or Stop using | `PATCH /suppliers/{id}` | **200**, the supplier as it is now |
+  | Delete | `DELETE /suppliers/{id}` | **204** |
+
+  `operationId`s, for the generated types: `createSupplier`, `listSuppliers`, `getSupplier`, `updateSupplier`, `deleteSupplier`. The standard owner endpoint `GET /api/v1/admin/procurement/contact-info` (`fetchProcurementContactInfo`) is there too.
+- **A supplier** has: `id`; `name` (required, at most 120 characters, **unique among live suppliers ignoring capitals**, and a stopped supplier still holds its name); `country` (required, an **ISO 3166-1 alpha-2 code** such as `ZM`, `CN`, `AE`: build a **country picker**, not a text box, because "Zambia" or "UK" is a 400; stored in upper case); `contactName` (optional, at most 120); `contactDetails` (optional, at most 500: phone, WhatsApp, email); `paymentNotes` (optional, at most 500: "how you pay them", **in words**); `active`; `version`; and `createdAt`, `updatedAt`, `createdBy`, `updatedBy`. The three optional fields come back as `null` when empty. The name and the notes are trimmed; the text may not contain the NUL character (a 400 with `fieldErrors`; a form never produces one).
+- **The list** answers a Spring page: `content`, `totalElements`, `totalPages`, `number`, `size`. It is **always ordered by name ignoring capitals** (then id): the caller cannot choose an order, and asking with `sort` is a 400, not ignored. `size` is 1 to 100 (default 50); a `size` outside that, a negative `page`, or a `page` so far in that its offset overflows is a **400** (`bad-request`), never quietly clamped. `q` finds names **containing** the text, ignoring capitals (`%` and `_` are ordinary characters). **With no `active` filter, stopped suppliers are listed too**: either default the screen to `active=true` with a "show stopped" switch, or mark stopped rows plainly. A deleted supplier is never listed.
+- **Change (`PATCH`): send only what changed, and always send `version`.**
+  - A field **left out** is unchanged. `contactName`, `contactDetails` and `paymentNotes` are **cleared** by sending `null` or blank text. `name`, `country` and `active` can be replaced but **never emptied** (a 400 with `fieldErrors`); `"active": null` is a 400 too.
+  - **`version` is the `version` of the supplier the form was loaded with.** If someone else saved it since, the change is refused with **409 `concurrent-update`** and nothing is applied, even if the two edits touched different fields: reload, show the new values, and let the person do it again. This is what stops a form left open for an hour from overwriting a colleague's change to how Oriah pays a supplier. A `version` of `null`, or not a number, is a 400. Leaving `version` out skips the check (the last save wins): do that only on purpose.
+  - Sending back the whole supplier from the last read is safe: fields the API does not have (`id`, the audit fields) are ignored. Send the real types, though (`active` a boolean, `version` a number): the platform's JSON reading is lenient and will turn `"5"` or `1` into a value rather than refuse it.
+  - **"Stop using"** is `{"version": n, "active": false}`; "Use again" is `active: true`. It means a real supplier Oriah no longer buys from (from Phase 4 it gets no new purchase orders); it is not a deletion and its name stays taken.
+- **Delete is for correcting a mistake**, a supplier added by error. It frees the name, and the supplier is gone from every screen (a second delete is a 404). The screen must say so in its words: **"Stop using"** for a supplier Oriah is finished with, **"Delete (added by mistake)"** for a record that should not exist. A Delete button must never be the way to stop buying from someone.
+- **Errors to handle on the add and change forms:** **400 `validation`** with `fieldErrors` (`[{field, message}]`, one per field at fault, all at once): attach each to its input; add and change use the same shape, so one form component serves both. **409 `conflict`** (the name is taken, generic text, "A supplier with this name already exists."; the person knows which name they typed). **409 `concurrent-update`** (above). **404** (it was deleted, or never existed). **403** (no capability) and **401** (signed out). A malformed id in the URL is a 400.
+- 'How you pay them' is a **description on the supplier, not a payment record.** Supplier deposits and part-payments are ruled out (§6, Q1), and what was paid is each consignment line's all-in bank total (Phase 4). Build no supplier-payments ledger. The invoice is the Phase 4 upload. Label the field "How you pay them (notes)".
 - **Settled 2026-11-10: there is no packaging screen in this phase.** The plan's Phase 2 line used to say 'packaging types'; packaging is a **catalog** entry of kind = PACKAGING (Phase 3), so it is built there and shown on the catalog screens. Phase 2's Suppliers screen is suppliers only.
-- New sidebar entry gated on PROCUREMENT_ADMIN, which OWNER and MANAGER hold.
 
 **Storefront**
 
@@ -163,11 +182,17 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 
 **What it breaks in oriah-web today**
 
-- No current screen or spec breaks, because this is a new service on a new path. oriah-web/scripts/codegen.mjs has no procurement entry yet (see cross-cutting).
+- No current screen or spec breaks, because this is a new service on a new path. `oriah-web/scripts/codegen.mjs` has no procurement entry yet (see cross-cutting): add `procurement` (its spec is served at `/v3/api-docs/procurement` through the gateway) and run `npm run codegen`. In the generated `UpdateSupplierRequest`, `contactName`, `contactDetails` and `paymentNotes` are `string | null` (that is how they are cleared) and `name`, `country`, `active` and `version` are not nullable: keep it so.
+- **Two things changed in other services in this phase** (found on sight, fixed, tested), and the storefront should expect them: `POST /api/v1/admin/promotions` with a code that already exists is now **409 `conflict`**, not 500 (the promotions screen should show "that code already exists"); and `POST /api/v1/customers/me` answers **201 only to the call that really created the profile and 200 to every other call**, including a second call at the same moment (two tabs on first sign-in): the storefront must treat 200 and 201 alike.
 
 **Needs from the owner**
 
 - The real supplier list (name, country, contact, how each is paid), typed in by the owner. Nothing is imported (§4.1).
+- **Four defaults the build chose, for the owner to overrule** (ask in plain words; none is hard to change):
+  1. **A supplier's country is where the supplier is based** ("who you deal with *there*"), not where the goods ship from. Where goods come from is on each consignment line (Phase 4).
+  2. **One contact per supplier**: a name, and one free-text box for how to reach them. If a supplier has two people to call, both go in the box until she says she needs a list.
+  3. **A supplier's name must be unique, ignoring capitals**, which is a guard against typing the same supplier twice. A stopped supplier keeps its name. Two real suppliers that share a name: add a distinguishing word (a town, say).
+  4. **"Stop using" and "Delete"** are different things (above), and the screen says which is which.
 
 ### Phase 3 — Catalog holds packaging; the product exists before the stock
 
