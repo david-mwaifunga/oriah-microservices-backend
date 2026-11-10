@@ -135,6 +135,35 @@ spring:
           shipping:
             connect-timeout: 500
             read-timeout: 2000
+          # payment is on the PAY path, not the placement path: before order
+          # marks an order paid it asks payment whether the intent it was given
+          # really is a settled payment for this order (PaymentIntentVerifier).
+          # Checkout makes that call (POST /orders/{id}/pay) only AFTER payment
+          # has taken the money, and waits 15s for it -- its default
+          # readTimeout, since its order client has no entry of its own. With
+          # no entry here, Feign's own 10s to connect and 60s to answer
+          # applied, so order could still be waiting on payment when checkout
+          # gave up; checkout then logs PAYMENT CAPTURED WITHOUT ORDER (money
+          # taken, order left unpaid) while order might yet mark it paid.
+          #
+          # 0.5s to connect, like customer and shipping: payment is on the
+          # same network. 3s to answer: payment reads one intent by id for one
+          # shopper, a single row -- and on the checkout path it has just
+          # confirmed that very intent, so it is warm. 3s rather than 2s for
+          # the cold case, as for shipping: an order paid straight to order
+          # (Postman) can be payment's first request since it started. That is
+          # 3.5s at worst, which leaves 11.5s of checkout's 15s for order's own
+          # work around the call (read the order; one transaction to attach the
+          # payment, mark it PAID and append order.paid; the reply).
+          # PayPathBudgetTest reads checkout's own files and fails unless at
+          # least 2s is left.
+          #
+          # If payment does not answer in time, order answers 503 with no
+          # Retry-After (PaymentIntentVerifier says why), so checkout sends
+          # order.pay again -- three attempts in all, 0.5s apart.
+          payment:
+            connect-timeout: 500
+            read-timeout: 3000
     stream:
       # No producer binding: order no longer sends to Kafka itself. Every event
       # is a row in the outbox, and the relay (shared/oriah-events) sends each
@@ -160,24 +189,29 @@ spring:
           # waits; Kafka's defaults would hold them for a minute or two. With
           # these a send fails within about 10 to 25 s, the cursor stays where
           # it was, and the row goes out once the broker is back.
+          #
+          # They also limit how long one replay step can take. A step sends up
+          # to 10 rows and then one continuation or end-of-replay marker, one
+          # after another, and each send can wait max.block.ms and then
+          # delivery.timeout.ms before it fails. The event-log module refuses
+          # to start order unless that fits inside the 5 minutes Kafka
+          # allows the replay listener between two polls:
+          # (10 + 1) x (10 s + 10 s) = 220 s, under 300 s. Raise them past that
+          # and order will not start. StartupChecksPerProfileTest checks it in
+          # every profile.
           producer-properties:
             max.block.ms: 10000         # waiting for the topic's details from the broker
             request.timeout.ms: 5000    # one request to the broker
             delivery.timeout.ms: 10000  # the whole send, retries included
-        bindings:
-          # The replay-request listener. The module binds it (destination
-          # oriah.outbox.replay-requests, group order); what Kafka does with a
-          # request order cannot answer is set here. A malformed request is
-          # refused, and a replay can fail part-way while Kafka is briefly
-          # down. Either way the binder retries it, and then parks it on its
-          # own dead-letter topic, named <topic>.dlq.<group> like every other.
-          # Without this the binder would log the last failure and skip past
-          # the request, and the consumer that asked would wait for a replay
-          # that never comes. ReplayRequestBindingTest pins it.
-          outboxReplayRequests-in-0:
-            consumer:
-              enable-dlq: true
-              dlq-name: oriah.outbox.replay-requests.dlq.order
+        # Nothing here for the replay-request listener (outboxReplayRequests-in-0)
+        # on purpose. The event-log module binds it and sets all of its Kafka
+        # settings itself: a request that keeps failing is delivered 3 times
+        # in all and then parked on oriah.outbox.replay-requests.dlq.order
+        # (never dropped, even when parking it fails at first), and the
+        # listener reads one request per poll. Its values win over anything
+        # written here, because the way a replay is answered depends on them,
+        # so a copy here would decide nothing. ReplayRequestBindingTest pins
+        # what the listener gets.
 
 server:
   port: 8086

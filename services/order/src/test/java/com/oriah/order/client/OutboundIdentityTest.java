@@ -302,9 +302,34 @@ class OutboundIdentityTest {
         assertThat(orders.count()).isZero();
     }
 
+    /**
+     * One ordinary placement, then forget it: so the clock in a hanging test
+     * times the wait for the hanging service and not the first time order
+     * reaches each of its clients.
+     *
+     * <p>The first call through a Feign client builds that client's own
+     * Spring context (customer, catalog, shipping and the token each have
+     * one), and the first request through MockMvc builds the security chain.
+     * On a busy machine that took 2.8 s, and the customer test measured
+     * 4,791 ms against its 4,500 ms bound (2026-11-09) with nothing wrong in
+     * order. The bounds below are unchanged; only that one-off cost is paid
+     * before the clock starts.
+     *
+     * <p>What the placement leaves behind is removed: the order, the cached
+     * machine token (so the timed call still fetches one) and WireMock's
+     * record of requests (so each test's own count of calls starts at zero).
+     */
+    private void warmUpTheWritePath() throws Exception {
+        place(shopper("kc-alice", "shopper-token"));
+        orders.deleteAll();
+        authorizedClients.removeAuthorizedClient("oriah-admin", "order-service");
+        WM.resetRequests();
+    }
+
     @Test
     @DisplayName("shipping hanging: order gives up within its own budget with a 503, and saves nothing")
     void aHangingShippingTimesOut() throws Exception {
+        warmUpTheWritePath();
         WM.stubFor(post(urlEqualTo("/api/v1/shipping/rates")).willReturn(okJson(
                 "{\"destinationCountry\":\"ZM\",\"options\":[]}").withFixedDelay(6000)));
 
@@ -319,7 +344,8 @@ class OutboundIdentityTest {
                 .andExpect(status().isServiceUnavailable());
         long tookMs = (System.nanoTime() - began) / 1_000_000;
 
-        // Read timeout 3s, inside checkout's 15s budget for the whole placement.
+        // Read timeout 2s (connect 0.5s), inside checkout's 15s budget for the
+        // whole placement. Feign's own default would wait 60s.
         assertThat(tookMs).isLessThan(5_500);
         assertThat(orders.count()).isZero();
     }
@@ -327,6 +353,7 @@ class OutboundIdentityTest {
     @Test
     @DisplayName("customer hanging: order gives up within its own budget with a 503, saves nothing, prices nothing")
     void aHangingCustomerTimesOut() throws Exception {
+        warmUpTheWritePath();
         // An empty list, if it ever arrived, would be a 400 -- so the 503 below
         // can only be order giving up on the wait.
         WM.stubFor(get(urlEqualTo(ADDRESSES_PATH)).willReturn(okJson("[]").withFixedDelay(6000)));

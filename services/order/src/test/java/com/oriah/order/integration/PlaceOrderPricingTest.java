@@ -43,6 +43,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -444,6 +445,56 @@ class PlaceOrderPricingTest {
                 .when(catalog).price(any());
 
         refused(body(VARIANT, "x", 1, "4500.00"), 500);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest(name = "catalog answering {0}")
+    @org.junit.jupiter.params.provider.ValueSource(ints = {500, 502, 503, 504})
+    @DisplayName("catalog failing: a 503 that says 'come back in 5 seconds' (Retry-After), like order's other upstream 503s")
+    void aCatalogFailureAsksTheCallerToComeBackLater(int status) throws Exception {
+        // Retry-After tells the caller not to ask again straight away. Checkout
+        // reads it: a 503 that carries it is passed on to the shopper at once,
+        // while one without it is sent again twice more, half a second apart.
+        // Without it, a struggling catalog was asked three times for every
+        // checkout -- and customer with it, since order asks customer first.
+        // Order's 503 when customer, Keycloak or shipping fails already says
+        // it; this one did not.
+        doThrow(catalogFailed(status)).when(catalog).price(any());
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(VARIANT, "x", 1, "4500.00")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/upstream-unavailable"));
+        assertThat(repository.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("catalog not answering in time: the same 503, with Retry-After")
+    void aCatalogTimeoutAsksTheCallerToComeBackLater() throws Exception {
+        // A read timeout reaches order as a FeignException with no status
+        // (-1), and is handled by the same handler as an answered 5xx.
+        doThrow(new feign.RetryableException(-1, "Read timed out", Request.HttpMethod.POST,
+                (Long) null, Request.create(Request.HttpMethod.POST, "/api/v1/variants/pricing",
+                        java.util.Map.of(), null, new RequestTemplate())))
+                .when(catalog).price(any());
+
+        mvc.perform(post("/api/v1/orders").with(alice())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body(VARIANT, "x", 1, "4500.00")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/upstream-unavailable"));
+        assertThat(repository.count()).isZero();
+    }
+
+    /** Catalog answering this status, as Feign reports it. */
+    private static FeignException catalogFailed(int status) {
+        Request request = Request.create(Request.HttpMethod.POST, "/api/v1/variants/pricing",
+                java.util.Map.of(), null, new RequestTemplate());
+        return FeignException.errorStatus("CatalogPricingClient#price(PricingRequest)",
+                feign.Response.builder().status(status).reason("x").request(request)
+                        .headers(java.util.Map.of()).build());
     }
 
     // ----------------------------------------- the transaction boundary

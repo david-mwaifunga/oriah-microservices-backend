@@ -156,6 +156,14 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
      * anything else -- 5xx, a connect failure, a read timeout, all of which
      * arrive as {@code FeignException} subclasses -- means the answer was
      * never obtained.
+     *
+     * <p>That 503 carries {@code Retry-After: 5}, like the one above for
+     * customer, Keycloak and shipping. It tells the caller "not straight
+     * away", and checkout acts on it: a 503 that carries it is passed on to
+     * the shopper at once, while one without it is sent again, twice more,
+     * half a second apart. Without the header, every checkout asked a
+     * struggling catalog three times -- and customer before it each time --
+     * and the shopper waited for all three.
      */
     @ExceptionHandler(FeignException.class)
     public ResponseEntity<ProblemDetail> upstream(FeignException ex) {
@@ -172,10 +180,11 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
                             + "logs and traces."));
         }
         log.error("503 could not price this order: catalog status={}", status, ex);
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem(
-                HttpStatus.SERVICE_UNAVAILABLE, TYPE_UPSTREAM_UNAVAILABLE,
-                HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
-                "We could not price your order just now. Nothing has been ordered "
-                        + "or charged; please try again."));
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header("Retry-After", "5")
+                .body(problem(HttpStatus.SERVICE_UNAVAILABLE, TYPE_UPSTREAM_UNAVAILABLE,
+                        HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
+                        "We could not price your order just now. Nothing has been ordered "
+                                + "or charged; please try again."));
     }
 }

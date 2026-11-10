@@ -40,6 +40,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -456,6 +457,37 @@ class PayVerificationTest {
                         .content(payBody(UUID.randomUUID())))
                 .andExpect(status().isServiceUnavailable());
 
+        assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CREATED);
+    }
+
+    @Test
+    @DisplayName("payment unreachable: the 503 says only what is true -- not marked paid -- and carries no "
+            + "Retry-After, so checkout goes on repeating order.pay after the money is taken")
+    void paymentUnreachableSaysWhatIsTrueAndDoesNotAskForLater() throws Exception {
+        UUID orderId = placeOrderAs("alice");
+        when(payment.findIntent(any())).thenThrow(feignStatus(503));
+
+        String body = mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(as("alice"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payBody(UUID.randomUUID())))
+                .andExpect(status().isServiceUnavailable())
+                // No Retry-After, on purpose. Checkout calls order.pay only
+                // after payment has taken the money. It sends a 503 again
+                // (twice more, half a second apart) unless the 503 carries
+                // Retry-After, which tells it to stop and leave it for later
+                // -- and here "later" never comes: checkout gives up and logs
+                // PAYMENT CAPTURED WITHOUT ORDER, money taken and the order
+                // left unpaid. So this 503 must never ask for later.
+                .andExpect(header().doesNotExist("Retry-After"))
+                .andReturn().getResponse().getContentAsString();
+
+        // Checkout logs this answer as the cause of PAYMENT CAPTURED WITHOUT
+        // ORDER, so whoever reconciles the payment reads it. It used to say
+        // the order "has not been charged" -- untrue by the time this is
+        // called, which is after the charge.
+        assertThat(objectMapper.readTree(body).get("detail").asText())
+                .isEqualTo("Payment could not be verified right now, so the order has not been marked paid; "
+                        + "please retry.");
         assertThat(statusOf(orderId)).isEqualTo(OrderStatus.CREATED);
     }
 

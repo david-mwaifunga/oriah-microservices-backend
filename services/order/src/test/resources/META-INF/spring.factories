@@ -1,0 +1,8 @@
+# Tests only: lets a test start order with the docker profile, whose
+# required Config Server import a test cannot reach. Active only in a test
+# that sets spring.cloud.config.enabled=false, and only for an import that is
+# not optional; see ConfigServerStandIn.
+org.springframework.boot.context.config.ConfigDataLocationResolver=\
+com.oriah.order.ConfigServerStandIn$Resolver
+org.springframework.boot.context.config.ConfigDataLoader=\
+com.oriah.order.ConfigServerStandIn$Loader

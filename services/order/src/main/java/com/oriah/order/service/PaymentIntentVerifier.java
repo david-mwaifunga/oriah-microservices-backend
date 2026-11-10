@@ -153,9 +153,26 @@ public class PaymentIntentVerifier {
         return intent.amount() != null && intent.amount().compareTo(order.total()) == 0;
     }
 
+    /**
+     * 503: payment could not be asked, so the claim was never checked.
+     *
+     * <p>The words say only what order knows. Checkout calls this endpoint
+     * AFTER payment has taken the money, so "the order has not been charged"
+     * would be untrue -- and this answer becomes the logged cause of
+     * checkout's PAYMENT CAPTURED WITHOUT ORDER, read by whoever reconciles
+     * that payment.
+     *
+     * <p>No {@code Retry-After}, on purpose (unlike order's 503s when it
+     * cannot place an order). Checkout sends a 503 again, twice more, unless
+     * it carries Retry-After, which tells it to stop and leave it for later.
+     * Here the money is already taken, and there is no later: once checkout
+     * gives up, a person has to reconcile the payment by hand. So this answer
+     * must keep checkout trying (checkout's application.yaml, retry instance
+     * {@code order-pay}). {@code PayVerificationTest} pins both.
+     */
     private static ResponseStatusException unavailable(Exception cause) {
         return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
-                "Payment could not be verified right now. The order has not been charged "
-                        + "or marked paid; please retry.", cause);
+                "Payment could not be verified right now, so the order has not been marked paid; "
+                        + "please retry.", cause);
     }
 }
