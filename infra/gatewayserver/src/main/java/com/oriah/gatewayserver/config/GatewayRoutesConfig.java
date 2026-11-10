@@ -64,10 +64,11 @@ public class GatewayRoutesConfig {
     private static final int STOREFRONT_REPLENISH_RATE = 20;
     private static final int STOREFRONT_BURST_CAPACITY = 40;
 
-    /** The 12 services whose OpenAPI spec the gateway aggregates. */
+    /** The 13 services whose OpenAPI spec the gateway aggregates. */
     private static final List<String> DOCS_SERVICES = List.of(
             "catalog", "inventory", "customer", "cart", "payment", "order",
-            "promotion", "shipping", "checkout", "notification", "review", "search");
+            "promotion", "shipping", "checkout", "notification", "review", "search",
+            "procurement");
 
     private final RedisRateLimiter redisRateLimiter;
     private final KeyResolver ipKeyResolver;
@@ -221,6 +222,10 @@ public class GatewayRoutesConfig {
         routes = simple(routes, "order-admin-route", "/api/v1/admin/orders/**", "order");
         routes = simple(routes, "promotion-admin-route", "/api/v1/admin/promotions/**", "promotion");
         routes = simple(routes, "payment-admin-route", "/api/v1/admin/payments/**", "payment");
+        // Everything under /api/v1/admin/procurement/ is procurement's: suppliers
+        // now, consignments and purchase orders in later phases, each guarded by
+        // PROCUREMENT_ADMIN at the edge (SecurityConfig) and again in the service.
+        routes = simple(routes, "procurement-admin-route", "/api/v1/admin/procurement/**", "procurement");
 
         // --------------------- OpenAPI aggregation ---------------------
         // /v3/api-docs/<svc> on the edge -> /v3/api-docs upstream. These back
@@ -271,7 +276,7 @@ public class GatewayRoutesConfig {
 
     /**
      * A route that is nothing but "this path prefix goes to that service":
-     * no filters, no ordering, default order 0. Fifteen of the 17 API routes
+     * no filters, no ordering, default order 0. Most of the API routes
      * are this shape, and writing them out longhand would bury the three that
      * are not.
      */

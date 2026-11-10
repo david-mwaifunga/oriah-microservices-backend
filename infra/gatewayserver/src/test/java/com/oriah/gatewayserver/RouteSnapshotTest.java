@@ -68,8 +68,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RouteSnapshotTest {
 
     /**
-     * Every route id: 22 API routes plus
-     * 12 per-service {@code /v3/api-docs/<svc>} routes that back the
+     * Every route id: 23 API routes plus
+     * 13 per-service {@code /v3/api-docs/<svc>} routes that back the
      * aggregated Swagger UI at the gateway.
      */
     private static final List<String> EXPECTED_ROUTE_IDS = List.of(
@@ -86,6 +86,9 @@ class RouteSnapshotTest {
             "promotion-route",
             "promotion-admin-route",
             "payment-admin-route",
+            // Phase 2: suppliers, and every later procurement endpoint (the
+            // gateway already guarded the prefix; nothing was routed to it).
+            "procurement-admin-route",
             "shipping-route",
             "checkout-route",
             "notification-route",
@@ -109,13 +112,14 @@ class RouteSnapshotTest {
             "checkout-docs",
             "notification-docs",
             "review-docs",
-            "search-docs");
+            "search-docs",
+            "procurement-docs");
 
     @Autowired
     private RouteLocator routeLocator;
 
     @Test
-    @DisplayName("route id set is exactly the 34-route snapshot")
+    @DisplayName("route id set is exactly the 36-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
         List<String> actual = routes().stream().map(Route::getId).toList();
 
@@ -145,6 +149,8 @@ class RouteSnapshotTest {
                 .containsEntry("promotion-route", "lb://promotion")
                 .containsEntry("promotion-admin-route", "lb://promotion")
                 .containsEntry("payment-admin-route", "lb://payment")
+                .containsEntry("procurement-admin-route", "lb://procurement")
+                .containsEntry("procurement-docs", "lb://procurement")
                 .containsEntry("shipping-route", "lb://shipping")
                 .containsEntry("checkout-route", "lb://checkout")
                 .containsEntry("notification-route", "lb://notification")
@@ -177,6 +183,12 @@ class RouteSnapshotTest {
             "/api/v1/promotions/WELCOME15,                        promotion-route",
             "/api/v1/admin/promotions,                           promotion-admin-route",
             "/api/v1/admin/payments,                             payment-admin-route",
+            // Every procurement path, the suppliers list, one supplier, and the
+            // contact-info endpoint, under the one prefix. The gateway guarded
+            // the prefix from Phase 0 and routed none of it until Phase 2.
+            "/api/v1/admin/procurement/suppliers,                procurement-admin-route",
+            "/api/v1/admin/procurement/suppliers/11111111-1111-1111-1111-111111111111, procurement-admin-route",
+            "/api/v1/admin/procurement/contact-info,             procurement-admin-route",
             "/api/v1/shipping/rates,                             shipping-route",
             "/api/v1/checkout/preview,                           checkout-route",
             "/api/v1/notifications/me,                           notification-route",
@@ -202,7 +214,8 @@ class RouteSnapshotTest {
             // OpenAPI aggregation.
             "/v3/api-docs/catalog,                               catalog-docs",
             "/v3/api-docs/checkout,                              checkout-docs",
-            "/v3/api-docs/search,                                search-docs"
+            "/v3/api-docs/search,                                search-docs",
+            "/v3/api-docs/procurement,                           procurement-docs"
     })
     void pathResolvesToExpectedRoute(String path, String expectedRouteId) {
         assertThat(firstMatchingRouteId(path))

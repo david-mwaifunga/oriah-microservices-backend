@@ -62,6 +62,7 @@ springdoc:
       - { name: notification, url: /v3/api-docs/notification }
       - { name: review,       url: /v3/api-docs/review }
       - { name: search,       url: /v3/api-docs/search }
+      - { name: procurement,  url: /v3/api-docs/procurement }
   # api-docs stays enabled (default) -- the swagger-ui's
   # /v3/api-docs/swagger-config endpoint that drives the dropdown is
   # served by springdoc only when api-docs is enabled. The gateway

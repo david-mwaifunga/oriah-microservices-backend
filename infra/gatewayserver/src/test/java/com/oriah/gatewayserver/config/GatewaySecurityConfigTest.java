@@ -250,6 +250,9 @@ class GatewaySecurityConfigTest {
             // before the endpoints exist. Each building phase adds the route
             // and the service's own method-level check.
             "/api/v1/admin/procurement/consignments,                                    ROLE_PROCUREMENT_ADMIN",
+            // Phase 2: the real path, with an id, the way the supplier screens call it.
+            "/api/v1/admin/procurement/suppliers,                                       ROLE_PROCUREMENT_ADMIN",
+            "/api/v1/admin/procurement/suppliers/00000000-0000-0000-0000-000000000001,  ROLE_PROCUREMENT_ADMIN",
             "/api/v1/admin/shipping/towns,                                               ROLE_SHIPPING_ADMIN",
             "/api/v1/admin/finance/expenses,                                             ROLE_FINANCE_ADMIN",
             "/api/v1/admin/costs/lots,                                                   ROLE_COST_VIEWER",
@@ -277,6 +280,8 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/payments",
             "/api/v1/admin/categories",
             "/api/v1/admin/procurement/consignments",
+            "/api/v1/admin/procurement/suppliers",
+            "/api/v1/admin/procurement/suppliers/00000000-0000-0000-0000-000000000001",
             "/api/v1/admin/shipping/towns",
             "/api/v1/admin/finance/expenses",
             "/api/v1/admin/costs/lots",
@@ -358,8 +363,32 @@ class GatewaySecurityConfigTest {
 
         assertAdmitted(as("MANAGER").post().uri(AN_ORDER + "/transition"));
         assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/procurement/consignments"));
+        assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/procurement/suppliers"));
         assertAdmitted(as("MANAGER").get().uri(AN_ORDER + "/dispatch"));
         assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/costs/lots"));
+    }
+
+    @ParameterizedTest(name = "{0} cannot reach the suppliers")
+    @DisplayName("SALES, DISPATCH and BOOKKEEPER get 403 on every supplier call: a supplier's contact and payment details are procurement's")
+    @ValueSource(strings = {"SALES", "DISPATCH", "BOOKKEEPER"})
+    void staffWithoutProcurementCannotReachTheSuppliers(String jobRole) {
+        String supplier = "/api/v1/admin/procurement/suppliers/00000000-0000-0000-0000-000000000001";
+
+        as(jobRole).get().uri("/api/v1/admin/procurement/suppliers").exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/procurement/suppliers").exchange().expectStatus().isForbidden();
+        as(jobRole).get().uri(supplier).exchange().expectStatus().isForbidden();
+        as(jobRole).patch().uri(supplier).exchange().expectStatus().isForbidden();
+        as(jobRole).delete().uri(supplier).exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("PATCH and DELETE on a supplier are admitted for procurement, so the edit and the correction are not blocked at the edge")
+    void procurementCanEditAndDeleteSuppliersAtTheEdge() {
+        String supplier = "/api/v1/admin/procurement/suppliers/00000000-0000-0000-0000-000000000001";
+
+        assertAdmitted(as("MANAGER").patch().uri(supplier));
+        assertAdmitted(as("MANAGER").delete().uri(supplier));
+        assertAdmitted(as("OWNER").post().uri("/api/v1/admin/procurement/suppliers"));
     }
 
     @Test
@@ -389,6 +418,7 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/products", "/api/v1/admin/inventory", "/api/v1/admin/inventory/write-offs",
             "/api/v1/admin/customers", "/api/v1/admin/orders/recorded", "/api/v1/admin/orders/late-recorded",
             "/api/v1/admin/payments", "/api/v1/admin/payments/confirmations", "/api/v1/admin/procurement/consignments",
+            "/api/v1/admin/procurement/suppliers",
             "/api/v1/admin/shipping/towns", "/api/v1/admin/finance/expenses", "/api/v1/admin/costs/lots"
     })
     void theOwnerReachesEverything(String path) {
