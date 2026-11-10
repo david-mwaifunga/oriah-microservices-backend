@@ -1,5 +1,7 @@
 package com.oriah.procurement.dto;
 
+import java.math.BigInteger;
+
 import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
@@ -133,9 +135,26 @@ public class UpdateSupplierRequest {
         return version;
     }
 
-    public void setVersion(Long version) {
-        this.version = version;
+    /**
+     * Takes whatever JSON value was sent, and only a whole number of 0 or more is a
+     * version. A {@code Long} parameter would let Jackson's lenient coercion round
+     * {@code 0.9} down to {@code 0}, which is a real version, so an edit would be
+     * applied from a value that is not a version at all; it would also accept the
+     * text "0". Anything else leaves {@link #getVersion()} null, which
+     * {@code SupplierService} refuses as a 400 naming the field (the same answer as
+     * {@code "version": null}).
+     */
+    public void setVersion(Object sent) {
         this.versionSent = true;
+        this.version = null;
+        if (sent instanceof Integer || sent instanceof Long || sent instanceof Short || sent instanceof Byte) {
+            long whole = ((Number) sent).longValue();
+            if (whole >= 0) {
+                this.version = whole;
+            }
+        } else if (sent instanceof BigInteger big && big.signum() >= 0 && big.bitLength() < 64) {
+            this.version = big.longValue();
+        }
     }
 
     // Was the field in the body at all? Not bean getters (no get/is prefix), so they are not part of the API.

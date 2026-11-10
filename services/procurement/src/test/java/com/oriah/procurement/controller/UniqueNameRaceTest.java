@@ -30,7 +30,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -102,8 +101,11 @@ class UniqueNameRaceTest {
                 .andExpect(content().string(not(containsString("uq_suppliers_name_live"))))
                 .andExpect(content().string(not(containsString("duplicate key"))));
 
-        // The pre-check really ran and really said "free": the 409 above came from the index.
-        verify(repository, atLeastOnce()).existsLiveName(anyString());
+        // The SECOND request's pre-check really ran and really said "free": the 409 above came from
+        // the index. Asserted on that request's own tidied name ("FYCARGO"), because the first
+        // request's call was with "Fycargo", so a bare "was it called" would pass even if the second
+        // request never consulted the check at all.
+        verify(repository).existsLiveName("FYCARGO");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM suppliers", Integer.class)).isEqualTo(1);
     }
 

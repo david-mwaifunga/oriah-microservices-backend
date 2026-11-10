@@ -157,6 +157,9 @@ class OpenApiContractTest {
         assertThat(properties.keySet())
                 .containsExactlyInAnyOrder("name", "country", "contactName", "contactDetails", "paymentNotes",
                         "active", "version");
+        // The version is a whole number in the contract, though the setter takes the raw JSON value.
+        assertThat((String) at("$.components.schemas.UpdateSupplierRequest.properties.version.type"))
+                .as("the edit's version is documented as an integer").isEqualTo("integer");
         List<String> required = at("$.components.schemas.UpdateSupplierRequest.required");
         assertThat(required).as("an edit sends only what changes, so nothing is required")
                 .isNullOrEmpty();

@@ -418,6 +418,24 @@ class SupplierUpdateTest {
                 .isTrue();
     }
 
+    @ParameterizedTest(name = "version {0}")
+    @ValueSource(strings = {"0.9", "0.0", "1e0", "-1", "\"0\"", "true", "[0]"})
+    @DisplayName("a version that is not a whole number of 0 or more is a 400 naming the field, and is never rounded to one that matches")
+    void aVersionThatIsNotAWholeNumberIsRefused(String version) throws Exception {
+        // 0.9 and 0.0 used to be coerced to 0, which is the supplier's real version, so the edit was
+        // applied from a value that is not a version at all. A string that merely looks like a number
+        // is not a version either.
+        String id = fullSupplier();
+
+        patchOf(id, "{\"version\":" + version + ",\"contactName\":\"Ms Wang\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/validation"))
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("version")));
+
+        assertThat(jdbc.queryForObject("SELECT contact_name FROM suppliers WHERE id = ?::uuid", String.class, id))
+                .isEqualTo("Mr Li");
+    }
+
     @Test
     @DisplayName("a version sent as null is a 400 naming the field; one that is not a number is a 400")
     void aBadVersionIsRefused() throws Exception {

@@ -31,7 +31,7 @@ A service started in IntelliJ with `SPRING_PROFILES_ACTIVE=local` reads
 ## One-time setup
 
 1. **Docker Desktop** running. Give it at least 6 GB (Settings → Resources).
-2. **JDK 21 or newer** and **IntelliJ IDEA** (Community is enough).
+2. **JDK 25** and **IntelliJ IDEA** (Community is enough). Exactly 25: the Maven build refuses any other JDK (maven-enforcer), and the images run JDK 25. In IntelliJ set the project SDK to 25 and leave the language level at 21 (File → Project Structure), and point Maven's runner JRE at the same JDK.
 3. **Build once**, so the shared modules are in your local Maven repository:
 
    ```powershell

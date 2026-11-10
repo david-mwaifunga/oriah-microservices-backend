@@ -160,7 +160,7 @@ public class SupplierService {
             problems.add(new FieldErrorView("active", "must be true or false"));
         }
         if (request.hasVersion() && request.getVersion() == null) {
-            problems.add(new FieldErrorView("version", "must be a whole number, or left out"));
+            problems.add(new FieldErrorView("version", "must be a whole number of 0 or more, or left out"));
         }
         if (!problems.isEmpty()) {
             throw new InvalidFieldsException(problems);

@@ -17,7 +17,7 @@ own git repo, with its own `CLAUDE.md`. It is built and running.
 
 ## Stack
 
-- **Java 21** · **Spring Boot 4.0.6** · **Maven** (multi-module)
+- **Java** (language level 21; **build and runtime JDK 25**) · **Spring Boot 4.0.6** · **Maven** (multi-module)
 - **PostgreSQL 16**, one instance per service · **Flyway** migrations ·
   `ddl-auto: validate`
 - **Testcontainers** for integration tests against a real Postgres (never H2)
@@ -63,7 +63,7 @@ oriah-api/
 
 ## Quick start
 
-Prerequisites: Java 21, Docker Desktop (running — Testcontainers needs it).
+Prerequisites: **JDK 25** (exactly 25: the build refuses any other version with a message saying so; the code is written at language level 21), Docker Desktop (running — Testcontainers needs it).
 
 ```powershell
 .\mvnw.cmd -ntp clean install
