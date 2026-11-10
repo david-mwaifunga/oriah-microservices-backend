@@ -354,7 +354,8 @@ order|property became required|PlaceOrderRequest.quoteDigest
 # filtered for, because the filter lists the four old values;
 # PaymentStatusSchema, the four-value enum, is used by a test only; and
 # AdminPaymentSummarySchema, a plain z.object, silently drops the new
-# chargingCount. The cost is a status nobody can see or count, not a crash.
+# chargingCount. The cost is a status with no styling, no filter and no count,
+# not a crash.
 # That is recorded for the frontend stage in docs/FRONTEND_WORK.md (Phase 1,
 # admin screens), with the contract tests to write first. The storefront never
 # reads the intent's status: it holds only paymentIntentId (schemas/checkout.ts,
