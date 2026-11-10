@@ -47,10 +47,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * late.
  *
  * <p>What cannot be applied is refused loudly instead of skipped: the
- * exception leaves the consumer and no marker is left behind. The binder
- * publishes it to the dead-letter topic -- on the first try for a refusal,
- * which would fail the same way again, and after its retries for a failure
- * that may pass, such as the database being away.
+ * exception leaves the consumer and no marker is left behind. On Kafka the
+ * oriah-events module then publishes it to the dead-letter topic -- on its
+ * first delivery for a refusal, which would fail the same way again, and
+ * after three deliveries for a failure that may pass, such as the database
+ * being away.
+ *
+ * <p>The "through the binder" tests run on the test binder, which has no
+ * dead-letter topic and none of the module's handling: it retries with the
+ * binder's own retry, reading the same retryable-exceptions, and keeps the
+ * last error where Kafka would dead-letter. So they show which failures are
+ * tried again; how many deliveries Kafka makes, and what lands on the
+ * dead-letter topic, ProductEventDeadLetterKafkaTest shows on a real broker.
  */
 @SpringBootTest
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
@@ -182,6 +190,36 @@ class ProductEventInboxTest {
         assertThat(markers(eventId)).isZero();
     }
 
+    /**
+     * The seq that orders snapshots is kept per aggregate TYPE and id, so the
+     * aggregate-type header decides whose history a snapshot is ordered in.
+     * Catalog writes "product" (lower case: ProductService.AGGREGATE). A
+     * product snapshot under any other aggregate-type -- even "Product" -- would
+     * be applied while its seq went into another history, and a later, older
+     * snapshot of the real product would then look new and overwrite it.
+     */
+    @Test
+    @DisplayName("a product event whose aggregate-type is not catalog's \"product\" is refused, and nothing is recorded")
+    void otherAggregateTypeIsRefused() {
+        UUID productId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Message<byte[]> misfiled = Relayed.productEvent(eventId, "product.created", productId, 1,
+                snapshot(productId, "Aurelia")).setHeader(EventHeaders.AGGREGATE_TYPE, "Product").build();
+
+        assertThatThrownBy(() -> productEvents.accept(misfiled))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("as about aggregate 'product'")
+                .hasMessageContaining("has aggregate-type 'Product'");
+
+        assertThat(index.findById(productId)).isEmpty();
+        assertThat(markers(eventId)).isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT count(*) FROM processed_aggregate WHERE consumer = 'search' AND aggregate_id = ?",
+                Long.class, productId.toString()))
+                .as("no seq recorded under any aggregate type")
+                .isZero();
+    }
+
     @Test
     @DisplayName("a seq of 0 is refused (seq starts at 1), and nothing is recorded")
     void seqZeroIsRefused() {
@@ -244,8 +282,8 @@ class ProductEventInboxTest {
         UUID eventId = UUID.randomUUID();
 
         // The binder hands the message to its error handling -- on Kafka, the
-        // dead-letter topic. The test binder cannot run a DLQ; it keeps the
-        // last error instead.
+        // module's, which dead-letters it. The test binder cannot run a DLQ;
+        // it keeps the last error instead.
         input.send(Relayed.productEvent(eventId, "product.reviewed", productId, 1, snapshot(productId, "Aurelia"))
                 .build(), "catalog.product");
 

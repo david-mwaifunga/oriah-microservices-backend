@@ -40,17 +40,28 @@ import lombok.extern.slf4j.Slf4j;
  * <h2>Nothing is swallowed</h2>
  *
  * An event that cannot be applied -- a type or payload version not declared
- * below, a missing or garbled envelope header, a body that breaks the
- * contract -- throws. The transaction rolls back with its record, and the
- * binder publishes it to {@code catalog.product.dlq.search}: on the first try
- * for a refusal like these, which would fail the same way again, and after its
- * retries for anything else, such as the database being away
- * (application.yaml). Logging and carrying on, as this consumer once did,
- * lost such an event for good.
+ * below, an aggregate-type other than {@code product}, a missing or garbled
+ * envelope header, a body that breaks the contract -- throws. The transaction
+ * rolls back with its record, and the oriah-events module publishes it to
+ * {@code catalog.product.dlq.search}: on its first delivery for a refusal like
+ * these, which would fail the same way again, and after three deliveries for
+ * anything else, such as the database being away (application.yaml). It is
+ * not committed until that topic has it. Logging and carrying on, as this
+ * consumer once did, lost such an event for good.
  */
 @Configuration
 @Slf4j
 public class ProductEventConsumer {
+
+    /**
+     * What every product event is about: a product, spelled exactly as catalog
+     * writes it into its outbox (ProductService.AGGREGATE, lower case). The
+     * Inbox keeps the newest seq per aggregate type and id, so an event that
+     * says it is about something else is refused before anything is
+     * recorded: applied, its seq would be filed under another history, and a
+     * later, older snapshot of this product would look new and overwrite it.
+     */
+    private static final String PRODUCT = "product";
 
     /**
      * Every type catalog publishes on catalog.product, all handled: each is a
@@ -59,9 +70,9 @@ public class ProductEventConsumer {
      * ProductUpdatedEvent and ProductDeletedEvent as they are today.
      */
     static final InboxConsumer SEARCH = InboxConsumer.named("search")
-            .handles("product.created", 1)
-            .handles("product.updated", 1)
-            .handles("product.deleted", 1);
+            .handles(PRODUCT, "product.created", 1)
+            .handles(PRODUCT, "product.updated", 1)
+            .handles(PRODUCT, "product.deleted", 1);
 
     @Bean
     public Consumer<Message<byte[]>> productEvents(
