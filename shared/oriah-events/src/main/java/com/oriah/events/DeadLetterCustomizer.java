@@ -198,6 +198,7 @@ final class DeadLetterCustomizer implements ListenerContainerWithDlqAndRetryCust
      * consumer for Kafka's defaults of 60 and 120.
      */
     static Map<String, Object> producerConfig(Map<String, Object> consumer) {
+        // The two waits below and the 5 s lookup are what PUBLISH_WORST_MS adds up.
         Map<String, Object> producer = new HashMap<>();
         consumer.forEach((name, value) -> {
             if (name.equals(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG)
@@ -212,11 +213,26 @@ final class DeadLetterCustomizer implements ListenerContainerWithDlqAndRetryCust
         producer.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         producer.put(ProducerConfig.ACKS_CONFIG, "all");
         producer.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
-        producer.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 10_000);
+        producer.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, (int) MAX_BLOCK_MS);
         producer.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 5_000);
-        producer.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 10_000);
+        producer.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, (int) DELIVERY_TIMEOUT_MS);
         return producer;
     }
+
+    /** What Spring Kafka's publisher spends looking up the dead-letter topic's partitions (its own default). */
+    static final long PARTITION_LOOKUP_MS = 5_000;
+    /** The dead-letter producer's wait for the topic's details. */
+    static final long MAX_BLOCK_MS = 10_000;
+    /** The dead-letter producer's wait for the send itself. */
+    static final long DELIVERY_TIMEOUT_MS = 10_000;
+
+    /**
+     * The longest a dead-letter publish can take before it fails (25 s): the
+     * lookup, then the producer's two waits. The startup checks count it
+     * against {@code max.poll.interval.ms}, because the consumer's thread
+     * spends it on a record that failed.
+     */
+    static final long PUBLISH_WORST_MS = PARTITION_LOOKUP_MS + MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS;
 
     /** Every reason this binding cannot be made safe, refused together so one start shows them all. */
     private static void refuseUnsafe(AbstractMessageListenerContainer<?, ?> container, String destination,

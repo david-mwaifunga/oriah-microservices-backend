@@ -246,6 +246,22 @@ final class DeadLetterStartupCheck {
                     + "that publish fails. To dead-letter a failure on its first delivery, list its exception "
                     + "under retryable-exceptions as false (or set default-retryable: false)");
         }
+        long pause = consumer.getBackOffMaxInterval();
+        ReplayStepTime.Setting interval = ReplayStepTime.pollInterval(binder, binding);
+        long publish = DeadLetterCustomizer.PUBLISH_WORST_MS;
+        if ((publish + pause) * 2 > interval.millis()) {
+            long mostPause = interval.millis() / 2 - publish;
+            problems.add(about + " waits back-off-max-interval " + pause + " ms after a dead-letter publish that "
+                    + "failed, and that publish can itself take up to " + publish + " ms first, all on the thread "
+                    + "that polls Kafka. That is " + (publish + pause) + " ms of a max.poll.interval.ms of "
+                    + interval.millis() + " ms (" + interval.source() + "), more than half of it. The listener's "
+                    + "own work (a database wait of up to 30 s, say) needs the other half; past the interval Kafka "
+                    + "takes the partition away and the record comes back, for ever. "
+                    + (mostPause > 0
+                            ? "Lower back-off-max-interval to " + mostPause + " ms or less, or raise "
+                                    + "max.poll.interval.ms"
+                            : "Raise max.poll.interval.ms: not even a pause of 0 leaves the listener half of it"));
+        }
         if (consumer.isBatchMode()) {
             problems.add(about + " has batch-mode on: the module dead-letters one record at a time");
         }

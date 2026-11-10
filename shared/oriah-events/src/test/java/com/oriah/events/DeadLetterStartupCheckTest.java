@@ -393,6 +393,88 @@ class DeadLetterStartupCheckTest {
         }
     }
 
+    /**
+     * When a dead-letter publish fails, the module logs one ERROR and waits
+     * the binding's back-off-max-interval before the record comes round again
+     * (DeadLetterThrottle), on the thread that polls Kafka. The publish itself
+     * can take up to 25 s first. If that wait and that publish took a large
+     * share of {@code max.poll.interval.ms}, a slow listener on top of them
+     * would push the next poll past it: Kafka takes the partition away and the
+     * record comes back again, for ever. So the two together may use at most
+     * half of the interval, which leaves the other half for the listener's own
+     * work (a database wait of up to 30 s, say).
+     */
+    @Nested
+    @DisplayName("the pause after a failed dead-letter publish, plus the publish, may use at most half of "
+            + "max.poll.interval.ms")
+    class PauseFitsPollInterval {
+
+        private static final String BACK_OFF_MAX = BINDING + "consumer.back-off-max-interval";
+        private static final String POLL_INTERVAL = KAFKA + "configuration.max.poll.interval.ms";
+
+        @Test
+        @DisplayName("a pause of 200 s: 25 s + 200 s is more than half of 300 s -- refused, naming the binding, "
+                + "both numbers and what to change")
+        void longPauseRefused() {
+            notification.withPropertyValues(BACK_OFF_MAX + "=200000")
+                    .run(context -> assertThat(context).getFailure().rootCause()
+                            .hasMessageContaining("binding orderEvents-in-0 (oriah.order)")
+                            .hasMessageContaining("back-off-max-interval 200000 ms")
+                            .hasMessageContaining("up to 25000 ms")
+                            .hasMessageContaining("max.poll.interval.ms of 300000 ms")
+                            .hasMessageContaining("half")
+                            .hasMessageContaining("125000 ms or less"));
+        }
+
+        @Test
+        @DisplayName("the edge: 25 s + 125 s is exactly half of 300 s and starts; 126 s is over it and is refused")
+        void edge() {
+            notification.withPropertyValues(BACK_OFF_MAX + "=125000")
+                    .run(context -> assertThat(context).hasNotFailed());
+            notification.withPropertyValues(BACK_OFF_MAX + "=126000")
+                    .run(context -> assertThat(context).getFailure().rootCause()
+                            .hasMessageContaining("back-off-max-interval 126000 ms"));
+        }
+
+        @Test
+        @DisplayName("the poll interval is the binding's own when it sets one: 60 s allows 30 s, and the default "
+                + "pause of 10 s plus the 25 s publish is 35 s -- refused")
+        void bindingsOwnPollInterval() {
+            notification.withPropertyValues(POLL_INTERVAL + "=60000")
+                    .run(context -> assertThat(context).getFailure().rootCause()
+                            .hasMessageContaining("max.poll.interval.ms of 60000 ms"));
+        }
+
+        @Test
+        @DisplayName("the pause is read from the default consumer settings when the binding is silent, and the "
+                + "binding's own value wins over them")
+        void pauseFromTheDefaultsAndPrecedence() {
+            notification.withPropertyValues("spring.cloud.stream.default.consumer.back-off-max-interval=200000")
+                    .run(context -> assertThat(context).getFailure().rootCause()
+                            .hasMessageContaining("back-off-max-interval 200000 ms"));
+            notification.withPropertyValues("spring.cloud.stream.default.consumer.back-off-max-interval=200000",
+                            BACK_OFF_MAX + "=10000")
+                    .run(context -> assertThat(context).hasNotFailed());
+        }
+
+        @Test
+        @DisplayName("every binding of the module's is held to it, CatchUp's replay binding too")
+        void catchUpBindingToo() {
+            notification.withPropertyValues(
+                            "oriah.events.inbox.catch-up.consumer=notification",
+                            "oriah.events.inbox.catch-up.producers=order",
+                            "spring.cloud.stream.bindings.replay-in-0.destination=oriah.replay.notification",
+                            "spring.cloud.stream.bindings.replay-in-0.group=notification",
+                            "spring.cloud.stream.kafka.bindings.replay-in-0.consumer.enable-dlq=true",
+                            "spring.cloud.stream.kafka.bindings.replay-in-0.consumer.dlq-name="
+                                    + "oriah.replay.notification.dlq.notification",
+                            "spring.cloud.stream.bindings.replay-in-0.consumer.back-off-max-interval=200000")
+                    .run(context -> assertThat(context).getFailure().rootCause()
+                            .hasMessageContaining("binding replay-in-0 (oriah.replay.notification)")
+                            .hasMessageContaining("back-off-max-interval 200000 ms"));
+        }
+    }
+
     @Nested
     @DisplayName("one Kafka binder only: the module reads the Kafka settings from the service's configuration, "
             + "which with several binders may not be the ones a binding uses")

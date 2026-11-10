@@ -24,10 +24,12 @@ import static org.mockito.Mockito.mock;
  * which takes just as long -- for ever. With one request per poll, that time
  * is one step: up to {@code chunk-size} row sends plus one continuation or
  * marker, and a send Kafka does not answer can wait {@code max.block.ms} and
- * then {@code delivery.timeout.ms}. So the service refuses to start unless
- * {@code (chunk-size + 1) x (max.block.ms + delivery.timeout.ms) < max.poll.interval.ms},
- * read as the Kafka binder will actually use them: a timeout missing
- * everywhere is Kafka's own default (60000 and 120000).
+ * then {@code delivery.timeout.ms}; a step that fails also spends 25 s on its
+ * dead-letter publish and then the listener's back-off-max-interval (10 s by
+ * default) on the same thread. So the service refuses to start unless
+ * {@code (chunk-size + 1) x (max.block.ms + delivery.timeout.ms) + 25 s + back-off-max-interval
+ * < max.poll.interval.ms}, read as the Kafka binder will actually use them: a
+ * timeout missing everywhere is Kafka's own default (60000 and 120000).
  *
  * <p>Each context is the module's producer side, with the binding settings
  * the module adds itself ({@link OutboxReplayBinding}) unless a test says
@@ -63,8 +65,8 @@ class ReplayStepTimeTest {
             PRODUCER_PROPERTIES + "request.timeout.ms=5000", PRODUCER_PROPERTIES + "delivery.timeout.ms=10000"};
 
     @Test
-    @DisplayName("the README's send timeouts and the default chunk size: (10 + 1) x 20 s = 220 s, under the "
-            + "listener's 300 s -- the service starts")
+    @DisplayName("the README's send timeouts and the default chunk size: (10 + 1) x 20 s = 220 s of sends plus a "
+            + "failed step's 25 s + 10 s = 255 s, under the listener's 300 s -- the service starts")
     void houseSettingsStart() {
         producer.withPropertyValues(HOUSE)
                 .run(context -> {
@@ -89,35 +91,67 @@ class ReplayStepTimeTest {
     }
 
     @ParameterizedTest(name = "chunk size {0}")
-    @ValueSource(ints = {13, 14})
-    @DisplayName("the edge, with the README's timeouts: 13 is (13 + 1) x 20 s = 280 s and starts; 14 is exactly "
-            + "300 s, not under the limit, and is refused")
+    @ValueSource(ints = {12, 13})
+    @DisplayName("the edge, with the README's timeouts: 12 is (12 + 1) x 20 s = 260 s plus a failed step's "
+            + "25 s dead-letter publish and 10 s pause = 295 s and starts; 13 is 280 + 25 + 10 = 315 s, not under "
+            + "300 s, and is refused")
     void edge(int chunkSize) {
         producer.withPropertyValues(HOUSE)
                 .withPropertyValues("oriah.events.replay.chunk-size=" + chunkSize)
                 .run(context -> {
-                    if (chunkSize == 13) {
+                    if (chunkSize == 12) {
                         assertThat(context).hasNotFailed();
                     } else {
                         assertThat(context).getFailure().rootCause()
-                                .hasMessageContaining("(14 + 1) x (10000 + 10000) ms = 300000 ms")
-                                .hasMessageContaining("13 or less");
+                                .hasMessageContaining("(13 + 1) x (10000 + 10000) ms = 280000 ms")
+                                .hasMessageContaining("315000 ms")
+                                .hasMessageContaining("12 or less");
                     }
                 });
     }
 
     @Test
-    @DisplayName("the refusal also says what the rule does not count -- a failed step's dead-letter publish and the "
-            + "pause after a failed one -- so the largest chunk size the rule allows is not taken as advice")
-    void refusalSaysWhatIsNotCounted() {
+    @DisplayName("a step that fails also waits: its dead-letter publish (up to 25 s) and the pause after a failed "
+            + "one (the listener's back-off-max-interval) are counted, and the refusal shows them in the sum")
+    void refusalCountsAFailedStepsWaits() {
         producer.withPropertyValues(HOUSE)
-                .withPropertyValues("oriah.events.replay.chunk-size=14")
+                .withPropertyValues("oriah.events.replay.chunk-size=13")
                 .run(context -> assertThat(context).getFailure().rootCause()
-                        .hasMessageContaining("This rule counts the sends only")
-                        .hasMessageContaining("dead-letter publish (up to about 25 s)")
-                        .hasMessageContaining("back-off-max-interval")
-                        .hasMessageContaining("the default chunk size of 10 leaves room for them")
+                        .hasMessageContaining("280000 ms for the sends")
+                        .hasMessageContaining("25000 ms for the dead-letter publish of a step that fails")
+                        .hasMessageContaining("10000 ms for the pause after a failed publish "
+                                + "(back-off-max-interval 10000 ms")
+                        .hasMessageContaining("= 315000 ms")
+                        .hasMessageContaining("which is not under max.poll.interval.ms 300000 ms")
                         .hasMessageContaining("How long one step may take"));
+    }
+
+    @Test
+    @DisplayName("the pause is the replay listener's own back-off-max-interval: a service that raises it to 60 s "
+            + "makes (10 + 1) x 20 s + 25 s + 60 s = 305 s -- refused, though the sends alone fit")
+    void aLongerPauseIsCounted() {
+        producer.withPropertyValues(HOUSE)
+                .withPropertyValues("spring.cloud.stream.bindings.outboxReplayRequests-in-0.consumer"
+                        + ".back-off-max-interval=60000")
+                .run(context -> assertThat(context).getFailure().rootCause()
+                        .hasMessageContaining("60000 ms for the pause after a failed publish "
+                                + "(back-off-max-interval 60000 ms (spring.cloud.stream.bindings."
+                                + "outboxReplayRequests-in-0.consumer)")
+                        .hasMessageContaining("= 305000 ms"));
+    }
+
+    @Test
+    @DisplayName("the pause is read from the default consumer settings when the binding says nothing, and a "
+            + "binding's own value wins over them")
+    void pausePrecedence() {
+        producer.withPropertyValues(HOUSE)
+                .withPropertyValues("spring.cloud.stream.default.consumer.back-off-max-interval=60000")
+                .run(context -> assertThat(context).getFailure().rootCause()
+                        .hasMessageContaining("back-off-max-interval 60000 ms (spring.cloud.stream.default.consumer)"));
+        producer.withPropertyValues(HOUSE)
+                .withPropertyValues("spring.cloud.stream.default.consumer.back-off-max-interval=60000",
+                        "spring.cloud.stream.bindings.outboxReplayRequests-in-0.consumer.back-off-max-interval=10000")
+                .run(context -> assertThat(context).hasNotFailed());
     }
 
     @ParameterizedTest(name = "{0}")

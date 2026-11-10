@@ -337,6 +337,14 @@ service: Spring Cloud Stream would leave it unbound and retry every 30 s):
   own dead-letter sender, the one that drops a message when its publish
   fails. To dead-letter a failure on its first delivery, mark its exception
   `false` under `retryable-exceptions` (or set `default-retryable: false`);
+- a `back-off-max-interval` that leaves room inside the binding's
+  `max.poll.interval.ms` (300000 unless the binding sets it): the pause after
+  a failed dead-letter publish, plus the publish itself (up to 25 s), may use
+  **at most half of it**. The other half is the listener's own work - a
+  database wait of up to 30 s, say. Past the interval Kafka takes the
+  partition away and the record comes back, for ever. The default 10 s pause
+  uses 35 s of 300 s; the refusal says the largest pause that fits (125 s at
+  300 s);
 - no `batch-mode`, no `use-native-decoding`, no Kafka transactions, and key
   and value read as raw bytes (`ByteArrayDeserializer`, the binder's
   default): the module re-publishes the record's bytes exactly as Kafka
@@ -553,32 +561,29 @@ The listener reads one request per poll, so the time between two polls is
 one step. A step makes up to `chunk-size` + 1 sends (its rows, then the
 continuation or the marker), one after another, and a send that Kafka does
 not answer can wait `max.block.ms` and then `delivery.timeout.ms` before it
-fails. So the service refuses to start unless
+fails. A step that fails also spends time on the listener's thread before
+the next poll: after its last try, the dead-letter publish - up to 25 s (the
+5 s lookup of the topic's partitions, then the dead-letter producer's two
+10 s waits; see "The dead-letter publisher") - and, if that publish fails
+too, the pause after it (the binding's `back-off-max-interval`, 10 s by
+default). So the service refuses to start unless
 
 ```
-(chunk-size + 1) x (max.block.ms + delivery.timeout.ms) < max.poll.interval.ms
+(chunk-size + 1) x (max.block.ms + delivery.timeout.ms)
+    + 25 s (the dead-letter publish) + back-off-max-interval  <  max.poll.interval.ms
 ```
 
 With the send timeouts every producing service sets (10000 each, see "The
-four switches") and the default chunk size: 11 x 20 s = 220 s, under the
-module's 300 s. A long history simply takes more steps.
+four switches"), the default pause and the default chunk size:
+11 x 20 s + 25 s + 10 s = 255 s, under the module's 300 s. The largest chunk
+size that fits with these numbers is 12 (260 + 25 + 10 = 295 s); 13 is
+315 s and is refused. Kafka would otherwise presume the listener dead and
+deliver the step again - nothing is lost, the step is simply answered again
+- but it is wasted work. Leave `chunk-size` at 10 unless there is a measured
+reason to change it. A long history simply takes more steps.
 
-**What the rule does not count.** It counts the sends only. A step that
-fails also spends time on the listener's thread before the next poll:
-
-- the pause before its next try (the listener's back-off: 1 s, then 2 s);
-- after its last try, the dead-letter publish - up to about 25 s (see "The
-  dead-letter publisher") - and, if that fails too, the pause after it (the
-  back-off max-interval, 10 s).
-
-At the default chunk size these fit in what the rule leaves: 220 + 25 + 10 =
-255 s, under 300 s. The rule alone would accept a chunk size up to 13 with
-these timeouts (14 x 20 s = 280 s), but there they do not fit: a step that
-fails slowly on its last try could take 280 + 25 + 10 = 315 s. Kafka would
-then presume the listener dead and deliver the step again - nothing is lost,
-the step is simply answered again - but it is wasted work. So leave
-`chunk-size` at 10 unless there is a measured reason to change it; the
-refusal says the same.
+(The pause before a listener's next *try*, 1 s and then 2 s, is not counted:
+a try is a new poll, so the clock starts again.)
 
 Each value is read as the Kafka binder will use it: a send timeout from
 `spring.kafka.properties`, `spring.kafka.producer.properties`, the binder's
@@ -596,14 +601,15 @@ where it came from, and what to change:
 oriah-events refuses to start: one replay step could take longer than Kafka allows the replay-request
 listener (outboxReplayRequests-in-0) between two polls. ...
 A step sends up to oriah.events.replay.chunk-size rows plus one continuation or end-of-replay marker, ...:
-(10 + 1) x (60000 + 120000) ms = 1980000 ms, which is not under max.poll.interval.ms 300000 ms.
+(10 + 1) x (60000 + 120000) ms = 1980000 ms for the sends. A step that fails also spends ... 25000 ms
+for the dead-letter publish ... and 10000 ms for the pause after a failed publish
+(back-off-max-interval 10000 ms (Spring Cloud Stream's default)). Together 1980000 + 25000 + 10000 =
+2015000 ms, which is not under max.poll.interval.ms 300000 ms.
 Where each number came from: chunk size 10 (oriah.events.replay.chunk-size), max.block.ms 60000 (Kafka's
 default), delivery.timeout.ms 120000 (Kafka's default), max.poll.interval.ms 300000
 (spring.cloud.stream.kafka.bindings.outboxReplayRequests-in-0.consumer.configuration).
 To fix it, set max.block.ms: 10000 and delivery.timeout.ms: 10000 under
 spring.cloud.stream.kafka.binder.producer-properties, ...
-This rule counts the sends only. A step that fails also waits ... the default chunk size of 10 leaves room
-for them; the largest the rule allows may not, ...
 ```
 
 `OutboxReplayTest` proves each rule of a step on the test binder, including

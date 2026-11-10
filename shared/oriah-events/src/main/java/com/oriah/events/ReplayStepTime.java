@@ -27,24 +27,22 @@ import org.springframework.util.StringUtils;
  * sends, one after another, each waiting until Kafka has the record. A send
  * Kafka does not answer waits up to {@code max.block.ms} (for the topic's
  * details) and then up to {@code delivery.timeout.ms} (for the send itself)
- * before it fails. So the service refuses to start unless
- * <pre>(chunk-size + 1) x (max.block.ms + delivery.timeout.ms) &lt; max.poll.interval.ms</pre>
- * With the README's timeouts (10000 each) and the default chunk size of 10
- * that is 11 x 20 s = 220 s, under the module's 300 s.
- *
- * <p><b>What the rule does not count.</b> Only the sends. A step that fails
- * also spends time on the same thread before the next poll: the pause before
- * its next try (the listener's back-off, 1 s then 2 s by default) and, after
- * its last try, the dead-letter publish (up to about 25 s, see
- * {@link DeadLetterCustomizer}'s producer settings) and, if that fails too, the
- * pause after it ({@link DeadLetterThrottle}, the back-off max-interval, 10 s
- * by default). At the default chunk size they fit in what the rule leaves:
- * 220 + 25 + 10 = 255 s. The rule itself would allow up to 13 with these
- * timeouts (14 x 20 s = 280 s), and there they do not fit: 280 + 25 + 10 =
- * 315 s. Kafka would then presume the listener dead and deliver the step
- * again -- nothing is lost, the step is answered again -- so the refusal
- * says so rather than recommend the largest size the rule allows. (The rule
- * is the one agreed for the module; counting these too would change it.)
+ * before it fails. A step that fails also spends time on the same thread
+ * before the next poll: after its last try, the dead-letter publish (up to
+ * {@link DeadLetterCustomizer#PUBLISH_WORST_MS}, 25 s) and, if that fails too,
+ * the pause after it ({@link DeadLetterThrottle}: the listener binding's
+ * back-off max-interval, 10 s by default). So the service refuses to start
+ * unless
+ * <pre>(chunk-size + 1) x (max.block.ms + delivery.timeout.ms)
+ *     + 25 s + back-off-max-interval &lt; max.poll.interval.ms</pre>
+ * With the README's timeouts (10000 each), the default pause and the default
+ * chunk size of 10 that is 11 x 20 s + 25 s + 10 s = 255 s, under the
+ * module's 300 s. The largest chunk size that fits is 12 (295 s); 13 is
+ * 315 s and is refused. Kafka would otherwise presume the listener dead and
+ * deliver the step again -- nothing is lost, the step is answered again.
+ * (The pause before a listener's next try, 1 s then 2 s, is not counted: a
+ * try is a new poll, so the clock starts again. This rule used to count the
+ * sends only and said so in its refusal.)
  *
  * <p>The values are read from the service's configuration. That is the
  * configuration the binder uses only because {@link DeadLetterStartupCheck}
@@ -102,15 +100,19 @@ final class ReplayStepTime {
         Binder binder = Binder.get(environment);
         Setting maxBlock = fromLayers(binder, PRODUCER_LAYERS, MAX_BLOCK, 60_000);
         Setting delivery = fromLayers(binder, PRODUCER_LAYERS, DELIVERY_TIMEOUT, 120_000);
-        Setting interval = pollInterval(binder);
+        Setting interval = pollInterval(binder, OutboxReplayBinding.BINDING_NAME);
+        Setting pause = backOffMaxInterval(binder);
 
         long perSend = maxBlock.millis() + delivery.millis();
-        long slowestStep = (chunkSize + 1L) * perSend;
+        long sends = (chunkSize + 1L) * perSend;
+        long publish = DeadLetterCustomizer.PUBLISH_WORST_MS;
+        long slowestStep = sends + publish + pause.millis();
         if (slowestStep < interval.millis()) {
             return;
         }
-        long fitsNow = interval.millis() > 0 ? (interval.millis() - 1) / perSend - 1 : 0;
-        long fitsWithReadme = (interval.millis() - 1) / README_SEND_MS - 1;
+        long spare = publish + pause.millis();
+        long fitsNow = interval.millis() > spare ? (interval.millis() - spare - 1) / perSend - 1 : 0;
+        long fitsWithReadme = interval.millis() > spare ? (interval.millis() - spare - 1) / README_SEND_MS - 1 : 0;
         throw new IllegalStateException("oriah-events refuses to start: one replay step could take longer than "
                 + "Kafka allows the replay-request listener (" + OutboxReplayBinding.BINDING_NAME + ") between two "
                 + "polls. Kafka would then presume the listener dead and deliver the step again, where it would "
@@ -118,8 +120,12 @@ final class ReplayStepTime {
                 + "A step sends up to " + CHUNK_SIZE + " rows plus one continuation or end-of-replay marker, one "
                 + "after another, and a send Kafka does not answer can wait max.block.ms and then "
                 + "delivery.timeout.ms before it fails: (" + chunkSize + " + 1) x (" + maxBlock.millis() + " + "
-                + delivery.millis() + ") ms = " + slowestStep + " ms, which is not under " + MAX_POLL_INTERVAL + " "
-                + interval.millis() + " ms.\n"
+                + delivery.millis() + ") ms = " + sends + " ms for the sends. A step that fails also spends, on the "
+                + "same thread before the next poll, " + publish + " ms for the dead-letter publish of a step that "
+                + "fails (the lookup, then the producer's two waits) and, if that publish fails too, " + pause.millis()
+                + " ms for the pause after a failed publish (back-off-max-interval " + pause.millis() + " ms ("
+                + pause.source() + ")). Together " + sends + " + " + publish + " + " + pause.millis() + " = "
+                + slowestStep + " ms, which is not under " + MAX_POLL_INTERVAL + " " + interval.millis() + " ms.\n"
                 + "Where each number came from: chunk size " + chunkSize + " (" + CHUNK_SIZE + "), " + MAX_BLOCK + " "
                 + maxBlock + ", " + DELIVERY_TIMEOUT + " " + delivery + ", " + MAX_POLL_INTERVAL + " " + interval
                 + ".\n"
@@ -127,22 +133,36 @@ final class ReplayStepTime {
                 + "spring.cloud.stream.kafka.binder.producer-properties, as the oriah-events README asks (with "
                 + "those, " + CHUNK_SIZE + " may be " + fitsWithReadme + " or less), or lower " + CHUNK_SIZE
                 + (fitsNow >= 1 ? " to " + fitsNow + " or less." : " (with these timeouts not even 1 fits).")
-                + "\n" + NOT_COUNTED);
+                + " See the oriah-events README, \"How long one step may take\".");
     }
 
     /**
-     * What the rule leaves out, said with every refusal so that the largest
-     * chunk size the rule allows is not read as advice.
+     * How long the replay listener waits after a dead-letter publish fails:
+     * the binding's back-off-max-interval, as Spring Cloud Stream merges it
+     * (the binding's own value over the default consumer's), and its own
+     * default of 10 s when neither is set.
      */
-    private static final String NOT_COUNTED = "This rule counts the sends only. A step that fails also waits, on "
-            + "the same thread before the next poll, for the pause before its next try and, after its last try, "
-            + "for its dead-letter publish (up to about 25 s) and, if that fails too, the pause after it (the "
-            + "listener's back-off-max-interval, 10 s by default). With the send timeouts above, the default chunk "
-            + "size of 10 leaves room for them; the largest the rule allows may not, and a failed step would then "
-            + "be delivered again. See the oriah-events README, \"How long one step may take\".";
+    private static Setting backOffMaxInterval(Binder binder) {
+        Setting found = new Setting(10_000, "Spring Cloud Stream's default");
+        for (String layer : List.of(
+                "spring.cloud.stream.default.consumer",
+                "spring.cloud.stream.bindings." + OutboxReplayBinding.BINDING_NAME + ".consumer")) {
+            // adapt, not of: a binding name such as outboxReplayRequests-in-0 has capitals, which a strict name refuses.
+            Long millis = binder.bind(ConfigurationPropertyName.adapt(layer + ".back-off-max-interval", '.'),
+                    Bindable.of(Long.class)).orElse(null);
+            if (millis != null) {
+                found = new Setting(millis, layer);
+            }
+        }
+        return found;
+    }
 
-    /** The listener's poll interval, as the Kafka binder builds its consumer. */
-    private static Setting pollInterval(Binder binder) {
+    /**
+     * A binding's poll interval, as the Kafka binder builds that binding's
+     * consumer. Also used for the module's other bindings by
+     * {@link DeadLetterStartupCheck}.
+     */
+    static Setting pollInterval(Binder binder, String binding) {
         Setting found = new Setting(300_000, "Kafka's default");
         found = layer(binder, "spring.kafka.properties", MAX_POLL_INTERVAL, found);
         Duration boot = binder.bind("spring.kafka.consumer.max-poll-interval", Duration.class).orElse(null);
@@ -154,7 +174,7 @@ final class ReplayStepTime {
                 "spring.cloud.stream.kafka.binder.configuration",
                 "spring.cloud.stream.kafka.binder.consumer-properties",
                 "spring.cloud.stream.kafka.default.consumer.configuration",
-                "spring.cloud.stream.kafka.bindings." + OutboxReplayBinding.BINDING_NAME + ".consumer.configuration")) {
+                "spring.cloud.stream.kafka.bindings." + binding + ".consumer.configuration")) {
             found = layer(binder, layer, MAX_POLL_INTERVAL, found);
         }
         return found;
@@ -188,7 +208,7 @@ final class ReplayStepTime {
     }
 
     /** A value in milliseconds and where it came from. */
-    private record Setting(long millis, String source) {
+    record Setting(long millis, String source) {
 
         @Override
         public String toString() {
