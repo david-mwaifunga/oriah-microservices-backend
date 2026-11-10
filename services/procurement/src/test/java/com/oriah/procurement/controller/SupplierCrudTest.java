@@ -162,6 +162,36 @@ class SupplierCrudTest {
     }
 
     @Test
+    @DisplayName("a NUL character in any text field is a 400 naming the field, not a 500, and nothing is saved")
+    void nulIsRefusedOnCreate() throws Exception {
+        for (String field : new String[] {"name", "contactName", "contactDetails", "paymentNotes"}) {
+            String name = field.equals("name") ? "a\\u0000b" : "Fycargo";
+            String body = "{\"name\":\"" + name + "\",\"country\":\"CN\""
+                    + (field.equals("name") ? "" : ",\"" + field + "\":\"a\\u0000b\"") + "}";
+
+            mvc.perform(post(PATH).with(maya()).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/validation"))
+                    .andExpect(jsonPath("$.fieldErrors[*].field", hasItem(field)));
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM suppliers", Integer.class)).isZero();
+    }
+
+    @Test
+    @DisplayName("limits count the text as sent, so 120 characters plus a trailing space is over the name limit")
+    void paddingCountsTowardsTheLimit() throws Exception {
+        // Known and harmless: the aggregate counts after trimming, the request before. Pinned so a
+        // change to either is a decision, not an accident.
+        mvc.perform(post(PATH).with(maya()).contentType(MediaType.APPLICATION_JSON)
+                        .content(supplier("x".repeat(120) + " ", "CN")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("name")));
+        mvc.perform(post(PATH).with(maya()).contentType(MediaType.APPLICATION_JSON)
+                        .content(supplier("x".repeat(120), "CN")))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
     @DisplayName("a duplicate name, in any letter case, is 409 and the first supplier is untouched")
     void duplicateNameIs409() throws Exception {
         create(supplier("Fycargo", "CN"));

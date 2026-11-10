@@ -72,6 +72,31 @@ class SupplierTest {
                 .hasMessageContaining("120");
     }
 
+    @ParameterizedTest(name = "NUL in {0}")
+    @ValueSource(strings = {"name", "contactName", "contactDetails", "paymentNotes"})
+    @DisplayName("text may not contain the NUL character: PostgreSQL cannot store it, so it must be refused here, not at the database")
+    void textMayNotContainNul(String field) {
+        String bad = "a\u0000b";
+        String name = field.equals("name") ? bad : "A";
+        String contactName = field.equals("contactName") ? bad : null;
+        String contactDetails = field.equals("contactDetails") ? bad : null;
+        String paymentNotes = field.equals("paymentNotes") ? bad : null;
+
+        assertThatThrownBy(() -> new Supplier(name, "CN", contactName, contactDetails, paymentNotes))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(field)
+                .hasMessageContaining("NUL");
+
+        Supplier existing = supplier();
+        assertThatThrownBy(() -> existing.change(
+                field.equals("name") ? bad : "Mercury", "AE", contactName, contactDetails, paymentNotes))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(field);
+        // A refused change leaves the supplier exactly as it was.
+        assertThat(existing.name()).isEqualTo("Fycargo");
+        assertThat(existing.country()).isEqualTo("CN");
+    }
+
     @ParameterizedTest(name = "country {0}")
     @NullAndEmptySource
     @ValueSource(strings = {"   ", "UK", "XX", "ZZ", "ZMB", "Z", "Zambia", "1A"})

@@ -18,6 +18,8 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.jayway.jsonpath.JsonPath;
 import com.oriah.procurement.TestcontainersConfiguration;
@@ -26,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.nullValue;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -238,9 +241,14 @@ class SupplierUpdateTest {
     void requiredFieldsCannotBeEmptied(String body) throws Exception {
         String id = fullSupplier();
 
+        String field = body.contains("\"name\"") ? "name" : "country";
+
         patchOf(id, body)
                 .andExpect(status().isBadRequest())
                 .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                // The same fieldErrors shape as adding a supplier, so one form handles both.
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/validation"))
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem(field)))
                 .andExpect(jsonPath("$.traceId").isNotEmpty());
 
         assertThat(jdbc.queryForObject("SELECT name FROM suppliers WHERE id = ?::uuid", String.class, id))
@@ -314,18 +322,131 @@ class SupplierUpdateTest {
     // ------------------------------------------------------ version and audit
 
     @Test
-    @DisplayName("an edit raises the version and records who changed it; an edit that changes nothing does not")
-    void versionAndAudit() throws Exception {
+    @DisplayName("an edit raises the version; an edit that changes nothing does not")
+    void versionMovesOnlyOnARealChange() throws Exception {
         String id = fullSupplier();
 
         patchOf(id, "{}")
                 .andExpect(jsonPath("$.version").value(0));
         patchOf(id, "{\"contactName\":\"Ms Wang\"}")
-                .andExpect(jsonPath("$.version").value(1))
-                .andExpect(jsonPath("$.updatedBy").value("kc-maya"));
+                .andExpect(jsonPath("$.version").value(1));
         // Sending the value it already has is not a change either.
         patchOf(id, "{\"contactName\":\"Ms Wang\"}")
                 .andExpect(jsonPath("$.version").value(1));
+    }
+
+    @Test
+    @DisplayName("an edit records who made it and when, apart from who added the supplier")
+    void auditNamesTheEditor() throws Exception {
+        String id = fullSupplier();
+        RequestPostProcessor sam = jwt().jwt(j -> j.subject("kc-sam"))
+                .authorities(new SimpleGrantedAuthority("ROLE_PROCUREMENT_ADMIN"));
+
+        MvcResult edited = mvc.perform(patch(PATH + "/" + id).with(sam)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"contactName\":\"Ms Wang\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.createdBy").value("kc-maya"))
+                .andExpect(jsonPath("$.updatedBy").value("kc-sam"))
+                .andReturn();
+
+        String json = edited.getResponse().getContentAsString();
+        java.time.Instant createdAt = java.time.Instant.parse(JsonPath.read(json, "$.createdAt"));
+        java.time.Instant updatedAt = java.time.Instant.parse(JsonPath.read(json, "$.updatedAt"));
+        assertThat(updatedAt).as("the edit happened after the supplier was added").isAfter(createdAt);
+    }
+
+    @Test
+    @DisplayName("editing another field leaves a stopped supplier stopped: left out means unchanged for active too")
+    void editingAnotherFieldKeepsAStoppedSupplierStopped() throws Exception {
+        String id = fullSupplier();
+        patchOf(id, "{\"active\":false}").andExpect(status().isOk());
+
+        patchOf(id, "{\"contactName\":\"Ms Wang\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.active").value(false));
+        patchOf(id, "{}")
+                .andExpect(jsonPath("$.active").value(false));
+    }
+
+    // ------------------------------------------------------ the version precondition
+
+    @Test
+    @DisplayName("an edit that carries the version it was made from is applied while that version is current")
+    void currentVersionIsAccepted() throws Exception {
+        String id = fullSupplier();
+
+        patchOf(id, "{\"version\":0,\"contactName\":\"Ms Wang\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(1));
+        patchOf(id, "{\"version\":1,\"contactName\":\"Mr Zhao\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.version").value(2));
+    }
+
+    @Test
+    @DisplayName("an edit made from an older version is 409 concurrent-update, even for a different field, and the newer change stands")
+    void aStaleVersionIsRefused() throws Exception {
+        String id = fullSupplier();
+        // A colleague saves first: the supplier is now at version 1.
+        patchOf(id, "{\"contactName\":\"Ms Wang\"}").andExpect(jsonPath("$.version").value(1));
+
+        // Someone whose form was loaded at version 0 now saves how Oriah pays this supplier.
+        patchOf(id, "{\"version\":0,\"paymentNotes\":\"Cash on arrival\"}")
+                .andExpect(status().isConflict())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/concurrent-update"))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+
+        assertThat(jdbc.queryForObject("SELECT payment_notes FROM suppliers WHERE id = ?::uuid", String.class, id))
+                .as("the stale edit was not applied").isEqualTo("Bank transfer");
+        assertThat(jdbc.queryForObject("SELECT contact_name FROM suppliers WHERE id = ?::uuid", String.class, id))
+                .as("the colleague's change stands").isEqualTo("Ms Wang");
+    }
+
+    @Test
+    @DisplayName("a stale version is refused before anything else is looked at, so nothing in the same request is applied")
+    void aStaleVersionAppliesNothing() throws Exception {
+        String id = fullSupplier();
+        patchOf(id, "{\"contactName\":\"Ms Wang\"}").andExpect(status().isOk());
+
+        patchOf(id, "{\"version\":0,\"name\":\"Renamed\",\"active\":false}")
+                .andExpect(status().isConflict());
+
+        assertThat(jdbc.queryForObject("SELECT name FROM suppliers WHERE id = ?::uuid", String.class, id))
+                .isEqualTo("Fycargo");
+        assertThat(jdbc.queryForObject("SELECT active FROM suppliers WHERE id = ?::uuid", Boolean.class, id))
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("a version sent as null is a 400 naming the field; one that is not a number is a 400")
+    void aBadVersionIsRefused() throws Exception {
+        String id = fullSupplier();
+
+        patchOf(id, "{\"version\":null,\"contactName\":\"Ms Wang\"}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/validation"))
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("version")));
+        patchOf(id, "{\"version\":\"abc\",\"contactName\":\"Ms Wang\"}")
+                .andExpect(status().isBadRequest());
+
+        assertThat(jdbc.queryForObject("SELECT contact_name FROM suppliers WHERE id = ?::uuid", String.class, id))
+                .isEqualTo("Mr Li");
+    }
+
+    @Test
+    @DisplayName("a NUL character in any text field is a 400 naming the field, never a 500")
+    void nulIsRefusedOnEdit() throws Exception {
+        String id = fullSupplier();
+
+        for (String field : new String[] {"name", "contactName", "contactDetails", "paymentNotes"}) {
+            patchOf(id, "{\"" + field + "\":\"a\\u0000b\"}")
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/validation"))
+                    .andExpect(jsonPath("$.fieldErrors[*].field", hasItem(field)));
+        }
+        assertThat(jdbc.queryForObject("SELECT name FROM suppliers WHERE id = ?::uuid", String.class, id))
+                .isEqualTo("Fycargo");
     }
 
     // ------------------------------------------------------------- not found
@@ -347,7 +468,7 @@ class SupplierUpdateTest {
     }
 
     @Test
-    @DisplayName("a body that is not JSON, or has the wrong type for a field, is a 400, not a 500")
+    @DisplayName("a body that is not JSON, or has a value that cannot be read as the field's type, is a 400, not a 500")
     void malformedBodies() throws Exception {
         String id = fullSupplier();
 
@@ -361,9 +482,10 @@ class SupplierUpdateTest {
     void unknownFieldsAreIgnored() throws Exception {
         String id = fullSupplier();
 
-        // What a client gets from GET and sends back: id, version, audit columns and all.
+        // What a client gets from GET and sends back: id, version, audit columns and all. The
+        // version is the one real field among them, and it is the current one, so the edit is applied.
         patchOf(id, """
-                {"id":"00000000-0000-0000-0000-000000000000","version":99,"createdBy":"someone-else",
+                {"id":"00000000-0000-0000-0000-000000000000","version":0,"createdBy":"someone-else",
                  "createdAt":"2000-01-01T00:00:00Z","contactName":"Ms Wang"}""")
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(id))

@@ -37,8 +37,10 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -170,6 +172,8 @@ class SupplierUpdateRaceTest {
                 .andExpect(content().string(not(containsString("uq_suppliers_name_live"))))
                 .andExpect(content().string(not(containsString("duplicate key"))));
 
+        // The check really ran and really said "free": the 409 above came from the index.
+        verify(repository).existsOtherLiveName(eq("MERCURY"), any(UUID.class));
         assertThat(jdbc.queryForObject("SELECT name FROM suppliers WHERE id = ?::uuid", String.class, id))
                 .isEqualTo("Fycargo");
     }

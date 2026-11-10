@@ -90,13 +90,17 @@ public class SupplierController {
             summary = "The suppliers, by name, optionally only those in use or those stopped, or matching some text")
     @ApiResponse(responseCode = "200", description = "A page of suppliers")
     @ApiResponse(responseCode = "400",
-            description = "size outside 1-100, a negative page, a malformed active, or a sort parameter "
-                    + "(this endpoint is fixed to name order)",
+            description = "size outside 1-100, a negative page or one too far into the list, a malformed "
+                    + "active, a NUL character in q, or a sort parameter (this endpoint is fixed to name order)",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping
     public Page<SupplierResponse> list(
+            @Parameter(description = "Which page, counting from 0", schema = @Schema(type = "integer", minimum = "0",
+                    defaultValue = "0"))
             @RequestParam(name = "page", defaultValue = "0") int page,
+            @Parameter(description = "Suppliers per page, 1 to 100", schema = @Schema(type = "integer", minimum = "1",
+                    maximum = "" + MAX_PAGE_SIZE, defaultValue = "" + DEFAULT_PAGE_SIZE))
             @RequestParam(name = "size", defaultValue = "" + DEFAULT_PAGE_SIZE) int size,
             @Parameter(description = "true: only suppliers in use; false: only those we have stopped using; absent: both")
             @RequestParam(name = "active", required = false) Boolean active,
@@ -117,6 +121,15 @@ public class SupplierController {
         }
         if (size < 1 || size > MAX_PAGE_SIZE) {
             throw new IllegalArgumentException("size must be between 1 and " + MAX_PAGE_SIZE + ", was " + size);
+        }
+        // page * size is how many rows the database is asked to skip, and that count must fit in an
+        // int or the query is built with a wrapped-around negative offset and fails as a 500.
+        if ((long) page * size > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("page " + page + " is too far into the list for a size of " + size);
+        }
+        // PostgreSQL cannot store or compare the NUL character; it would be a 500 from the database.
+        if (q != null && q.indexOf(0) >= 0) {
+            throw new IllegalArgumentException("q must not contain the NUL character");
         }
         return service.list(page, size, active, q).map(SupplierResponse::from);
     }
@@ -161,6 +174,9 @@ public class SupplierController {
             summary = "Correct a mistake: delete a supplier that should never have been added",
             description = "Frees the name. To stop buying from a real supplier, switch it inactive instead.")
     @ApiResponse(responseCode = "204", description = "Deleted")
+    @ApiResponse(responseCode = "400", description = "The id is not a UUID",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "404", description = "No such supplier, or already deleted",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))

@@ -118,7 +118,8 @@ class OpenApiContractTest {
                 "get " + SUPPLIERS, List.of("400", "401", "403", "500"),
                 "get " + SUPPLIER, List.of("400", "401", "403", "404", "500"),
                 "patch " + SUPPLIER, List.of("400", "401", "403", "404", "409", "500"),
-                "delete " + SUPPLIER, List.of("401", "403", "404", "500"));
+                // 400: the id in the path is not a UUID. 409 is not here: a delete cannot conflict.
+                "delete " + SUPPLIER, List.of("400", "401", "403", "404", "500"));
 
         expected.forEach((operation, statuses) -> {
             String[] parts = operation.split(" ");
@@ -134,10 +135,11 @@ class OpenApiContractTest {
     }
 
     @Test
-    @DisplayName("a failure is not documented where it cannot happen: a list never answers 404, a delete never 400 or 409")
+    @DisplayName("a failure is not documented where it cannot happen: a list never answers 404 or 409, a delete never 409")
     void impossibleFailuresAreNotClaimed() {
         assertThat(responses(SUPPLIERS, "get")).doesNotContainKey("404").doesNotContainKey("409");
-        assertThat(responses(SUPPLIER, "delete")).doesNotContainKey("400").doesNotContainKey("409");
+        assertThat(responses(SUPPLIER, "delete")).doesNotContainKey("409");
+        assertThat(responses(SUPPLIER, "get")).doesNotContainKey("409");
     }
 
     @Test
@@ -147,14 +149,14 @@ class OpenApiContractTest {
     }
 
     @Test
-    @DisplayName("the edit's request lists its six fields, none of them required")
+    @DisplayName("the edit's request lists its six fields and the version it was made from, none of them required")
     void updateRequestHasSixOptionalFields() {
         Map<String, Object> properties = at("$.components.schemas.UpdateSupplierRequest.properties");
 
         assertThat(properties).as("UpdateSupplierRequest must be published with its fields").isNotNull();
         assertThat(properties.keySet())
                 .containsExactlyInAnyOrder("name", "country", "contactName", "contactDetails", "paymentNotes",
-                        "active");
+                        "active", "version");
         List<String> required = at("$.components.schemas.UpdateSupplierRequest.required");
         assertThat(required).as("an edit sends only what changes, so nothing is required")
                 .isNullOrEmpty();
@@ -169,7 +171,7 @@ class OpenApiContractTest {
                             clearable, describe("UpdateSupplierRequest", clearable))
                     .isTrue();
         }
-        for (String fixed : List.of("name", "country", "active")) {
+        for (String fixed : List.of("name", "country", "active", "version")) {
             assertThat(isNullable("UpdateSupplierRequest", fixed))
                     .as("%s can be replaced but never emptied, so the schema must not allow null; it says %s",
                             fixed, describe("UpdateSupplierRequest", fixed))
@@ -211,13 +213,30 @@ class OpenApiContractTest {
     }
 
     @Test
-    @DisplayName("the list documents its filters and its bounds")
+    @DisplayName("the list documents its filters, and the bounds a client form needs: size 1 to 100 (default 50), page from 0")
     void listDocumentsItsParameters() {
         List<Map<String, Object>> parameters = at(operation(SUPPLIERS, "get") + ".parameters");
 
         assertThat(parameters).isNotNull();
         assertThat(parameters).extracting(p -> p.get("name"))
                 .contains("page", "size", "active", "q");
+
+        Map<String, Object> size = schemaOf(parameters, "size");
+        assertThat(((Number) size.get("minimum")).intValue()).as("size minimum").isEqualTo(1);
+        assertThat(((Number) size.get("maximum")).intValue()).as("size maximum").isEqualTo(100);
+        assertThat(((Number) size.get("default")).intValue()).as("size default").isEqualTo(50);
+        Map<String, Object> page = schemaOf(parameters, "page");
+        assertThat(((Number) page.get("minimum")).intValue()).as("page minimum").isEqualTo(0);
+        assertThat(((Number) page.get("default")).intValue()).as("page default").isEqualTo(0);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> schemaOf(List<Map<String, Object>> parameters, String name) {
+        Map<String, Object> parameter = parameters.stream().filter(p -> name.equals(p.get("name"))).findFirst()
+                .orElseThrow(() -> new AssertionError("no parameter " + name));
+        Map<String, Object> schema = (Map<String, Object>) parameter.get("schema");
+        assertThat(schema).as("the schema of parameter %s", name).isNotNull();
+        return schema;
     }
 
     private String describe(String schema, String property) {

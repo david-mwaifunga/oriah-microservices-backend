@@ -28,13 +28,21 @@ import io.swagger.v3.oas.annotations.media.Schema;
  * them empty is refused as a field error by {@code SupplierService.update}, which
  * checks every field that was sent against the same rules as adding a supplier.
  *
+ * <p>{@code version} is the version of the supplier the edit was made from, the
+ * {@code version} of the response the form was loaded with. If someone else has
+ * saved since, it is no longer current and the edit is refused (409), so a form
+ * that was open for an hour cannot silently overwrite a colleague's change, for
+ * instance to how Oriah pays a supplier. Leaving it out skips the check, and the
+ * last save wins.
+ *
  * <p>This class is only ever read from a request, never written to one. The
  * getters exist so the generated API description lists the fields.
  */
 @Schema(name = "UpdateSupplierRequest",
         description = "Any of these fields. A field left out is unchanged. contactName, contactDetails and "
                 + "paymentNotes are cleared by sending null or blank text. name, country and active cannot be "
-                + "empty.")
+                + "empty. Send version, from the supplier you loaded, so that an edit made from an out-of-date "
+                + "copy is refused instead of overwriting a colleague's change.")
 public class UpdateSupplierRequest {
 
     private boolean nameSent;
@@ -49,9 +57,11 @@ public class UpdateSupplierRequest {
     private String paymentNotes;
     private boolean activeSent;
     private Boolean active;
+    private boolean versionSent;
+    private Long version;
 
     @Schema(description = "A new name. Unique among live suppliers, ignoring letter case. Cannot be empty.",
-            example = "Fycargo", maxLength = 120)
+            example = "Example Trading Ltd", maxLength = 120)
     public String getName() {
         return name;
     }
@@ -73,7 +83,7 @@ public class UpdateSupplierRequest {
     }
 
     @Schema(description = "Who you deal with there. Send null or blank text to clear it.",
-            example = "Mr Li", maxLength = 120, types = {"string", "null"})
+            example = "A. Contact", maxLength = 120, types = {"string", "null"})
     public String getContactName() {
         return contactName;
     }
@@ -116,6 +126,18 @@ public class UpdateSupplierRequest {
         this.activeSent = true;
     }
 
+    @Schema(description = "The version of the supplier this edit was made from (the version in the response "
+            + "you loaded). If it is no longer current, someone else saved first and this edit is refused "
+            + "with 409. Leave it out to skip the check: the last save then wins.", example = "3", minimum = "0")
+    public Long getVersion() {
+        return version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
+        this.versionSent = true;
+    }
+
     // Was the field in the body at all? Not bean getters (no get/is prefix), so they are not part of the API.
 
     public boolean hasName() {
@@ -140,5 +162,9 @@ public class UpdateSupplierRequest {
 
     public boolean hasActive() {
         return activeSent;
+    }
+
+    public boolean hasVersion() {
+        return versionSent;
     }
 }

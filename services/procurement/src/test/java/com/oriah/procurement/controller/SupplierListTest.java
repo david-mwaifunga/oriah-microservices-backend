@@ -227,6 +227,72 @@ class SupplierListTest {
                 .andExpect(jsonPath("$.traceId").isNotEmpty());
     }
 
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"page=1073741824&size=2", "page=2147483647&size=50", "page=100000000&size=100"})
+    @DisplayName("a page so far into the list that its offset cannot be represented is a 400, not a 500")
+    void aPageBeyondTheLargestOffsetIsRefused(String query) throws Exception {
+        // page * size is the row offset PostgreSQL is asked to skip; it must fit in an int, or
+        // the query is built with a wrapped-around negative offset and the request fails.
+        mvc.perform(get(PATH + "?" + query).with(SupplierCrudTest.maya()))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/bad-request"))
+                .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
+    @Test
+    @DisplayName("a far page that is still representable is simply an empty page")
+    void aFarPageIsEmpty() throws Exception {
+        insert("Fycargo");
+
+        mvc.perform(get(PATH).param("page", "1000").param("size", "100").with(SupplierCrudTest.maya()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content").value(empty()))
+                .andExpect(jsonPath("$.totalElements").value(1));
+    }
+
+    @Test
+    @DisplayName("a NUL character in q is a 400: it must not reach the database, which cannot compare with it")
+    void aNulInTheSearchIsRefused() throws Exception {
+        mvc.perform(get(PATH).param("q", "a\u0000b").with(SupplierCrudTest.maya()))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/bad-request"));
+    }
+
+    @Test
+    @DisplayName("a deleted supplier is never found by a search, with or without the active filter")
+    void deletedSuppliersAreNotFoundBySearch() throws Exception {
+        insert("Cargo Live");
+        insert("Cargo Gone", true, true);
+        insert("Cargo Stopped Gone", false, true);
+        insert("Cargo Stopped", false, false);
+
+        mvc.perform(get(PATH).param("q", "cargo").with(SupplierCrudTest.maya()))
+                .andExpect(jsonPath("$.content[*].name", contains("Cargo Live", "Cargo Stopped")));
+        mvc.perform(get(PATH).param("q", "cargo").param("active", "true").with(SupplierCrudTest.maya()))
+                .andExpect(jsonPath("$.content[*].name", contains("Cargo Live")));
+        mvc.perform(get(PATH).param("q", "cargo").param("active", "false").with(SupplierCrudTest.maya()))
+                .andExpect(jsonPath("$.content[*].name", contains("Cargo Stopped")));
+    }
+
+    @Test
+    @DisplayName("% and _ stay ordinary characters when the search is combined with the active filter")
+    void wildcardsStayLiteralWithTheActiveFilter() throws Exception {
+        insert("100% Gold");
+        insert("100% Stopped", false, false);
+        insert("100X Gold");
+        insert("A_B Traders");
+        insert("AXB Traders");
+
+        mvc.perform(get(PATH).param("q", "%").param("active", "true").with(SupplierCrudTest.maya()))
+                .andExpect(jsonPath("$.content[*].name", contains("100% Gold")));
+        mvc.perform(get(PATH).param("q", "%").param("active", "false").with(SupplierCrudTest.maya()))
+                .andExpect(jsonPath("$.content[*].name", contains("100% Stopped")));
+        mvc.perform(get(PATH).param("q", "a_b").param("active", "true").with(SupplierCrudTest.maya()))
+                .andExpect(jsonPath("$.content[*].name", contains("A_B Traders")));
+    }
+
     @Test
     @DisplayName("the 400 for sort says the order is fixed")
     void sortRefusalExplains() throws Exception {

@@ -181,6 +181,7 @@ public class Supplier extends BaseEntity {
         }
 
         private static String required(String field, String value, int max) {
+            noNul(field, value);
             String tidy = value == null ? "" : value.strip();
             if (tidy.isEmpty()) {
                 throw new IllegalArgumentException(field + " is required");
@@ -189,8 +190,20 @@ public class Supplier extends BaseEntity {
         }
 
         private static String optional(String field, String value, int max) {
+            noNul(field, value);
             String tidy = value == null ? "" : value.strip();
             return tidy.isEmpty() ? null : atMost(field, tidy, max);
+        }
+
+        /**
+         * PostgreSQL cannot store the NUL character in text, so it would fail at the
+         * database as a 500. It is never legitimate in a name or a note, so it is
+         * refused here, as the caller's mistake.
+         */
+        private static void noNul(String field, String value) {
+            if (value != null && value.indexOf(0) >= 0) {
+                throw new IllegalArgumentException(field + " must not contain the NUL character");
+            }
         }
 
         private static String atMost(String field, String tidy, int max) {

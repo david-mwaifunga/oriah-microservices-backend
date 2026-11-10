@@ -1,6 +1,8 @@
 package com.oriah.procurement.controller;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +18,8 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jwt.BadJwtException;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -28,6 +32,7 @@ import com.jayway.jsonpath.JsonPath;
 import com.oriah.procurement.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -167,6 +172,60 @@ class SupplierSecurityTest {
                 .containsEntry("active", true)
                 .containsEntry("is_deleted", false)
                 .containsEntry("version", 0L);
+    }
+
+    // ------------------------------------------------------------ the real token path
+    //
+    // Every test above injects authorities directly, which skips the step a real request
+    // depends on: this service's own mapping of Keycloak's realm_access.roles claim to
+    // ROLE_<NAME>. These go in by the front door: a bearer token, the decoder, the
+    // converter, then the role check.
+
+    private static Jwt token(String subject, Object realmAccess) {
+        Instant now = Instant.now();
+        Jwt.Builder builder = Jwt.withTokenValue("t").header("alg", "none").subject(subject)
+                .issuedAt(now).expiresAt(now.plusSeconds(3600));
+        if (realmAccess != null) {
+            builder.claim("realm_access", realmAccess);
+        }
+        return builder.build();
+    }
+
+    @Test
+    @DisplayName("a bearer token whose realm_access.roles holds PROCUREMENT_ADMIN is admitted, through the service's own role mapping")
+    void aRealTokenWithTheRoleIsAdmitted() throws Exception {
+        when(jwtDecoder.decode("good")).thenReturn(
+                token("kc-real", Map.of("roles", List.of("USER", "PROCUREMENT_ADMIN"))));
+
+        mvc.perform(get(PATH).header("Authorization", "Bearer good")).andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("a bearer token without the role is 403: other roles, no realm_access at all, or roles that are not a list")
+    void aRealTokenWithoutTheRoleIsForbidden() throws Exception {
+        when(jwtDecoder.decode("other")).thenReturn(
+                token("kc-a", Map.of("roles", List.of("USER", "INVENTORY_ADMIN", "MANAGER"))));
+        when(jwtDecoder.decode("none")).thenReturn(token("kc-b", null));
+        when(jwtDecoder.decode("odd")).thenReturn(token("kc-c", Map.of("roles", "PROCUREMENT_ADMIN")));
+        when(jwtDecoder.decode("empty")).thenReturn(token("kc-d", Map.of("roles", List.of())));
+
+        for (String bearer : List.of("other", "none", "odd", "empty")) {
+            assertThat(mvc.perform(get(PATH).header("Authorization", "Bearer " + bearer))
+                    .andReturn().getResponse().getStatus())
+                    .as("a token that is '%s'", bearer).isEqualTo(403);
+        }
+    }
+
+    @Test
+    @DisplayName("a token the decoder refuses (expired, forged) is 401, not an error and not an admission")
+    void aBadTokenIs401() throws Exception {
+        when(jwtDecoder.decode("bad")).thenThrow(new BadJwtException("expired"));
+
+        for (String endpoint : List.of("create", "list", "get", "update", "delete")) {
+            MockHttpServletResponse response = mvc.perform(call(endpoint).header("Authorization", "Bearer bad"))
+                    .andReturn().getResponse();
+            assertThat(response.getStatus()).as("%s with a refused token", endpoint).isEqualTo(401);
+        }
     }
 
     @Test

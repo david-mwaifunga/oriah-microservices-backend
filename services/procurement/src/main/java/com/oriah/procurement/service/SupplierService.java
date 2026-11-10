@@ -2,11 +2,13 @@ package com.oriah.procurement.service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -99,6 +101,11 @@ public class SupplierService {
      * looked up or changed until they are fixed. A field that was left out is not
      * checked: whatever is stored passed the rules when it was stored.
      *
+     * <p>If the request carries the version it was made from and the supplier has
+     * moved on since, nothing is applied: it is refused as a lost update (409
+     * {@code concurrent-update}), the same answer as two edits colliding inside the
+     * database. The check comes before any change is looked at.
+     *
      * <p>The name is compared with every <em>other</em> live supplier, so a supplier
      * can change the letter case of its own name. As on adding, that check and the
      * write are not one atomic step: the unique index decides a race and
@@ -110,6 +117,9 @@ public class SupplierService {
     public Supplier update(UUID id, UpdateSupplierRequest request) {
         rejectInvalidFields(request);
         Supplier supplier = live(id);
+        if (request.hasVersion() && !Objects.equals(request.getVersion(), supplier.version())) {
+            throw new ObjectOptimisticLockingFailureException(Supplier.class, id);
+        }
 
         String name = request.hasName() ? request.getName() : supplier.name();
         String country = request.hasCountry() ? request.getCountry() : supplier.country();
@@ -148,6 +158,9 @@ public class SupplierService {
         check(problems, "paymentNotes", request.hasPaymentNotes(), request.getPaymentNotes());
         if (request.hasActive() && request.getActive() == null) {
             problems.add(new FieldErrorView("active", "must be true or false"));
+        }
+        if (request.hasVersion() && request.getVersion() == null) {
+            problems.add(new FieldErrorView("version", "must be a whole number, or left out"));
         }
         if (!problems.isEmpty()) {
             throw new InvalidFieldsException(problems);
