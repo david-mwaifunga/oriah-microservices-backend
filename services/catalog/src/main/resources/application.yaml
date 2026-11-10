@@ -94,24 +94,29 @@ spring:
           # with Kafka's own defaults a stopped broker would hold it for 60 to
           # 120 seconds. With these the send fails in about 10 to 25, the
           # cursor stays put, and the row goes out in a later round.
+          #
+          # They also limit how long one replay step can take. A step sends up
+          # to 10 rows and then one continuation or end-of-replay marker, one
+          # after another, and each send can wait max.block.ms and then
+          # delivery.timeout.ms before it fails. The event-log module refuses
+          # to start catalog unless that fits inside the 5 minutes Kafka
+          # allows the replay listener between two polls:
+          # (10 + 1) x (10 s + 10 s) = 220 s. Raise them past that and catalog
+          # will not start. StartupChecksPerProfileTest checks it in every
+          # profile.
           producer-properties:
             max.block.ms: 10000         # waiting for the topic's details from the broker
             request.timeout.ms: 5000    # one request to the broker
             delivery.timeout.ms: 10000  # the whole send, retries included
-        bindings:
-          # The replay-request listener. The module binds it (destination
-          # oriah.outbox.replay-requests, group catalog); what Kafka does with
-          # a request catalog cannot answer is set here. A malformed request
-          # is refused, and a replay can fail part-way while Kafka is briefly
-          # down. Either way the binder retries it, and then parks it on its
-          # own dead-letter topic, named <topic>.dlq.<group> like every other.
-          # Without this the binder would log the last failure and skip past
-          # the request, and the consumer that asked (search, inventory) would
-          # wait for a replay that never comes. ReplayRequestBindingTest pins it.
-          outboxReplayRequests-in-0:
-            consumer:
-              enable-dlq: true
-              dlq-name: oriah.outbox.replay-requests.dlq.catalog
+        # Nothing here for the replay-request listener (outboxReplayRequests-in-0)
+        # on purpose. The event-log module binds it and sets all of its Kafka
+        # settings itself: a request that keeps failing is delivered 3 times
+        # in all and then parked on oriah.outbox.replay-requests.dlq.catalog
+        # (never dropped, even when parking it fails at first), and the
+        # listener reads one request per poll. Its values win over anything
+        # written here, because the way a replay is answered depends on them,
+        # so a copy here would decide nothing. ReplayRequestBindingTest pins
+        # what the listener gets.
 
   security:
     oauth2:
