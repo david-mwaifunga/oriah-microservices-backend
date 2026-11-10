@@ -41,10 +41,10 @@ import java.util.UUID;
  * turn every field catalog adds into a poison message.
  *
  * <p>It would no longer be silent -- a body that cannot be read now throws,
- * and the binder sends the message to the dead-letter topic on its first
- * try, since a retry would read it no better -- but every product event after
- * such a change would stop reaching product_index until the consumer was
- * fixed and the events replayed.
+ * and the oriah-events module sends the message to the dead-letter topic on
+ * its first delivery, since a retry would read it no better -- but every
+ * product event after such a change would stop reaching product_index until
+ * the consumer was fixed and the events replayed.
  *
  * <p>Found by a test that constructed a raw ObjectMapper and failed, which is
  * exactly the condition described above.

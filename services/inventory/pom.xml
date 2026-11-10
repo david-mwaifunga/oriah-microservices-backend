@@ -182,6 +182,13 @@
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- A real broker for ProductEventDeadLetterKafkaTest: only Kafka has a
+             dead-letter topic and committed offsets to look at. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- jwt() post-processor for MockMvc tests; same as catalog. -->
         <dependency>

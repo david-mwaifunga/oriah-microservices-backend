@@ -69,24 +69,26 @@ spring.cloud:
           # bytes alone.
           use-native-decoding: false
           # A snapshot inventory cannot apply throws (it is never
-          # swallowed): the binder tries it again, pausing 1 s and then
-          # doubling the pause, at most 10 s. Spring Cloud Stream 5.0 hands
-          # max-attempts to Spring's RetryPolicy as the number of RETRIES
-          # after the first try, so 3 here is up to four tries in all
-          # (pauses of 1, 2 and 4 s) ...
+          # swallowed). catalog.product is read through the Inbox
+          # (oriah.events.inbox.topics below), so the oriah-events module,
+          # not the Kafka binder, decides what happens next: Kafka delivers
+          # the event again, pausing 1 s and then doubling the pause, at most
+          # 10 s. max-attempts counts deliveries IN ALL, so 3 here is three
+          # deliveries, 1 s and then 2 s apart. Each one is a fresh poll of
+          # the same event from Kafka, not a loop inside one poll ...
           max-attempts: 3
           back-off-initial-interval: 1000
           back-off-multiplier: 2.0
           back-off-max-interval: 10000
           # ... except a refusal, which fails the same way every time: a
-          # type, payload version or envelope header the Inbox does not
-          # accept, or a snapshot that breaks the contract (all
-          # IllegalArgumentException), and a body Jackson cannot read
+          # type, payload version, aggregate-type or envelope header the
+          # Inbox does not accept, or a snapshot that breaks the contract
+          # (all IllegalArgumentException), and a body Jackson cannot read
           # (JsonProcessingException, found inside the UncheckedIOException
           # the consumer wraps it in). Retrying those cannot change the
           # answer and only holds up the products behind them, so they go
-          # to the dead-letter topic on the first try. (Plain keys, not
-          # "[...]": Spring Cloud Stream's defaults lookup rejects a
+          # to the dead-letter topic on their first delivery. (Plain keys,
+          # not "[...]": Spring Cloud Stream's defaults lookup rejects a
           # bracketed key with capitals and the app won't start.)
           retryable-exceptions:
             java.lang.IllegalArgumentException: false
@@ -98,27 +100,41 @@ spring.cloud:
       bindings:
         productEvents-in-0:
           consumer:
-            # Then the binder publishes it to a dead-letter topic of its own,
-            # named <topic>.dlq.<group>, and moves on to the products behind
-            # it. Nothing was recorded for it, so it could still be applied
+            # Then the module publishes it to a dead-letter topic of its own,
+            # named <topic>.dlq.<group>, and only once that topic has it
+            # commits the event and moves on to the products behind it. If
+            # the publish fails (the topic is missing, the broker refuses
+            # it), the event is NOT committed: the module logs one ERROR,
+            # waits back-off-max-interval (10 s) and Kafka delivers it again,
+            # until the dead-letter topic takes it. Nothing is dropped while
+            # Kafka keeps it, but the products behind it wait meanwhile: an
+            # ERROR every 10 to 35 s and the consumer group's growing lag are
+            # how that shows. The dead-letter topic gets it at least once: a
+            # crash between the publish and the commit publishes it again.
+            # Nothing was recorded for it, so it could still be applied
             # later -- but today nothing does that: nothing reads
             # catalog.product.dlq.inventory and inventory has no replay
             # listener, so product_index stays as it was until catalog's next
-            # snapshot of that product. And the publish is best effort: if
-            # the dead-letter topic does not take it, the binder only logs an
-            # error and the offset is committed.
+            # snapshot of that product.
+            # The module refuses to start unless this binding keeps a group,
+            # enable-dlq with a dlq-name other than its own topic,
+            # max-attempts of 2 or more and the default raw-bytes
+            # deserializers: without them it could not dead-letter safely.
             enable-dlq: true
             dlq-name: catalog.product.dlq.inventory
             configuration:
-              # The binder retries in the thread that polls Kafka. Kafka takes
-              # the partition away if the next poll is more than
-              # max.poll.interval.ms (5 min) away, and the batch in hand then
-              # comes back to be failed all over again -- for ever, with every
-              # product behind it waiting. One event per poll keeps the worst
-              # poll (the database away: four tries of up to 30 s each, 7 s of
-              # pauses, up to 122 s waiting on the dead-letter send) inside
-              # it, and commits each event's offset as it is done.
-              # ProductEventBindingTest adds it up.
+              # Kafka takes the partition away if the next poll is more than
+              # max.poll.interval.ms (5 min) away, and the events in hand
+              # then come back to be failed all over again -- for ever, with
+              # every product behind them waiting. Each retry is a new poll,
+              # so a poll holds one try of each event it hands over and then
+              # the wait before the next poll: a pause of 1 or 2 s, or after
+              # the last try the dead-letter publish (up to about 25 s) and,
+              # if that fails, the 10 s pause. One event per poll keeps the
+              # worst poll (the database away: one try of up to 30 s, then
+              # 25 + 10 s) at about 65 s, well inside it, and commits each
+              # event's offset as it is done. ProductEventBindingTest adds it
+              # up.
               max.poll.records: 1
 
 # The event log convention (shared/oriah-events). Inventory only receives here:
@@ -128,6 +144,13 @@ spring.cloud:
 # a newer one. Inventory publishes nothing yet (stock movements join the event
 # log in Phase 5), so outbox, relay and replay stay off.
 oriah.events.inbox.enabled: true
+# The topics inventory reads through the Inbox. The module dead-letters their
+# bindings itself (here only productEvents-in-0) and never commits an event
+# until its dead-letter topic has it; a binding on any other topic would keep
+# the Kafka binder's own handling, which drops an event whose dead-letter
+# publish fails. So the service refuses to start if a topic listed here is
+# read by no input binding (a typo) or by more than one.
+oriah.events.inbox.topics: catalog.product
 
 # ---------------------------------------------------------------------------
 # Local fallback for GET /api/v1/inventory/contact-info.
