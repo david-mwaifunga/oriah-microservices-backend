@@ -81,12 +81,22 @@ public class DefaultProductImageService implements ProductImageService {
                                        String declaredContentType, String altText) {
         requireLiveProduct(productId);
 
-        // Validated and re-encoded BEFORE anything is written, so a rejected
-        // upload leaves no half-created state to clean up.
-        StoredImage prepared = ProductImageIngest.accept(
-                productId, bytes, filename, declaredContentType, gate::admit);
+        // The cheap checks first, so a file that is refused (too big, not an image, cut
+        // short, silly dimensions) never asks for memory or waits behind a good upload, and
+        // so the figure the gate is asked for comes from the picture's own header.
+        long workingBytes = ProductImageIngest.workingBytes(bytes, declaredContentType);
 
-        return transaction.execute(status -> store(productId, prepared, altText));
+        // Held from the first decoded pixel until the object is stored and the row written:
+        // the encoded bytes stay live until the storage write ends, and if storage is slow
+        // they must not pile up outside the budget while the next picture is decoded.
+        try (IngestGate.Permit ignored = gate.admit(workingBytes)) {
+            // Validated and re-encoded BEFORE anything is written, so a rejected
+            // upload leaves no half-created state to clean up.
+            StoredImage prepared = ProductImageIngest.accept(
+                    productId, bytes, filename, declaredContentType);
+
+            return transaction.execute(status -> store(productId, prepared, altText));
+        }
     }
 
     /**

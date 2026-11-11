@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -22,18 +23,23 @@ import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.repository.ProductImageRepository;
 import com.oriah.catalog.repository.ProductRepository;
 import com.oriah.catalog.storage.IngestGate;
+import com.oriah.catalog.storage.ProductImageStorage;
 import com.oriah.catalog.storage.TestImages;
 import com.oriah.observability.ResourceNotFoundException;
 import com.zaxxer.hikari.HikariDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 
 /**
  * The upload and the working-memory gate, wired together in the running service.
@@ -57,7 +63,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ProductImageGateTest {
 
     private static final String STAFF = "user:catalog-test";
-    private static final long MAX_PIXELS = 40_000_000L;
+    /** The biggest 8-bit picture: 40 megapixels at 8 bytes a pixel = 306 MiB, the whole budget. */
+    private static final long BIG = 40_000_000L * 8;
 
     @Autowired
     private ProductImageService service;
@@ -76,6 +83,9 @@ class ProductImageGateTest {
 
     @Autowired
     private DataSource dataSource;
+
+    @MockitoSpyBean
+    private ProductImageStorage storage;
 
     @MockitoBean
     @SuppressWarnings("unused")
@@ -102,7 +112,7 @@ class ProductImageGateTest {
     @Test
     @DisplayName("an upload waiting for photograph memory holds no database connection")
     void waitingUploadHoldsNoConnection() throws Exception {
-        var everything = gate.admit(MAX_PIXELS);
+        var everything = gate.admit(BIG);
         try {
             Future<?> upload = pool.submit(() ->
                     service.upload(liveProduct, TestImages.jpeg(400, 300), "a.jpg", "image/jpeg", "waiting"));
@@ -132,7 +142,7 @@ class ProductImageGateTest {
     @Test
     @DisplayName("a product that does not exist is a 404 straight away, without waiting for photograph memory")
     void missingProductDoesNotQueue() {
-        var everything = gate.admit(MAX_PIXELS);
+        var everything = gate.admit(BIG);
         try {
             long t0 = System.nanoTime();
             assertThatThrownBy(() -> service.upload(
@@ -148,7 +158,7 @@ class ProductImageGateTest {
     @Test
     @DisplayName("a file that is not an image is a 400 straight away, without waiting for photograph memory")
     void badFileDoesNotQueue() {
-        var everything = gate.admit(MAX_PIXELS);
+        var everything = gate.admit(BIG);
         try {
             long t0 = System.nanoTime();
             assertThatThrownBy(() -> service.upload(
@@ -158,6 +168,30 @@ class ProductImageGateTest {
         } finally {
             everything.close();
         }
+    }
+
+    @Test
+    @DisplayName("the memory stays held until the object is stored, so slow storage cannot pile up finished pictures")
+    void memoryIsHeldThroughStorage() throws Exception {
+        var inStorage = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            inStorage.countDown();
+            release.await(30, TimeUnit.SECONDS);
+            return invocation.callRealMethod();
+        }).when(storage).put(anyString(), any(byte[].class), anyString());
+
+        Future<?> upload = pool.submit(() ->
+                service.upload(liveProduct, TestImages.jpeg(640, 480), "a.jpg", "image/jpeg", null));
+        assertThat(inStorage.await(30, TimeUnit.SECONDS)).as("the upload reached storage").isTrue();
+
+        // the picture has been decoded and re-encoded, but its encoded bytes are still live
+        // until the write finishes, so its share of the budget must still be held
+        assertThat(gate.availableMiB()).as("MiB free while the object is being stored").isLessThan(306);
+
+        release.countDown();
+        upload.get(30, TimeUnit.SECONDS);
+        assertThat(gate.availableMiB()).isEqualTo(306);
     }
 
     @Test

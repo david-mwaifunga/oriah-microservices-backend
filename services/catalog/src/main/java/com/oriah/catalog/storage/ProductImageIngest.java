@@ -14,6 +14,7 @@ import java.util.UUID;
 
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
+import javax.imageio.ImageTypeSpecifier;
 import javax.imageio.stream.ImageInputStream;
 
 import com.drew.imaging.ImageMetadataReader;
@@ -63,44 +64,30 @@ public final class ProductImageIngest {
     /** Beyond any plausible product photograph, and well short of a bomb. */
     private static final int MAX_DIMENSION = 8_000;
 
-    /**
-     * 40 MP: a 8000x5000 image is fine, 20000x20000 is not. Also the size
-     * {@link IngestGate} must be able to give memory for, so it reads this.
-     */
+    /** 40 MP: a 8000x5000 image is fine, 20000x20000 is not. */
     static final long MAX_PIXELS = 40_000_000L;
 
-    /** No limit on concurrent work: what the four-argument form (unit tests, tools) uses. */
-    private static final IngestGate.Admission UNLIMITED = pixels -> () -> { };
+    /**
+     * What an ordinary 8-bit picture costs in heap while it is worked on, per pixel: the
+     * decoded raster (3-4 bytes) and the upright copy (4). {@link IngestGate}'s smallest
+     * allowed budget is what the biggest such picture needs.
+     */
+    static final int BYTES_PER_PIXEL_8BIT = 8;
+
+    /** The upright copy is always an int raster (RGB or ARGB). */
+    private static final int UPRIGHT_COPY_BYTES = 4;
 
     private ProductImageIngest() {
     }
 
     /**
-     * {@link #accept(UUID, byte[], String, String, IngestGate.Admission)} with no limit on how
-     * many pictures are worked on at once. The service never calls this form.
+     * What the header says about an upload, once it has passed every check that costs
+     * (almost) nothing: size, signature, completeness and dimensions.
      */
-    public static StoredImage accept(UUID productId, byte[] uploaded,
-                                     String filename, String declaredContentType) {
-        return accept(productId, uploaded, filename, declaredContentType, UNLIMITED);
+    private record Checked(int width, int height, int bytesPerPixel) {
     }
 
-    /**
-     * @param declaredContentType the client's claim, used for NOTHING except
-     *                            the error message. It is a request header; the
-     *                            bytes are the fact.
-     * @param admission           asked for working memory once the picture has passed every
-     *                            cheap check and before anything is decoded, with the pixel
-     *                            count from the header. The decode, the rotation and the
-     *                            re-encode all happen while the permit is held, and it is
-     *                            given back however they end. A file refused by the cheap
-     *                            checks never asks, so it cannot queue behind a good upload.
-     * @throws IllegalArgumentException on anything that is not a storable
-     *         photograph, rendered as a 400 by the shared error contract
-     * @throws ImageIngestBusyException when the admission has no memory to spare (503)
-     */
-    public static StoredImage accept(UUID productId, byte[] uploaded,
-                                     String filename, String declaredContentType,
-                                     IngestGate.Admission admission) {
+    private static Checked checkCheaply(byte[] uploaded, String declaredContentType) {
         if (uploaded == null || uploaded.length == 0) {
             throw new IllegalArgumentException("the uploaded file is empty");
         }
@@ -123,42 +110,72 @@ public final class ProductImageIngest {
         }
 
         // Header only. No raster is allocated by this.
-        int[] declared = readDimensions(uploaded);
-        guardDimensions(declared[0], declared[1]);
+        int[] header = readHeader(uploaded);
+        guardDimensions(header[0], header[1]);
+        return new Checked(header[0], header[1], header[2]);
+    }
 
-        // From here the work is measured in pixels: the decoded raster is that many pixels,
-        // and the upright copy another. The permit covers all of it and goes back when
-        // the encoded bytes are in hand -- the rasters are garbage from then on.
-        try (IngestGate.Permit ignored = admission.admit((long) declared[0] * declared[1])) {
-            BufferedImage decoded = decode(uploaded);
-            // Re-checked after the decode: the header is itself client-supplied,
-            // and a file whose header lies about its size would otherwise slip the
-            // guard above and allocate anyway.
-            guardDimensions(decoded.getWidth(), decoded.getHeight());
+    /**
+     * How much heap {@link #accept} will need for this upload, worked out from the header
+     * alone, after the cheap checks: width x height x (the picture's own bytes a pixel, at
+     * least 4, plus 4 for the upright copy). An ordinary photograph is 8 bytes a pixel; a
+     * 16-bit-per-channel PNG is 12.
+     *
+     * <p>This is what {@link IngestGate} is asked for. A file the cheap checks refuse fails
+     * here with the same {@link IllegalArgumentException} {@code accept} would give it, so it
+     * never asks for, or waits for, any memory.
+     *
+     * @throws IllegalArgumentException on anything that is not a storable photograph
+     */
+    public static long workingBytes(byte[] uploaded, String declaredContentType) {
+        Checked checked = checkCheaply(uploaded, declaredContentType);
+        return (long) checked.width() * checked.height()
+                * (Math.max(checked.bytesPerPixel(), 4) + UPRIGHT_COPY_BYTES);
+    }
 
-            BufferedImage upright = applyOrientation(decoded, orientationOf(uploaded));
+    /**
+     * Validates, decodes, turns upright and re-encodes. Allocates about
+     * {@link #workingBytes} of heap while it runs, which is why the caller asks
+     * {@link IngestGate} for that much first.
+     *
+     * @param declaredContentType the client's claim, used for NOTHING except
+     *                            the error message. It is a request header; the
+     *                            bytes are the fact.
+     * @throws IllegalArgumentException on anything that is not a storable
+     *         photograph, rendered as a 400 by the shared error contract
+     */
+    public static StoredImage accept(UUID productId, byte[] uploaded,
+                                     String filename, String declaredContentType) {
+        checkCheaply(uploaded, declaredContentType);
 
-            // Alpha decides the output format, not the input format. A product
-            // photographed on a transparent background re-encoded as JPEG comes
-            // back on black, because JPEG has no alpha channel -- so a transparent
-            // source must stay PNG. An opaque source becomes JPEG, which is far
-            // smaller for photographs.
-            Format target = upright.getColorModel().hasAlpha() ? Format.PNG : Format.JPEG;
-            byte[] stored = encode(upright, target);
+        BufferedImage decoded = decode(uploaded);
+        // Re-checked after the decode: the header is itself client-supplied,
+        // and a file whose header lies about its size would otherwise slip the
+        // guard above and allocate anyway.
+        guardDimensions(decoded.getWidth(), decoded.getHeight());
 
-            String hash = sha256Hex(stored);
-            return new StoredImage(
-                    stored,
-                    target.contentType,
-                    upright.getWidth(),
-                    upright.getHeight(),
-                    hash,
-                    // Content-addressed and scoped to the product. The FILENAME is
-                    // deliberately absent: the same photograph uploaded twice under
-                    // different names is one object, and a client-supplied name in
-                    // a storage key is a path-traversal surface for no benefit.
-                    "products/" + productId + "/" + hash + "." + target.extension);
-        }
+        BufferedImage upright = applyOrientation(decoded, orientationOf(uploaded));
+
+        // Alpha decides the output format, not the input format. A product
+        // photographed on a transparent background re-encoded as JPEG comes
+        // back on black, because JPEG has no alpha channel -- so a transparent
+        // source must stay PNG. An opaque source becomes JPEG, which is far
+        // smaller for photographs.
+        Format target = upright.getColorModel().hasAlpha() ? Format.PNG : Format.JPEG;
+        byte[] stored = encode(upright, target);
+
+        String hash = sha256Hex(stored);
+        return new StoredImage(
+                stored,
+                target.contentType,
+                upright.getWidth(),
+                upright.getHeight(),
+                hash,
+                // Content-addressed and scoped to the product. The FILENAME is
+                // deliberately absent: the same photograph uploaded twice under
+                // different names is one object, and a client-supplied name in
+                // a storage key is a path-traversal surface for no benefit.
+                "products/" + productId + "/" + hash + "." + target.extension);
     }
 
     private static void guardDimensions(int width, int height) {
@@ -175,13 +192,19 @@ public final class ProductImageIngest {
     }
 
     /**
-     * Width and height without decoding the pixels.
+     * Width, height and the bytes a pixel of the decoded raster will take, without decoding
+     * the pixels.
      *
      * <p>This is the decompression-bomb guard. {@code ImageReader.getWidth}
      * parses the header only, so a gigapixel file is refused for a few bytes
-     * of work instead of a gigabyte of allocation.
+     * of work instead of a gigabyte of allocation. The pixel size comes from the reader's
+     * default destination type, which is what {@code ImageIO.read} will allocate; when the
+     * reader cannot say, 4 bytes a pixel is assumed (and {@link #workingBytes} never goes
+     * below that).
+     *
+     * @return {width, height, bytesPerPixel}
      */
-    private static int[] readDimensions(byte[] bytes) {
+    private static int[] readHeader(byte[] bytes) {
         try (ImageInputStream in = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
             Iterator<ImageReader> readers = ImageIO.getImageReaders(in);
             if (!readers.hasNext()) {
@@ -190,7 +213,18 @@ public final class ProductImageIngest {
             ImageReader reader = readers.next();
             try {
                 reader.setInput(in);
-                return new int[] { reader.getWidth(0), reader.getHeight(0) };
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                int bytesPerPixel = 4;
+                try {
+                    Iterator<ImageTypeSpecifier> types = reader.getImageTypes(0);
+                    if (types.hasNext()) {
+                        bytesPerPixel = (types.next().getColorModel().getPixelSize() + 7) / 8;
+                    }
+                } catch (IOException | RuntimeException e) {
+                    // not a reason to refuse a picture that is otherwise fine: keep the default
+                }
+                return new int[] { width, height, bytesPerPixel };
             } finally {
                 reader.dispose();
             }

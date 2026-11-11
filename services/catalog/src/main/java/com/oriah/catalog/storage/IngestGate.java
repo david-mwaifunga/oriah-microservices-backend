@@ -25,37 +25,30 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <h2>How it works</h2>
  *
- * A fixed budget of working memory, in MiB. Each upload asks for what its picture needs,
- * 8 bytes a pixel ({@link #workingMemoryMiB}): the decoded raster is 3-4 bytes a pixel and
- * the upright copy 4. While memory is free the upload goes straight in; otherwise it waits,
- * up to {@code max-wait}, in a queue that is itself limited to {@code max-waiting}. An upload
- * that cannot be served gets {@link ImageIngestBusyException}: 503 with {@code Retry-After}.
- * Waiting is first come, first served, so a big picture is not starved by small ones.
+ * A fixed budget of working memory, in MiB. Each upload asks for what its picture needs
+ * ({@link ProductImageIngest#workingBytes}: 8 bytes a pixel for an ordinary picture, 12 for a
+ * 16-bit PNG). While memory is free the upload goes straight in; otherwise it waits, up to
+ * {@code max-wait}, in a queue that is itself limited to {@code max-waiting}. An upload that
+ * cannot be served gets {@link ImageIngestBusyException}: 503 with {@code Retry-After}. A
+ * picture that needs more than the whole budget can never be served and is refused at once
+ * as a 400 that says so. Waiting is first come, first served, so a big picture is not
+ * starved by small ones.
  *
  * <p>The budget is the number to keep in step with the heap: 400 MiB is 70% of 575 MiB, which
  * leaves the rest of the service about 175 MiB beside it. A budget that does not even cover
- * the biggest picture is refused when the service starts.
+ * the biggest ordinary picture is refused when the service starts.
  *
  * <h2>Where it sits</h2>
  *
- * Outside the database transaction. An upload that waits here holds no connection, so
- * a queue of admin uploads cannot starve the storefront's reads
- * ({@code ProductImageGateTest} pins that).
+ * Outside the database transaction, and around everything that holds the picture's data: the
+ * work on it AND the write to object storage ({@code DefaultProductImageService.upload}).
+ * An upload that waits here holds no database connection, so a queue of admin uploads cannot
+ * starve the storefront's reads, and a slow object store cannot pile up finished pictures
+ * outside the budget ({@code ProductImageGateTest} pins both).
  */
 @Component
 @Slf4j
 public class IngestGate {
-
-    /** Hands out working memory for decoding a photograph. */
-    @FunctionalInterface
-    public interface Admission {
-        /**
-         * @param pixels width times height of the picture, from its header
-         * @return a permit to give back when the picture has been worked on
-         * @throws ImageIngestBusyException when there is no memory to spare
-         */
-        Permit admit(long pixels);
-    }
 
     /** Memory held for one upload; closing it gives it back (closing twice is harmless). */
     @FunctionalInterface
@@ -63,9 +56,6 @@ public class IngestGate {
         @Override
         void close();
     }
-
-    /** Decoded raster (3-4 bytes a pixel) plus the upright copy (4): 8, a little over. */
-    static final long BYTES_PER_PIXEL = 8;
 
     private static final long MIB = 1024 * 1024;
 
@@ -79,7 +69,8 @@ public class IngestGate {
             @Value("${catalog.images.ingest.working-memory-mib:400}") long workingMemoryMiB,
             @Value("${catalog.images.ingest.max-waiting:4}") int maxWaiting,
             @Value("${catalog.images.ingest.max-wait:20s}") Duration maxWait) {
-        long biggest = workingMemoryMiB(ProductImageIngest.MAX_PIXELS);
+        long biggest = workingMemoryMiB(
+                ProductImageIngest.MAX_PIXELS * ProductImageIngest.BYTES_PER_PIXEL_8BIT);
         if (workingMemoryMiB < biggest) {
             throw new IllegalArgumentException(
                     "catalog.images.ingest.working-memory-mib is " + workingMemoryMiB
@@ -103,26 +94,30 @@ public class IngestGate {
         this.maxWaitNanos = maxWait.toNanos();
     }
 
-    /** What a picture of this many pixels is charged, in whole MiB (never less than 1). */
-    public static long workingMemoryMiB(long pixels) {
-        long bytes = pixels * BYTES_PER_PIXEL;
+    /** What this much working memory is charged, in whole MiB (never less than 1). */
+    public static long workingMemoryMiB(long bytes) {
         return Math.max(1, (bytes + MIB - 1) / MIB);
     }
 
     /**
-     * Waits for working memory for a picture of this many pixels.
+     * Waits for this much working memory.
      *
+     * @param workingBytes what the picture needs ({@link ProductImageIngest#workingBytes})
+     * @throws IllegalArgumentException when the picture needs more than the whole budget
+     *         (a 400: no amount of waiting would help)
      * @throws ImageIngestBusyException when too many are already waiting, or the wait
      *         runs out, or the thread is interrupted (its interrupt flag is kept)
      */
-    public Permit admit(long pixels) {
-        if (pixels <= 0) {
-            throw new IllegalArgumentException("a picture has at least one pixel");
+    public Permit admit(long workingBytes) {
+        if (workingBytes <= 0) {
+            throw new IllegalArgumentException("a picture needs some working memory");
         }
-        long need = workingMemoryMiB(pixels);
+        long need = workingMemoryMiB(workingBytes);
         if (need > budgetMiB) {
             throw new IllegalArgumentException(
-                    "a picture of " + pixels + " pixels needs " + need + " MiB, more than the budget of " + budgetMiB);
+                    "this picture needs " + need + " MiB of working memory, more than the "
+                            + budgetMiB + " MiB catalog gives one picture; save it as an ordinary "
+                            + "8-bit picture or make it smaller");
         }
         int permits = (int) need;
 
@@ -133,8 +128,8 @@ public class IngestGate {
             }
             if (waiting.incrementAndGet() > maxWaiting) {
                 waiting.decrementAndGet();
-                log.warn("Photograph processing is full: {} waiting already, refusing a {}-pixel picture",
-                        maxWaiting, pixels);
+                log.warn("Photograph processing is full: {} waiting already, refusing a {} MiB picture",
+                        maxWaiting, permits);
                 throw new ImageIngestBusyException();
             }
             try {

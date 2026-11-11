@@ -2,11 +2,12 @@ package com.oriah.catalog.storage;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -29,8 +30,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class IngestGateTest {
 
-    /** 40 megapixels: the most the ingest accepts. */
-    private static final long MAX_PIXELS = 40_000_000L;
+    private static final long MIB = 1024 * 1024;
+
+    /** The biggest 8-bit picture: 40 megapixels at 8 bytes a pixel = 320,000,000 B = 306 MiB. */
+    private static final long BIG = 40_000_000L * 8;
 
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
@@ -40,16 +43,17 @@ class IngestGateTest {
     }
 
     @Test
-    @DisplayName("an image is charged 8 bytes a pixel of working memory, rounded up to a whole MiB")
-    void chargeIsEightBytesAPixel() {
-        // decoded raster (3-4 bytes) + the rotated copy (4 bytes)
-        assertThat(IngestGate.workingMemoryMiB(MAX_PIXELS)).isEqualTo(306);        // 320,000,000 B
-        assertThat(IngestGate.workingMemoryMiB(480_000)).isEqualTo(4);             // 3,840,000 B
-        assertThat(IngestGate.workingMemoryMiB(1)).isEqualTo(1);                   // never zero
+    @DisplayName("memory is charged in whole MiB, rounded up, never less than one")
+    void chargeIsWholeMiBRoundedUp() {
+        assertThat(IngestGate.workingMemoryMiB(BIG)).isEqualTo(306);
+        assertThat(IngestGate.workingMemoryMiB(480_000L * 8)).isEqualTo(4);   // 3,840,000 B
+        assertThat(IngestGate.workingMemoryMiB(MIB)).isEqualTo(1);
+        assertThat(IngestGate.workingMemoryMiB(MIB + 1)).isEqualTo(2);
+        assertThat(IngestGate.workingMemoryMiB(1)).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("a budget smaller than the biggest image is refused at start-up, not discovered at the first upload")
+    @DisplayName("a budget smaller than the biggest 8-bit picture is refused at start-up, not discovered at the first upload")
     void budgetMustFitTheBiggestImage() {
         assertThatThrownBy(() -> new IngestGate(305, 4, Duration.ofSeconds(1)))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -59,7 +63,7 @@ class IngestGateTest {
     }
 
     @Test
-    @DisplayName("nonsense settings are refused")
+    @DisplayName("nonsense settings and requests are refused")
     void settingsAreChecked() {
         assertThatThrownBy(() -> new IngestGate(400, -1, Duration.ofSeconds(1)))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -72,12 +76,27 @@ class IngestGateTest {
     }
 
     @Test
+    @DisplayName("a picture that needs more than the whole budget is refused with the sizes, not queued for ever")
+    void pictureBiggerThanTheBudgetIsRefusedAtOnce() {
+        var gate = new IngestGate(400, 4, Duration.ofSeconds(30));
+
+        long t0 = System.nanoTime();
+        assertThatThrownBy(() -> gate.admit(500 * MIB))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("500")
+                .hasMessageContaining("400");
+        assertThat(Duration.ofNanos(System.nanoTime() - t0)).isLessThan(Duration.ofSeconds(2));
+        assertThat(gate.availableMiB()).isEqualTo(400);
+    }
+
+    @Test
     @DisplayName("small images run side by side while the budget lasts")
     void smallImagesShareTheBudget() {
         var gate = new IngestGate(400, 4, Duration.ofSeconds(1));
-        // 12 megapixels = 92 MiB each; four fit in 400 MiB, a fifth would not
-        try (var a = gate.admit(12_000_000); var b = gate.admit(12_000_000);
-             var c = gate.admit(12_000_000); var d = gate.admit(12_000_000)) {
+        // 12 megapixels at 8 bytes = 92 MiB each; four fit in 400 MiB, a fifth would not
+        long twelveMp = 12_000_000L * 8;
+        try (var a = gate.admit(twelveMp); var b = gate.admit(twelveMp);
+             var c = gate.admit(twelveMp); var d = gate.admit(twelveMp)) {
             assertThat(gate.availableMiB()).isEqualTo(400 - 4 * 92);
         }
         assertThat(gate.availableMiB()).isEqualTo(400);
@@ -87,12 +106,12 @@ class IngestGateTest {
     @DisplayName("a second biggest-possible image waits for the first and then goes ahead")
     void secondBigImageWaitsForTheFirst() throws Exception {
         var gate = new IngestGate(400, 4, Duration.ofSeconds(10));
-        var first = gate.admit(MAX_PIXELS);
+        var first = gate.admit(BIG);
 
         var started = new CountDownLatch(1);
         Future<IngestGate.Permit> second = pool.submit(() -> {
             started.countDown();
-            return gate.admit(MAX_PIXELS);
+            return gate.admit(BIG);
         });
         started.await();
         waitUntil(() -> gate.waiting() == 1);
@@ -110,8 +129,8 @@ class IngestGateTest {
     @DisplayName("waiting longer than the limit is a 503 that says when to try again")
     void waitingTooLongIsA503() {
         var gate = new IngestGate(400, 4, Duration.ofMillis(200));
-        try (var first = gate.admit(MAX_PIXELS)) {
-            assertThatThrownBy(() -> gate.admit(MAX_PIXELS))
+        try (var first = gate.admit(BIG)) {
+            assertThatThrownBy(() -> gate.admit(BIG))
                     .isInstanceOfSatisfying(ImageIngestBusyException.class, e -> {
                         assertThat(e.getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
                         assertThat(e.getHeaders().getFirst("Retry-After")).isEqualTo("5");
@@ -127,23 +146,26 @@ class IngestGateTest {
     @DisplayName("when too many are already waiting, the next one is refused at once instead of queueing")
     void fullQueueRefusesAtOnce() throws Exception {
         var gate = new IngestGate(400, 2, Duration.ofSeconds(30));
-        var first = gate.admit(MAX_PIXELS);
+        var first = gate.admit(BIG);
 
-        var attempts = new AtomicInteger();
-        Future<?> w1 = pool.submit(() -> { attempts.incrementAndGet(); return gate.admit(MAX_PIXELS); });
-        Future<?> w2 = pool.submit(() -> { attempts.incrementAndGet(); return gate.admit(MAX_PIXELS); });
+        var done = new ExecutorCompletionService<IngestGate.Permit>(pool);
+        done.submit(() -> gate.admit(BIG));
+        done.submit(() -> gate.admit(BIG));
         waitUntil(() -> gate.waiting() == 2);
 
         long t0 = System.nanoTime();
-        assertThatThrownBy(() -> gate.admit(MAX_PIXELS)).isInstanceOf(ImageIngestBusyException.class);
+        assertThatThrownBy(() -> gate.admit(BIG)).isInstanceOf(ImageIngestBusyException.class);
         assertThat(Duration.ofNanos(System.nanoTime() - t0)).as("refused without waiting").isLessThan(Duration.ofSeconds(2));
 
         first.close();
-        // the two that were waiting are served, one after the other
-        var p1 = (IngestGate.Permit) w1.get(5, TimeUnit.SECONDS);
-        p1.close();
-        var p2 = (IngestGate.Permit) w2.get(5, TimeUnit.SECONDS);
-        p2.close();
+        // the two that were waiting are served one after the other, in whichever order the
+        // scheduler started them: take whichever is admitted first, give it back, then the other
+        var p1 = done.poll(5, TimeUnit.SECONDS);
+        assertThat(p1).as("one of the waiting uploads is admitted").isNotNull();
+        p1.get().close();
+        var p2 = done.poll(5, TimeUnit.SECONDS);
+        assertThat(p2).as("and then the other").isNotNull();
+        p2.get().close();
         assertThat(gate.availableMiB()).isEqualTo(400);
         assertThat(gate.waiting()).isZero();
     }
@@ -152,7 +174,7 @@ class IngestGateTest {
     @DisplayName("closing a permit twice gives the memory back once")
     void closeIsIdempotent() {
         var gate = new IngestGate(400, 4, Duration.ofSeconds(1));
-        var permit = gate.admit(12_000_000);
+        var permit = gate.admit(12_000_000L * 8);
         permit.close();
         permit.close();
         assertThat(gate.availableMiB()).isEqualTo(400);
@@ -162,11 +184,11 @@ class IngestGateTest {
     @DisplayName("a thread interrupted while waiting is refused and keeps its interrupt")
     void interruptedWhileWaiting() throws Exception {
         var gate = new IngestGate(400, 4, Duration.ofSeconds(30));
-        var first = gate.admit(MAX_PIXELS);
-        var interruptedAfter = new java.util.concurrent.atomic.AtomicBoolean();
+        var first = gate.admit(BIG);
+        var interruptedAfter = new AtomicBoolean();
         Future<?> waiter = pool.submit(() -> {
             try {
-                gate.admit(MAX_PIXELS);
+                gate.admit(BIG);
             } catch (ImageIngestBusyException expected) {
                 interruptedAfter.set(Thread.currentThread().isInterrupted());
             }

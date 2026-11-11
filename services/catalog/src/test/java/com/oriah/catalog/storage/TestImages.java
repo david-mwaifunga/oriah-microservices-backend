@@ -128,6 +128,20 @@ public final class TestImages {
         return encode(solid(width, height, Color.BLACK, false), "png");
     }
 
+    /**
+     * A 16-bit-per-channel RGBA PNG: 8 bytes a pixel once decoded, twice what an ordinary
+     * 8-bit picture costs, and still tiny on disk when it is a flat colour. Used to pin that
+     * the memory charged for an upload comes from the picture's real sample size and not from
+     * an assumption that every picture is 8-bit.
+     */
+    public static byte[] png16(int width, int height) {
+        var spec = javax.imageio.ImageTypeSpecifier.createInterleaved(
+                java.awt.color.ColorSpace.getInstance(java.awt.color.ColorSpace.CS_sRGB),
+                new int[] {0, 1, 2, 3}, java.awt.image.DataBuffer.TYPE_USHORT, true, false);
+        BufferedImage image = spec.createBufferedImage(width, height);
+        return encode(image, "png");
+    }
+
     /** A JPEG truncated mid-stream, as an interrupted upload would be. */
     public static byte[] truncatedJpeg() {
         byte[] full = jpeg(200, 200);
