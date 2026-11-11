@@ -31,6 +31,20 @@ spring:
           # working copy with what's on the remote. Dev-friendly; in
           # prod we'd usually leave it false and gate updates via PRs.
           force-pull: true
+          # Fetch from the repository at most once in this many SECONDS, and answer every
+          # other request from the local clone. Spring's default, 0, means a fetch on every
+          # request, and on 2026-11-11 that took ~10 s each here (the repository is a Windows
+          # folder mounted into the container): thirteen services asking at once queued behind
+          # one another, the last waited past the clients' 185 s limit, and died with
+          # "Read timed out" before they started. A change committed to the repository reaches
+          # the services at most this many seconds later (ConfigServerGitBackendTest pins it).
+          refresh-rate: ${CONFIG_REPO_REFRESH_RATE:10}
+          # Clone when the server STARTS, not at the first request: the first service to ask
+          # then gets an answer as fast as the last, and a wrong repository path stops the
+          # server at once instead of failing every service later. (A file: URI is read in place
+          # and never cloned, so this and the refresh rate do nothing for it: the compose stack
+          # therefore gives CONFIG_REPO_URI as a plain path.)
+          clone-on-start: ${CONFIG_REPO_CLONE_ON_START:true}
           # Skip SSL verification only for self-signed git hosts (no-op
           # for file:// URLs but doesn't hurt to declare).
           skip-ssl-validation: true
