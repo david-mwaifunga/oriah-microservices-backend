@@ -132,6 +132,27 @@ spring:
           # need a live Keycloak.
           issuer-uri: http://localhost:7080/realms/oriah
 
+# -------------------------------------------------------------------------
+# How much photograph catalog works on at once (IngestGate).
+#
+# An upload is decoded into a raster, turned upright into a second one and re-encoded:
+# 8 bytes a pixel while it is worked on, so the biggest picture accepted (8000 x 5000)
+# needs about 306 MiB. Catalog's heap is 575 MiB (a 1 GiB container), and 124 of those at
+# once killed it with OutOfMemoryError. Uploads that cannot be served get 503 + Retry-After.
+#
+# working-memory-mib: the budget. Keep it about 70% of the heap; raise it only together
+#   with the container's memory limit. It must cover one biggest picture (service refuses
+#   to start otherwise).
+# max-waiting:        uploads allowed to queue for memory; the next is refused at once.
+# max-wait:           how long a queued upload waits before it is refused.
+# -------------------------------------------------------------------------
+catalog:
+  images:
+    ingest:
+      working-memory-mib: 400
+      max-waiting: 4
+      max-wait: 20s
+
 server:
   # Port stays local — different services need different ports on the
   # same host during dev, and the Config Server can't help here because

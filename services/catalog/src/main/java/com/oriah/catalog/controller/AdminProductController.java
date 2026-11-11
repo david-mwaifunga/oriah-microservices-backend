@@ -317,6 +317,12 @@ public class AdminProductController {
     @ApiResponse(responseCode = "404", description = "No product with that id",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503",
+            description = "Catalog has no room to work on another photograph right now (it "
+                    + "limits how many it decodes at once). Nothing was stored. Try again "
+                    + "after the number of seconds in the Retry-After header.",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<ProductImageResponse> uploadImage(
             @PathVariable("id") UUID id,
             @RequestPart("file") MultipartFile file,

@@ -5,9 +5,11 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.catalog.dto.ProductImageResponse;
 import com.oriah.catalog.model.Product;
@@ -15,6 +17,7 @@ import com.oriah.catalog.model.ProductImage;
 import com.oriah.catalog.model.ProductStatus;
 import com.oriah.catalog.repository.ProductImageRepository;
 import com.oriah.catalog.repository.ProductRepository;
+import com.oriah.catalog.storage.IngestGate;
 import com.oriah.catalog.storage.ProductImageIngest;
 import com.oriah.catalog.storage.ProductImageStorage;
 import com.oriah.catalog.storage.StoredImage;
@@ -49,30 +52,58 @@ public class DefaultProductImageService implements ProductImageService {
     private final ProductRepository products;
     private final ProductImageRepository images;
     private final ProductImageStorage storage;
+    private final IngestGate gate;
+    private final TransactionTemplate transaction;
 
     public DefaultProductImageService(ProductRepository products,
                                       ProductImageRepository images,
-                                      ProductImageStorage storage) {
+                                      ProductImageStorage storage,
+                                      IngestGate gate,
+                                      PlatformTransactionManager transactionManager) {
         this.products = products;
         this.images = images;
         this.storage = storage;
+        this.gate = gate;
+        this.transaction = new TransactionTemplate(transactionManager);
     }
 
+    /**
+     * Not {@code @Transactional}, on purpose. The picture is decoded, turned upright and
+     * re-encoded first, and that can wait for working memory behind other uploads
+     * ({@link IngestGate}). A transaction opened before it would hold a database connection
+     * for the whole of that wait, and a few queued admin uploads could then use up the pool
+     * the storefront reads from. So: a cheap look at the product (404 before any memory is
+     * spent), the picture work with no transaction open, and only then one short transaction
+     * that writes the object and the row.
+     */
     @Override
-    @Transactional
     public ProductImageResponse upload(UUID productId, byte[] bytes, String filename,
                                        String declaredContentType, String altText) {
-        // A deleted product is not found: its objects were swept when it was
-        // deleted, so new bytes would be stored for a product nobody can see.
-        Product product = products.findById(productId)
-                .filter(p -> !p.isDeleted())
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "Product", "id", productId.toString()));
+        requireLiveProduct(productId);
 
         // Validated and re-encoded BEFORE anything is written, so a rejected
         // upload leaves no half-created state to clean up.
         StoredImage prepared = ProductImageIngest.accept(
-                productId, bytes, filename, declaredContentType);
+                productId, bytes, filename, declaredContentType, gate::admit);
+
+        return transaction.execute(status -> store(productId, prepared, altText));
+    }
+
+    /**
+     * A deleted product is not found: its objects were swept when it was
+     * deleted, so new bytes would be stored for a product nobody can see.
+     */
+    private Product requireLiveProduct(UUID productId) {
+        return products.findById(productId)
+                .filter(p -> !p.isDeleted())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Product", "id", productId.toString()));
+    }
+
+    private ProductImageResponse store(UUID productId, StoredImage prepared, String altText) {
+        // Read again inside the transaction: the product may have been deleted while the
+        // picture was being worked on, and this is the copy the new row attaches to.
+        Product product = requireLiveProduct(productId);
 
         // Content-addressed, so an admin who clicks upload twice gets the
         // existing image back rather than a second identical gallery entry.

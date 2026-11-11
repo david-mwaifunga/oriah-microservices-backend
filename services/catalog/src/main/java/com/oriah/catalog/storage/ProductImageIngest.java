@@ -63,21 +63,44 @@ public final class ProductImageIngest {
     /** Beyond any plausible product photograph, and well short of a bomb. */
     private static final int MAX_DIMENSION = 8_000;
 
-    /** 40 MP: a 8000x5000 image is fine, 20000x20000 is not. */
-    private static final long MAX_PIXELS = 40_000_000L;
+    /**
+     * 40 MP: a 8000x5000 image is fine, 20000x20000 is not. Also the size
+     * {@link IngestGate} must be able to give memory for, so it reads this.
+     */
+    static final long MAX_PIXELS = 40_000_000L;
+
+    /** No limit on concurrent work: what the four-argument form (unit tests, tools) uses. */
+    private static final IngestGate.Admission UNLIMITED = pixels -> () -> { };
 
     private ProductImageIngest() {
+    }
+
+    /**
+     * {@link #accept(UUID, byte[], String, String, IngestGate.Admission)} with no limit on how
+     * many pictures are worked on at once. The service never calls this form.
+     */
+    public static StoredImage accept(UUID productId, byte[] uploaded,
+                                     String filename, String declaredContentType) {
+        return accept(productId, uploaded, filename, declaredContentType, UNLIMITED);
     }
 
     /**
      * @param declaredContentType the client's claim, used for NOTHING except
      *                            the error message. It is a request header; the
      *                            bytes are the fact.
+     * @param admission           asked for working memory once the picture has passed every
+     *                            cheap check and before anything is decoded, with the pixel
+     *                            count from the header. The decode, the rotation and the
+     *                            re-encode all happen while the permit is held, and it is
+     *                            given back however they end. A file refused by the cheap
+     *                            checks never asks, so it cannot queue behind a good upload.
      * @throws IllegalArgumentException on anything that is not a storable
      *         photograph, rendered as a 400 by the shared error contract
+     * @throws ImageIngestBusyException when the admission has no memory to spare (503)
      */
     public static StoredImage accept(UUID productId, byte[] uploaded,
-                                     String filename, String declaredContentType) {
+                                     String filename, String declaredContentType,
+                                     IngestGate.Admission admission) {
         if (uploaded == null || uploaded.length == 0) {
             throw new IllegalArgumentException("the uploaded file is empty");
         }
@@ -103,34 +126,39 @@ public final class ProductImageIngest {
         int[] declared = readDimensions(uploaded);
         guardDimensions(declared[0], declared[1]);
 
-        BufferedImage decoded = decode(uploaded);
-        // Re-checked after the decode: the header is itself client-supplied,
-        // and a file whose header lies about its size would otherwise slip the
-        // guard above and allocate anyway.
-        guardDimensions(decoded.getWidth(), decoded.getHeight());
+        // From here the work is measured in pixels: the decoded raster is that many pixels,
+        // and the upright copy another. The permit covers all of it and goes back when
+        // the encoded bytes are in hand -- the rasters are garbage from then on.
+        try (IngestGate.Permit ignored = admission.admit((long) declared[0] * declared[1])) {
+            BufferedImage decoded = decode(uploaded);
+            // Re-checked after the decode: the header is itself client-supplied,
+            // and a file whose header lies about its size would otherwise slip the
+            // guard above and allocate anyway.
+            guardDimensions(decoded.getWidth(), decoded.getHeight());
 
-        BufferedImage upright = applyOrientation(decoded, orientationOf(uploaded));
+            BufferedImage upright = applyOrientation(decoded, orientationOf(uploaded));
 
-        // Alpha decides the output format, not the input format. A product
-        // photographed on a transparent background re-encoded as JPEG comes
-        // back on black, because JPEG has no alpha channel -- so a transparent
-        // source must stay PNG. An opaque source becomes JPEG, which is far
-        // smaller for photographs.
-        Format target = upright.getColorModel().hasAlpha() ? Format.PNG : Format.JPEG;
-        byte[] stored = encode(upright, target);
+            // Alpha decides the output format, not the input format. A product
+            // photographed on a transparent background re-encoded as JPEG comes
+            // back on black, because JPEG has no alpha channel -- so a transparent
+            // source must stay PNG. An opaque source becomes JPEG, which is far
+            // smaller for photographs.
+            Format target = upright.getColorModel().hasAlpha() ? Format.PNG : Format.JPEG;
+            byte[] stored = encode(upright, target);
 
-        String hash = sha256Hex(stored);
-        return new StoredImage(
-                stored,
-                target.contentType,
-                upright.getWidth(),
-                upright.getHeight(),
-                hash,
-                // Content-addressed and scoped to the product. The FILENAME is
-                // deliberately absent: the same photograph uploaded twice under
-                // different names is one object, and a client-supplied name in
-                // a storage key is a path-traversal surface for no benefit.
-                "products/" + productId + "/" + hash + "." + target.extension);
+            String hash = sha256Hex(stored);
+            return new StoredImage(
+                    stored,
+                    target.contentType,
+                    upright.getWidth(),
+                    upright.getHeight(),
+                    hash,
+                    // Content-addressed and scoped to the product. The FILENAME is
+                    // deliberately absent: the same photograph uploaded twice under
+                    // different names is one object, and a client-supplied name in
+                    // a storage key is a path-traversal surface for no benefit.
+                    "products/" + productId + "/" + hash + "." + target.extension);
+        }
     }
 
     private static void guardDimensions(int width, int height) {
