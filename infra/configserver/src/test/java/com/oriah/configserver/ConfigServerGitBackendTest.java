@@ -86,6 +86,16 @@ class ConfigServerGitBackendTest {
     }
 
     @Test
+    @DisplayName("it waits up to 60 s for the repository to answer, not Spring's 5 s, because the mount is slow")
+    void gitTimeoutIsGenerous() {
+        // Found 2026-11-11: cloning a 0.1 MB repository from the folder mounted into the
+        // container (a Windows folder under OneDrive) took longer than the default 5 s to start
+        // sending, the clone at start failed with "Read timed out after 5,000 ms", and the
+        // config server exited before it served anything.
+        assertThat(repository.getTimeout()).isEqualTo(60);
+    }
+
+    @Test
     @DisplayName("a change committed to the repository is not fetched again within the refresh rate")
     void secondRequestIsServedFromTheLocalClone() throws Exception {
         mvc.perform(get("/orders/default"))

@@ -45,6 +45,12 @@ spring:
           # and never cloned, so this and the refresh rate do nothing for it: the compose stack
           # therefore gives CONFIG_REPO_URI as a plain path.)
           clone-on-start: ${CONFIG_REPO_CLONE_ON_START:true}
+          # Seconds to wait for the repository to answer. Spring's default is 5, and cloning a
+          # 0.1 MB repository from the folder mounted into the container (a Windows folder under
+          # OneDrive) took longer than that to start sending: "Read timed out after 5,000 ms",
+          # and the server exited at start (2026-11-11). It only matters at the clone and the
+          # fetch every refresh-rate seconds, never on a request.
+          timeout: ${CONFIG_REPO_TIMEOUT:60}
           # Skip SSL verification only for self-signed git hosts (no-op
           # for file:// URLs but doesn't hurt to declare).
           skip-ssl-validation: true
