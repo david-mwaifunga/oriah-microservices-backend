@@ -25,12 +25,14 @@ import com.oriah.catalog.events.ProductCreatedEvent;
 import com.oriah.catalog.events.VariantPayload;
 import com.oriah.catalog.events.ProductDeletedEvent;
 import com.oriah.catalog.events.ProductUpdatedEvent;
+import com.oriah.catalog.constants.CatalogConstants;
 import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.ProductTypeRegistry;
 import com.oriah.catalog.model.AttributeValidationException;
 import com.oriah.catalog.model.Category;
 import com.oriah.catalog.repository.CategoryRepository;
 import com.oriah.catalog.model.Product;
+import com.oriah.catalog.model.ProductKind;
 import com.oriah.catalog.model.ProductSort;
 import com.oriah.catalog.model.ProductStatus;
 import com.oriah.catalog.model.ProductVariant;
@@ -190,6 +192,9 @@ public class ProductService {
                 // would confirm that the id exists, which is exactly what an
                 // unpublished product should not confirm.
                 .filter(product -> product.status() == ProductStatus.ACTIVE)
+                // Packaging is never on the storefront. It cannot be ACTIVE, so
+                // the line above already hides it; this one says so itself.
+                .filter(product -> product.kind() == ProductKind.SELLABLE)
                 // MAPPED HERE, inside the transaction, and that is the whole
                 // point of returning a DTO rather than the entity. The wire
                 // format now reads variants, images and categories, all of
@@ -302,6 +307,43 @@ public class ProductService {
                 .filter(product -> !product.isDeleted())
                 .map(product -> ProductMapper.toResponse(
                         new ProductWithAvailability(product, lookupAvailability(product.id()))));
+    }
+
+    /**
+     * The operator's list: every product that is not deleted, whatever its status
+     * or kind, newest first.
+     *
+     * <p>Rows are the admin projection -- variants included, no availability. An
+     * inventory call per row would turn one screen into N downstream calls, and the
+     * operator reading this list is choosing a product, not checking its stock.
+     *
+     * @param text matched as plain text, case-insensitively, against the title and
+     *             every variant's SKU
+     * @param size clamped to {@link CatalogConstants#ADMIN_MAX_PAGE_SIZE}; a page
+     *             past the end is simply empty
+     */
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> findForAdmin(ProductKind kind, ProductStatus status, String text,
+                                              int page, int size) {
+        // A NUL cannot be stored by PostgreSQL, so searching for one would reach
+        // the database and come back as a "conflicts with existing data" 409. It
+        // is the caller's mistake: a 400 that says so.
+        if (text != null && text.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("q must not contain the NUL character");
+        }
+        int pageNumber = Math.max(page, 0);
+        int pageSize = Math.min(Math.max(size, 1), CatalogConstants.ADMIN_MAX_PAGE_SIZE);
+
+        List<UUID> ids = repository.findAdminIds(kind, status, text, pageNumber, pageSize);
+        long total = repository.countAdmin(kind, status, text);
+        List<ProductResponse> content = repository.findAllWithDetailByIdIn(ids).stream()
+                .map(ProductMapper::toAdminResponse)
+                .toList();
+
+        log.debug("findForAdmin kind={} status={} textGiven={} -> {} of {}",
+                kind, status, text != null && !text.isBlank(), content.size(), total);
+        return new org.springframework.data.domain.PageImpl<>(
+                content, org.springframework.data.domain.PageRequest.of(pageNumber, pageSize), total);
     }
 
     /**
@@ -468,11 +510,36 @@ public class ProductService {
     public ProductResponse create(String title, String description, List<String> tags,
                                   String typeCode, Map<String, Object> attributes,
                                   List<UUID> categoryIds, UUID primaryCategoryId, String actor) {
+        return create(title, description, tags, typeCode, attributes, categoryIds, primaryCategoryId,
+                null, null, actor);
+    }
+
+    /**
+     * As above, for a given {@link ProductKind} and with the axes its variants
+     * vary on.
+     *
+     * @param kind        null means SELLABLE, so every caller that predates
+     *                    packaging is unchanged. Packaging is typed PACKAGING and
+     *                    is never published or priced; see {@link ProductKind}.
+     * @param optionNames the axes the variants vary on ({@code ["Ring Size"]});
+     *                    null or empty means the product does not vary. Declared
+     *                    here, before any variant exists, because each variant's
+     *                    options must match them exactly.
+     */
+    @Transactional
+    public ProductResponse create(String title, String description, List<String> tags,
+                                  String typeCode, Map<String, Object> attributes,
+                                  List<UUID> categoryIds, UUID primaryCategoryId,
+                                  ProductKind kind, List<String> optionNames, String actor) {
         // Tag-count logging is friendlier than printing the full list: keeps
         // the line scannable and avoids leaking large payloads at INFO.
         int tagCount = tags == null ? 0 : tags.size();
-        Product product = new Product(title, description, tags);
+        Product product = new Product(UUID.randomUUID(), title, description, tags,
+                kind == null ? ProductKind.SELLABLE : kind);
         applyTypeAndAttributes(product, typeCode, attributes);
+        if (optionNames != null) {
+            product.declareOptionNames(optionNames);
+        }
         // Applied HERE as well as on update, and the omission was a live bug:
         // the field was on the DTO and wired only into the update path, so a
         // create carrying categoryIds was accepted and silently filed the
@@ -487,7 +554,8 @@ public class ProductService {
         lockSlugAssignment();
         product.assignSlug(freeSlugFor(product));
         Product saved = repository.saveAndFlush(product);
-        log.info("Created product id={} title=\"{}\" tagCount={}", saved.id(), saved.title(), tagCount);
+        log.info("Created product id={} title=\"{}\" kind={} tagCount={}",
+                saved.id(), saved.title(), saved.kind(), tagCount);
         // No row lock to take first: the row was inserted by this transaction a
         // moment ago, nobody else can see it until the commit, and the insert
         // already holds it. Tag list is copied via List.copyOf to decouple
@@ -504,7 +572,8 @@ public class ProductService {
                 // correct -- there is nothing purchasable to track stock
                 // against yet. The variants arrive on the first
                 // product.updated after a variant is added.
-                variantPayloads(saved)
+                variantPayloads(saved),
+                saved.kind().name()
         ), actor);
         // Mapped inside the transaction like every other read path here. A
         // freshly constructed product would in fact survive mapping outside
@@ -604,9 +673,24 @@ public class ProductService {
             // Track which fields actually changed so the log line is useful
             // when investigating "why did this product's title change?"
             StringBuilder changedFields = new StringBuilder();
+            // The kind is fixed at creation. Naming it again is harmless; naming
+            // a different one is refused here, before anything else is applied,
+            // so the request changes nothing and says why.
+            if (request.kind() != null && request.kind() != product.kind()) {
+                throw new IllegalArgumentException(
+                        "a product's kind is fixed when it is created: this one is "
+                                + product.kind() + " and cannot become " + request.kind());
+            }
             if (request.title() != null) {
                 product.updateTitle(request.title());
                 changedFields.append("title ");
+            }
+            // Refused by the product while an active variant's options would
+            // stop matching, naming that variant (400), so a rename of an axis
+            // can never leave a variant the storefront cannot build a selector for.
+            if (request.optionNames() != null) {
+                product.declareOptionNames(request.optionNames());
+                changedFields.append("optionNames ");
             }
             if (request.description() != null) {
                 product.updateDescription(request.description());
@@ -687,8 +771,11 @@ public class ProductService {
      */
     private void applyTypeAndAttributes(Product product, String typeCode,
                                         Map<String, Object> attributes) {
+        // Absent means the type this product already has: the constructor
+        // gave a new one the type its kind calls for (JEWELLERY for something
+        // for sale, PACKAGING for packaging), so "absent" is right for both.
         String code = typeCode == null || typeCode.isBlank()
-                ? ProductTypeRegistry.JEWELLERY
+                ? product.productTypeCode()
                 : typeCode.trim().toUpperCase();
 
         if (!ProductTypeRegistry.knownCodes().contains(code)) {
@@ -738,7 +825,8 @@ public class ProductService {
                 product.tags() == null ? List.of() : List.copyOf(product.tags()),
                 product.productTypeCode(),
                 product.status().name(),
-                variantPayloads(product));
+                variantPayloads(product),
+                product.kind().name());
     }
 
     /**

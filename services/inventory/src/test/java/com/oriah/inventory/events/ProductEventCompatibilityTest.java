@@ -189,6 +189,43 @@ class ProductEventCompatibilityTest {
     }
 
     @Test
+    @DisplayName("Phase 3's kind field (SELLABLE or PACKAGING) is tolerated: the event still binds, variants included")
+    void kindFieldIsTolerated() throws Exception {
+        // Catalog appends "kind" as the last field of product.created and
+        // product.updated. Inventory does not read it yet: packaging is stocked
+        // like anything else, so its variants register exactly as a ring's do
+        // (ProductEventConsumerTest drives the consumer for that; this test only
+        // proves the record binds a payload that carries the field).
+        // Phase 5 starts reading it, from the snapshot catalog then re-sends.
+        String json = """
+                {
+                  "id": "11111111-1111-4111-8111-111111111111",
+                  "title": "Gift box, medium",
+                  "tags": [],
+                  "productType": "PACKAGING",
+                  "status": "DRAFT",
+                  "variants": [
+                    {
+                      "variantId": "22222222-2222-4222-8222-222222222222",
+                      "sku": "BOX-M",
+                      "title": "Gift box, medium",
+                      "unitPrice": 0.00,
+                      "currency": "ZMW",
+                      "active": true
+                    }
+                  ],
+                  "kind": "PACKAGING"
+                }
+                """;
+
+        var event = mapper.readValue(json, ProductCreatedEvent.class);
+
+        assertThat(event.variants()).hasSize(1);
+        assertThat(event.variants().getFirst().sku()).isEqualTo("BOX-M");
+        assertThat(event.productType()).isEqualTo("PACKAGING");
+    }
+
+    @Test
     @DisplayName("a product.updated carrying variants deserialises")
     void updatedWithVariants() throws Exception {
         String json = """

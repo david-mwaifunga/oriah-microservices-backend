@@ -201,9 +201,9 @@ class ProductSlugCollisionTest {
         // so a newly created product can collide with one it has never seen.
         jdbc.execute("""
                 INSERT INTO products (id, title, slug, status, product_type_code,
-                                      attributes, option_names, is_deleted)
+                                      attributes, option_names, is_deleted, kind)
                 VALUES (gen_random_uuid(), 'Legacy Piece', 'legacy-piece', 'DRAFT',
-                        'JEWELLERY', '{}'::jsonb, '{}', false)
+                        'JEWELLERY', '{}'::jsonb, '{}', false, 'SELLABLE')
                 """);
 
         var created = service.create("Legacy Piece", null, List.of(), STAFF);

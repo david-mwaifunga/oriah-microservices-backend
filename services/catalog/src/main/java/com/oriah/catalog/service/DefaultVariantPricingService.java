@@ -13,6 +13,7 @@ import com.oriah.catalog.dto.VariantPricingResponse;
 import com.oriah.catalog.dto.VariantPricingResponse.Entry;
 import com.oriah.catalog.dto.VariantPricingResponse.Status;
 import com.oriah.catalog.model.Product;
+import com.oriah.catalog.model.ProductKind;
 import com.oriah.catalog.model.ProductStatus;
 import com.oriah.catalog.model.ProductVariant;
 import com.oriah.catalog.repository.ProductVariantRepository;
@@ -105,6 +106,14 @@ public class DefaultVariantPricingService implements VariantPricingService {
             return Entry.unknown(requestedId);
         }
         Product product = variant.product();
+        // Packaging is not on sale and never in a shopper's bag, so it is
+        // answered as if it did not exist: no product id, no title, no price.
+        // UNPUBLISHED would hand a caller who guessed a variant id the name of
+        // the box, which a draft ring needs (a bag says which line is gone) and
+        // a box never does.
+        if (product.kind() != ProductKind.SELLABLE) {
+            return Entry.unknown(requestedId);
+        }
         // NOTE: a DELETED product is deliberately NOT special-cased here. It is
         // archived, so it falls into the UNPUBLISHED branch below along with
         // drafts and withdrawn products -- which is the whole point of making

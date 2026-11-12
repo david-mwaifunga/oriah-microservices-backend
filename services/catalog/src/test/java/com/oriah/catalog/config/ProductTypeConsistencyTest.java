@@ -45,13 +45,13 @@ class ProductTypeConsistencyTest {
     }
 
     @Test
-    @DisplayName("the real registry agrees with what V3 seeded")
+    @DisplayName("the real registry agrees with what the migrations seeded")
     void theActualRegistryMatchesTheActualMigration() {
-        // V3 inserts exactly JEWELLERY and WATCH. This is the assertion that
-        // would catch someone adding a type to Java without the migration, or
-        // the reverse, at build time rather than at boot.
+        // V3 inserts JEWELLERY and WATCH, and V5 adds PACKAGING. This is the
+        // assertion that would catch someone adding a type to Java without the
+        // migration, or the reverse, at build time rather than at boot.
         assertThatCode(() -> ProductTypeConsistency.verify(
-                Set.of("JEWELLERY", "WATCH"), ProductTypeRegistry.knownCodes()))
+                Set.of("JEWELLERY", "WATCH", "PACKAGING"), ProductTypeRegistry.knownCodes()))
                 .doesNotThrowAnyException();
     }
 

@@ -153,6 +153,29 @@ class VariantOptionsTest {
         }
 
         @Test
+        @DisplayName("two keys that normalise to the same name are refused, not merged with one value silently winning")
+        void collidingKeysAreRefused() {
+            // "Size" and " Size " are different raw keys in a JSON object but the
+            // same axis once trimmed. Merged into one map entry, the later value
+            // overwrote the earlier and the variant was stored with an option
+            // combination nobody submitted.
+            var trimmed = new LinkedHashMap<String, String>();
+            trimmed.put("Size", "M");
+            trimmed.put(" Size ", "L");
+            assertThatThrownBy(() -> VariantOptions.validated(trimmed))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Size");
+
+            // The same through Unicode: precomposed e-acute and e + combining acute.
+            var composed = new LinkedHashMap<String, String>();
+            composed.put("Café", "A");
+            composed.put("Café", "B");
+            assertThatThrownBy(() -> VariantOptions.validated(composed))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("more than once");
+        }
+
+        @Test
         @DisplayName("keys and values longer than 64 characters are rejected")
         void lengthCapped() {
             assertThatThrownBy(() -> VariantOptions.validated(map("k".repeat(65), "v")))

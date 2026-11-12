@@ -57,6 +57,10 @@ public class Product extends BaseEntity {
     @Column
     private String description;
 
+    // Batched: tags are fetched eagerly, so a page of products would otherwise
+    // run one extra select per product for its tags. The admin list pages up to
+    // 100 rows, which made that visible.
+    @BatchSize(size = 50)
     @ElementCollection(fetch = FetchType.EAGER)
     @CollectionTable(name = "product_tags", joinColumns = @JoinColumn(name = "product_id"))
     @Column(name = "tag", nullable = false)
@@ -105,6 +109,17 @@ public class Product extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private ProductStatus status;
+
+    /**
+     * SELLABLE or PACKAGING, set at creation and never changed ({@code
+     * updatable = false}, so not even a stray setter could change it later).
+     * The database also refuses a PACKAGING row that is ACTIVE
+     * ({@code V5__product_kind.sql}), so the storefront rule does not rest on
+     * this class alone.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, updatable = false)
+    private ProductKind kind;
 
     /**
      * The category used for breadcrumbs and the canonical URL. Must also be a
@@ -165,9 +180,21 @@ public class Product extends BaseEntity {
      * factory methods across packages.
      */
     public Product(UUID id, String title, String description, List<String> tags) {
+        this(id, title, description, tags, ProductKind.SELLABLE);
+    }
+
+    /**
+     * As above, for a given {@link ProductKind}. Kind is fixed here and never
+     * changed afterwards.
+     */
+    public Product(UUID id, String title, String description, List<String> tags, ProductKind kind) {
         if (title == null || title.isBlank()) {
             throw new IllegalArgumentException("title must not be blank");
         }
+        if (kind == null) {
+            throw new IllegalArgumentException("kind must not be null");
+        }
+        this.kind = kind;
         this.id = id;
         this.title = title;
         this.description = description;
@@ -187,7 +214,9 @@ public class Product extends BaseEntity {
         //                         migration. The service resolves collisions,
         //                         since the column is UNIQUE.
         this.status = ProductStatus.DRAFT;
-        this.productTypeCode = ProductTypeRegistry.JEWELLERY;
+        this.productTypeCode = kind == ProductKind.PACKAGING
+                ? ProductTypeRegistry.PACKAGING
+                : ProductTypeRegistry.JEWELLERY;
         this.slug = Slug.from(title);
     }
 
@@ -239,6 +268,11 @@ public class Product extends BaseEntity {
     // Phase 7: type, taxonomy, variants, images
     // ------------------------------------------------------------------
 
+    /** What this entry is for; fixed when it is created. See {@link ProductKind}. */
+    public ProductKind kind() {
+        return kind;
+    }
+
     public String slug() {
         return slug;
     }
@@ -289,6 +323,20 @@ public class Product extends BaseEntity {
      * attributes a product may carry are entirely a function of its type.
      */
     public void applyType(String newTypeCode, Map<String, Object> newAttributes) {
+        // Kind and type say the same thing about a product: packaging is typed
+        // PACKAGING and nothing else is. Refused here, before the spec is
+        // looked at, so a box is never stored as jewellery or a watch.
+        boolean typedPackaging = ProductTypeRegistry.PACKAGING.equals(newTypeCode);
+        if (kind == ProductKind.PACKAGING && !typedPackaging) {
+            throw new IllegalArgumentException(
+                    "packaging cannot be typed " + newTypeCode + ": a packaging entry's type is always "
+                            + ProductTypeRegistry.PACKAGING);
+        }
+        if (kind != ProductKind.PACKAGING && typedPackaging) {
+            throw new IllegalArgumentException(
+                    "a product for sale cannot be typed " + ProductTypeRegistry.PACKAGING
+                            + ": that type is only for packaging");
+        }
         // Validated BEFORE either field is assigned, so a rejected change
         // leaves the product exactly as it was rather than half-applied with
         // a new type and the old type's attributes.
@@ -305,9 +353,15 @@ public class Product extends BaseEntity {
      *         variants the storefront cannot build a selector for
      */
     public void declareOptionNames(List<String> newOptionNames) {
-        List<String> declared = newOptionNames == null ? List.of() : List.copyOf(newOptionNames);
+        List<String> declared = newOptionNames == null ? List.of() : newOptionNames;
         var keys = new LinkedHashSet<String>();
         for (String name : declared) {
+            // A null entry is a client mistake like a blank one. Left alone it
+            // reached Map.of below and came out as a NullPointerException,
+            // which the error contract renders as a 500.
+            if (name == null) {
+                throw new IllegalArgumentException("option name must not be null or blank");
+            }
             // Normalised through the same path a variant's option keys take,
             // so "Ring Size" declared here and submitted there cannot differ
             // by whitespace or Unicode form and then fail to match.
@@ -321,15 +375,14 @@ public class Product extends BaseEntity {
         // change would leave variants whose key set no longer corresponds to
         // any axis, which the storefront cannot build a selector from and the
         // admin cannot edit back into shape.
-        // ACTIVE variants only, which makes the error message below honest.
-        // It tells the caller to "update or deactivate the variants first" --
-        // and until this filter existed, deactivating changed nothing because
-        // the loop consulted every variant regardless. That left the whole
-        // migrated catalogue unable to gain option axes: V3 gave every
-        // pre-existing product one variant with empty options, so adding a
-        // "Ring Size" axis hit this refusal, and the remedy it named did not
-        // work. An inactive variant is not for sale and the storefront builds
-        // no selector from it, so it has no stake in the axes.
+        // ACTIVE variants only. The message used to tell the caller to "update
+        // or deactivate the variants first" -- and until this filter existed,
+        // deactivating changed nothing because the loop consulted every
+        // variant regardless. An inactive variant is not for sale and the
+        // storefront builds no selector from it, so it has no stake in the
+        // axes. (The message no longer names that remedy: the HTTP API can add
+        // and reprice variants but not switch one off, so over HTTP the axes
+        // are in practice declared before the first variant.)
         for (ProductVariant variant : variants) {
             if (!variant.isActive()) {
                 continue;
@@ -339,7 +392,8 @@ public class Product extends BaseEntity {
                         "cannot change option axes to " + keys
                                 + " while active variant " + variant.sku()
                                 + " has options " + variant.options().keySet()
-                                + "; update or deactivate the variants first");
+                                + "; axes cannot change while an active variant would stop "
+                                + "matching them (declare the axes before adding variants)");
             }
         }
         this.optionNames = keys.toArray(String[]::new);
@@ -364,6 +418,7 @@ public class Product extends BaseEntity {
                     "variant options " + variant.options().keySet()
                             + " must match the product's option axes " + axes);
         }
+        requireNoSellingPriceForPackaging(variant.unitPrice());
         requireUniformCurrency(variant.currency(), variant);
         boolean duplicate = variants.stream()
                 .anyMatch(existing -> existing.optionDigest().equals(variant.optionDigest()));
@@ -424,7 +479,10 @@ public class Product extends BaseEntity {
      * would have made the entire existing catalogue free.
      */
     public boolean isPublishable() {
-        return variants.stream().anyMatch(ProductVariant::isPurchasable);
+        // Packaging is never listed, whatever its variants say: the cost of a
+        // box goes onto the sale it went out with, not onto a shelf.
+        return kind == ProductKind.SELLABLE
+                && variants.stream().anyMatch(ProductVariant::isPurchasable);
     }
 
     /**
@@ -433,6 +491,16 @@ public class Product extends BaseEntity {
      *         contract
      */
     public void publish() {
+        if (kind == ProductKind.PACKAGING) {
+            // Its own message: "needs a price above zero" would send an
+            // operator off to price a box, which is never the answer. This is
+            // the one place a product becomes ACTIVE, so refusing here is what
+            // keeps packaging off the storefront, out of the price the cart
+            // and checkout trust, and out of search.
+            throw new IllegalStateException(
+                    "product '" + slug + "' is packaging and is never published: "
+                            + "packaging is stocked and costed but not sold");
+        }
         if (!isPublishable()) {
             throw new IllegalStateException(
                     "product '" + slug + "' cannot be published: it needs at least one "
@@ -485,6 +553,7 @@ public class Product extends BaseEntity {
      */
     public void repriceVariant(UUID variantId, BigDecimal newPrice, String newCurrency) {
         ProductVariant variant = requireVariant(variantId);
+        requireNoSellingPriceForPackaging(newPrice);
         requireUniformCurrency(newCurrency, variant);
         // Zero is not a price, so repricing to zero makes a variant
         // unpurchasable just as surely as deactivating it. Without this the
@@ -546,6 +615,21 @@ public class Product extends BaseEntity {
                     "variant " + variant.sku() + " is the last purchasable variant of the "
                             + "published product '" + slug + "' and cannot be " + change
                             + "; price another variant or withdraw the product first");
+        }
+    }
+
+    /**
+     * Packaging is never sold, so its variants carry no selling price: 0.00
+     * means "not priced", which is exactly what a box is. Its cost lives in the
+     * receipt lots (Phase 5) and is attached to the sale it went out with; a
+     * price here would be a number nothing uses and an operator could mistake
+     * for one that matters.
+     */
+    private void requireNoSellingPriceForPackaging(BigDecimal price) {
+        if (kind == ProductKind.PACKAGING && price != null && price.signum() != 0) {
+            throw new IllegalArgumentException(
+                    "packaging '" + slug + "' is not sold, so it has no selling price: "
+                            + "a variant's price must be 0.00");
         }
     }
 

@@ -67,4 +67,10 @@ public final class CatalogConstants {
 
     /** Default page size for the public product list. */
     public static final int DEFAULT_PAGE_SIZE = 20;
+
+    /**
+     * The most rows one admin list page returns, however many are asked for. Each
+     * row carries its variants, so an unbounded page is an unbounded read.
+     */
+    public static final int ADMIN_MAX_PAGE_SIZE = 100;
 }

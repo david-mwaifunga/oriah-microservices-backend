@@ -7,6 +7,8 @@ import java.util.UUID;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
+import com.oriah.catalog.model.ProductKind;
+
 /**
  * Wire-format payload for creating a product. Kept separate from the
  * {@code Product} entity so the API contract can evolve independently of
@@ -19,6 +21,7 @@ import jakarta.validation.constraints.Size;
  *                    we triangulate that with a test when the wireframe demands it)
  */
 public record ProductCreateRequest(
+
 
         @NotBlank(message = "title must not be blank")
         @Size(max = 200, message = "title must be at most 200 characters")
@@ -80,5 +83,32 @@ public record ProductCreateRequest(
          * otherwise, because a trail pointing somewhere the product does not
          * appear is worse than rendering no trail at all.
          */
-        UUID primaryCategoryId
+        UUID primaryCategoryId,
+
+        /**
+         * What this entry is for: {@code SELLABLE} (something Oriah sells) or
+         * {@code PACKAGING} (a box, pouch or ribbon a sale goes out in).
+         *
+         * <p>Optional, and absent means SELLABLE, so every existing client keeps
+         * working. Fixed for the life of the product. Packaging is stocked and
+         * costed like anything else but is never published and never carries a
+         * price: its variants are created at 0.00.
+         *
+         * <p>An enum, so a value that is not one of the two is a 400 from the
+         * body parser rather than a constraint violation from the database.
+         */
+        ProductKind kind,
+
+        /**
+         * The axes this product's variants vary on, in display order: {@code
+         * ["Ring Size"]}, or {@code ["Strap", "Case Size"]}. Absent or empty means
+         * the product does not vary: one variant with no options.
+         *
+         * <p>Declared BEFORE the variants are added, because each variant's option
+         * keys must match this set exactly -- which is what lets the storefront
+         * build a size selector without guessing which keys a product uses. Until
+         * this field existed nothing in the API could set the axes, so every
+         * product held exactly one variant.
+         */
+        List<String> optionNames
 ) {}

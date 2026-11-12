@@ -166,9 +166,9 @@ class ProductTypeAndVariantsTest {
         }
 
         @Test
-        @DisplayName("a DEACTIVATED variant does not block declaring new axes, which is what the error message tells you to do")
+        @DisplayName("a DEACTIVATED variant does not block declaring new axes")
         void deactivatedVariantsDoNotBlockAxisChanges() {
-            // The refusal message says "update or deactivate the variants
+            // The refusal message once said "update or deactivate the variants
             // first", but the check iterated EVERY variant regardless of
             // whether it was active -- so following that instruction changed
             // nothing and the operation stayed impossible.

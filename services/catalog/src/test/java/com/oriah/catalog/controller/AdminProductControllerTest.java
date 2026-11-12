@@ -111,14 +111,15 @@ class AdminProductControllerTest {
                 "A single-stone solitaire in 18k recycled gold.",
                 List.of("rings", "engagement"));
 
-        // The five-argument overload, which is the one the controller calls
-        // now that a product carries a TYPE and that type's specification.
-        // Stubbing the three-argument one left the real call unstubbed,
-        // returning null and rendering 500 -- the arity change is invisible to
-        // the compiler here because Mockito takes matchers, not a signature.
+        // The ten-argument overload, which is the one the controller calls
+        // now that a product carries a TYPE, that type's specification, a KIND
+        // and its option axes. Stubbing a shorter one left the real call
+        // unstubbed, returning null and rendering 500 -- the arity change is
+        // invisible to the compiler here because Mockito takes matchers, not a
+        // signature.
         when(service.create(eq("Aurelia Solitaire Ring"),
                 eq("A single-stone solitaire in 18k recycled gold."),
-                any(), any(), any(), any(), any(), eq(ACTOR))).thenReturn(ProductMapper.toResponse(saved));
+                any(), any(), any(), any(), any(), any(), any(), eq(ACTOR))).thenReturn(ProductMapper.toResponse(saved));
 
         String body = """
                 {
@@ -133,7 +134,8 @@ class AdminProductControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
-                .andExpect(header().string("Location", "/api/v1/products/" + id))
+                // The admin read: a new product is a DRAFT and the public read 404s it.
+                .andExpect(header().string("Location", "/api/v1/admin/products/" + id))
                 .andExpect(jsonPath("$.id").value(id.toString()))
                 .andExpect(jsonPath("$.title").value("Aurelia Solitaire Ring"))
                 .andExpect(jsonPath("$.tags[0]").value("rings"));

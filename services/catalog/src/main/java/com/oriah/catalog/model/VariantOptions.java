@@ -75,7 +75,8 @@ public final class VariantOptions {
      *                any axis" — a one-off piece, and what the V3 backfill
      *                produced for every pre-existing product
      * @throws IllegalArgumentException on a blank, over-long, or
-     *                                  control-character-bearing key or value
+     *                                  control-character-bearing key or value,
+     *                                  or on two keys that normalise to the same name
      */
     public static Map<String, String> validated(Map<String, String> options) {
         var out = new LinkedHashMap<String, String>();
@@ -85,7 +86,14 @@ public final class VariantOptions {
         for (var entry : options.entrySet()) {
             String key = normalise(entry.getKey(), "option name");
             String value = normalise(entry.getValue(), "option value for '" + key + "'");
-            out.put(key, value);
+            // Two raw keys can normalise to one ("Size" and " Size ", or the two
+            // Unicode spellings of the same accented letter). Merged, the later
+            // value silently overwrote the earlier one and the variant was stored
+            // with an option combination nobody submitted.
+            if (out.put(key, value) != null) {
+                throw new IllegalArgumentException(
+                        "option name '" + key + "' is given more than once");
+            }
         }
         return out;
     }

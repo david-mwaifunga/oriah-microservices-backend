@@ -121,6 +121,12 @@ public class ProductStorefrontQueriesImpl implements ProductStorefrontQueries {
         // left the entire pre-existing catalogue, and ARCHIVED is withdrawn.
         conditions.add("p.status = 'ACTIVE'");
 
+        // And only what is FOR SALE. Packaging is never ACTIVE (publish refuses
+        // it and V5 has a CHECK), so this does nothing today -- it is here so
+        // that the storefront's own query states the rule instead of leaning on
+        // two others staying in force.
+        conditions.add("p.kind = 'SELLABLE'");
+
         // A deleted product is archived as well as flagged, so the status
         // check above already excludes it -- this is belt and braces, and
         // deliberately so: the flag is the authoritative "not catalogue
@@ -188,10 +194,11 @@ public class ProductStorefrontQueriesImpl implements ProductStorefrontQueries {
      * the order the id query returned.
      *
      * <p>Variants are fetch-joined because every card needs a price from them,
-     * so they are never optional. Images and categories are left to
+     * so they are never optional. Images, categories and tags are left to
      * {@code @BatchSize}, which loads each collection for the whole page in
-     * one additional query — three queries per page in total, instead of the
-     * cartesian product a triple fetch join would build.
+     * one additional query (up to 50 products at a time) — a handful of queries
+     * per page in total, instead of the cartesian product a fetch join of all of
+     * them would build.
      *
      * <p>The database does not preserve the {@code IN} list's order, so the
      * result is re-sorted here. Without this the carefully chosen sort would

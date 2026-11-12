@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.oriah.catalog.dto.ProductImageResponse;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.model.ProductImage;
+import com.oriah.catalog.model.ProductKind;
 import com.oriah.catalog.model.ProductStatus;
 import com.oriah.catalog.repository.ProductImageRepository;
 import com.oriah.catalog.repository.ProductRepository;
@@ -165,6 +166,10 @@ public class DefaultProductImageService implements ProductImageService {
         return images.findByIdWithProduct(imageId)
                 .filter(image -> !image.product().isDeleted())
                 .filter(image -> image.product().status() == ProductStatus.ACTIVE)
+                // Packaging is never on the storefront, photographs included. It
+                // cannot be ACTIVE, so the line above already hides them; this
+                // one says so itself, like the list, the product read and the price.
+                .filter(image -> image.product().kind() == ProductKind.SELLABLE)
                 .flatMap(this::openFor);
     }
 

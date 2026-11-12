@@ -69,8 +69,23 @@ public record ProductResponse(
         /** JEWELLERY or WATCH; selects which spec fields {@code attributes} holds. */
         String productType,
 
+        /**
+         * SELLABLE or PACKAGING. Public reads only ever return SELLABLE (packaging
+         * is never published); the field is there so an admin screen can tell a
+         * gift box from a ring without guessing from the title.
+         */
+        String kind,
+
         /** Type-specific specs, keyed by the type's declared attribute keys. */
         Map<String, Object> attributes,
+
+        /**
+         * The axes this product's variants vary on, in display order: {@code
+         * ["Ring Size"]}, or {@code ["Strap", "Case Size"]}. Empty for a product
+         * that does not vary. Every variant's option keys equal this set. Detail
+         * and admin reads only; a list row omits it.
+         */
+        List<String> optionNames,
 
         /** Every category the product belongs to, without children populated. */
         List<CategoryResponse> categories,

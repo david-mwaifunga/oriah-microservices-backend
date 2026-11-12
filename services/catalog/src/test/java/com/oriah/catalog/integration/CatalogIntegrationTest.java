@@ -115,7 +115,7 @@ class CatalogIntegrationTest {
         // GET-by-id served one happily, so an unpublished product page was
         // live to anyone who knew the URL. 404 rather than 403, because a 403
         // confirms the id exists.
-        mvc.perform(get(location))
+        mvc.perform(get(publicPath(location)))
                 .andExpect(status().isNotFound());
 
         // The admin can read it, which is how an operator works on a draft.
@@ -134,7 +134,7 @@ class CatalogIntegrationTest {
         addVariant(idOf(location), "AUR-001", "4500.00");
         publish(idOf(location));
 
-        mvc.perform(get(location))
+        mvc.perform(get(publicPath(location)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("Aurelia Solitaire Ring"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
@@ -231,7 +231,7 @@ class CatalogIntegrationTest {
     void patchPersistsChangesToDatabase() throws Exception {
         String location = createProduct("Aurelia Original", "rings");
 
-        mvc.perform(patch(location.replace("/api/v1/products", "/api/v1/admin/products"))
+        mvc.perform(patch(location)
                         .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -260,7 +260,7 @@ class CatalogIntegrationTest {
         // And once published, the public path serves the renamed product.
         addVariant(idOf(location), "AUR-REN", "4500.00");
         publish(idOf(location));
-        mvc.perform(get(location))
+        mvc.perform(get(publicPath(location)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("Aurelia Renamed"));
     }
@@ -269,12 +269,12 @@ class CatalogIntegrationTest {
     @DisplayName("DELETE removes the row — GET-by-id 404s and list count drops")
     void deleteRemovesFromDatabase() throws Exception {
         String location = createProduct("Aurelia", "rings");
-        String adminPath = location.replace("/api/v1/products", "/api/v1/admin/products");
+        String adminPath = location;
 
         mvc.perform(delete(adminPath).with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isNoContent());
 
-        mvc.perform(get(location))
+        mvc.perform(get(publicPath(location)))
                 .andExpect(status().isNotFound());
 
         mvc.perform(get("/api/v1/products"))
@@ -299,11 +299,12 @@ class CatalogIntegrationTest {
                 .andExpect(status().isUnauthorized());
     }
 
-    /**
-     * Convenience helper: creates a product with one tag and returns the
-     * {@code Location} header (a {@code /api/v1/products/{id}} path).
-     */
-    /** The id out of a Location header of the form /api/v1/products/{id}. */
+    /** The public read path for the product a Location header names. */
+    private static String publicPath(String location) {
+        return "/api/v1/products/" + idOf(location);
+    }
+
+    /** The id out of a Location header of the form /api/v1/admin/products/{id}. */
     private static String idOf(String location) {
         return location.substring(location.lastIndexOf('/') + 1);
     }
@@ -324,6 +325,11 @@ class CatalogIntegrationTest {
                 .andExpect(status().isOk());
     }
 
+    /**
+     * Convenience helper: creates a product with one tag and returns the
+     * {@code Location} header, which is the ADMIN read ({@code /api/v1/admin/products/{id}}):
+     * a new product is a DRAFT and the public path 404s it.
+     */
     private String createProduct(String title, String tag) throws Exception {
         String body = """
                 {

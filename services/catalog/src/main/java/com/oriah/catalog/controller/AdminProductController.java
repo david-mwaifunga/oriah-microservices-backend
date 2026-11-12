@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -20,7 +21,10 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 
 import com.oriah.catalog.constants.CatalogConstants;
+import com.oriah.catalog.dto.PageResponse;
 import com.oriah.catalog.dto.ProductCreateRequest;
+import com.oriah.catalog.model.ProductKind;
+import com.oriah.catalog.model.ProductStatus;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.dto.VariantUpdateRequest;
@@ -112,14 +116,20 @@ public class AdminProductController {
      * way.
      *
      * <p>The {@code Location} header is documented too — it is the only thing
-     * telling a caller where the new resource lives, and it points at the
-     * PUBLIC read path rather than this admin one.
+     * telling a caller where the new resource lives. It points at the ADMIN
+     * read, because a new product is a DRAFT (and packaging is never anything
+     * else) and the public read answers 404 for anything not published; it used
+     * to point there, at a URL that could not return what had just been made.
      */
     @PostMapping
-    @Operation(operationId = "create", summary = "Create a product")
-    @ApiResponse(responseCode = "201", description = "Created; Location points at the public read path",
+    @Operation(operationId = "create", summary = "Create a product",
+            description = "`kind` is SELLABLE (the default) or PACKAGING and is fixed for the life of "
+                    + "the product. Packaging is stocked and costed like anything else but is never "
+                    + "published and never priced: it is typed PACKAGING, and its variants are "
+                    + "created at 0.00.")
+    @ApiResponse(responseCode = "201", description = "Created; Location points at the admin read path",
             headers = @io.swagger.v3.oas.annotations.headers.Header(
-                    name = "Location", description = "/api/v1/products/{id}",
+                    name = "Location", description = "/api/v1/admin/products/{id}",
                     schema = @Schema(type = "string")))
     @ApiResponse(responseCode = "400", description = "Validation failure; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
@@ -129,9 +139,10 @@ public class AdminProductController {
         log.debug("POST /api/v1/admin/products title=\"{}\"", request.title());
         ProductResponse saved = service.create(request.title(), request.description(),
                 request.tags(), request.productType(), request.attributes(),
-                request.categoryIds(), request.primaryCategoryId(), actor(jwt));
-        // Location points at the public read endpoint, not the admin path.
-        URI location = URI.create("/api/v1/products/" + saved.id());
+                request.categoryIds(), request.primaryCategoryId(), request.kind(), request.optionNames(),
+                actor(jwt));
+        // The admin read, not the public one: what was just made is a DRAFT.
+        URI location = URI.create(CatalogConstants.ADMIN_BASE + "/" + saved.id());
         return ResponseEntity.created(location).body(saved);
     }
 
@@ -160,6 +171,37 @@ public class AdminProductController {
      * {@code @ResponseStatus(NO_CONTENT)} would move the status away from the
      * line that produces it.
      */
+    /**
+     * The operator's catalogue list: drafts, packaging and everything else the
+     * public list hides.
+     *
+     * <p>Also the picker a consignment line chooses its variant from (Phase 4): a
+     * piece is often created as a draft just before the shipment that brings it
+     * in is keyed, and packaging is never anything but a draft.
+     */
+    @GetMapping
+    @Operation(operationId = "listForAdmin",
+            summary = "List products for an operator, drafts and packaging included",
+            description = "Every product that has not been deleted, newest first, whatever its "
+                    + "status or kind. Each row carries its variants. `kind` and `status` filter; "
+                    + "`q` is plain text matched case-insensitively against the title and every "
+                    + "variant's SKU (a percent sign or underscore in it means itself). A page is "
+                    + "at most 100 rows; one past the end is empty.")
+    @ApiResponse(responseCode = "200", description = "A page of products, possibly empty")
+    @ApiResponse(responseCode = "400", description = "A kind or status that does not exist, or an "
+            + "unparseable page or size",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public PageResponse<ProductResponse> list(
+            @RequestParam(value = "kind", required = false) ProductKind kind,
+            @RequestParam(value = "status", required = false) ProductStatus status,
+            @RequestParam(value = "q", required = false) String q,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "" + CatalogConstants.DEFAULT_PAGE_SIZE) int size) {
+        log.debug("GET /api/v1/admin/products kind={} status={} page={} size={}", kind, status, page, size);
+        return PageResponse.from(service.findForAdmin(kind, status, q, page, size), r -> r);
+    }
+
     /**
      * Read a product as an operator, including drafts.
      *

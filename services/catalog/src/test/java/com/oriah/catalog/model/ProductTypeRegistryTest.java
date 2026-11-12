@@ -45,13 +45,14 @@ class ProductTypeRegistryTest {
     class Types {
 
         @Test
-        @DisplayName("exactly the two types V3 seeded are known")
+        @DisplayName("exactly the three types the migrations seeded are known")
         void knownCodesMatchTheMigration() {
-            // V3 seeds product_types with these two and the products FK points
-            // at that table, so a code here with no row there (or the reverse)
-            // is a startup-time failure rather than a runtime surprise.
+            // V3 seeds product_types with JEWELLERY and WATCH, V5 adds
+            // PACKAGING, and the products FK points at that table, so a code
+            // here with no row there (or the reverse) is a startup-time
+            // failure rather than a runtime surprise.
             assertThat(ProductTypeRegistry.knownCodes())
-                    .containsExactlyInAnyOrder("JEWELLERY", "WATCH");
+                    .containsExactlyInAnyOrder("JEWELLERY", "WATCH", "PACKAGING");
         }
 
         @Test

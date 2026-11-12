@@ -32,6 +32,20 @@ import java.util.UUID;
  * modules push a real serialised new-shape payload through the actual consumer
  * bean, because "the default is lenient" is an argument and not a test.
  *
+ * <h2>{@code kind}, added by Phase 3, last and additively</h2>
+ *
+ * {@code SELLABLE} or {@code PACKAGING}: whether this entry is something Oriah
+ * sells or what a sale goes out in. Appended after {@code variants}, so nothing
+ * that read the earlier shape is disturbed; both consumers tolerate an unknown
+ * field exactly as for the three above. <strong>A consumer must read an absent
+ * {@code kind} as SELLABLE</strong>: every snapshot written before Phase 3 has
+ * none, and every product that existed then was made to be sold. Search lists a
+ * product only when it is ACTIVE and SELLABLE; inventory will read it in Phase 5.
+ * Note that search therefore reads {@code status} and {@code kind} BY NAME from
+ * the generic tree: unlike the fields above, renaming either would silently stop
+ * every product being listed (search's {@code ProductEventCompatibilityTest}
+ * pins both names).
+ *
  * <p>{@code variants} is the field that matters. Before it, inventory wrote the
  * PRODUCT id into product_index.variant_id -- correct only while a product had
  * exactly one variant whose id was the product's own. For anything created
@@ -44,7 +58,8 @@ public record ProductCreatedEvent(
         List<String> tags,
         String productType,
         String status,
-        List<VariantPayload> variants
+        List<VariantPayload> variants,
+        String kind
 ) {
     /**
      * Event-type marker used by consumers that subscribe to a single topic

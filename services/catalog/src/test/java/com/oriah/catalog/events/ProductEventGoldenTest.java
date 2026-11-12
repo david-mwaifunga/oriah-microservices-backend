@@ -51,8 +51,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>The files were written while the old send-after-commit bridge was still
  * the publisher, and this test passed against it: that is what makes them
- * today's wire format rather than a guess at it. They must keep passing,
- * unchanged, with the outbox carrying the events.
+ * today's wire format rather than a guess at it. They had to keep passing,
+ * unchanged, when the outbox took over carrying the events. Since then the
+ * format has grown once, additively, and the files with it: Phase 3 appended
+ * {@code "kind"} as the last field of product.created and product.updated.
  *
  * <h2>Why through HTTP</h2>
  *
@@ -122,6 +124,35 @@ class ProductEventGoldenTest {
         mvc.perform(delete("/api/v1/admin/products/" + productId).with(admin()))
                 .andExpect(status().isNoContent());
         assertNext(productId, "product.deleted", "product.deleted.json", Map.of("productId", productId));
+    }
+
+    /**
+     * Phase 3 appended {@code kind} as the last field of product.created and
+     * product.updated -- additive, so a consumer that does not know it is
+     * unaffected, and one that does (search, and inventory from Phase 5) can
+     * tell packaging from something for sale. An entry made as packaging says
+     * so from its first event.
+     */
+    @Test
+    @DisplayName("an entry made as packaging says PACKAGING in every event, from the first")
+    void packagingSaysSoInEveryEvent() throws Exception {
+        MvcResult created = mvc.perform(post("/api/v1/admin/products")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Gift box, medium\",\"kind\":\"PACKAGING\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        String productId = objectMapper.readTree(created.getResponse().getContentAsString()).get("id").asText();
+        assertNext(productId, "product.created", "product.created.packaging.json", Map.of("productId", productId));
+
+        mvc.perform(post("/api/v1/admin/products/" + productId + "/variants")
+                        .with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"sku\":\"BOX-M\",\"unitPrice\":0.00}"))
+                .andExpect(status().isCreated());
+        String variantId = firstVariantId(productId);
+        assertNext(productId, "product.updated", "product.updated.packaging-variant-added.json",
+                Map.of("productId", productId, "variantId", variantId));
     }
 
     // ------------------------------------------------------------- helpers

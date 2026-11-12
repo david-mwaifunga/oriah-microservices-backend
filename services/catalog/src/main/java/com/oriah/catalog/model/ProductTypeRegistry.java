@@ -37,6 +37,16 @@ public final class ProductTypeRegistry {
     public static final String JEWELLERY = "JEWELLERY";
     public static final String WATCH = "WATCH";
 
+    /**
+     * The type of every {@link ProductKind#PACKAGING} entry, and of nothing
+     * else. A box has no metal, movement or carat weight, so it declares no
+     * spec fields; typing it JEWELLERY or WATCH would store a gift box as
+     * something it is not, and a report grouped by type would count it as one.
+     * Kind and type are tied together in {@link Product}, and again by a CHECK
+     * in V5, so the two can never disagree.
+     */
+    public static final String PACKAGING = "PACKAGING";
+
     /** Generous for "Alligator Leather", tight enough to stay a spec value. */
     private static final int MAX_TEXT_LENGTH = 120;
 
@@ -62,6 +72,11 @@ public final class ProductTypeRegistry {
                 AttributeDefinition.number("caratWeight", "Carat weight", false, "ct"),
                 AttributeDefinition.text("finish", "Finish", false),
                 AttributeDefinition.flag("hallmarked", "Hallmarked")));
+
+        // No spec fields: nothing about a box is asked of the client yet. If she
+        // wants material, colour or size recorded, they are added here and to
+        // nothing else.
+        DEFINITIONS.put(PACKAGING, List.of());
 
         DEFINITIONS.put(WATCH, List.of(
                 AttributeDefinition.enumerated("movement", "Movement", true,

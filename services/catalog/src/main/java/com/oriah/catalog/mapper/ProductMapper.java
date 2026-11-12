@@ -71,9 +71,11 @@ public final class ProductMapper {
                 product.slug(),
                 product.status().name(),
                 product.productTypeCode(),
-                // attributes and variants are detail-only -- a grid renders
-                // neither, and attributes alone can be a dozen fields a card
-                // never shows.
+                product.kind().name(),
+                // attributes, option axes and variants are detail-only -- a grid
+                // renders none of them, and attributes alone can be a dozen
+                // fields a card never shows.
+                null,
                 null,
                 toCategories(product),
                 product.primaryCategory().map(ProductMapper::toCategory).orElse(null),
@@ -103,7 +105,9 @@ public final class ProductMapper {
                 product.slug(),
                 product.status().name(),
                 product.productTypeCode(),
+                product.kind().name(),
                 product.attributes(),
+                product.optionNames(),
                 toCategories(product),
                 product.primaryCategory().map(ProductMapper::toCategory).orElse(null),
                 product.lowestActivePrice().orElse(null),
@@ -142,7 +146,9 @@ public final class ProductMapper {
                 product.slug(),
                 product.status().name(),
                 product.productTypeCode(),
+                product.kind().name(),
                 product.attributes(),
+                product.optionNames(),
                 toCategories(product),
                 product.primaryCategory().map(ProductMapper::toCategory).orElse(null),
                 product.lowestActivePrice().orElse(null),

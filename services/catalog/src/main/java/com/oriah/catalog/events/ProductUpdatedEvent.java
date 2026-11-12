@@ -26,6 +26,11 @@ import java.util.UUID;
  * modules push a real serialised new-shape payload through the actual consumer
  * bean, because "the default is lenient" is an argument and not a test.
  *
+ * <h2>{@code kind}, added by Phase 3, last and additively</h2>
+ *
+ * {@code SELLABLE} or {@code PACKAGING}; see {@link ProductCreatedEvent} for
+ * why it is appended and why a consumer must read an absent one as SELLABLE.
+ *
  * <p>{@code variants} is the field that matters. Before it, inventory wrote the
  * PRODUCT id into product_index.variant_id -- correct only while a product had
  * exactly one variant whose id was the product's own. For anything created
@@ -39,7 +44,8 @@ public record ProductUpdatedEvent(
         List<String> tags,
         String productType,
         String status,
-        List<VariantPayload> variants
+        List<VariantPayload> variants,
+        String kind
 ) {
     public static final String TYPE = "product.updated";
 }

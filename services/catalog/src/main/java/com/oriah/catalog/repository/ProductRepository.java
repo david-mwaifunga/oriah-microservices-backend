@@ -13,7 +13,8 @@ import org.springframework.data.repository.query.Param;
 
 import com.oriah.catalog.model.Product;
 
-public interface ProductRepository extends JpaRepository<Product, UUID>, ProductStorefrontQueries {
+public interface ProductRepository
+        extends JpaRepository<Product, UUID>, ProductStorefrontQueries, ProductAdminQueries {
 
     /**
      * The product, with its row locked until the transaction ends

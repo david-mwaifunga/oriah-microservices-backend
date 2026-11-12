@@ -6,6 +6,8 @@ import java.util.UUID;
 
 import jakarta.validation.constraints.Size;
 
+import com.oriah.catalog.model.ProductKind;
+
 /**
  * Partial-update payload for {@code PATCH /api/v1/admin/products/{id}}.
  *
@@ -82,7 +84,29 @@ public record ProductUpdateRequest(
          * otherwise, because a trail pointing somewhere the product does not
          * appear is worse than rendering no trail at all.
          */
-        UUID primaryCategoryId
+        UUID primaryCategoryId,
+
+        /**
+         * Not a way to change the kind: it is fixed when the product is
+         * created. Accepted only so that naming a DIFFERENT kind is refused
+         * with a 400 that says so, instead of being silently ignored -- a
+         * field on the wire that does nothing is worse than none, because the
+         * caller has every reason to believe it worked. Absent, or the same
+         * kind the product already has, is fine.
+         */
+        ProductKind kind,
+
+        /**
+         * Replaces the axes this product's variants vary on. Null leaves them
+         * alone; an empty list means "does not vary". Refused (400) while an
+         * ACTIVE variant's options would no longer match, naming that variant.
+         *
+         * <p>The API can add and reprice variants but not edit their options or
+         * switch them off, so in practice the axes can be changed only while the
+         * product has no active variant. To give a product that already has one
+         * different axes, create a new product.
+         */
+        List<String> optionNames
 ) {
 
     /**
@@ -96,6 +120,6 @@ public record ProductUpdateRequest(
      */
     public static ProductUpdateRequest describing(
             String title, String description, List<String> tags) {
-        return new ProductUpdateRequest(title, description, tags, null, null, null, null);
+        return new ProductUpdateRequest(title, description, tags, null, null, null, null, null, null);
     }
 }
