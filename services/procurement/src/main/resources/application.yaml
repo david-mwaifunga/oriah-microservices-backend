@@ -169,10 +169,11 @@ oriah:
   procurement:
     # How many invoices are taken in at once (UploadGate). A 5 MB upload is held in memory about three times
     # over while it is read, fingerprinted and written, and the heap is small: measured live, sixteen at once
-    # left half of them a 500 and the container at 96% of its limit. Four is about 60 MB at the worst; the
-    # rest wait up to max-wait for a place, then are told to try again (503 + Retry-After).
+    # left half of them a 500 and the container at 96% of its limit. Two is about 30 MB at the worst (the
+    # container needs 768 MiB for the native memory around it: docker-compose.yml); the rest wait up to
+    # max-wait for a place, then are told to try again (503 + Retry-After).
     uploads:
-      max-concurrent: 4
+      max-concurrent: 2
       max-wait: 20s
     contact-info:
       message: "Procurement service contact details are unavailable - the Config Server could not be reached"
