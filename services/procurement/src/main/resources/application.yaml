@@ -14,6 +14,50 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+  cloud:
+    stream:
+      # No binding for oriah.procurement: the outbox relay (shared/oriah-events)
+      # sends each outbox row to the topic named on the row, which is how a
+      # dynamic destination works in Spring Cloud Stream. These defaults
+      # therefore apply to it, and to every profile and every test.
+      default:
+        contentType: application/json
+      kafka:
+        default:
+          producer:
+            # A send returns only once Kafka has the record. Without it the
+            # binder answers "sent" as soon as the record is queued inside the
+            # service, the relay would move its cursor past an event Kafka never
+            # took, and that event would never be published. The relay refuses to
+            # start without it, in tests too.
+            sync: true
+        binder:
+          # Overridden in application-docker.yaml to the in-network broker. The
+          # localhost default is the Kafka HOST listener, which is what a
+          # developer running procurement from the IDE reaches.
+          brokers: localhost:9092
+          # How long one send may wait for Kafka. While a send waits, the relay's
+          # round holds its transaction and its place in the log; with Kafka's own
+          # defaults a stopped broker would hold it for 60 to 120 seconds.
+          #
+          # They also limit how long one replay step can take: a step sends up to
+          # 10 rows and then one marker, one after another, and each send can wait
+          # max.block.ms and then delivery.timeout.ms. The event-log module refuses
+          # to start procurement unless that fits inside the 5 minutes Kafka allows
+          # the replay listener between two polls: (10 + 1) x (10 s + 10 s) = 220 s,
+          # plus 35 s for what a failing step also spends = 255 s. Raise them past
+          # about 24 s together and procurement will not start.
+          # StartupChecksPerProfileTest checks it in every profile.
+          producer-properties:
+            max.block.ms: 10000         # waiting for the topic's details from the broker
+            request.timeout.ms: 5000    # one request to the broker
+            delivery.timeout.ms: 10000  # the whole send, retries included
+        # Nothing here for the replay-request listener (outboxReplayRequests-in-0)
+        # on purpose: the event-log module binds it and sets all of its Kafka
+        # settings itself, and its values win over anything written here.
+        # ReplayRequestBindingTest pins what the listener gets.
+
   security:
     oauth2:
       resourceserver:
@@ -64,6 +108,29 @@ eureka:
 # leak a stale value into the served response.
 # ---------------------------------------------------------------------------
 oriah:
+  # -------------------------------------------------------------------------
+  # The event log (MVP_PLAN Phase 4). Receiving a consignment appends one
+  # consignment.received per line to procurement's outbox table in the
+  # transaction that receives it; the relay publishes the outbox to Kafka in the
+  # order it was written; and a consumer that joins late (inventory, Phase 5) can
+  # ask for the whole log again (replay). Procurement consumes no events, so the
+  # Inbox stays off -- answered replay requests are recorded in processed_event
+  # without it. Each switch is exactly true or false; anything else stops the
+  # service. These keys live HERE, not in config-repo: the startup checks read
+  # this service's own environment, and a Config Server that is down must not be
+  # able to turn the event log off.
+  # -------------------------------------------------------------------------
+  events:
+    producer: procurement             # sent with every message as the `producer` header
+    topics: oriah.procurement         # an append to any other topic is refused
+    outbox:
+      enabled: true
+    relay:
+      enabled: true
+    replay:
+      enabled: true
+    inbox:
+      enabled: false
   procurement:
     contact-info:
       message: "Procurement service contact details are unavailable - the Config Server could not be reached"
