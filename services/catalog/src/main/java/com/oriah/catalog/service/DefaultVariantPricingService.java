@@ -143,7 +143,7 @@ public class DefaultVariantPricingService implements VariantPricingService {
      * SKUs would be unreadable. A product that varies on nothing gets the
      * plain title rather than a trailing separator.
      */
-    private static String variantTitle(Product product, ProductVariant variant) {
+    static String variantTitle(Product product, ProductVariant variant) {
         if (variant.options().isEmpty()) {
             return product.title();
         }

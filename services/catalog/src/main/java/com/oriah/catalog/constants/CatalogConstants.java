@@ -65,6 +65,13 @@ public final class CatalogConstants {
      */
     public static final String ROLE_CATALOG_ADMIN = "CATALOG_ADMIN";
 
+    /**
+     * Procurement's capability, which may also resolve a variant it is about to
+     * order ({@code VariantLookupController}, internal: not routed by the gateway).
+     * Defined in the realm like every capability; validate_roles.py checks it.
+     */
+    public static final String ROLE_PROCUREMENT_ADMIN = "PROCUREMENT_ADMIN";
+
     /** Default page size for the public product list. */
     public static final int DEFAULT_PAGE_SIZE = 20;
 
