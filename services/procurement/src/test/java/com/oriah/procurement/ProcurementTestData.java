@@ -24,7 +24,7 @@ public final class ProcurementTestData {
     public static void wipe(JdbcTemplate jdbc) {
         jdbc.execute("TRUNCATE purchase_order, purchase_order_line, consignment, consignment_line, cost_line, "
                 + "cost_line_share, allocation_revision, allocation_line, allocation_slice, "
-                + "allocation_cost_share CASCADE");
+                + "allocation_cost_share, procurement_document CASCADE");
         jdbc.update("DELETE FROM suppliers");
     }
 }

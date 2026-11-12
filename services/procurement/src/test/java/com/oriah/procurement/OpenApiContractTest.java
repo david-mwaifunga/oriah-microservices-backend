@@ -476,6 +476,92 @@ class OpenApiContractTest {
         }
     }
 
+    // ---------------------------------------------------------------- documents
+
+    private static final String C_DOCS = CONSIGNMENT + "/documents";
+    private static final String O_DOCS = ORDER + "/documents";
+    private static final String DOC_CONTENT = "/api/v1/admin/procurement/documents/{id}/content";
+    private static final String DOC_VOID = "/api/v1/admin/procurement/documents/{id}/void";
+
+    @Test
+    @DisplayName("documents: every operation has the id the frontend calls it by, and success is documented as what it is")
+    void documentOperationsArePinned() {
+        assertThat((String) at(operation(C_DOCS, "post") + ".operationId")).isEqualTo("uploadConsignmentDocument");
+        assertThat((String) at(operation(C_DOCS, "get") + ".operationId")).isEqualTo("listConsignmentDocuments");
+        assertThat((String) at(operation(O_DOCS, "post") + ".operationId")).isEqualTo("uploadPurchaseOrderDocument");
+        assertThat((String) at(operation(O_DOCS, "get") + ".operationId")).isEqualTo("listPurchaseOrderDocuments");
+        assertThat((String) at(operation(DOC_CONTENT, "get") + ".operationId")).isEqualTo("downloadDocument");
+        assertThat((String) at(operation(DOC_VOID, "post") + ".operationId")).isEqualTo("voidDocument");
+
+        assertThat(responses(C_DOCS, "post")).containsKey("201").doesNotContainKey("200");
+        assertThat(responses(O_DOCS, "post")).containsKey("201").doesNotContainKey("200");
+        assertThat(responses(C_DOCS, "get")).containsKey("200");
+        assertThat(responses(DOC_CONTENT, "get")).containsKey("200");
+        assertThat(responses(DOC_VOID, "post")).containsKey("200");
+    }
+
+    @Test
+    @DisplayName("documents: every failure an operation can answer is documented with ProblemDetail, and none that cannot happen")
+    void documentFailuresAreDocumented() {
+        Map<String, List<String>> expected = new java.util.HashMap<>();
+        expected.put("post " + C_DOCS, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("post " + O_DOCS, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("get " + C_DOCS, List.of("400", "401", "403", "404", "500"));
+        expected.put("get " + O_DOCS, List.of("400", "401", "403", "404", "500"));
+        expected.put("get " + DOC_CONTENT, List.of("400", "401", "403", "404", "500"));
+        expected.put("post " + DOC_VOID, List.of("400", "401", "403", "404", "409", "500"));
+
+        expected.forEach((operation, statuses) -> {
+            String[] parts = operation.split(" ");
+            Map<String, Object> responses = responses(parts[1], parts[0]);
+            for (String status : statuses) {
+                assertThat(responses).as("%s must document %s", operation, status).containsKey(status);
+                assertThat(String.valueOf(responses.get(status)))
+                        .as("%s %s must reference ProblemDetail", operation, status)
+                        .contains(PROBLEM_REF)
+                        .contains("application/problem+json");
+            }
+        });
+        assertThat(responses(DOC_CONTENT, "get")).doesNotContainKey("409");
+        assertThat(responses(C_DOCS, "get")).doesNotContainKey("409");
+    }
+
+    @Test
+    @DisplayName("documents: an upload is multipart with the file as a binary part, and says that kind is required")
+    void uploadsAreMultipart() {
+        for (String path : List.of(C_DOCS, O_DOCS)) {
+            Map<String, Object> content = at(operation(path, "post") + ".requestBody.content");
+            assertThat(content).as("upload %s request body", path).containsKey("multipart/form-data");
+            String schema = String.valueOf(content.get("multipart/form-data"));
+            assertThat(schema).as("%s: the file part", path).contains("file").contains("binary");
+
+            List<Map<String, Object>> parameters = at(operation(path, "post") + ".parameters");
+            Map<String, Object> kind = parameters.stream().filter(p -> "kind".equals(p.get("name"))).findFirst()
+                    .orElseThrow(() -> new AssertionError("no kind parameter on upload " + path));
+            assertThat(kind.get("required")).as("%s: kind", path).isEqualTo(true);
+        }
+    }
+
+    @Test
+    @DisplayName("documents: a download is a file, not JSON; a reply says which of its fields may be null")
+    void documentSchemas() {
+        assertThat(String.valueOf((Object) at(operation(DOC_CONTENT, "get") + ".responses['200']")))
+                .contains("application/octet-stream");
+        for (String optional : List.of("note", "uploadedBy", "voidedAt", "voidedBy", "voidReason")) {
+            assertThat(isNullable("ProcurementDocument", optional))
+                    .as("ProcurementDocument.%s may be null; the schema says %s", optional,
+                            describe("ProcurementDocument", optional))
+                    .isTrue();
+        }
+        for (String always : List.of("id", "ownerType", "ownerId", "kind", "filename", "contentType", "sizeBytes", "sha256",
+                "voided")) {
+            assertThat(isNullable("ProcurementDocument", always)).as("ProcurementDocument.%s", always).isFalse();
+        }
+        @SuppressWarnings("unchecked")
+        List<String> required = (List<String>) at("$.components.schemas.VoidDocumentRequest.required");
+        assertThat(required).contains("reason");
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> schemaOf(List<Map<String, Object>> parameters, String name) {
         Map<String, Object> parameter = parameters.stream().filter(p -> name.equals(p.get("name"))).findFirst()

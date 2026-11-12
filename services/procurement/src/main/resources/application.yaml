@@ -15,6 +15,17 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  # Invoices are uploaded as multipart (DocumentController). The file limit is the same 5 MB the
+  # service enforces itself (DocumentService.MAX_BYTES) and the database CHECK holds: Spring
+  # refuses an oversized part before it is buffered, the service refuses one that arrives some
+  # other way, and the CHECK is the last word. The request limit is a little larger to leave room
+  # for the multipart envelope and the form fields; set equal, a file at exactly 5 MB would fail
+  # with a confusing request-size error instead of being accepted.
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+
   cloud:
     openfeign:
       circuitbreaker:
