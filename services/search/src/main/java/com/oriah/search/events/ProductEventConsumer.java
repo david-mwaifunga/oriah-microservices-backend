@@ -149,14 +149,20 @@ public class ProductEventConsumer {
             String title = payload.path("title").asText("");
             String description = payload.path("description").asText(null);
             String tags = tagsToString(payload.path("tags"));
+            // Whether a search may return it. A snapshot is the whole product, so
+            // this is decided afresh by every one: publishing lists a product,
+            // withdrawing it takes it out, and packaging never gets in. An absent
+            // kind is a snapshot from before Phase 3 (see isListable).
+            boolean listed = SearchIndexEntry.isListable(
+                    payload.path("status").asText(null), payload.path("kind").asText(null));
             repository.findById(id).ifPresentOrElse(
                     existing -> {
-                        existing.replace(title, description, tags);
-                        ProductEventConsumer.log.info("Updated search_index id={} title=\"{}\"", id, title);
+                        existing.replace(title, description, tags, listed);
+                        ProductEventConsumer.log.info("Updated search_index id={} title=\"{}\" listed={}", id, title, listed);
                     },
                     () -> {
-                        repository.save(new SearchIndexEntry(id, title, description, tags));
-                        ProductEventConsumer.log.info("Indexed search_index id={} title=\"{}\"", id, title);
+                        repository.save(new SearchIndexEntry(id, title, description, tags, listed));
+                        ProductEventConsumer.log.info("Indexed search_index id={} title=\"{}\" listed={}", id, title, listed);
                     }
             );
         }

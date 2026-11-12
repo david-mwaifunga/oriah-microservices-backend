@@ -112,14 +112,52 @@ class SearchIntegrationTest {
                 .andExpect(status().isOk());
     }
 
+    @Test
+    @DisplayName("a DRAFT product is not searchable until it is published, and is not once it is withdrawn again")
+    void draftsAreNotSearchable() throws Exception {
+        sendUpdated(R1, "Zirconia Halo Ring", "draft piece", List.of("rings"), "DRAFT", "SELLABLE");
+        mvc.perform(get("/api/v1/search?q=zirconia")).andExpect(jsonPath("$.count").value(0));
+
+        sendUpdated(R1, "Zirconia Halo Ring", "draft piece", List.of("rings"), "ACTIVE", "SELLABLE");
+        mvc.perform(get("/api/v1/search?q=zirconia")).andExpect(jsonPath("$.count").value(1));
+
+        sendUpdated(R1, "Zirconia Halo Ring", "draft piece", List.of("rings"), "DRAFT", "SELLABLE");
+        mvc.perform(get("/api/v1/search?q=zirconia")).andExpect(jsonPath("$.count").value(0));
+    }
+
+    @Test
+    @DisplayName("packaging is never searchable, however its snapshot reads")
+    void packagingIsNeverSearchable() throws Exception {
+        sendUpdated(R2, "Velvet Gift Pouch", "packaging", List.of(), "DRAFT", "PACKAGING");
+        sendUpdated(R2, "Velvet Gift Pouch", "packaging", List.of(), "ACTIVE", "PACKAGING");
+
+        mvc.perform(get("/api/v1/search?q=velvet")).andExpect(jsonPath("$.count").value(0));
+    }
+
+    @Test
+    @DisplayName("a snapshot from before Phase 3, which has no kind, is read as sellable")
+    void snapshotWithoutKindIsSellable() throws Exception {
+        send("product.updated", R3, Map.of("id", R3.toString(), "title", "Opal Cuff", "description", "old shape",
+                "tags", List.of("cuffs"), "productType", "JEWELLERY", "status", "ACTIVE", "variants", List.of()));
+
+        mvc.perform(get("/api/v1/search?q=opal")).andExpect(jsonPath("$.count").value(1));
+    }
+
     private void sendCreated(UUID id, String title, String description, List<String> tags) throws Exception {
-        send("product.created", id, Map.of("id", id.toString(), "title", title, "tags", tags));
+        send("product.created", id, Map.of("id", id.toString(), "title", title, "tags", tags,
+                "status", "ACTIVE", "kind", "SELLABLE"));
     }
 
     private void sendUpdated(UUID id, String title, String description, List<String> tags) throws Exception {
+        sendUpdated(id, title, description, tags, "ACTIVE", "SELLABLE");
+    }
+
+    private void sendUpdated(UUID id, String title, String description, List<String> tags,
+                             String status, String kind) throws Exception {
         send("product.updated", id, Map.of(
                 "id", id.toString(), "title", title,
-                "description", description, "tags", tags));
+                "description", description, "tags", tags,
+                "status", status, "kind", kind));
     }
 
     private void sendDeleted(UUID id) throws Exception {

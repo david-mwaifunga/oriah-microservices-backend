@@ -1,0 +1,20 @@
+-- Phase 3: only a product that is ACTIVE and SELLABLE may be searched.
+--
+-- Until now the index stored no status, so a DRAFT product -- unfinished, with no
+-- price -- came back from a full-text search. Each product event is a whole
+-- snapshot, so the consumer now decides, from the snapshot, whether the product
+-- is listed:
+--
+--     listed = status is ACTIVE  and  kind is SELLABLE
+--
+-- (a snapshot written before Phase 3 has no kind and is read as SELLABLE; see
+-- ProductEventConsumer). A product that is not listed keeps its row, so
+-- publishing it later only flips this flag, but the search query never returns it.
+--
+-- Every row that exists today comes out NOT listed. The index never stored a
+-- status, so nothing can say which of these rows is published; listing them all
+-- would keep every draft searchable, which is what this migration exists to
+-- end. A product is listed again by its next snapshot: catalog writes one on
+-- every change, with a seq higher than anything applied, so the consumer's
+-- bookkeeping (processed_event, processed_aggregate -- untouched here) accepts it.
+ALTER TABLE search_index ADD COLUMN listed BOOLEAN NOT NULL DEFAULT FALSE;

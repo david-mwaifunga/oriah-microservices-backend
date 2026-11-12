@@ -14,7 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <h2>Why search is tolerant by construction, and why that still gets a test</h2>
  *
  * Unlike inventory, this consumer never binds to an event class. It reads a
- * generic tree and pulls out the four fields it indexes:
+ * generic tree and pulls out the four fields it indexes (and, since Phase 3, the two that decide whether
+ * a product is LISTED: status and kind):
  *
  * <pre>
  *   JsonNode payload = objectMapper.readTree(message.getPayload());
@@ -22,6 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   String t  = payload.path("title").asText("");
  *   String d  = payload.path("description").asText(null);
  *   String g  = tagsToString(payload.path("tags"));
+ *   boolean listed = SearchIndexEntry.isListable(
+ *           payload.path("status").asText(null), payload.path("kind").asText(null));
  * </pre>
  *
  * A field it does not know is therefore never looked up, so catalog's
@@ -47,6 +50,8 @@ class ProductEventCompatibilityTest {
                 payload.path("title").asText(""),
                 payload.path("description").asText(null),
                 payload.path("tags").isArray() ? "array" : "absent",
+                payload.path("status").asText(null),
+                payload.path("kind").asText(null),
         };
     }
 
@@ -80,25 +85,32 @@ class ProductEventCompatibilityTest {
     }
 
     @Test
-    @DisplayName("the new fields are NOT indexed, which is the deliberate scope of this service")
-    void newFieldsAreIgnored() throws Exception {
-        // Price, type, status and variants reach this consumer and are
-        // dropped. That is a decision, not an oversight: the storefront's
-        // structured filters (category, type, price band, availability) run
-        // against CATALOG, which owns that data and can index it properly.
-        // This index is four text fields in a tsvector with no pagination and
-        // no facets, and a category-faceted storefront cannot be built on it.
+    @DisplayName("price, type and variants are NOT indexed, which is the deliberate scope of this service; status and kind are READ, to decide listing")
+    void typeAndVariantsAreIgnoredButStatusAndKindAreRead() throws Exception {
+        // Price, type and variants reach this consumer and are dropped. That is
+        // a decision, not an oversight: the storefront's structured filters
+        // (category, type, price band, availability) run against CATALOG, which
+        // owns that data and can index it properly. This index is four text
+        // fields in a tsvector with no pagination and no facets, and a
+        // category-faceted storefront cannot be built on it.
+        //
+        // Status and kind are the exception, since Phase 3: they decide whether
+        // a product may be returned at all (SearchIndexEntry.isListable), so
+        // renaming either in catalog would silently stop products being listed.
+        // ProductEventListingTest drives the real consumer for that behaviour;
+        // this test pins the field NAMES this consumer depends on.
         JsonNode payload = mapper.readTree("""
                 {"id": "11111111-1111-4111-8111-111111111111", "title": "X",
-                 "productType": "WATCH", "status": "DRAFT",
+                 "productType": "WATCH", "status": "DRAFT", "kind": "SELLABLE",
                  "variants": [{"unitPrice": 9000.00}]}
                 """);
 
         // Present in the payload...
         assertThat(payload.path("productType").asText()).isEqualTo("WATCH");
-        // ...and simply not among the fields the consumer extracts.
+        // ...and not among the text fields the consumer indexes; the last two
+        // values are status and kind, which it reads for listing only.
         assertThat(extract(payload)).containsExactly(
-                "11111111-1111-4111-8111-111111111111", "X", null, "absent");
+                "11111111-1111-4111-8111-111111111111", "X", null, "absent", "DRAFT", "SELLABLE");
     }
 
     @Test
@@ -147,19 +159,23 @@ class ProductEventCompatibilityTest {
     @Test
     @DisplayName("the fields this consumer reads are the contract catalog must not rename")
     void readFieldsAreTheContract() throws Exception {
-        // id, title, description and tags. Renaming any of them in catalog
+        // id, title, description and tags, plus status and kind (Phase 3: they
+        // decide whether a product is listed). Renaming any of them in catalog
         // would not fail a build -- nothing binds these names to a type -- it
-        // would make this index quietly stop updating, or index empty titles.
+        // would make this index quietly stop updating, index empty titles, or
+        // stop listing every product.
         JsonNode payload = mapper.readTree("""
                 {"id": "11111111-1111-4111-8111-111111111111", "title": "T",
-                 "description": "D", "tags": ["a"]}
+                 "description": "D", "tags": ["a"], "status": "ACTIVE", "kind": "SELLABLE"}
                 """);
 
         assertThat(payload.has("id")).isTrue();
         assertThat(payload.has("title")).isTrue();
         assertThat(payload.has("description")).isTrue();
         assertThat(payload.has("tags")).isTrue();
+        assertThat(payload.has("status")).isTrue();
+        assertThat(payload.has("kind")).isTrue();
         assertThat(extract(payload)).containsExactly(
-                "11111111-1111-4111-8111-111111111111", "T", "D", "array");
+                "11111111-1111-4111-8111-111111111111", "T", "D", "array", "ACTIVE", "SELLABLE");
     }
 }
