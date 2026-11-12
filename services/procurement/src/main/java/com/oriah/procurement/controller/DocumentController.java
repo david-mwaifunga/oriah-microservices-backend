@@ -29,6 +29,7 @@ import com.oriah.procurement.dto.DocumentResponse;
 import com.oriah.procurement.dto.VoidDocumentRequest;
 import com.oriah.procurement.service.DocumentService;
 import com.oriah.procurement.service.DocumentService.Owner;
+import com.oriah.procurement.service.UploadGate;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -67,9 +68,11 @@ public class DocumentController {
     static final String DOCUMENTS = BASE_PATH + "/documents";
 
     private final DocumentService service;
+    private final UploadGate gate;
 
-    public DocumentController(DocumentService service) {
+    public DocumentController(DocumentService service, UploadGate gate) {
         this.service = service;
+        this.gate = gate;
     }
 
     @Operation(operationId = "uploadConsignmentDocument", summary = "Attach an invoice to a consignment",
@@ -86,6 +89,9 @@ public class DocumentController {
     @ApiResponse(responseCode = "413", description = "The file is over 5 MB: refused by the server before it is read "
             + "(the 400 above is for a file that gets past that limit)",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503", description = "The server is busy with other uploads (only a few are held in "
+            + "memory at once); nothing was stored. Retry-After says when to try again",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "The same file is already attached, or 10 are already in use",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping(value = "/consignments/{id}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -93,8 +99,9 @@ public class DocumentController {
             @RequestPart(name = "file", required = false) MultipartFile file,
             @Parameter(description = "SUPPLIER_INVOICE, COURIER_INVOICE, ZRA_ASSESSMENT or OTHER", required = true)
             @RequestParam(name = "kind", required = false) String kind,
-            @RequestParam(name = "note", required = false) String note) throws IOException {
-        return stored(service.upload(Owner.CONSIGNMENT, id, kind, name(file), bytes(file), note, subject()));
+            @RequestParam(name = "note", required = false) String note) throws Exception {
+        // Only a few uploads are held in memory at once: see UploadGate.
+        return gate.run(() -> stored(service.upload(Owner.CONSIGNMENT, id, kind, name(file), bytes(file), note, subject())));
     }
 
     @Operation(operationId = "uploadPurchaseOrderDocument", summary = "Attach an invoice to a purchase order",
@@ -109,6 +116,9 @@ public class DocumentController {
     @ApiResponse(responseCode = "413", description = "The file is over 5 MB: refused by the server before it is read "
             + "(the 400 above is for a file that gets past that limit)",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503", description = "The server is busy with other uploads (only a few are held in "
+            + "memory at once); nothing was stored. Retry-After says when to try again",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "The same file is already attached, or 10 are already in use",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping(value = "/purchase-orders/{id}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -116,8 +126,8 @@ public class DocumentController {
             @RequestPart(name = "file", required = false) MultipartFile file,
             @Parameter(description = "SUPPLIER_INVOICE or OTHER", required = true)
             @RequestParam(name = "kind", required = false) String kind,
-            @RequestParam(name = "note", required = false) String note) throws IOException {
-        return stored(service.upload(Owner.PURCHASE_ORDER, id, kind, name(file), bytes(file), note, subject()));
+            @RequestParam(name = "note", required = false) String note) throws Exception {
+        return gate.run(() -> stored(service.upload(Owner.PURCHASE_ORDER, id, kind, name(file), bytes(file), note, subject())));
     }
 
     @Operation(operationId = "listConsignmentDocuments", summary = "A consignment's documents, newest first",
