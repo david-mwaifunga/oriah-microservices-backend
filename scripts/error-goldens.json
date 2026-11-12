@@ -125,6 +125,25 @@
     "request": "GET /api/v1/admin/products  (as user)",
     "status": 403
   },
+  "403-procurement-suppliers-as-plain-user": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/procurement/suppliers",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/procurement/suppliers  (as user)",
+    "status": 403
+  },
   "404-unknown-order": {
     "contentType": "application/problem+json",
     "problem": {
@@ -203,6 +222,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/promotions/NOSUCHCODE  (as user)",
+    "status": 404
+  },
+  "404-unknown-supplier": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Supplier not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/procurement/suppliers/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/procurement/suppliers/<uuid>  (as admin)",
     "status": 404
   },
   "404-unmapped-path-under-prefix": {

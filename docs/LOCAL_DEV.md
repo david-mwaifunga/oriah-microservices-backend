@@ -30,7 +30,10 @@ A service started in IntelliJ with `SPRING_PROFILES_ACTIVE=local` reads
 
 ## One-time setup
 
-1. **Docker Desktop** running. Give it at least 6 GB (Settings → Resources).
+1. **Docker Desktop** running. Give it at least 6 GB (Settings → Resources) for the
+   everyday loop below. (The *whole* stack in containers, for `smoke-test.ps1`, needs
+   about 9 GiB: cap the VM at `memory=10GB` in `%USERPROFILE%\.wslconfig`; see
+   `README.md` and Phase 2 in `MVP_PLAN.md`.)
 2. **JDK 25** and **IntelliJ IDEA** (Community is enough). Exactly 25: the Maven build refuses any other JDK (maven-enforcer), and the images run JDK 25. In IntelliJ set the project SDK to 25 and leave the language level at 21 (File → Project Structure), and point Maven's runner JRE at the same JDK.
 3. **Build once**, so the shared modules are in your local Maven repository:
 
@@ -212,7 +215,7 @@ environment.
    or **as alice** (customer). It stores the token in `bearerToken`; every other request sends
    it. Tokens last 30 minutes — log in again on a 401.
 2. **1. Is it up?** — one health check per app, straight to its port.
-3. One folder per service with **all 81 endpoints**, each with its path
+3. One folder per service with **all 87 endpoints**, each with its path
    variables, query parameters and an example body. They go through the gateway
    (`{{baseUrl}}`); the few the gateway does not expose (inventory's internal
    reads) go straight to the service and say so in their description.

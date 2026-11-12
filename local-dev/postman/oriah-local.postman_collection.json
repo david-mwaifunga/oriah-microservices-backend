@@ -643,6 +643,39 @@
               ]
             }
           }
+        },
+        {
+          "name": "procurement :8093",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "http://localhost:8093/actuator/health",
+              "protocol": "http",
+              "host": [
+                "localhost"
+              ],
+              "port": "8093",
+              "path": [
+                "actuator",
+                "health"
+              ]
+            }
+          }
         }
       ]
     },
@@ -3208,6 +3241,219 @@
               "variable": []
             },
             "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "procurement",
+      "item": [
+        {
+          "name": "Who owns the procurement service, and how to reach them",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/contact-info",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "contact-info"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "The suppliers, by name, optionally only those in use or those stopped, or matching some text",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/suppliers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "suppliers"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Which page, counting from 0"
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Suppliers per page, 1 to 100"
+                },
+                {
+                  "key": "active",
+                  "value": "",
+                  "disabled": true,
+                  "description": "true: only suppliers in use; false: only those we have stopped using; absent: both"
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Names containing this text, ignoring letter case. % and _ are ordinary characters."
+                },
+                {
+                  "key": "sort",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Add a supplier",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/suppliers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "suppliers"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example Trading Ltd\",\n  \"country\": \"CN\",\n  \"contactName\": \"A. Contact\",\n  \"contactDetails\": \"WhatsApp +86 000 0000\",\n  \"paymentNotes\": \"Bank transfer, in full, on shipping\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "One supplier",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/suppliers/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "suppliers",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Correct a mistake: delete a supplier that should never have been added",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/suppliers/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "suppliers",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Frees the name. To stop buying from a real supplier, switch it inactive instead."
+          }
+        },
+        {
+          "name": "Change a supplier: send only the fields that change",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/suppliers/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "suppliers",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Example Trading Ltd\",\n  \"country\": \"CN\",\n  \"contactName\": \"A. Contact\",\n  \"contactDetails\": \"WhatsApp +86 000 0000\",\n  \"paymentNotes\": \"Bank transfer, in full, on shipping\",\n  \"active\": false,\n  \"version\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A field left out is unchanged. contactName, contactDetails and paymentNotes are cleared by sending null or blank text. name, country and active cannot be empty. \"active\": false stops using a supplier without deleting it."
           }
         }
       ]
