@@ -215,7 +215,7 @@ environment.
    or **as alice** (customer). It stores the token in `bearerToken`; every other request sends
    it. Tokens last 30 minutes — log in again on a 401.
 2. **1. Is it up?** — one health check per app, straight to its port.
-3. One folder per service with **all 87 endpoints**, each with its path
+3. One folder per service with **all 88 endpoints**, each with its path
    variables, query parameters and an example body. They go through the gateway
    (`{{baseUrl}}`); the few the gateway does not expose (inventory's internal
    reads) go straight to the service and say so in their description.

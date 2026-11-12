@@ -781,6 +781,59 @@
           }
         },
         {
+          "name": "List products for an operator, drafts and packaging included",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "kind",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Every product that has not been deleted, newest first, whatever its status or kind. Each row carries its variants. `kind` and `status` filter; `q` is plain text matched case-insensitively against the title and every variant's SKU (a percent sign or underscore in it means itself). A page is at most 100 rows; one past the end is empty."
+          }
+        },
+        {
           "name": "Create a product",
           "request": {
             "method": "POST",
@@ -801,14 +854,14 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"\",\n  \"description\": \"\",\n  \"tags\": [\n    \"\"\n  ],\n  \"productType\": \"\",\n  \"attributes\": {},\n  \"categoryIds\": [\n    \"00000000-0000-0000-0000-000000000000\"\n  ],\n  \"primaryCategoryId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "raw": "{\n  \"title\": \"\",\n  \"description\": \"\",\n  \"tags\": [\n    \"\"\n  ],\n  \"productType\": \"\",\n  \"attributes\": {},\n  \"categoryIds\": [\n    \"00000000-0000-0000-0000-000000000000\"\n  ],\n  \"primaryCategoryId\": \"00000000-0000-0000-0000-000000000000\",\n  \"kind\": \"SELLABLE\",\n  \"optionNames\": [\n    \"\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": ""
+            "description": "`kind` is SELLABLE (the default) or PACKAGING and is fixed for the life of the product. Packaging is stocked and costed like anything else but is never published and never priced: it is typed PACKAGING, and its variants are created at 0.00."
           }
         },
         {
@@ -897,7 +950,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"title\": \"\",\n  \"description\": \"\",\n  \"tags\": [\n    \"\"\n  ],\n  \"productType\": \"\",\n  \"attributes\": {},\n  \"categoryIds\": [\n    \"00000000-0000-0000-0000-000000000000\"\n  ],\n  \"primaryCategoryId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "raw": "{\n  \"title\": \"\",\n  \"description\": \"\",\n  \"tags\": [\n    \"\"\n  ],\n  \"productType\": \"\",\n  \"attributes\": {},\n  \"categoryIds\": [\n    \"00000000-0000-0000-0000-000000000000\"\n  ],\n  \"primaryCategoryId\": \"00000000-0000-0000-0000-000000000000\",\n  \"kind\": \"SELLABLE\",\n  \"optionNames\": [\n    \"\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"

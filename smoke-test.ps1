@@ -38,6 +38,13 @@
 #      transitions.
 #   [8/20] Search index (Kafka-driven) finds product, via /search?q=aurelia
 #      (the index fills asynchronously, so the step polls).
+#   [8b/20] Phase 3: packaging. maya creates a PACKAGING entry (two sizes, each
+#      0.00), a DRAFT ring and a published control ring. The admin list finds all
+#      three (and the box by SKU, with its two variants); publishing the box is
+#      refused 409; the public read 404s it; its price says UNKNOWN with no title;
+#      search lists the control and neither the draft nor the box, after the step
+#      has seen (in search's own database) that the index READ both and kept them
+#      unlisted, so the absence is not just "not consumed yet".
 #   [9/20] Customer review; public listing + aggregate.
 #   [10/20] /notifications/me shows order.* events -- at least five
 #      (created, paid, fulfilled, shipped, delivered).
@@ -798,6 +805,113 @@ for ($i = 0; $i -lt 30; $i++) {
 }
 if (-not $searchHit) { Write-Error "Search index never picked up product $productId from Kafka"; exit 1 }
 Write-Host "    /search?q=aurelia returned the product" -ForegroundColor Gray
+
+# Phase 3: packaging exists in the catalog but never reaches the storefront, and a
+# draft is not searchable. A draft and a box are made FIRST, then a published control
+# piece; once the control is searchable the index has had time to read the earlier
+# events, so the two absences below are real rather than "not there yet".
+Write-Host "[8b/20] Packaging is stocked and costed but never shown; a draft is not searchable..." -ForegroundColor Cyan
+$p3 = [guid]::NewGuid().ToString('N').Substring(0, 8)
+$p3Word = "zenith" + (($p3.ToCharArray() | ForEach-Object { [char](97 + ([convert]::ToInt32([string]$_, 16) % 26)) }) -join '')
+$boxTitle = "$p3Word gift box"
+$draftTitle = "$p3Word draft ring"
+$controlTitle = "$p3Word control ring"
+$adminHeaders = @{ Authorization = "Bearer $maya" }
+$box = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products" -Headers $adminHeaders `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ title=$boxTitle; kind="PACKAGING"; optionNames=@("Size") })
+if ($box.kind -ne "PACKAGING" -or $box.productType -ne "PACKAGING" -or $box.status -ne "DRAFT") {
+    Write-Error "A packaging entry should be DRAFT, kind PACKAGING and typed PACKAGING; got: $($box | ConvertTo-Json -Depth 3)"; exit 1
+}
+foreach ($size in "Small", "Large") {
+    $boxVariant = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products/$($box.id)/variants" `
+        -Headers $adminHeaders -ContentType "application/json" `
+        -Body (ConvertTo-Json @{ sku="BOX-$p3-$size"; unitPrice=0.00; options=@{ Size=$size } })
+}
+$boxVariantId = ($boxVariant.variants | Select-Object -First 1).id
+$draft = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products" -Headers $adminHeaders `
+    -ContentType "application/json" -Body (ConvertTo-Json @{ title=$draftTitle })
+$control = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products" -Headers $adminHeaders `
+    -ContentType "application/json" -Body (ConvertTo-Json @{ title=$controlTitle })
+Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products/$($control.id)/variants" `
+    -Headers $adminHeaders -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ sku="CTL-$p3"; unitPrice=250.00; options=@{} }) | Out-Null
+Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products/$($control.id)/publish" `
+    -Headers $adminHeaders | Out-Null
+
+# The operator's list shows what the public list hides, and finds a box by SKU.
+$adminList = Invoke-RestMethod -Method GET -Headers $adminHeaders `
+    -Uri "http://localhost:8080/api/v1/admin/products?q=$p3Word&size=50"
+foreach ($expected in @($box.id, $draft.id, $control.id)) {
+    if (-not ($adminList.content | Where-Object { $_.id -eq $expected })) {
+        Write-Error "The admin list should show $expected (q=$p3Word); got ids: $(($adminList.content | ForEach-Object { $_.id }) -join ', ')"; exit 1
+    }
+}
+$bySku = Invoke-RestMethod -Method GET -Headers $adminHeaders `
+    -Uri "http://localhost:8080/api/v1/admin/products?q=BOX-$p3&kind=PACKAGING"
+if (-not ($bySku.content | Where-Object { $_.id -eq $box.id -and @($_.variants).Count -eq 2 })) {
+    Write-Error "Searching the admin list by SKU 'BOX-$p3' should find the packaging with its two variants; got: $($bySku | ConvertTo-Json -Depth 4)"; exit 1
+}
+$onlyBoxes = Invoke-RestMethod -Method GET -Headers $adminHeaders `
+    -Uri "http://localhost:8080/api/v1/admin/products?q=$p3Word&kind=PACKAGING"
+if (@($onlyBoxes.content).Count -ne 1) { Write-Error "kind=PACKAGING should list only the box; got $(@($onlyBoxes.content).Count)"; exit 1 }
+
+# Packaging cannot be published, and the shopper-facing reads say nothing about it.
+# "Accepted" is decided AFTER the try, as Expect-Refusal does: raised inside it, the
+# catch would swallow the error and the run would blame a status code of 0.
+function Get-ResponseStatus([scriptblock]$Call) {
+    $accepted = $false
+    $code = $null
+    try { & $Call | Out-Null; $accepted = $true }
+    catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
+    }
+    return [pscustomobject]@{ Accepted = $accepted; Code = $code }
+}
+$publishAttempt = Get-ResponseStatus {
+    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products/$($box.id)/publish" -Headers $adminHeaders
+}
+if ($publishAttempt.Accepted) { Write-Error "Publishing packaging should be refused 409, but it succeeded"; exit 1 }
+if ($publishAttempt.Code -ne 409) { Write-Error "Publishing packaging should be refused 409, got $($publishAttempt.Code)"; exit 1 }
+$readAttempt = Get-ResponseStatus {
+    Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/products/$($box.id)"
+}
+if ($readAttempt.Accepted) { Write-Error "The public product read should 404 for packaging, but it answered"; exit 1 }
+if ($readAttempt.Code -ne 404) { Write-Error "The public product read should 404 for packaging, got $($readAttempt.Code)"; exit 1 }
+$priced = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/variants/pricing" `
+    -ContentType "application/json" -Body (ConvertTo-Json @{ variantIds=@($boxVariantId) })
+if ($priced.results[0].status -ne "UNKNOWN" -or $priced.results[0].productTitle) {
+    Write-Error "Pricing a packaging variant should say UNKNOWN with no title; got: $($priced | ConvertTo-Json -Depth 4)"; exit 1
+}
+
+# Search: the control is found (the index has caught up), the draft and the box are not.
+$controlFound = $false
+for ($i = 0; $i -lt 40; $i++) {
+    $hits = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=$p3Word"
+    if ($hits.hits | Where-Object { $_.productId -eq $control.id }) { $controlFound = $true; break }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $controlFound) { Write-Error "Search never listed the published control product $($control.id)"; exit 1 }
+# Seeing the control proves nothing about the other two: each product's events are keyed by its
+# own id and may sit on a different Kafka partition. So wait until the projection has READ the
+# draft's and the box's events -- a row for each, not listed -- instead of assuming it has.
+$projected = @()
+for ($i = 0; $i -lt 60; $i++) {
+    $projected = @(docker exec oriah-postgres-search psql -U search -d search -t -A -F ':' -c `
+        "SELECT variant_id, listed FROM search_index WHERE variant_id IN ('$($draft.id)', '$($box.id)')" |
+        Where-Object { $_ })
+    if ($projected.Count -eq 2) { break }
+    Start-Sleep -Milliseconds 500
+}
+if ($projected.Count -ne 2) { Write-Error "Search never indexed the draft and the packaging entry (it keeps a row for each, not listed); rows seen: $($projected -join ', ')"; exit 1 }
+foreach ($row in $projected) {
+    if ($row -notmatch ':f$') { Write-Error "A draft or packaging row is LISTED in the search index: $row"; exit 1 }
+}
+$hits = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/search?q=$p3Word"
+if ($hits.hits | Where-Object { $_.productId -eq $draft.id }) { Write-Error "A DRAFT product is searchable: $($draft.id)"; exit 1 }
+if ($hits.hits | Where-Object { $_.productId -eq $box.id }) { Write-Error "A packaging entry is searchable: $($box.id)"; exit 1 }
+Write-Host "    box $($box.id) is DRAFT/PACKAGING (publish 409, public read 404, price UNKNOWN); admin list finds it; search lists only the control" -ForegroundColor Gray
 
 Write-Host "[9/20] Customer review; public listing + aggregate..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `

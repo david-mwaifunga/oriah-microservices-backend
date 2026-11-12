@@ -456,17 +456,19 @@ Phase 0 used order **V4** and inventory **V5**, so their next free numbers were
 order **V5** and inventory **V6**. **Updated after Phase 1 (2026-11-10):** Phase 1
 used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
 **V3** and notification **V3**. **Updated after Phase 2 (2026-11-10):** the new
-`procurement` service used its **V1** (`suppliers`) and nothing else changed — the
-table below is what is on disk now.
+`procurement` service used its **V1** (`suppliers`) and nothing else changed.
+**Updated after Phase 3 (2026-11-12):** catalog used **V5** (`kind`) and search
+**V4** (`listed`) — the table below is what is on disk now.
 
 | Service | Highest now | Next free |
 |---|---|---|
-| catalog | **V4** — USED by Phase 1's outbox | **V5** — Phase 3's `kind` |
+| catalog | **V5** — USED by Phase 3's `kind` (V4 is Phase 1's outbox) | **V6** |
 | inventory | **V6** — USED by Phase 1's `processed_event` (V5 is Phase 0's `@Version`) | **V7** — Phase 5's `cost_lot` |
 | order | **V5** — USED by Phase 1's event log (V4 is Phase 0's authoritative totals) | **V6** |
 | cart | V3 | V4 |
 | payment | **V5** — USED by Phase 1: one charge per intent, and the event log | **V6** |
-| search / notification | **V3** — USED by Phase 1's `processed_event` | **V4** |
+| search | **V4** — USED by Phase 3's `listed` (V3 is Phase 1's `processed_event`) | **V5** |
+| notification | **V3** — USED by Phase 1's `processed_event` | **V4** |
 | promotion / customer / review | V2 | V3 |
 | checkout | *(stateless, no DB)* | — |
 | shipping | *(stateless today)* | **V1** — gains a database in Phase 7 for provinces, towns and delivery prices |
@@ -1131,6 +1133,100 @@ beginning, not from whatever Kafka still holds.
 > section gets a status block when the phase is built.
 
 ### Phase 3 — Catalog holds packaging; the product exists before the stock
+
+> **Status: built, 2026-11-12.** Committed in `oriah-api` (not pushed): catalog
+> `0e4def2`, search `c424ff7`, and the plan, progress log, smoke test, Postman
+> collection and READMEs in the commit after them. The design went through two
+> Codex plan reviews (`../.codex-tmp/p3-plan-1.md`, `-2.md` and their `.review.md`),
+> then a six-lens read-only review panel whose findings were each tried by three
+> skeptics (12 of 26 survived, none above minor; all fixed or recorded), and three
+> Codex reviews of the diff (each found something real, all fixed).
+> `docs/PROGRESS.md`'s Phase 3 entry lists what each found.
+>
+> **What it delivers.**
+> - **`kind` on a catalog entry** (`catalog` V5): `SELLABLE` (every existing product,
+>   and the default) or `PACKAGING`, **fixed at creation**. Packaging is typed
+>   `PACKAGING` (a type with no spec fields: a box is not jewellery, and a CHECK ties
+>   kind and type together), is **never published** (`Product.publish()` refuses it,
+>   409, and a database CHECK holds it even against hand-edited SQL), and **has no
+>   selling price** (its variants are 0.00; a price above zero is a 400).
+> - **Nothing a shopper can reach shows or sells it.** The storefront list, the public
+>   product read, the anonymous image route and the price the cart, checkout and order
+>   trust (`UNKNOWN`, no id, no title) each check "sellable" for themselves, not only
+>   "ACTIVE"; `PackagingStorefrontBoundaryTest` proves each by forcing an ACTIVE
+>   packaging row beside a sellable twin that *is* visible.
+> - **Search lists only ACTIVE + SELLABLE products** (`search` V4, `listed`). The live
+>   defect "a DRAFT product is full-text searchable" is closed. A snapshot with no
+>   `kind` (written before this phase) is read as SELLABLE; an unrecognised kind or
+>   status is not listed; an older snapshot arriving late cannot re-list what a newer
+>   one withdrew.
+> - **The operator's list** `GET /api/v1/admin/products` (filters `kind`, `status`,
+>   `q` on title **and every variant's SKU**, pages of at most 100, newest first,
+>   variants included): the Products screen's table, and the picker Phase 4's
+>   consignment lines choose a variant from (drafts and packaging cannot be found any
+>   other way).
+> - **Option axes.** The domain always had them (`Product.declareOptionNames`) but
+>   nothing in the API could set them, so every product held exactly one variant
+>   with no options and "the product with its variants" (step 1 below) could not be
+>   entered. `optionNames` is now accepted on create and update and returned on reads;
+>   a variant naming one axis twice (`"Size"` and `" Size "`) is a 400 instead of one
+>   value silently overwriting the other.
+> - `201 Location` on create now points at the **admin** read (a new product is a
+>   DRAFT and the public read 404s it).
+>
+> **Verified on 2026-11-12.** Catalog **450** tests, search **56**, inventory **79**,
+> 0 failures; the new migrations were run over databases that already held rows
+> (`V5ProductKindTest`, `V4ListedMigrationTest`) and on the dev stack's own volumes.
+> On the live stack (catalog and search rebuilt; the rest unchanged since Phase 2):
+> **smoke 26/26** (steps 1-20 plus 4b, 5b, 6b, **8b**, 20b, 20c; the new 8b makes a
+> packaging entry, a draft and a published control piece, then asserts publish 409, public
+> read 404, price `UNKNOWN`, the admin list finds all three and the box by SKU, and search
+> lists only the control), error goldens **17/17**, OpenAPI **PASS** (49 additions, 7
+> new: the list operation and `kind` / `optionNames` on three schemas; the same 22
+> waived breaks, none new), Postman **88** endpoints (check PASS), Playwright **6/6**.
+> The first smoke run after the catalog image was rebuilt twice stopped at step 5 (a
+> call to a cold service), never on a wrong answer; the run on the final image passed
+> first time. **Not run:** a full `clean install` of every module: no shared module,
+> gateway or other service changed, so the three changed modules' own suites are the
+> bar.
+>
+> **Accepted for the MVP (written down so nobody rediscovers them).**
+> - **Search rows from before V4 come out not listed** and stay so until their
+>   product's next snapshot (any save writes one). The consumer's bookkeeping makes a
+>   replay of old events a no-op, and the index never stored a status, so nothing can
+>   say which rows were published. Acceptable only because nothing goes live until
+>   every phase is built (`CLIENT_DECISIONS.md` §1.5): only developer data exists. If
+>   that ever stops being true, the smallest rebuild is a one-shot job in catalog that
+>   emits a fresh `product.updated` for every product.
+> - **There is no endpoint to edit a variant's options or switch a variant off**
+>   (the domain can; the API only adds and reprices). So option axes can be declared
+>   only while a product has no variant; a product that already has one needs a new
+>   product to get different axes. Phase 4's question below is the natural place to add
+>   variant lifecycle, if the client wants it.
+> - **`GET /api/v1/product-types` (public) now lists `PACKAGING`.** The storefront
+>   uses the list only to render a product's spec, so nothing shows; the admin type
+>   picker must not offer it for sellable pieces (`FRONTEND_WORK.md`).
+> - **Inventory's public `GET /api/v1/inventory/{variantId}` still answers for any
+>   variant id** (stock for drafts and packaging alike, by an unguessable UUID).
+>   Already true for drafts before this phase; revisit when inventory is reworked in
+>   Phase 5.
+> - **`status=ARCHIVED` on the admin list is always empty**: a product becomes
+>   ARCHIVED only when it is deleted, and a deleted product is never listed.
+>
+> **What this phase hands to the next ones.**
+> - **Phase 4:** a consignment line names a variant from the admin list (`kind`,
+>   `status`, `q`). Questions for the owner: may a consignment take a switched-off
+>   variant, or one on an archived product? (There is no way to switch one off yet.)
+> - **Phase 5 (inventory):** read `kind` from `product.created` / `product.updated`
+>   and persist it. Events written before Phase 3 have none (**absent = SELLABLE**),
+>   and inventory has already applied every one of them, so a replay will not repair
+>   a packaging entry made in Phases 3-4: catalog must send a fresh snapshot (any save
+>   does) or run the one-shot job above. Inventory ignores `kind` today, so packaging
+>   registers its variants exactly as a ring's do.
+> - **Open question for the owner, not blocking:** does she want anything recorded about
+>   packaging beyond a name and sizes (material, colour, dimensions)? It would be added
+>   as fields on the `PACKAGING` type: one edit, nothing retrofitted.
+> - **Frontend:** `docs/FRONTEND_WORK.md`'s Phase 3 section has the API as built.
 
 `catalog` **V5** (V4 is Phase 1's outbox): `kind` (`SELLABLE` | `PACKAGING`). `search` **V4** (V3 is Phase 1's `processed_event`): index
 only sellable-and-published.

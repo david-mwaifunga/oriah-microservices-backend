@@ -197,6 +197,20 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 
 ### Phase 3 — Catalog holds packaging; the product exists before the stock
 
+> **Built 2026-11-12 — what the API does now (the bullets below it are the screens that use it).**
+>
+> - **`kind` on a product.** `POST /api/v1/admin/products` takes an optional `kind`: `SELLABLE` (the default, so today's dialog still works) or `PACKAGING`. It is **fixed for life**: a `PATCH` that names a different `kind` is a 400 (naming the same one, or none, is fine). Every product response now carries `kind` (the public ones too, always `SELLABLE`).
+> - **A packaging entry is typed `PACKAGING`**, with no spec fields: sending `productType` as anything else is a 400, sending `PACKAGING` for something sellable is a 400, and so is changing the type across that line. `GET /api/v1/product-types` now lists a third type, `PACKAGING`: **the type picker must not offer it** for a sellable product (and must not offer the others for packaging). Hide the whole spec section for packaging.
+> - **Packaging is never published and never priced.** `POST .../publish` on it is a **409** whose `detail` says it is packaging: hide the Publish button. Its variants are created and kept at **`unitPrice` 0.00** (the field is still required: send `0.00`); any price above zero, on create or on a reprice, is a 400. Hide the price field and the pricing screen for it.
+> - **More than one variant now works.** `optionNames` (for example `["Ring Size"]`, `["Strap", "Case Size"]`) is accepted on create and on `PATCH`, and every product detail and admin read returns it. **Declare the axes before adding variants:** each variant's `options` must have exactly those keys (`{"Ring Size": "M"}`), and two variants may not share a combination. Until now nothing in the API could set the axes, so a product could hold only one variant with no options. A `PATCH` that changes the axes is a 400 naming the active variant it would strand, and **today nothing in the API can edit a variant's options or switch a variant off** (only add and reprice), so the axes can be changed only while the product has **no** variant: to give a product that already has one different axes, create a new product (the screen should say so rather than offer a way out that does not exist). A null, blank or repeated axis name is a 400. Names are trimmed but **not** case-folded: `Size` and `size` are different axes. Packaging in sizes is one entry with a variant per size.
+> - **The operator's list: `GET /api/v1/admin/products`** (`CATALOG_ADMIN`; operationId `listForAdmin`). Query parameters: `kind` (`SELLABLE` | `PACKAGING`), `status` (`DRAFT` | `ACTIVE` | `ARCHIVED`; **offer `DRAFT` and `ACTIVE` only**: `ARCHIVED` is set only when a product is deleted, and a deleted product is never listed, so that filter always returns an empty page), `q` (plain text, case-insensitive, matched against the **title and every variant's SKU**; a `%` or `_` typed in it means that character), `page` (from 0), `size` (default 20, **at most 100**). Newest first. Reply: the usual page envelope (`content`, `page`, `size`, `totalElements`, `totalPages`) of the admin product, **variants included**, so it is also the picker for consignment lines (Phase 4). It shows drafts and packaging and never shows a deleted product. A kind or status that does not exist is a 400. Use it for the Products table and for the dashboard's Catalogue count (the public list leaves drafts and packaging out).
+> - **`201 Location` on create now points at the admin read** (`/api/v1/admin/products/{id}`), because a new product is a draft and the public read 404s it. Anything that followed the old `Location` was following a URL that could not return the new product.
+> - **A shopper can never reach packaging**: the public list and `GET /api/v1/products/{id}` leave it out (404), and `POST /api/v1/variants/pricing` answers `UNKNOWN` for a packaging variant, with no id and no title, so a bag can never hold one.
+> - **Search** lists only products that are published **and** sellable: a draft, an archived product and packaging never come back. The storefront has no search box, so nothing changes on screen.
+> - **Breaks in `oriah-web`** (a failing spec not listed here is a regression): `createSellableProduct` and `admin-happy-path.spec.ts` still pass unchanged because `kind` is optional, but the dialog must stop asking for a price and SKU at create (below); `AdminProductsClient.test.tsx` and `adminProductFlow.test.ts` change with the draft-first create; the generated types (`lib/api/generated/catalog.ts`) gain `kind`, `optionNames`, the list operation and the new request fields, so regenerate them.
+>
+> **Open questions for the owner** (none blocks the build): does she want anything recorded about packaging beyond a name and sizes (material, colour, dimensions)? It would be added as fields on the `PACKAGING` type, one edit, nothing retrofitted. May a consignment take a variant that is switched off, or one on an archived product (Phase 4)?
+
 **Admin screens**
 
 - The Products screen (CATALOG_ADMIN) gains the product kind, SELLABLE or PACKAGING, so gift boxes and pouches are created as catalog entries.
@@ -207,7 +221,7 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 **Storefront**
 
 - No visible change. The storefront must never show a PACKAGING entry (Part 3: packaging 'never reaches the storefront'), which holds as long as catalog's public list and product-by-id leave them out.
-- Search V3 (indexing only sellable, published products) changes nothing on screen: the storefront has no search box, and the shop page lists through catalog.
+- Search V4 (indexing only sellable, published products) changes nothing on screen: the storefront has no search box, and the shop page lists through catalog.
 
 **What it breaks in oriah-web today**
 

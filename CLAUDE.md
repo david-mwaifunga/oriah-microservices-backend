@@ -198,7 +198,13 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    separate period expenses.
 9. **Packaging is a catalog entry of `kind = PACKAGING`** — stocked, lotted and
    FIFO-drained like anything else, and recorded against the sale it went out
-   with. Never baked into a product's own cost.
+   with. Never baked into a product's own cost. **Built in Phase 3:** `kind`
+   is fixed at creation (`SELLABLE` by default), a packaging entry is typed
+   `PACKAGING`, is never published (`Product.publish()` refuses and a database
+   CHECK holds it), has no selling price (its variants are 0.00) and is answered
+   as "unknown" by the price the cart and checkout trust. Admins find drafts and
+   packaging with `GET /api/v1/admin/products` (filters `kind`, `status`, `q` on
+   title and SKU).
 10. **Nothing transactional is seeded.** Reference data (product types,
     provinces and towns, courier list) may be. Products, variants, prices, suppliers, consignments,
     costs and stock are all created through admin endpoints — which is what
@@ -241,7 +247,11 @@ consumer asks a producer to send its history again),
 `oriah.replay.<consumer>` (the answer, one topic per consumer) and the
 dead-letter topics `<topic>.dlq.<group>` (an event that cannot be applied is
 parked there, never dropped). Every event goes through the shared module
-**`shared/oriah-events`**; its `README.md` is the reference.
+**`shared/oriah-events`**; its `README.md` is the reference. **Since Phase 3,
+`product.created` / `product.updated` end with a `kind` (`SELLABLE` |
+`PACKAGING`); a consumer must read an absent `kind` as `SELLABLE`** (every earlier
+snapshot lacks one). Search reads `status` and `kind` by name to decide whether a
+product is listed; inventory ignores `kind` until Phase 5.
 
 ---
 
@@ -355,7 +365,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 20b and 20c**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b and 20c**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, inventory,
 cart, checkout **quote then commit**, order transitions, Kafka-driven search
@@ -478,10 +488,15 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   order-service, so "verified purchase" is self-asserted.
 - **No landed cost exists anywhere**, so cost of goods and profit cannot be
   computed today.
-- **`search` indexes unpublished products.** `SearchIndexEntry` has no status,
-  price or stock column, so a `DRAFT` product is full-text searchable. Its PK
-  column is named `variant_id` but holds the **product** id, and
-  `SearchResultResponse.Hit.from(e)` returns that same value twice,
+- ✅ **FIXED in Phase 3 (2026-11-12): `search` indexed unpublished products.**
+  Each row now carries `listed` (V4): true only for a product that is `ACTIVE`
+  **and** `SELLABLE`, decided afresh by every snapshot, and the search query
+  returns only listed rows. Every row that existed before V4 comes out **not
+  listed** (the index never stored a status) until its product's next snapshot;
+  any save of the product writes one. That is accepted for the MVP because
+  nothing goes live until every phase is built, so only developer data exists.
+  Still true: the PK column is named `variant_id` but holds the **product** id,
+  and `SearchResultResponse.Hit.from(e)` returns that same value twice,
   deliberately.
 - ✅ **FIXED in Phase 1 (2026-11-10): the append-only event log.** Order,
   catalog write every change, and payment every charge outcome

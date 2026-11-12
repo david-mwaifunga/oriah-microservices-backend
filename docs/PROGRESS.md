@@ -20,6 +20,98 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-12 (MVP_PLAN Phase 3 complete: packaging in the catalog, and search lists only what is published)
+
+Phase 3 of `MVP_PLAN.md` is built, tested, reviewed and committed (**not pushed**).
+Packaging (boxes, pouches) is now a **kind of catalog entry**: stocked and costed like
+anything later, but never published, never priced, and invisible to anything a shopper
+can reach. The operator gets a **list that shows drafts and packaging** (and finds a
+product by SKU), products can finally have **more than one variant** (nothing in the API
+could set their option axes before), and **search no longer returns a DRAFT** (the live
+defect). Strict test-first throughout; `oriah-web` was not changed.
+
+| What | Commits |
+|---|---|
+| Catalog: `kind`, the packaging rules, the admin list, option axes, every anonymous read checking "sellable" (V5) | `0e4def2` |
+| Search: `listed`, only ACTIVE + SELLABLE can be found (V4) | `c424ff7` |
+| Smoke step 8b, Postman (88), plan, frontend handover, READMEs, this entry | the commit after them |
+
+### How the design was checked
+
+- **Codex reviewed the plan twice.** Round 1 found real gaps and all became work: there
+  was no admin list (Phase 4 could not pick a draft variant), packaging's price was not
+  held at zero, `Location` pointed at a URL that 404s a new product, the public pricing
+  route would have named a packaging entry, and "never reaches the storefront" needed a
+  definition (answered: cannot be found, cannot be bought, and a guessed id learns
+  nothing from catalog). Round 2: no blockers. It also pushed for a real `PACKAGING`
+  product type instead of typing boxes as jewellery, which was done.
+- **A six-lens read-only review panel** (catalog correctness, shopper exposure, events
+  and migrations, test integrity, the list and axes, docs and downstream consumers; 84
+  agents, each finding tried by three skeptics): 26 candidates, **12 survived, none
+  above minor**. Fixed: the anonymous image route checked ACTIVE but not SELLABLE (a
+  real gap in the "every anonymous read" claim; now closed and tested), a NUL in the
+  search text answered 409, tags were fetched one query per product (the list pages 100),
+  untested edges of the list and of PATCH, two tests that described the old behaviour,
+  and a smoke-test pitfall (an error raised inside `try` blamed "status 0"). Recorded: no
+  endpoint edits or switches off a variant, `status=ARCHIVED` is always empty.
+- **Codex reviewed the diff three times**: round 1 found `"optionNames":[null]` answered
+  **500** (a bug of mine, fixed test-first) and that the API cannot do what the axes
+  error told an admin to do (the wording is fixed and the limit recorded); round 2 found
+  that a variant naming one axis twice (`"Size"`, `" Size "`) silently kept the last value
+  (a bug the axes work made reachable, fixed test-first in `VariantOptions`); round 3
+  found that smoke step 8b could go green by accident (finding the control proves
+  nothing about a draft and a box whose events may sit on other Kafka partitions), so
+  the step now waits until search's own database holds a row for each, not listed, before
+  it asserts they are not returned.
+
+### Verified on 2026-11-12
+
+- **Tests:** catalog **450**, search **56**, inventory **79**, all 0 failures. The new
+  migrations run over databases that already hold rows (`V5ProductKindTest`,
+  `V4ListedMigrationTest`) **and** on the dev stack's own volumes (V5 and V4 applied
+  cleanly there). Not run: a `clean install` of every module; no shared module, gateway
+  or other service changed.
+- **Live stack** (catalog and search rebuilt, the rest unchanged since Phase 2; a cold
+  start took **237 s** on an unloaded PC, against 20-25 min when it was loaded): smoke
+  **26/26**, error goldens **17/17**, OpenAPI **PASS** (49 additions, 7 of them new; the
+  same 22 waived breaks, none new), Postman **88** endpoints with its GET check PASS,
+  Playwright **6/6** in 41 s (no extended time limit needed this time).
+- **The runs that failed first.** The first full catalog run had four failures and an
+  error, all of them tests that described behaviour this phase changed on purpose or
+  shared state: three tests followed `Location` as the public URL (it is now the admin
+  one), a test inserted a product with raw SQL that now has to say its `kind`, and the
+  event golden test's `BOX-M` SKU collided with the same SKU created by a test that
+  shares the database (the second full run: 433 tests, 0 failures). Smoke attempts 1
+  and 2 on the first deploy stopped at step 5, a first call to a cold `checkout` that
+  had restarted seconds earlier (the known Phase 2 pattern), never on a wrong answer;
+  attempt 3 passed, and the run on the final image passed first time.
+
+### What the code does not say
+
+- **Several test classes share one Spring context and so one Testcontainers
+  database.** SKUs and slugs are unique across the catalogue, so a fixed SKU in one class
+  can collide with another's (`AUR-1` and `BOX-M` belong to the event golden tests).
+  New tests use a per-run suffix or a token.
+- **MockMvc encodes a URL template**, so `%25` in `get("/path?q=100%25")` sends the
+  three characters `%25`, and `+` is not a space; the list test decodes a browser-style
+  query string into parameters instead.
+- **`PackagingStorefrontBoundaryTest` drops a CHECK inside a transaction it rolls
+  back** (PostgreSQL DDL is transactional) to force an ACTIVE packaging row; a sellable
+  twin built the same way is the control that proves the fixture is not what hides the
+  box.
+- **Search rows from before V4 are hidden until their product's next snapshot**, and a
+  replay cannot repair them (the consumer's bookkeeping already holds those events).
+  Accepted because only developer data exists before go-live; the smallest rebuild is
+  written in the plan's Phase 3 block.
+- **Inventory ignores `kind` today** and must persist it in Phase 5; events from before
+  this phase have none (absent = SELLABLE) and were already applied, so catalog has to
+  send fresh snapshots for any packaging made in Phases 3-4.
+
+### What is next
+
+Phase 4 (procurement: purchase orders and consignments), which picks variants from the
+new admin list. `docs/FRONTEND_WORK.md` has the Phase 3 API as built, for the screens.
+
 ## CURRENT STATE — 2026-11-12 (MVP_PLAN Phase 2 complete: suppliers, the procurement service, and every container's memory measured)
 
 Phase 2 of `MVP_PLAN.md` is built, tested, reviewed and committed (**not
