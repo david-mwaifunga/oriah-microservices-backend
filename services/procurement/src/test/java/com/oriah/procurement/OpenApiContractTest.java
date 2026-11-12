@@ -118,8 +118,8 @@ class OpenApiContractTest {
                 "get " + SUPPLIERS, List.of("400", "401", "403", "500"),
                 "get " + SUPPLIER, List.of("400", "401", "403", "404", "500"),
                 "patch " + SUPPLIER, List.of("400", "401", "403", "404", "409", "500"),
-                // 400: the id in the path is not a UUID. 409 is not here: a delete cannot conflict.
-                "delete " + SUPPLIER, List.of("400", "401", "403", "404", "500"));
+                // 400: the id in the path is not a UUID. 409: a purchase order names the supplier.
+                "delete " + SUPPLIER, List.of("400", "401", "403", "404", "409", "500"));
 
         expected.forEach((operation, statuses) -> {
             String[] parts = operation.split(" ");
@@ -135,10 +135,9 @@ class OpenApiContractTest {
     }
 
     @Test
-    @DisplayName("a failure is not documented where it cannot happen: a list never answers 404 or 409, a delete never 409")
+    @DisplayName("a failure is not documented where it cannot happen: a list never answers 404 or 409, nor does a single read answer 409")
     void impossibleFailuresAreNotClaimed() {
         assertThat(responses(SUPPLIERS, "get")).doesNotContainKey("404").doesNotContainKey("409");
-        assertThat(responses(SUPPLIER, "delete")).doesNotContainKey("409");
         assertThat(responses(SUPPLIER, "get")).doesNotContainKey("409");
     }
 
@@ -231,6 +230,97 @@ class OpenApiContractTest {
         Map<String, Object> page = schemaOf(parameters, "page");
         assertThat(((Number) page.get("minimum")).intValue()).as("page minimum").isEqualTo(0);
         assertThat(((Number) page.get("default")).intValue()).as("page default").isEqualTo(0);
+    }
+
+    // ------------------------------------------------------------ purchase orders
+
+    private static final String ORDERS = "/api/v1/admin/procurement/purchase-orders";
+    private static final String ORDER = ORDERS + "/{id}";
+    private static final String ORDER_CANCEL = ORDER + "/cancel";
+
+    @Test
+    @DisplayName("purchase orders: every operation has the id the frontend calls it by, and success is documented as what it is")
+    void purchaseOrderOperationsArePinned() {
+        assertThat((String) at(operation(ORDERS, "post") + ".operationId")).isEqualTo("createPurchaseOrder");
+        assertThat((String) at(operation(ORDERS, "get") + ".operationId")).isEqualTo("listPurchaseOrders");
+        assertThat((String) at(operation(ORDER, "get") + ".operationId")).isEqualTo("getPurchaseOrder");
+        assertThat((String) at(operation(ORDER, "patch") + ".operationId")).isEqualTo("updatePurchaseOrder");
+        assertThat((String) at(operation(ORDER_CANCEL, "post") + ".operationId")).isEqualTo("cancelPurchaseOrder");
+
+        assertThat(responses(ORDERS, "post")).containsKey("201").doesNotContainKey("200");
+        assertThat(responses(ORDERS, "get")).containsKey("200");
+        assertThat(responses(ORDER, "get")).containsKey("200");
+        assertThat(responses(ORDER, "patch")).containsKey("200");
+        assertThat(responses(ORDER_CANCEL, "post")).containsKey("200").doesNotContainKey("201");
+    }
+
+    @Test
+    @DisplayName("purchase orders: every failure an operation can answer is documented with ProblemDetail, and none that cannot happen")
+    void purchaseOrderFailuresAreDocumented() {
+        Map<String, List<String>> expected = Map.of(
+                // 404 no such supplier; 409 the supplier is stopped; 503 catalog could not be asked.
+                "post " + ORDERS, List.of("400", "401", "403", "404", "409", "500", "503"),
+                "get " + ORDERS, List.of("400", "401", "403", "500"),
+                "get " + ORDER, List.of("400", "401", "403", "404", "500"),
+                "patch " + ORDER, List.of("400", "401", "403", "404", "409", "500", "503"),
+                "post " + ORDER_CANCEL, List.of("400", "401", "403", "404", "409", "500"));
+
+        expected.forEach((operation, statuses) -> {
+            String[] parts = operation.split(" ");
+            Map<String, Object> responses = responses(parts[1], parts[0]);
+            for (String status : statuses) {
+                assertThat(responses).as("%s must document %s", operation, status).containsKey(status);
+                assertThat(String.valueOf(responses.get(status)))
+                        .as("%s %s must reference ProblemDetail", operation, status)
+                        .contains(PROBLEM_REF)
+                        .contains("application/problem+json");
+            }
+        });
+        // A list and a read never answer 409; cancelling never asks catalog.
+        assertThat(responses(ORDERS, "get")).doesNotContainKey("404").doesNotContainKey("409")
+                .doesNotContainKey("503");
+        assertThat(responses(ORDER, "get")).doesNotContainKey("409").doesNotContainKey("503");
+        assertThat(responses(ORDER_CANCEL, "post")).doesNotContainKey("503");
+    }
+
+    @Test
+    @DisplayName("purchase orders: a change and a cancel must say which version they were made from; a new order must have a supplier and lines")
+    void purchaseOrderRequestsSaySoWhatIsRequired() {
+        assertThat((List<String>) at("$.components.schemas.CreatePurchaseOrderRequest.required"))
+                .contains("supplierId", "lines");
+        assertThat((List<String>) at("$.components.schemas.UpdatePurchaseOrderRequest.required"))
+                .contains("version").doesNotContain("lines", "placedOn", "note");
+        assertThat((List<String>) at("$.components.schemas.VersionRequest.required")).contains("version");
+        assertThat((List<String>) at("$.components.schemas.PurchaseOrderLineRequest.required"))
+                .contains("variantId", "quantity", "totalPaid");
+    }
+
+    @Test
+    @DisplayName("purchase orders: a reply says which of its fields may be null (the note, the consignment, a line's product title)")
+    void purchaseOrderResponseSaysWhatMayBeNull() {
+        for (String optional : List.of("note", "consignmentId")) {
+            assertThat(isNullable("PurchaseOrder", optional))
+                    .as("PurchaseOrder.%s may be null; the schema says %s", optional, describe("PurchaseOrder", optional))
+                    .isTrue();
+        }
+        assertThat(isNullable("PurchaseOrderLine", "productTitle")).isTrue();
+        for (String always : List.of("reference", "status", "totalPaid", "currency", "version")) {
+            assertThat(isNullable("PurchaseOrder", always)).as("PurchaseOrder.%s", always).isFalse();
+        }
+        assertThat(isNullable("PurchaseOrderLine", "variantTitle")).isFalse();
+    }
+
+    @Test
+    @DisplayName("purchase orders: the list documents its filters and the same page bounds as every list: size 1 to 100, page from 0")
+    void purchaseOrderListDocumentsItsParameters() {
+        List<Map<String, Object>> parameters = at(operation(ORDERS, "get") + ".parameters");
+
+        assertThat(parameters).isNotNull();
+        assertThat(parameters).extracting(p -> p.get("name")).contains("page", "size", "supplierId", "status");
+        Map<String, Object> size = schemaOf(parameters, "size");
+        assertThat(((Number) size.get("minimum")).intValue()).isEqualTo(1);
+        assertThat(((Number) size.get("maximum")).intValue()).isEqualTo(100);
+        assertThat(((Number) schemaOf(parameters, "page").get("minimum")).intValue()).isEqualTo(0);
     }
 
     @SuppressWarnings("unchecked")

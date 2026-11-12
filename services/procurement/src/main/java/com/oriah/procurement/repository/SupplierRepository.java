@@ -3,9 +3,12 @@ package com.oriah.procurement.repository;
 import java.util.Optional;
 import java.util.UUID;
 
+import jakarta.persistence.LockModeType;
+
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -18,7 +21,7 @@ import com.oriah.procurement.model.Supplier;
  * deleted but nothing hides it, and {@code delete()} on a repository still
  * removes the row for good. So every read here says {@code deleted = false}
  * itself, and a deleted supplier simply does not exist as far as the API is
- * concerned (its row is kept so Phase 4's history can still name it).
+ * concerned (its row is kept so a purchase order's history can still name it).
  *
  * <p>Names are compared with {@code lower(...)}, the same expression the partial
  * unique index {@code uq_suppliers_name_live} is built on, so "is it taken?" and
@@ -27,6 +30,23 @@ import com.oriah.procurement.model.Supplier;
 public interface SupplierRepository extends JpaRepository<Supplier, UUID> {
 
     Optional<Supplier> findByIdAndDeletedFalse(UUID id);
+
+    /**
+     * The live supplier with its row SHARE-locked until the transaction ends. Taken by what
+     * COMMITS Oriah to a supplier: placing a purchase order, or adding to one. Many of those
+     * can run together; none can run while the supplier is being deleted, stopped or edited,
+     * which take {@link #findLiveForUpdate} and wait for the share locks to end (and the
+     * other way round). That is what makes "a stopped supplier gets no new orders" and "a
+     * supplier with orders cannot be deleted" hold when two requests race.
+     */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("select s from Supplier s where s.id = :id and s.deleted = false")
+    Optional<Supplier> findLiveForShare(@Param("id") UUID id);
+
+    /** The live supplier with its row locked exclusively: for editing, stopping or deleting it. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select s from Supplier s where s.id = :id and s.deleted = false")
+    Optional<Supplier> findLiveForUpdate(@Param("id") UUID id);
 
     /** Is a live supplier already called this, in any letter case? */
     @Query("select count(s) > 0 from Supplier s where lower(s.name) = lower(:name) and s.deleted = false")

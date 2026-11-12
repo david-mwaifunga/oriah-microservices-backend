@@ -22,6 +22,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.jayway.jsonpath.JsonPath;
+import com.oriah.procurement.ProcurementTestData;
 import com.oriah.procurement.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -77,7 +78,7 @@ class SupplierUpdateTest {
 
     @BeforeEach
     void clean() {
-        jdbc.update("DELETE FROM suppliers");
+        ProcurementTestData.wipe(jdbc);
     }
 
     /** A supplier with every optional field filled, so a clear or a keep is visible. */

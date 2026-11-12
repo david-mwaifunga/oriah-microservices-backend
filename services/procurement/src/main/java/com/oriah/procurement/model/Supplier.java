@@ -31,9 +31,11 @@ import jakarta.persistence.Version;
  *
  * <ul>
  *   <li><strong>inactive</strong> ({@link #deactivate()}): a real supplier we have
- *       stopped using. Phase 4 will give it no new purchase orders.</li>
+ *       stopped using. It gets no new purchase orders, and orders already placed with
+ *       it carry on.</li>
  *   <li><strong>deleted</strong> ({@link #markDeleted()}): correcting a record that
- *       should never have existed. Its name becomes free again.</li>
+ *       should never have existed. Its name becomes free again. A supplier that any
+ *       purchase order names is never deleted: stop using it instead.</li>
  * </ul>
  *
  * <h2>Rules</h2>

@@ -20,6 +20,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.jayway.jsonpath.JsonPath;
+import com.oriah.procurement.ProcurementTestData;
 import com.oriah.procurement.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,7 +67,7 @@ class SupplierCrudTest {
 
     @BeforeEach
     void clean() {
-        jdbc.update("DELETE FROM suppliers");
+        ProcurementTestData.wipe(jdbc);
     }
 
     static RequestPostProcessor maya() {

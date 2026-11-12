@@ -29,6 +29,7 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.jayway.jsonpath.JsonPath;
+import com.oriah.procurement.ProcurementTestData;
 import com.oriah.procurement.TestcontainersConfiguration;
 import com.oriah.procurement.repository.SupplierRepository;
 
@@ -97,7 +98,7 @@ class SupplierUpdateRaceTest {
 
     @BeforeEach
     void clean() {
-        jdbc.update("DELETE FROM suppliers");
+        ProcurementTestData.wipe(jdbc);
     }
 
     /**

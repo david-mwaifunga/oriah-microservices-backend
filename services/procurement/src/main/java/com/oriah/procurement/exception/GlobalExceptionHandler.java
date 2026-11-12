@@ -27,8 +27,8 @@ import lombok.extern.slf4j.Slf4j;
  * simultaneous creates did.
  *
  * <p>Catalog handles the exception by turning <em>every</em> integrity violation
- * into a 409. That is too wide here. Procurement will grow foreign keys in Phase 4,
- * and a purchase order pointing at nothing is OUR bug, to be paged, not the
+ * into a 409. That is too wide here. Procurement has foreign keys now (a purchase
+ * order names its supplier), and an order pointing at nothing is OUR bug, to be paged, not the
  * caller's conflict to resolve. So only one case is a 409: SQLSTATE 23505 (unique
  * violation) on the index {@code uq_suppliers_name_live}. Both must match.
  * Everything else goes to the shared catch-all, which logs it with its stack trace

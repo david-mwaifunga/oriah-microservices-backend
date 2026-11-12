@@ -18,6 +18,7 @@ import com.oriah.procurement.dto.CreateSupplierRequest;
 import com.oriah.procurement.dto.UpdateSupplierRequest;
 import com.oriah.procurement.exception.InvalidFieldsException;
 import com.oriah.procurement.model.Supplier;
+import com.oriah.procurement.repository.PurchaseOrderRepository;
 import com.oriah.procurement.repository.SupplierRepository;
 
 import jakarta.validation.ConstraintViolation;
@@ -33,10 +34,12 @@ import jakarta.validation.Validator;
 public class SupplierService {
 
     private final SupplierRepository repository;
+    private final PurchaseOrderRepository orders;
     private final Validator validator;
 
-    public SupplierService(SupplierRepository repository, Validator validator) {
+    public SupplierService(SupplierRepository repository, PurchaseOrderRepository orders, Validator validator) {
         this.repository = repository;
+        this.orders = orders;
         this.validator = validator;
     }
 
@@ -180,9 +183,28 @@ public class SupplierService {
     /**
      * Deletes a supplier: it disappears from the API and frees its name, and its
      * row is kept (marked deleted) so history can still name it.
+     *
+     * <p>A supplier that any purchase order names, in any status, is not deleted:
+     * stop using it instead (edit it inactive). Deleting is for a supplier added by
+     * mistake, and an order is the record that it was not one.
+     *
+     * <p>The supplier's row is taken exclusively BEFORE the orders are looked at. What
+     * places an order takes the same row SHARE-locked first ({@code PurchaseOrderService}),
+     * so a delete that arrives while an order is being placed waits for it to commit and
+     * then finds it, and an order placed while a delete is running waits for the delete and
+     * then finds no supplier. Without the lock both could pass their checks and a deleted
+     * supplier would have a new order. An edit does not need this lock: stopping or
+     * renaming a supplier cannot make an order wrong, and two edits are already ordered
+     * by the version column.
      */
     public void delete(UUID id) {
-        live(id).markDeleted();
+        Supplier supplier = repository.findLiveForUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Supplier", "id", id.toString()));
+        if (orders.existsBySupplierId(id)) {
+            throw new IllegalStateException("Supplier '" + supplier.name() + "' has purchase orders, so it cannot "
+                    + "be deleted. Stop using it instead: edit it and set active to false.");
+        }
+        supplier.markDeleted();
     }
 
     private Supplier live(UUID id) {

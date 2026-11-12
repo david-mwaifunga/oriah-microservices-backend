@@ -172,12 +172,17 @@ public class SupplierController {
 
     @Operation(operationId = "deleteSupplier",
             summary = "Correct a mistake: delete a supplier that should never have been added",
-            description = "Frees the name. To stop buying from a real supplier, switch it inactive instead.")
+            description = "Frees the name. To stop buying from a real supplier, switch it inactive instead: "
+                    + "a supplier that any purchase order names, in any status, is never deleted.")
     @ApiResponse(responseCode = "204", description = "Deleted")
     @ApiResponse(responseCode = "400", description = "The id is not a UUID",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "404", description = "No such supplier, or already deleted",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "A purchase order names this supplier (or one is being placed "
+            + "with it right now), so it is kept: stop using it instead",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @DeleteMapping("/{id}")

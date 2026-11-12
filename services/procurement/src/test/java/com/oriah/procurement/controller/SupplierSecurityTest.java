@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.jayway.jsonpath.JsonPath;
+import com.oriah.procurement.ProcurementTestData;
 import com.oriah.procurement.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,7 +92,7 @@ class SupplierSecurityTest {
 
     @BeforeEach
     void aSupplierToTryToHarm() throws Exception {
-        jdbc.update("DELETE FROM suppliers");
+        ProcurementTestData.wipe(jdbc);
         MvcResult created = mvc.perform(post(PATH).with(SupplierCrudTest.maya())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Fycargo\",\"country\":\"CN\",\"contactName\":\"Mr Li\"}"))

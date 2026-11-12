@@ -16,6 +16,22 @@ spring:
     locations: classpath:db/migration
 
   cloud:
+    openfeign:
+      circuitbreaker:
+        # Stays off. The catalog client forwards the signed-in person's JWT from a
+        # ThreadLocal, and Spring Cloud's Resilience4j integration runs the call on a
+        # ForkJoinPool worker: the header would be dropped and catalog would answer 401
+        # for every lookup. It also keeps a failed call THROWING rather than falling back
+        # to an invented answer about whether a variant exists.
+        enabled: false
+      client:
+        config:
+          catalog:
+            # One lookup per order placement or line change, on the request thread. The
+            # library defaults (10 s to connect, 60 s to read) would let a slow catalog hold
+            # a request, and a database connection with it, for a minute.
+            connect-timeout: 1000
+            read-timeout: 3000
     stream:
       # No binding for oriah.procurement: the outbox relay (shared/oriah-events)
       # sends each outbox row to the topic named on the row, which is how a

@@ -16,6 +16,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.oriah.procurement.ProcurementTestData;
 import com.oriah.procurement.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,7 +48,7 @@ class SupplierSchemaTest {
 
     @BeforeEach
     void clean() {
-        jdbc.update("DELETE FROM suppliers");
+        ProcurementTestData.wipe(jdbc);
     }
 
     private void insert(String name, String country, boolean deleted) {

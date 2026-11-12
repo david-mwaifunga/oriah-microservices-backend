@@ -17,6 +17,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.oriah.procurement.ProcurementTestData;
 import com.oriah.procurement.TestcontainersConfiguration;
 
 import static org.hamcrest.Matchers.contains;
@@ -61,7 +62,7 @@ class SupplierListTest {
 
     @BeforeEach
     void clean() {
-        jdbc.update("DELETE FROM suppliers");
+        ProcurementTestData.wipe(jdbc);
     }
 
     private void insert(String name, boolean active, boolean deleted) {
