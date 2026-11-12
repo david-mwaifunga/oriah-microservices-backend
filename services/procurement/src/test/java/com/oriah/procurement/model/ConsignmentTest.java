@@ -734,6 +734,38 @@ class ConsignmentTest {
         }
 
         @Test
+        @DisplayName("an identical split typed a second time is the second person's: one old split is matched to one new, never to two")
+        void anIdenticalSecondSplitIsNotAttributedToTheFirstTypist() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-maya", FIRST);
+
+            // Zoe re-sends Maya's split and adds another, identical one of her own.
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00"), duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-zoe", LATER);
+
+            assertThat(c.costLines().get(0).typedBy()).as("the saved-again one is still Maya's").isEqualTo("kc-maya");
+            assertThat(c.costLines().get(1).typedBy()).as("the new one is Zoe's").isEqualTo("kc-zoe");
+            assertThat(c.costLines().get(1).typedAt()).isEqualTo(LATER);
+        }
+
+        @Test
+        @DisplayName("two identical splits typed by different people each keep their own typist when the list is saved again")
+        void identicalSplitsKeepTheirOwnTypists() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-maya", FIRST);
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00"), duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-zoe", LATER);
+
+            // Saved again, unchanged, by a third person.
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00"), duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-ana", LATER.plusSeconds(60));
+
+            assertThat(c.costLines()).extracting(CostLine::typedBy).containsExactly("kc-maya", "kc-zoe");
+        }
+
+        @Test
         @DisplayName("changing the split makes the person who changed it the typist")
         void aChangedSplitIsTheChangersAlone() {
             Consignment c = withTwoLines();

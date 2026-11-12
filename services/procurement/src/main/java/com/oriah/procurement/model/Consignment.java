@@ -369,10 +369,19 @@ public class Consignment extends BaseEntity {
             built.add(checkedCostLine(i + 1, inputs.get(i), lineIds));
         }
         // A split that is saved again unchanged keeps the person who first typed it, whoever saves the list.
+        // One old split is matched to ONE new one: if the same split now appears twice, the second is a
+        // new override and is its saver's, and two identical old splits keep their own typists in order.
+        List<CostLine> unclaimed = new ArrayList<>(costLines.stream().filter(CostLine::isStamped).toList());
         for (CostLine fresh : built) {
             if (fresh.hasTypedSplit()) {
-                costLines.stream().filter(old -> old.isStamped() && old.sameSplitAs(fresh)).findFirst()
-                        .ifPresent(fresh::carryStampFrom);
+                for (java.util.Iterator<CostLine> it = unclaimed.iterator(); it.hasNext(); ) {
+                    CostLine old = it.next();
+                    if (old.sameSplitAs(fresh)) {
+                        fresh.carryStampFrom(old);
+                        it.remove();
+                        break;
+                    }
+                }
             }
         }
         costLines.clear();
