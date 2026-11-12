@@ -51,10 +51,18 @@ services:
   # localhost defaults used when running a module straight from Maven).
   #
   # The healthcheck cadence is shared; the probe itself is not (see the note
-  # at the top of this file). `retries: 30` at `interval: 10s` gives a service
-  # five minutes past its start_period before compose marks it unhealthy,
+  # at the top of this file). `retries: 120` at `interval: 10s` gives a service
+  # twenty minutes past its start_period before compose marks it unhealthy,
   # which matters on a cold Docker Desktop start where twelve Postgres
-  # containers, Keycloak and Kafka are all competing for IO.
+  # containers, Keycloak and Kafka are all competing for IO. Measured
+  # 2026-11-11/12 on a laptop running at 38% of its rated speed: with all twelve
+  # domain services starting together the last was healthy 20-25 minutes after it
+  # started. At the old 30 retries (five minutes) `docker compose up -d` gave up,
+  # exited 1 and left the services that wait on the slow one unstarted, three cold
+  # starts in a row; a service that really fails still ends the wait at once,
+  # because its container exits. On a PC at full speed this costs nothing:
+  # `retries` only counts failures in a row, and a service that passes is
+  # healthy at once.
   microservice-base-config:
     extends:
       service: network-deploy-service
@@ -97,7 +105,7 @@ services:
     healthcheck:
       interval: 10s
       timeout: 5s
-      retries: 30
+      retries: 120
 
   # For modules that fetch their configuration from the Config Server.
   # Waiting for `service_healthy` rather than `service_started` is load-
