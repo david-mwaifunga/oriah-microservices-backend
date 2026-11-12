@@ -4,7 +4,6 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -20,15 +19,11 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.oriah.observability.OriahExceptionHandlerSupport.FieldErrorView;
 import com.oriah.observability.ResourceNotFoundException;
-import com.oriah.procurement.client.CatalogClient.VariantLookupResult.Entry;
-import com.oriah.procurement.client.CatalogVariants;
 import com.oriah.procurement.dto.CreatePurchaseOrderRequest;
 import com.oriah.procurement.dto.PurchaseOrderLineRequest;
 import com.oriah.procurement.dto.PurchaseOrderResponse;
 import com.oriah.procurement.dto.UpdatePurchaseOrderRequest;
-import com.oriah.procurement.exception.InvalidFieldsException;
 import com.oriah.procurement.model.PurchaseOrder;
 import com.oriah.procurement.model.PurchaseOrder.NewLine;
 import com.oriah.procurement.model.PurchaseOrderStatus;
@@ -70,15 +65,15 @@ public class PurchaseOrderService {
 
     private final PurchaseOrderRepository orders;
     private final SupplierRepository suppliers;
-    private final CatalogVariants catalog;
+    private final OrderableVariants variants;
 
     @PersistenceContext
     private EntityManager entityManager;
 
-    public PurchaseOrderService(PurchaseOrderRepository orders, SupplierRepository suppliers, CatalogVariants catalog) {
+    public PurchaseOrderService(PurchaseOrderRepository orders, SupplierRepository suppliers, OrderableVariants variants) {
         this.orders = orders;
         this.suppliers = suppliers;
-        this.catalog = catalog;
+        this.variants = variants;
     }
 
     static LocalDate today() {
@@ -189,33 +184,18 @@ public class PurchaseOrderService {
     }
 
     /**
-     * Asks catalog about every variant at once, refuses the ones that cannot be ordered (all the
-     * problems together, each against its line), and gives back the lines with the catalogue's names.
+     * Asks catalog about every variant at once (see {@link OrderableVariants}: all the problems
+     * together, each against its line) and gives back the lines with the catalogue's names.
      */
     private List<NewLine> resolveLines(List<PurchaseOrderLineRequest> requested) {
-        Map<UUID, Entry> known = catalog.lookup(requested.stream().map(PurchaseOrderLineRequest::variantId).toList());
-
-        List<FieldErrorView> problems = new ArrayList<>();
-        List<NewLine> lines = new ArrayList<>();
+        List<OrderableVariants.Orderable> resolved = variants.resolve(
+                requested.stream().map(PurchaseOrderLineRequest::variantId).toList());
+        List<NewLine> lines = new ArrayList<>(requested.size());
         for (int i = 0; i < requested.size(); i++) {
             PurchaseOrderLineRequest line = requested.get(i);
-            Entry entry = known.get(line.variantId());
-            String field = "lines[" + i + "].variantId";
-            if (entry == null || !entry.found()) {
-                problems.add(new FieldErrorView(field, "no such variant in the catalogue"));
-            } else if (Boolean.TRUE.equals(entry.productDeleted())) {
-                problems.add(new FieldErrorView(field, "belongs to a deleted product"));
-            } else if ("ARCHIVED".equals(entry.productStatus())) {
-                problems.add(new FieldErrorView(field, "belongs to an archived product"));
-            } else if (!Boolean.TRUE.equals(entry.active())) {
-                problems.add(new FieldErrorView(field, "is switched off in the catalogue"));
-            } else {
-                lines.add(new NewLine(line.variantId(), line.quantity(), line.totalPaid(),
-                        entry.sku(), entry.productTitle(), entry.variantTitle(), entry.kind()));
-            }
-        }
-        if (!problems.isEmpty()) {
-            throw new InvalidFieldsException(problems);
+            OrderableVariants.Orderable variant = resolved.get(i);
+            lines.add(new NewLine(line.variantId(), line.quantity(), line.totalPaid(),
+                    variant.sku(), variant.productTitle(), variant.variantTitle(), variant.kind()));
         }
         return lines;
     }

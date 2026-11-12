@@ -323,6 +323,144 @@ class OpenApiContractTest {
         assertThat(((Number) schemaOf(parameters, "page").get("minimum")).intValue()).isEqualTo(0);
     }
 
+    // ------------------------------------------------------------- consignments
+
+    private static final String CONSIGNMENTS = "/api/v1/admin/procurement/consignments";
+    private static final String CONSIGNMENT = CONSIGNMENTS + "/{id}";
+    private static final String C_LINE = CONSIGNMENT + "/lines/{lineId}";
+    private static final String C_OPENING = CONSIGNMENT + "/opening-lines";
+    private static final String C_COSTS = CONSIGNMENT + "/cost-lines";
+    private static final String C_ORDERS = CONSIGNMENT + "/purchase-orders";
+    private static final String C_ORDER = C_ORDERS + "/{orderId}";
+    private static final String C_ALLOCATION = CONSIGNMENT + "/allocation";
+
+    @Test
+    @DisplayName("consignments: every operation has the id the frontend calls it by, and success is documented as what it is")
+    void consignmentOperationsArePinned() {
+        assertThat((String) at(operation(CONSIGNMENTS, "post") + ".operationId")).isEqualTo("createConsignment");
+        assertThat((String) at(operation(CONSIGNMENTS, "get") + ".operationId")).isEqualTo("listConsignments");
+        assertThat((String) at(operation(CONSIGNMENT, "get") + ".operationId")).isEqualTo("getConsignment");
+        assertThat((String) at(operation(CONSIGNMENT, "put") + ".operationId")).isEqualTo("updateConsignmentHeader");
+        assertThat((String) at(operation(CONSIGNMENT, "delete") + ".operationId")).isEqualTo("deleteConsignment");
+        assertThat((String) at(operation(C_LINE, "put") + ".operationId")).isEqualTo("updateConsignmentLine");
+        assertThat((String) at(operation(C_OPENING, "put") + ".operationId")).isEqualTo("replaceOpeningLines");
+        assertThat((String) at(operation(C_COSTS, "put") + ".operationId")).isEqualTo("replaceCostLines");
+        assertThat((String) at(operation(C_ORDERS, "post") + ".operationId")).isEqualTo("attachPurchaseOrder");
+        assertThat((String) at(operation(C_ORDER, "delete") + ".operationId")).isEqualTo("detachPurchaseOrder");
+        assertThat((String) at(operation(C_ALLOCATION, "get") + ".operationId")).isEqualTo("previewAllocation");
+
+        assertThat(responses(CONSIGNMENTS, "post")).containsKey("201").doesNotContainKey("200");
+        assertThat(responses(CONSIGNMENT, "delete")).containsKey("204").doesNotContainKey("200");
+        assertThat(responses(C_ORDERS, "post")).containsKey("200").doesNotContainKey("201");
+        assertThat(responses(C_ORDER, "delete")).containsKey("200").doesNotContainKey("204");
+        assertThat(responses(C_COSTS, "put")).containsKey("200");
+        assertThat(responses(C_ALLOCATION, "get")).containsKey("200");
+    }
+
+    @Test
+    @DisplayName("consignments: every failure an operation can answer is documented with ProblemDetail, and none that cannot happen")
+    void consignmentFailuresAreDocumented() {
+        Map<String, List<String>> expected = new java.util.HashMap<>();
+        // 404: an order does not exist. 409: an order has changed or is taken. 503: opening stock asks catalog.
+        expected.put("post " + CONSIGNMENTS, List.of("400", "401", "403", "404", "409", "500", "503"));
+        expected.put("get " + CONSIGNMENTS, List.of("400", "401", "403", "500"));
+        expected.put("get " + CONSIGNMENT, List.of("400", "401", "403", "404", "500"));
+        expected.put("put " + CONSIGNMENT, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("delete " + CONSIGNMENT, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("put " + C_LINE, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("put " + C_OPENING, List.of("400", "401", "403", "404", "409", "500", "503"));
+        expected.put("put " + C_COSTS, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("post " + C_ORDERS, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("delete " + C_ORDER, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("get " + C_ALLOCATION, List.of("400", "401", "403", "404", "500"));
+
+        expected.forEach((operation, statuses) -> {
+            String[] parts = operation.split(" ");
+            Map<String, Object> responses = responses(parts[1], parts[0]);
+            for (String status : statuses) {
+                assertThat(responses).as("%s must document %s", operation, status).containsKey(status);
+                assertThat(String.valueOf(responses.get(status)))
+                        .as("%s %s must reference ProblemDetail", operation, status)
+                        .contains(PROBLEM_REF)
+                        .contains("application/problem+json");
+            }
+        });
+        assertThat(responses(CONSIGNMENTS, "get")).doesNotContainKey("404").doesNotContainKey("409")
+                .doesNotContainKey("503");
+        assertThat(responses(CONSIGNMENT, "get")).doesNotContainKey("409").doesNotContainKey("503");
+        assertThat(responses(C_ALLOCATION, "get")).doesNotContainKey("409");
+        // Only typing the opening stock asks the catalogue.
+        assertThat(responses(C_COSTS, "put")).doesNotContainKey("503");
+        assertThat(responses(C_ORDERS, "post")).doesNotContainKey("503");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("consignments: what each request must carry is said, so a generated form knows")
+    void consignmentRequestsSayWhatIsRequired() {
+        assertThat((List<String>) at("$.components.schemas.UpdateConsignmentRequest.required")).contains("version");
+        assertThat((List<String>) at("$.components.schemas.LineDetailsRequest.required")).contains("version");
+        assertThat((List<String>) at("$.components.schemas.OpeningLinesRequest.required"))
+                .contains("version", "lines");
+        assertThat((List<String>) at("$.components.schemas.CostLinesRequest.required"))
+                .contains("version", "costLines");
+        assertThat((List<String>) at("$.components.schemas.AttachOrderRequest.required"))
+                .contains("version", "purchaseOrderId", "purchaseOrderVersion");
+        assertThat((List<String>) at("$.components.schemas.CostLineRequest.required")).contains("costType", "amount")
+                .doesNotContain("basis", "treatment", "shares", "note", "incurredOn");
+        assertThat((List<String>) at("$.components.schemas.OpeningLineRequest.required"))
+                .contains("variantId", "quantity", "totalCost");
+        assertThat((List<String>) at("$.components.schemas.CostShareRequest.required")).contains("lineId", "amount");
+        assertThat((List<String>) at("$.components.schemas.ConsignmentOrderRef.required")).contains("id", "version");
+        assertThat((List<String>) at("$.components.schemas.CreateConsignmentRequest.required"))
+                .as("either orders or opening lines, so neither is required on its own").isNullOrEmpty();
+    }
+
+    @Test
+    @DisplayName("consignments: a reply says which of its fields may be null")
+    void consignmentResponseSaysWhatMayBeNull() {
+        for (String optional : List.of("note", "chargesBasis", "declarant", "clearanceForm", "zraAssessmentRef",
+                "licensedAgentUsed", "receivedAt")) {
+            assertThat(isNullable("Consignment", optional))
+                    .as("Consignment.%s may be null; the schema says %s", optional, describe("Consignment", optional))
+                    .isTrue();
+        }
+        for (String always : List.of("reference", "status", "opening", "estimated", "currency", "goodsTotal", "version")) {
+            assertThat(isNullable("Consignment", always)).as("Consignment.%s", always).isFalse();
+        }
+        for (String optional : List.of("supplier", "purchaseOrder", "productTitle", "chargeableWeightGrams",
+                "originCountry", "hsCode")) {
+            assertThat(isNullable("ConsignmentLine", optional))
+                    .as("ConsignmentLine.%s may be null; the schema says %s", optional, describe("ConsignmentLine", optional))
+                    .isTrue();
+        }
+        assertThat(isNullable("ConsignmentLine", "sku")).isFalse();
+    }
+
+    @Test
+    @DisplayName("consignments: the list documents its filters and the same page bounds as every list")
+    void consignmentListDocumentsItsParameters() {
+        List<Map<String, Object>> parameters = at(operation(CONSIGNMENTS, "get") + ".parameters");
+
+        assertThat(parameters).extracting(p -> p.get("name")).contains("page", "size", "status", "opening");
+        Map<String, Object> size = schemaOf(parameters, "size");
+        assertThat(((Number) size.get("minimum")).intValue()).isEqualTo(1);
+        assertThat(((Number) size.get("maximum")).intValue()).isEqualTo(100);
+        assertThat(((Number) schemaOf(parameters, "page").get("minimum")).intValue()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("consignments: the version a delete or a detach was decided from is a required query parameter")
+    void versionIsRequiredOnDeleteAndDetach() {
+        for (String path : List.of(CONSIGNMENT, C_ORDER)) {
+            List<Map<String, Object>> parameters = at(operation(path, "delete") + ".parameters");
+            Map<String, Object> version = parameters.stream().filter(p -> "version".equals(p.get("name"))).findFirst()
+                    .orElseThrow(() -> new AssertionError("no version parameter on delete " + path));
+            assertThat(version.get("required")).as("delete %s: version", path).isEqualTo(true);
+            assertThat(version.get("in")).isEqualTo("query");
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> schemaOf(List<Map<String, Object>> parameters, String name) {
         Map<String, Object> parameter = parameters.stream().filter(p -> name.equals(p.get("name"))).findFirst()

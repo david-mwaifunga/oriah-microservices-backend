@@ -1,0 +1,65 @@
+package com.oriah.procurement.dto;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.UUID;
+
+import com.oriah.procurement.allocation.ConsignmentCosting;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+
+/**
+ * What the consignment would cost per unit if it were received now.
+ *
+ * <p>A consignment that cannot be costed yet is not an error: {@code ready} is false, {@code problems}
+ * says in plain words what stops it (each naming the cost line or line), and {@code lines} is empty.
+ * {@code costs} is always filled so a screen is never blank.
+ */
+@Schema(name = "AllocationPreview")
+public record AllocationPreviewResponse(
+        @Schema(description = "Every problem is cleared and the unit costs are final") boolean ready,
+        @Schema(description = "What stops it, in plain words; empty when ready") List<String> problems,
+        @Schema(description = "One per consignment line; empty while there are problems") List<Line> lines,
+        List<Cost> costs,
+        BigDecimal goodsTotal,
+        BigDecimal capitalizedCostTotal,
+        BigDecimal periodCostTotal,
+        @Schema(description = "Goods plus capitalized costs: what the units recover, to the ngwee") BigDecimal landedTotal,
+        String currency) {
+
+    /** What one line comes to. {@code slices} are the unit costs: at most two, a ngwee apart, dearer first. */
+    @Schema(name = "AllocationLine")
+    public record Line(UUID lineId, int position, String sku, int quantity, BigDecimal goodsTotal,
+                       @Schema(description = "The costs put on this line") BigDecimal sharedCost,
+                       @Schema(description = "Goods plus the costs put on it") BigDecimal landedTotal,
+                       List<Slice> slices) {
+    }
+
+    /** {@code quantity} units, each costing {@code unitCost}. */
+    @Schema(name = "AllocationSlice")
+    public record Slice(int quantity, BigDecimal unitCost) {
+    }
+
+    /** One cost, and what it put on each line (empty for a PERIOD cost, and while there are problems). */
+    @Schema(name = "AllocationCost")
+    public record Cost(UUID costLineId, int position, String costType, String basis, String treatment,
+                       BigDecimal amount, @Schema(description = "A person typed the split") boolean typed,
+                       List<Share> perLine) {
+    }
+
+    @Schema(name = "AllocationShare")
+    public record Share(UUID lineId, BigDecimal amount) {
+    }
+
+    public static AllocationPreviewResponse of(ConsignmentCosting.Outcome outcome) {
+        return new AllocationPreviewResponse(outcome.ready(), outcome.problems(),
+                outcome.lines().stream().map(l -> new Line(l.lineId(), l.position(), l.sku(), l.quantity(),
+                        l.goodsTotal(), l.sharedCost(), l.landedTotal(),
+                        l.slices().stream().map(s -> new Slice(s.quantity(), s.unitCost())).toList())).toList(),
+                outcome.costs().stream().map(c -> new Cost(c.costLineId(), c.position(), c.costType().name(),
+                        c.basis().name(), c.treatment().name(), c.amount(), c.typed(),
+                        c.perLine().entrySet().stream().map(e -> new Share(e.getKey(), e.getValue())).toList())).toList(),
+                outcome.goodsTotal(), outcome.capitalizedCostTotal(), outcome.periodCostTotal(), outcome.landedTotal(),
+                ConsignmentResponse.CURRENCY);
+    }
+}

@@ -1,5 +1,7 @@
 package com.oriah.procurement.repository;
 
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -33,6 +35,23 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, UU
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select p from PurchaseOrder p where p.id = :id")
     Optional<PurchaseOrder> findByIdForUpdate(@Param("id") UUID id);
+
+    /**
+     * Several orders at once, each row locked, IN ID ORDER. Anything that locks more than one
+     * order takes them in this order, so two such requests can never wait on each other.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from PurchaseOrder p where p.id in :ids order by p.id")
+    List<PurchaseOrder> findAllByIdForUpdate(@Param("ids") Collection<UUID> ids);
+
+    /** The orders in a consignment, oldest reference first; no lock. */
+    @Query("select p from PurchaseOrder p where p.consignmentId = :consignmentId order by p.refNo")
+    List<PurchaseOrder> findByConsignment(@Param("consignmentId") UUID consignmentId);
+
+    /** The orders in a consignment, locked in id order (for deleting a draft). */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select p from PurchaseOrder p where p.consignmentId = :consignmentId order by p.id")
+    List<PurchaseOrder> findByConsignmentForUpdate(@Param("consignmentId") UUID consignmentId);
 
     /** Does any purchase order, of any status, name this supplier? The reason a supplier cannot be deleted. */
     boolean existsBySupplierId(UUID supplierId);
