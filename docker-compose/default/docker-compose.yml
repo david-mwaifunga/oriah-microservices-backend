@@ -1222,10 +1222,15 @@ services:
       start_period: 90s
 
   procurement:
-    # Suppliers only for now (Phase 2), so it waits for its own Postgres and
-    # nothing else. Kafka joins depends_on in the phase where procurement first
-    # publishes an event (consignment.received); until then it would only delay
-    # the start of a service that never touches it.
+    # Suppliers, purchase orders, consignments, the landed-cost allocator and invoices
+    # (Phases 2 and 4). It waits for its own Postgres AND for Kafka: receiving a
+    # consignment appends consignment.received to its outbox, and the relay publishes it.
+    # Kafka being down at that moment is safe (the event stays in the outbox and goes out
+    # when Kafka is back), but a service whose relay and replay listener cannot reach a broker
+    # at start refuses to run its startup checks, so it starts after Kafka like the others.
+    #
+    # It also calls catalog (a variant lookup, Feign, by name through Eureka) when a line is
+    # placed. That is a call at request time, not a start-up dependency: no depends_on.
     extends:
       file: ../common-config.yml
       service: microservice-keycloak-config
@@ -1238,6 +1243,8 @@ services:
       - "127.0.0.1:8093:8093"
     depends_on:
       postgres-procurement:
+        condition: service_healthy
+      kafka:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8093"]

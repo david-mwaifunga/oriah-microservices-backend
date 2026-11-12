@@ -14,7 +14,7 @@
     <artifactId>procurement</artifactId>
     <packaging>jar</packaging>
     <name>procurement</name>
-    <description>Suppliers today; purchase orders, consignments and landed cost in a later phase.</description>
+    <description>Suppliers, purchase orders, consignments, the landed-cost allocator and invoices.</description>
 
     <dependencies>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>

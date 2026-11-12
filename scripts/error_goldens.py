@@ -82,6 +82,8 @@ CASES = [
     # procurement (Phase 2): the supplier list is PROCUREMENT_ADMIN only. Also a
     # GET, so capturing it creates nothing.
     ("403-procurement-suppliers-as-plain-user", "GET", "/api/v1/admin/procurement/suppliers", "user", None),
+    # procurement (Phase 4): consignments, their costs and invoices are PROCUREMENT_ADMIN only.
+    ("403-procurement-consignments-as-plain-user", "GET", "/api/v1/admin/procurement/consignments", "user", None),
 
     # --- 404: the Tier 5 bodies, through the gateway ----------------------
     ("404-unknown-product", "GET", "/api/v1/products/" + MISSING, None, None),
@@ -91,12 +93,20 @@ CASES = [
     # procurement: "admin" is maya (OWNER, so she holds PROCUREMENT_ADMIN). A
     # well-formed id that no supplier has is a 404, not the 400 a malformed id gets.
     ("404-unknown-supplier", "GET", "/api/v1/admin/procurement/suppliers/" + MISSING, "admin", None),
+    # Phase 4: an order, a consignment and a document that nobody has. Each is a GET.
+    ("404-unknown-purchase-order", "GET", "/api/v1/admin/procurement/purchase-orders/" + MISSING, "admin", None),
+    ("404-unknown-consignment", "GET", "/api/v1/admin/procurement/consignments/" + MISSING, "admin", None),
+    ("404-unknown-procurement-document", "GET", "/api/v1/admin/procurement/documents/" + MISSING + "/content", "admin", None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------
     ("400-validation-missing-title", "POST", "/api/v1/admin/products", "admin",
      {"description": "no title", "tags": []}),
     ("400-malformed-uuid-path", "GET", "/api/v1/products/not-a-uuid", None, None),
+    # Phase 4: both are refused before anything is written, so capturing them creates no state.
+    ("400-purchase-order-without-lines", "POST", "/api/v1/admin/procurement/purchase-orders", "admin",
+     {"lines": []}),
+    ("400-consignment-without-orders", "POST", "/api/v1/admin/procurement/consignments", "admin", {}),
 
     # --- 405 / 415: framework errors, the Tier 0.5 class ------------------
     # Both need a token, or the gateway answers 401 before the service ever

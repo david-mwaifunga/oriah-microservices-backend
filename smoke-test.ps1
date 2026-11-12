@@ -117,6 +117,20 @@
 #      intent (409, one live intent per order); and an order checkout has
 #      already paid takes none either (409, it is no longer waiting for
 #      payment).
+#   [20d/20] Procurement: purchase orders, a consignment, receiving it, and its
+#      invoices (Phase 4) -- the worked example of MVP_PLAN Part 4, live and through the
+#      gateway. Two suppliers, two orders (7 rings K10,500.00; 200 boxes K10,000.00), an
+#      unknown variant 400 naming its line, a supplier with an order not deletable 409; a
+#      consignment from both orders (the orders then frozen), a bank charge refused 400
+#      naming the field, the courier's K6,000.00 keyed; the allocation preview to the
+#      ngwee (ring 4 x K1,528.99 + 3 x K1,528.98, box 110 x K78.99 + 90 x K78.98); a
+#      courier invoice stored, fingerprinted and downloaded byte for byte as a nosniff
+#      attachment (the same file again 409, a program named .pdf 400); received (the
+#      consignment and both orders RECEIVED, revision 1 recorded, a second receive 409,
+#      a late change 409); two consignment.received rows in the outbox, the relay's
+#      cursor past them and both on the oriah.procurement topic; a stopped supplier takes
+#      no new order; alice 403, anonymous 401. It leaves a received consignment behind
+#      on purpose (history is never deleted); see the comment at the step.
 #   [20c/20] Procurement: suppliers. maya creates a supplier under a random
 #      name (so the step can re-run on a live stack): 201, the Location a
 #      relative path, the name stored as sent and the country upper-cased
@@ -1935,6 +1949,266 @@ if ($supplierFailures.Count -gt 0) {
     exit 1
 }
 Write-Host "    created 201 (Location a relative path, name stored as sent, country upper-cased), read back by id and in the list, a duplicate name in another letter case 409, patched (paymentNotes + active=false), still readable while stopped; an edit from the current version 200 with the version up by one, an edit from an older version 409 concurrent-update and nothing changed; a page past the offset limit 400 bad-request; deleted 204 then 404; alice 403 on list and create; anonymous 401" -ForegroundColor Gray
+
+Write-Host "[20d/20] Procurement: purchase orders, a consignment, receiving it, and its invoices..." -ForegroundColor Cyan
+# The worked example of MVP_PLAN Part 4, live and through the gateway: 7 rings (K10,500.00)
+# from one supplier and 200 boxes (K10,000.00) from another, one courier charge of K6,000.00.
+# The ring has to come out at K1,528.99 (4 of them) and K1,528.98 (3), the box at K78.99 (110)
+# and K78.98 (90), to the ngwee. Receiving it records the allocation, makes the orders and the
+# consignment RECEIVED, and writes one consignment.received per line to procurement's outbox,
+# which the relay publishes to Kafka.
+#
+# THIS STEP LEAVES ROWS BEHIND, by design. A received consignment, its orders and the suppliers
+# they name are history, and the database refuses to delete them (a supplier any order names is
+# not deleted either), so every run adds one more of each. That is harmless on a developer stack
+# and the reason a go-live database starts empty. It also means the OPENING stock can no longer
+# be received on a stack this has run against: it must come before any shipment.
+$maya  = Get-Jwt "maya"
+$alice = Get-Jwt "alice"
+$mayaH  = @{ Authorization = "Bearer $maya" }
+$aliceH = @{ Authorization = "Bearer $alice" }
+
+Add-Type -AssemblyName System.Net.Http
+# PowerShell 5.1 has no -Form on Invoke-WebRequest, so the multipart upload is made by hand. The
+# byte array is passed with a leading comma: without it PowerShell spreads it across the
+# constructor's arguments.
+function Invoke-Upload($Uri, $Token, [byte[]]$Bytes, $FileName, $Kind) {
+    $client = New-Object System.Net.Http.HttpClient
+    try {
+        $client.DefaultRequestHeaders.Authorization = New-Object System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", $Token)
+        $form = New-Object System.Net.Http.MultipartFormDataContent
+        $file = New-Object System.Net.Http.ByteArrayContent(,$Bytes)
+        $file.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/pdf")
+        $form.Add($file, "file", $FileName)
+        $form.Add((New-Object System.Net.Http.StringContent($Kind)), "kind")
+        $reply = $client.PostAsync($Uri, $form).Result
+        $text = $reply.Content.ReadAsStringAsync().Result
+        $json = $null
+        if ($text) { try { $json = $text | ConvertFrom-Json } catch { $json = $null } }
+        $where = $null
+        if ($reply.Headers.Location) { $where = $reply.Headers.Location.OriginalString }
+        return @{ Status = [int]$reply.StatusCode; Json = $json; Location = $where }
+    }
+    finally { $client.Dispose() }
+}
+
+# docker and psql write to stderr freely, which 5.1 turns into a terminating error under "Stop".
+function Invoke-DockerText([string[]]$DockerArguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { return @(& docker @DockerArguments 2>&1 | ForEach-Object { "$_" }) }
+    finally { $ErrorActionPreference = $previous }
+}
+
+# A money amount from the JSON, compared as a decimal so that 1528.98 is not 1528.9800000001.
+function Same-Money($Actual, [string]$Expected) {
+    if ($null -eq $Actual) { return $false }
+    return ([decimal]$Actual) -eq ([decimal]::Parse($Expected, [Globalization.CultureInfo]::InvariantCulture))
+}
+function Sha256Hex([byte[]]$Bytes) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace "-", "").ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+$procBase = "http://localhost:8080/api/v1/admin/procurement"
+$procFailures = @()
+$procSuffix = [guid]::NewGuid().ToString().Substring(0,8).ToUpper()
+$procNote = ""
+
+# No Write-Error and no exit inside the try (a Write-Error under "Stop" would skip the checks
+# after it). A failed PREREQUISITE throws, the catch records it, and the rest is skipped.
+try {
+    $dubai = Invoke-Supplier "POST" "$procBase/suppliers" $mayaH @{ name = "Smoke Dubai $procSuffix"; country = "ae" }
+    $guang = Invoke-Supplier "POST" "$procBase/suppliers" $mayaH @{ name = "Smoke Guangzhou $procSuffix"; country = "cn" }
+    if ($dubai.Status -ne 201 -or $guang.Status -ne 201) {
+        throw "the two suppliers could not be created (statuses $($dubai.Status) and $($guang.Status))"
+    }
+
+    # --- two purchase orders ------------------------------------------------------------
+    $ringPo = Invoke-Supplier "POST" "$procBase/purchase-orders" $mayaH @{
+        supplierId = $dubai.Json.id; note = "smoke"
+        lines = @(@{ variantId = $variantId; quantity = 7; totalPaid = 10500.00 }) }
+    if ($ringPo.Status -ne 201) { throw "placing the ring order gave $($ringPo.Status), expected 201: $($ringPo.Json.detail)" }
+    if ($ringPo.Json.reference -notmatch '^PO-\d{6}$') { $procFailures += "the ring order's reference is '$($ringPo.Json.reference)', expected PO- and six digits" }
+    if (-not (Same-Money $ringPo.Json.totalPaid "10500.00")) { $procFailures += "the ring order's total is $($ringPo.Json.totalPaid), expected 10500.00" }
+    $wantPoLocation = "/api/v1/admin/procurement/purchase-orders/$($ringPo.Json.id)"
+    if ("$($ringPo.Location)" -cne $wantPoLocation) { $procFailures += "the order's Location '$($ringPo.Location)' is not the relative path '$wantPoLocation'" }
+
+    $boxPo = Invoke-Supplier "POST" "$procBase/purchase-orders" $mayaH @{
+        supplierId = $guang.Json.id
+        lines = @(@{ variantId = $boxVariantId; quantity = 200; totalPaid = 10000.00 }) }
+    if ($boxPo.Status -ne 201) { throw "placing the box order gave $($boxPo.Status), expected 201: $($boxPo.Json.detail)" }
+
+    # A variant that does not exist is refused, naming the line.
+    $ghost = Invoke-Supplier "POST" "$procBase/purchase-orders" $mayaH @{
+        supplierId = $dubai.Json.id
+        lines = @(@{ variantId = [guid]::NewGuid().ToString(); quantity = 1; totalPaid = 10.00 }) }
+    $ghostFields = @($ghost.Json.fieldErrors | ForEach-Object { $_.field })
+    if ($ghost.Status -ne 400 -or $ghostFields -notcontains "lines[0].variantId") {
+        $procFailures += "an order for a variant catalog does not know gave $($ghost.Status) with fields '$($ghostFields -join ',')', expected 400 naming lines[0].variantId"
+    }
+
+    # A supplier any order names is never deleted: it is stopped instead.
+    $keep = Invoke-Supplier "DELETE" "$procBase/suppliers/$($dubai.Json.id)" $mayaH $null
+    if ($keep.Status -ne 409) { $procFailures += "deleting a supplier that has an order gave $($keep.Status), expected 409" }
+
+    # --- a consignment from both orders --------------------------------------------------
+    $cons = Invoke-Supplier "POST" "$procBase/consignments" $mayaH @{
+        purchaseOrders = @(@{ id = $ringPo.Json.id; version = $ringPo.Json.version },
+                           @{ id = $boxPo.Json.id;  version = $boxPo.Json.version }) }
+    if ($cons.Status -ne 201) { throw "starting the consignment gave $($cons.Status), expected 201: $($cons.Json.detail)" }
+    $cid = $cons.Json.id
+    if ($cons.Json.reference -notmatch '^C-\d{6}$') { $procFailures += "the consignment's reference is '$($cons.Json.reference)', expected C- and six digits" }
+    if ($cons.Json.status -cne "DRAFT") { $procFailures += "a new consignment is $($cons.Json.status), expected DRAFT" }
+    if (@($cons.Json.lines).Count -ne 2) { $procFailures += "the consignment has $(@($cons.Json.lines).Count) lines, expected 2" }
+    if (-not (Same-Money $cons.Json.goodsTotal "20500.00")) { $procFailures += "the goods total is $($cons.Json.goodsTotal), expected 20500.00" }
+
+    # Its orders are frozen from now on.
+    $ringNow = Invoke-Supplier "GET" "$procBase/purchase-orders/$($ringPo.Json.id)" $mayaH $null
+    $frozen = Invoke-Supplier "PATCH" "$procBase/purchase-orders/$($ringPo.Json.id)" $mayaH @{ version = $ringNow.Json.version; note = "too late" }
+    if ($ringNow.Json.consignmentId -cne $cid) { $procFailures += "the ring order says it is in consignment '$($ringNow.Json.consignmentId)', expected '$cid'" }
+    if ($frozen.Status -ne 409) { $procFailures += "changing an order that is in a consignment gave $($frozen.Status), expected 409" }
+
+    # --- the costs: a bank charge is refused, the courier's charge is keyed ----------------
+    $v = [long]$cons.Json.version
+    $bank = Invoke-Supplier "PUT" "$procBase/consignments/$cid/cost-lines" $mayaH @{
+        version = $v; costLines = @(@{ costType = "BANK_CHARGE"; amount = 25.00 }) }
+    $bankFields = @($bank.Json.fieldErrors | ForEach-Object { $_.field })
+    if ($bank.Status -ne 400 -or $bankFields -notcontains "costLines[0].costType") {
+        $procFailures += "a bank charge as a cost line gave $($bank.Status) with fields '$($bankFields -join ',')', expected 400 naming costLines[0].costType"
+    }
+    $courier = Invoke-Supplier "PUT" "$procBase/consignments/$cid/cost-lines" $mayaH @{
+        version = $v; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 6000.00 }) }
+    if ($courier.Status -ne 200) { throw "keying the courier's charge gave $($courier.Status), expected 200: $($courier.Json.detail)" }
+    if ([long]$courier.Json.version -ne ($v + 1)) { $procFailures += "keying the costs moved the version to $($courier.Json.version), expected $($v + 1)" }
+
+    # --- the preview is the worked example to the ngwee -------------------------------------
+    $preview = Invoke-Supplier "GET" "$procBase/consignments/$cid/allocation" $mayaH $null
+    $ringSlices = @($preview.Json.lines[0].slices)
+    $boxSlices = @($preview.Json.lines[1].slices)
+    $previewOk = ($preview.Status -eq 200) -and ($preview.Json.ready -eq $true) -and
+        ($ringSlices.Count -eq 2) -and ($boxSlices.Count -eq 2) -and
+        ([int]$ringSlices[0].quantity -eq 4) -and (Same-Money $ringSlices[0].unitCost "1528.99") -and
+        ([int]$ringSlices[1].quantity -eq 3) -and (Same-Money $ringSlices[1].unitCost "1528.98") -and
+        ([int]$boxSlices[0].quantity -eq 110) -and (Same-Money $boxSlices[0].unitCost "78.99") -and
+        ([int]$boxSlices[1].quantity -eq 90) -and (Same-Money $boxSlices[1].unitCost "78.98") -and
+        (Same-Money $preview.Json.landedTotal "26500.00")
+    if (-not $previewOk) {
+        $procFailures += "the allocation preview is not the worked example (status $($preview.Status), ready $($preview.Json.ready)): $($preview.Json | ConvertTo-Json -Depth 6 -Compress)"
+    }
+
+    # --- the courier's invoice: stored, fingerprinted, downloaded exactly, never rendered -----
+    $pdfBytes = [Text.Encoding]::ASCII.GetBytes("%PDF-1.4`nsmoke courier invoice $procSuffix`n%%EOF")
+    $docUrl = "$procBase/consignments/$cid/documents"
+    $upload = Invoke-Upload $docUrl $maya $pdfBytes "Fycargo invoice $procSuffix.pdf" "COURIER_INVOICE"
+    if ($upload.Status -ne 201) { $procFailures += "uploading the courier's invoice gave $($upload.Status), expected 201: $($upload.Json.detail)" }
+    else {
+        if ($upload.Json.sha256 -cne (Sha256Hex $pdfBytes)) { $procFailures += "the stored fingerprint '$($upload.Json.sha256)' is not the file's SHA-256" }
+        if ($upload.Json.contentType -cne "application/pdf") { $procFailures += "the stored type is '$($upload.Json.contentType)', expected application/pdf" }
+        $wantDoc = "/api/v1/admin/procurement/documents/$($upload.Json.id)/content"
+        if ("$($upload.Location)" -cne $wantDoc) { $procFailures += "the document's Location '$($upload.Location)' is not the relative path '$wantDoc'" }
+        $download = Invoke-WebRequest -Method GET -Uri "http://localhost:8080$wantDoc" -Headers $mayaH -UseBasicParsing
+        $downloaded = $download.RawContentStream.ToArray()
+        if ((Sha256Hex $downloaded) -cne (Sha256Hex $pdfBytes)) { $procFailures += "the downloaded file is not the file that was uploaded" }
+        if ("$($download.Headers['X-Content-Type-Options'])" -cne "nosniff") { $procFailures += "the download is missing X-Content-Type-Options: nosniff" }
+        if ("$($download.Headers['Content-Disposition'])" -notmatch "^attachment") { $procFailures += "the download is not an attachment: '$($download.Headers['Content-Disposition'])'" }
+        if ("$($download.Headers['Content-Type'])" -cne "application/pdf") { $procFailures += "the download's type is '$($download.Headers['Content-Type'])', expected application/pdf" }
+    }
+    $again = Invoke-Upload $docUrl $maya $pdfBytes "the same file again.pdf" "COURIER_INVOICE"
+    if ($again.Status -ne 409) { $procFailures += "the same file uploaded twice gave $($again.Status), expected 409" }
+    $program = [Text.Encoding]::ASCII.GetBytes("MZ this is not a pdf $procSuffix")
+    $notPdf = Invoke-Upload $docUrl $maya $program "invoice.pdf" "COURIER_INVOICE"
+    if ($notPdf.Status -ne 400) { $procFailures += "a file that is not a PDF, JPEG or PNG gave $($notPdf.Status), expected 400, whatever its name says" }
+
+    # --- receiving it -----------------------------------------------------------------------
+    $beforeReceive = Invoke-Supplier "GET" "$procBase/consignments/$cid" $mayaH $null
+    $received = Invoke-Supplier "POST" "$procBase/consignments/$cid/receive" $mayaH @{ version = [long]$beforeReceive.Json.version }
+    if ($received.Status -ne 200) { throw "receiving the consignment gave $($received.Status), expected 200: $($received.Json.detail)" }
+    if ($received.Json.status -cne "RECEIVED" -or -not $received.Json.receivedAt) {
+        $procFailures += "after receiving, the consignment is $($received.Json.status) receivedAt '$($received.Json.receivedAt)'"
+    }
+    foreach ($po in @($ringPo, $boxPo)) {
+        $poNow = Invoke-Supplier "GET" "$procBase/purchase-orders/$($po.Json.id)" $mayaH $null
+        if ($poNow.Json.status -cne "RECEIVED") { $procFailures += "order $($po.Json.reference) is $($poNow.Json.status) after receiving, expected RECEIVED" }
+    }
+    $recorded = Invoke-Supplier "GET" "$procBase/consignments/$cid/allocation" $mayaH $null
+    if ($recorded.Status -ne 200 -or [int]$recorded.Json.revision -ne 1 -or -not (Same-Money $recorded.Json.lines[0].slices[0].unitCost "1528.99")) {
+        $procFailures += "the recorded allocation (status $($recorded.Status)) says revision '$($recorded.Json.revision)', expected revision 1 with the ring at K1,528.99"
+    }
+    $second = Invoke-Supplier "POST" "$procBase/consignments/$cid/receive" $mayaH @{ version = [long]$received.Json.version }
+    if ($second.Status -ne 409) { $procFailures += "receiving it a second time gave $($second.Status), expected 409" }
+    # A received consignment is history: every change is refused.
+    $late = Invoke-Supplier "PUT" "$procBase/consignments/$cid/cost-lines" $mayaH @{ version = [long]$received.Json.version; costLines = @() }
+    if ($late.Status -ne 409) { $procFailures += "changing a received consignment's costs gave $($late.Status), expected 409" }
+
+    # --- the events: in the outbox, and published to Kafka ------------------------------------
+    $lineIds = @($received.Json.lines | ForEach-Object { $_.id })
+    $in = ($lineIds | ForEach-Object { "'$_'" }) -join ","
+    $outbox = Invoke-DockerText @("exec", "oriah-postgres-procurement", "psql", "-U", "procurement", "-d", "procurement", "-t", "-A", "-F", ":", "-c",
+        "SELECT event_type, topic, schema_version FROM outbox WHERE aggregate_type = 'consignment_line' AND aggregate_id IN ($in) ORDER BY outbox_id")
+    $outboxRows = @($outbox | Where-Object { $_ -match "\S" })
+    if ($outboxRows.Count -ne 2 -or @($outboxRows | Where-Object { $_ -cne "consignment.received:oriah.procurement:1" }).Count -ne 0) {
+        $procFailures += "the outbox holds [$($outboxRows -join ' | ')] for the two lines, expected two rows 'consignment.received:oriah.procurement:1'"
+    }
+    else {
+        $maxSql = "SELECT max(outbox_id) FROM outbox WHERE aggregate_id IN ($in)"
+        $maxText = Invoke-DockerText @("exec", "oriah-postgres-procurement", "psql", "-U", "procurement", "-d", "procurement", "-t", "-A", "-c", $maxSql)
+        $maxId = [long](($maxText -join "").Trim())
+        $cursorSql = "SELECT last_outbox_id FROM outbox_relay_cursor WHERE relay = 'main'"
+        $cursor = 0L
+        for ($i = 0; $i -lt 45; $i++) {
+            $cursorText = Invoke-DockerText @("exec", "oriah-postgres-procurement", "psql", "-U", "procurement", "-d", "procurement", "-t", "-A", "-c", $cursorSql)
+            $cursor = [long](($cursorText -join "").Trim())
+            if ($cursor -ge $maxId) { break }
+            Start-Sleep -Seconds 2
+        }
+        if ($cursor -lt $maxId) {
+            $procFailures += "the relay's cursor is at $cursor after 90 s, the events are at $maxId: they were not published"
+        }
+        else {
+            # The relay moves its cursor only after Kafka has taken the record (a synchronous send),
+            # but reading the topic is the proof that does not lean on that: both lines' events are there.
+            $topic = Invoke-DockerText @("exec", "oriah-kafka", "/opt/kafka/bin/kafka-console-consumer.sh", "--bootstrap-server", "kafka:9092",
+                "--topic", "oriah.procurement", "--from-beginning", "--timeout-ms", "20000")
+            foreach ($lineId in $lineIds) {
+                if (@($topic | Where-Object { $_ -like "*$lineId*" -and $_ -like "*consignmentLineId*" }).Count -lt 1) {
+                    $procFailures += "the event for line $lineId is not on the oriah.procurement topic"
+                }
+            }
+        }
+    }
+
+    # --- a supplier we stopped gets no new order -----------------------------------------------
+    $stopSupplier = Invoke-Supplier "PATCH" "$procBase/suppliers/$($guang.Json.id)" $mayaH @{ active = $false }
+    $toStopped = Invoke-Supplier "POST" "$procBase/purchase-orders" $mayaH @{
+        supplierId = $guang.Json.id
+        lines = @(@{ variantId = $boxVariantId; quantity = 1; totalPaid = 5.00 }) }
+    if ($stopSupplier.Status -ne 200 -or $toStopped.Status -ne 409) {
+        $procFailures += "stopping a supplier gave $($stopSupplier.Status) and then an order for it gave $($toStopped.Status), expected 200 then 409"
+    }
+
+    # --- who may do any of this ------------------------------------------------------------------
+    $aliceOrder = Invoke-Supplier "POST" "$procBase/purchase-orders" $aliceH @{ supplierId = $dubai.Json.id; lines = @(@{ variantId = $variantId; quantity = 1; totalPaid = 1.00 }) }
+    $aliceCons = Invoke-Supplier "POST" "$procBase/consignments" $aliceH @{ opening = $true }
+    $aliceAlloc = Invoke-Supplier "GET" "$procBase/consignments/$cid/allocation" $aliceH $null
+    $aliceDoc = Invoke-Upload $docUrl $alice $pdfBytes "alice.pdf" "OTHER"
+    $anon = Invoke-Supplier "GET" "$procBase/consignments" $null $null
+    if ($aliceOrder.Status -ne 403 -or $aliceCons.Status -ne 403 -or $aliceAlloc.Status -ne 403 -or $aliceDoc.Status -ne 403) {
+        $procFailures += "alice (USER only) got $($aliceOrder.Status), $($aliceCons.Status), $($aliceAlloc.Status), $($aliceDoc.Status) on order, consignment, allocation and upload, expected 403 for each"
+    }
+    if ($anon.Status -ne 401) { $procFailures += "an anonymous list of consignments gave $($anon.Status), expected 401" }
+}
+catch {
+    $procFailures += "the step stopped early: $($_.Exception.Message)"
+}
+
+if ($procFailures.Count -gt 0) {
+    $procFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "the procurement purchase-order, consignment and invoice surface regressed on $($procFailures.Count) check(s)"
+    exit 1
+}
+Write-Host "    two orders placed 201 (PO- references, a relative Location), an unknown variant 400 naming the line, a supplier with an order not deletable 409; a consignment from both orders 201 (C- reference, goods K20,500.00) with its orders frozen 409; a bank charge refused 400 naming the field, the courier's K6,000.00 keyed; the preview is the worked example to the ngwee (ring 4 x K1,528.99 + 3 x K1,528.98, box 110 x K78.99 + 90 x K78.98); a courier invoice stored (fingerprint, type, relative Location), downloaded byte for byte as a nosniff attachment, the same file again 409, a program named .pdf 400; received 200 (consignment and both orders RECEIVED, revision 1 recorded, a second receive 409, a late cost change 409); two consignment.received rows in the outbox and on the oriah.procurement topic; a stopped supplier takes no new order 409; alice 403 and anonymous 401" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

@@ -65,6 +65,14 @@ NON_200_SUCCESS = {
     # accept a document that wrongly says "200".
     ("procurement", "post", "/api/v1/admin/procurement/suppliers"): "201",
     ("procurement", "delete", "/api/v1/admin/procurement/suppliers/{id}"): "204",
+    # Phase 4: a purchase order, a consignment and an uploaded document are each created with
+    # 201 + Location (ResponseEntity.created, which springdoc cannot see into); deleting a draft
+    # consignment is 204.
+    ("procurement", "post", "/api/v1/admin/procurement/purchase-orders"): "201",
+    ("procurement", "post", "/api/v1/admin/procurement/consignments"): "201",
+    ("procurement", "delete", "/api/v1/admin/procurement/consignments/{id}"): "204",
+    ("procurement", "post", "/api/v1/admin/procurement/consignments/{id}/documents"): "201",
+    ("procurement", "post", "/api/v1/admin/procurement/purchase-orders/{id}/documents"): "201",
 }
 
 # The one auto-numbered id in the contract, pinned deliberately rather than
