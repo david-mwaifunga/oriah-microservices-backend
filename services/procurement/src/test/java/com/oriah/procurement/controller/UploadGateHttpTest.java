@@ -50,8 +50,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Only a few invoices are taken in at once. Measured live: sixteen 5 MB uploads at the same moment left half of
- * them a 500 (the service's heap is 217 MiB and each upload is held in memory about three times over while it is
- * read, fingerprinted and written) and the container at 96% of its limit. So a gate lets
+ * them a 500 (the service's heap is small and each upload is held in memory about three times over while it is
+ * read, fingerprinted and written); with only a gate of four in a 640 MiB container, a second burst later got
+ * the container killed for memory. So a gate lets
  * {@code oriah.procurement.uploads.max-concurrent} through; the rest wait up to {@code max-wait} and are then told
  * to try again: 503 with {@code Retry-After}, nothing stored.
  *

@@ -1238,12 +1238,15 @@ services:
     container_name: oriah-procurement
     # 768 MiB, not the 640 MiB default: invoices are uploaded at up to 5 MB, and an upload is held in memory
     # about three times over while it is read, fingerprinted and written. Measured 2026-11-12 on the rebuilt
-    # stack with a script that sends 16 5 MB PDFs at once: the container idled at 536 MiB (451 MiB of it the
-    # JVM's own anonymous memory), ONE such burst took it to 648 MiB of its 640 MiB limit, and the second
-    # burst was killed by the kernel (exit 137, OOMKilled) even though the Java heap never passed 178 of its
-    # 217 MiB: the rest is native memory (thread stacks, malloc arenas, the heap's own committed pages).
-    # UploadGate (oriah.procurement.uploads.max-concurrent, default 2) keeps the heap safe; this limit keeps
-    # the container alive. Re-measured after the change: see docs/MVP_PLAN.md Phase 4.
+    # stack with a script that sends 16 5 MB PDFs at once. With no limit, half of them were a 500 and the
+    # container read 614 MiB of its 640 MiB (96%). With a gate of four every upload succeeded (`docker stats`
+    # 605 MiB after the first burst, from an idle 537 MiB; the kernel's count of the process's anonymous memory
+    # went from 430 MiB to 592 MiB), and the second burst was killed by the kernel (exit 137, OOMKilled) even
+    # though the Java heap never passed 178 of its 217 MiB: the rest is native memory (thread stacks, malloc
+    # arenas, the heap's own committed pages). UploadGate (oriah.procurement.uploads.max-concurrent, default 2)
+    # keeps the heap safe; this limit keeps the container alive. Re-measured at 768 MiB with two at a time:
+    # six bursts of 16 in a row, every upload 201, no restart, plateau about 714 MiB (93%), heap peak 235 of
+    # its 335 MiB ceiling, idle 437 MiB. See docs/MVP_PLAN.md Phase 4.
     mem_limit: 768m
     memswap_limit: 768m
     environment:

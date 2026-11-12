@@ -20,6 +20,100 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-12 (MVP_PLAN Phase 4 complete: purchase orders, consignments, landed cost, receiving and invoices)
+
+Phase 4 of `MVP_PLAN.md` is built, tested, reviewed twice, verified on the live stack and
+committed (**not pushed**). Procurement can now place an order with a supplier, put
+whole orders into a **consignment**, add what the shipment cost, work out **what each
+single piece really cost** (the landed cost, in whole ngwee, so not a ngwee is lost or
+invented), and **receive** it: the answer is recorded for good and announced to Kafka,
+one `consignment.received` per line, for inventory to turn into cost lots in Phase 5.
+Supplier and courier invoices are kept as evidence. Strict test-first throughout;
+`oriah-web` was not changed.
+
+| What | Commits (`oriah-api`) |
+|---|---|
+| The landed-cost allocator (a pure class, with its basis and treatment lists) | `b3f931d` |
+| Procurement's event log (outbox, relay, replay) | `7bafd0b` |
+| Catalog's variant lookup for procurement | `64a6d6e` |
+| Purchase orders, and Phase 2's hand-offs (inactive supplier, delete refused, historical reads) | `219eb1c` |
+| Consignment drafts, cost lines, typed splits, the allocation preview and the costing that feeds it (`ConsignmentCosting`) | `09ea529` |
+| Receiving: the recorded allocation and the events | `421c1d2` |
+| Invoices | `7d9a7f4` |
+| Totals the books cannot hold; platform wiring and smoke step 20d | `96e4491`, `abcbbd9` |
+| Shared upload handler (a bad upload is a 400) | `3f41751` |
+| The review's fixes | `b38ec2e`, `7e04869` |
+| Upload gate and procurement's 768 MiB | `ce43229`, `d2a70ce` |
+| Plan, frontend handover, Postman (112), error goldens (six new), the smoke script's `${maxId}` fix, CLAUDE.md, README, LOCAL_DEV, comment corrections in the upload gate, this entry | the commit after them |
+
+`config-repo` `4e7a332`.
+
+### How it was checked
+
+- **Codex reviewed the whole diff twice.** It found, and all were fixed test-first: a
+  fraction where a whole number belongs was rounded (an order for 1.9 rings recorded as one;
+  a version of 0.9 passed as 0, defeating the stale-copy check); a variant title longer than
+  300 characters broke the schema; a lookup of more than 100 variants was refused instead of
+  asked in batches; the cap of 10 documents per owner could be passed by two uploads at once;
+  and the record of who typed a split could be inherited by two new splits from one old one (a
+  one-to-one match now). It also warned against editing migrations in place; **that one was
+  rejected**: V3, V4 and V5 were edited during the review, before any persistent database had
+  applied them (V6 was not edited), and from the dev stack's first apply every change is a new V7+.
+- **A six-lens read-only panel** (84 agents, three skeptics per finding): 14 findings survived and
+  were fixed. They overlapped Codex's very little, as in Phase 3. Among them, the database let a row
+  move between consignments and an order join a consignment that was not a draft (the freeze judged an
+  update by the old parent only), so both are now refused by triggers, and every override now records
+  who typed it.
+- **The live memory check found a real fault** (below), which neither review could have: it
+  needs the real container.
+
+### Verified on 2026-11-12
+
+- **Tests:** procurement **502** (run again on the final code after the last comment-only edits: 0 failures,
+  0 errors, 0 skipped, BUILD SUCCESS), catalog **457** and the shared observability starter **38**, all
+  0 failures (run together on the final code). Not run: a `clean install` of every module.
+- **Live stack**, every image rebuilt from the final code: smoke **27/27 on its first attempt
+  (117 s)**; error goldens **23/23**; OpenAPI **PASS** (additions, and the same 22 waived breaks);
+  Postman **112** endpoints, its GET check PASS. Playwright not re-run (`oriah-web` unchanged).
+- **Memory:** bursts of sixteen 5 MB invoices at once (the endpoint can be asked for more: Tomcat allows 50
+  requests at a time). With no limit, half were 500s and the 640 MiB container read 614.5 MiB (96%). With a
+  gate of four every upload succeeded (604.6 MiB after the first burst, from an idle 536.7 MiB) and the kernel
+  killed the container on the second burst (exit 137) with the Java heap at 178 of 217 MiB, because a JVM's
+  native memory is outside the heap (the kernel's count of the process's anonymous memory went from 430 MiB
+  at idle to 592 MiB after one burst). Now **768 MiB and two at a time**: six bursts in a row, every upload
+  201, no restart, plateau about 714 MiB of 768 (93%), heap peak 235 of 335 MiB, idle 437 MiB.
+- **The runs that failed first.** The first live burst ended in 500s and then in an out-of-memory kill
+  (above). Every smoke retry died in under a second until a typo in the script was fixed (`$maxId:` read as
+  a drive-qualified variable; it is `${maxId}:`). After a container is recreated, its first requests fail
+  with 503 until Eureka and the gateway have caught up; the helper scripts retry until the gateway answers.
+
+### What the code does not say
+
+- **Locking order matters.** The receipt gate (an advisory lock named for receipts) first, then the
+  consignment row, then purchase orders in id order, the outbox last. Any new code that takes two of them
+  must take them in that order, or two receives can deadlock.
+- **Only a version bump on a parent protects a children-only change.** Editing cost lines does not change
+  the consignment row, so the service forces a version increment (`PESSIMISTIC_FORCE_INCREMENT`); without
+  it a stale screen would save over a newer one.
+- **A test that re-stubs a `@MockitoBean` with `when(...)` calls the old answer** (with null); use
+  `doAnswer(...).when(...)`. Spying a `@Transactional` bean needs the target behind the proxy.
+- **Opening stock must be received before any shipment**, so a stack where the smoke test has received a
+  consignment cannot receive opening stock: a go-live database starts empty.
+- **Other services' images still carry the old shared observability starter** (the 400 for an unreadable
+  upload) until their next image build; nothing depends on it.
+- **The gateway has no request-size filter** on the upload path (Tomcat's 5 MB / 6 MB multipart limit is
+  the guard); catalog's photographs are the same. Accepted.
+- **Six questions for the owner** are in `MVP_PLAN.md` Phase 4 (receive shipments in arrival order, what to
+  do with a piece missed from the opening count, goods carried home, which month a period cost belongs to,
+  several opening consignments, whether receiving should require the charges basis). Each has a default;
+  none blocks.
+
+### What is next
+
+Phase 5 (inventory: cost lots from `consignment.received`, replayed from the beginning, FIFO drain in the
+sale's own transaction). `docs/MVP_PLAN.md` Phase 4's "What this phase hands on" lists what it must do;
+`docs/FRONTEND_WORK.md` has the Phase 4 API as built, for the screens.
+
 ## CURRENT STATE — 2026-11-12 (MVP_PLAN Phase 3 complete: packaging in the catalog, and search lists only what is published)
 
 Phase 3 of `MVP_PLAN.md` is built, tested, reviewed and committed (**not pushed**).

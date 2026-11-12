@@ -2164,7 +2164,7 @@ try {
             Start-Sleep -Seconds 2
         }
         if ($cursor -lt $maxId) {
-            $procFailures += "the relay's cursor is at $cursor after 90 s, the events are at $maxId: they were not published"
+            $procFailures += "the relay's cursor is at $cursor after 90 s, the events are at ${maxId}: they were not published"
         }
         else {
             # The relay moves its cursor only after Kafka has taken the record (a synchronous send),

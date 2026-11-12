@@ -472,7 +472,7 @@ used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
 | promotion / customer / review | V2 | V3 |
 | checkout | *(stateless, no DB)* | — |
 | shipping | *(stateless today)* | **V1** — gains a database in Phase 7 for provinces, towns and delivery prices |
-| procurement | **V1** — USED by Phase 2's `suppliers` | **V2** — Phase 4's consignments, cost lines and invoices |
+| procurement | **V6** — USED: V1 Phase 2's `suppliers`; V2 the event log; V3 purchase orders; V4 consignments, lines, cost lines; V5 receiving (the recorded allocation, the freezes); V6 documents (Phase 4) | **V7** |
 | finance | *(new service, Phase 10)* | **V1** |
 
 ### Phase 0 — Fix what is live and wrong
@@ -1247,8 +1247,10 @@ path, either way.
 
 ### Phase 4 — Procure: purchase orders and consignments
 
-`procurement` **V2**: consignment, consignment_line, cost_line
-(`treatment`, `basis`), supplier_invoice. The allocator from Part 4 —
+`procurement` **V2–V6** (as built; see the status block at the end of this phase):
+purchase orders, consignment, consignment_line, cost_line
+(`treatment`, `basis`), the recorded allocation, and documents (the plan's
+`supplier_invoice`). The allocator from Part 4 —
 **test first, at the unit level**. Receiving emits `consignment.received`.
 
 > **What Phase 2 hands to this phase (recorded 2026-11-10).**
@@ -1296,6 +1298,139 @@ Settled by the client (`CLIENT_DECISIONS.md` §3, §4.1):
   no supplier invoice, a supplier that may be *opening stock / supplier
   unknown*, and **a K0 cost is refused** — the client approximates every piece
   from their book. Receiving it emits the same event with `isEstimated = true`.
+
+> **Phase 4 is built (2026-11-12; commits in `oriah-api`: `b3f931d` the allocator,
+> `7bafd0b` the event log, `64a6d6e` catalog's variant lookup, `219eb1c` purchase
+> orders and the supplier rules, `09ea529` consignment drafts, `421c1d2` receiving,
+> `7d9a7f4` invoices, `96e4491` and `abcbbd9` the totals guard and the platform wiring, `3f41751` the
+> shared upload handler, `b38ec2e` and `7e04869` the review fixes (Codex's two passes and the panel), `ce43229`
+> and `d2a70ce` the upload gate and procurement's 768 MiB; `config-repo` `4e7a332`). Not pushed.**
+> Strict test-first. Numbers at the end of the phase: **procurement 502 tests, catalog 457, the
+> shared observability starter 38, all green**: the allocator and the costing at the unit level
+> (a seeded property test among them), the schema as raw SQL, the domain, every endpoint over HTTP
+> against a real PostgreSQL, the races (create, receive, upload, delete against place) driven
+> deterministically, the catalog call over a real HTTP server, and the OpenAPI contract. Reviewed
+> twice: Codex on the whole diff, and a six-lens read-only panel with three skeptics per finding
+> (84 agents); 14 findings survived and were fixed test-first.
+> The API as built, every error and the screens that use it are in `docs/FRONTEND_WORK.md`
+> (Phase 4); this block is what was **decided while building it**.
+>
+> **Migrations V3-V5 were corrected in place during the review** (V6 was written after them and not
+> edited), which is only safe before a
+> persistent database has applied them: the dev stack's procurement database applied V2-V6 for the
+> first time on 2026-11-12 (after the review fixes), so **from then on every schema change is a new
+> V7+**, never an edit (Flyway's checksum would refuse to start the service).
+>
+> **What exists.** Procurement Flyway **V2** event log, **V3** purchase orders, **V4**
+> consignments (`consignment`, `consignment_line`, `cost_line`, `cost_line_share`),
+> **V5** receiving (`allocation_revision`, `_line`, `_slice`, `_cost_share`, append-only;
+> a received consignment frozen by trigger), **V6** documents. Catalog gained one
+> internal endpoint, `POST /api/v1/admin/variants/lookup` (not routed by the gateway;
+> procurement calls it with the signed-in person's own token, so there is no machine
+> role).
+>
+> **Decisions made while building** (each with its reason; none reopens the settled list):
+> - **The purchase order is its own record**, with one supplier, `PO-000123`. §4.1 promises
+>   three screens and the V2 sketch listed no order table; an order is placed weeks before
+>   the shipment and a forwarder consolidates several, so the shipment cannot BE the order.
+> - **A consignment is a set of WHOLE orders** (no part-shipments: Q4-Q6). Attaching copies
+>   the order's lines onto the consignment and **freezes the order**, so the copy cannot
+>   drift from what was ordered. Detaching sets it free. 20 orders, 200 lines, 30 cost lines.
+> - **Cost belongs to a receipt, never to the product:** the same variant from two suppliers
+>   is two consignment lines, each remembering its supplier.
+> - **The allocator's inputs are exactly what is recorded.** Receiving writes **revision 1** of
+>   an append-only allocation: the inputs in whole ngwee as JSON (so the answer can be
+>   reproduced from the record alone; a test does), each line's totals and slices, and what
+>   each cost put on each line. A correction is a later revision with a reason (Phase 5).
+> - **Receipt order is time order.** FIFO is by `received_at`, so every receipt goes through
+>   one gate (a Postgres advisory lock, taken first; lock order is gate, consignment, orders by
+>   id, outbox last), each gets a `received_at` later than the last even if the clock steps
+>   back, and **opening stock must be received before any shipment** (received after one, it
+>   would count as newer than a shipment it predates).
+> - **The event is a full snapshot**, one `consignment.received` per line (aggregate
+>   `consignment_line`, so a later amendment is the next `seq` of the same aggregate), topic
+>   `oriah.procurement`, slices dearer first, written as the receive transaction's last write.
+> - **Bank and transfer charges are refused by name** with the reason (the supplier price already
+>   is the total that left the bank). Duty, surtax and import VAT are `DIRECT` only, typed per
+>   line, read zero today; `DUTY_PAID` forbids a duty, surtax or import-VAT line above zero, in both directions (setting the basis while
+>   such a line is there, and keying such a line once it is set).
+> - **A split a person types names every line and adds up exactly** (the 400 says by how much it
+>   is out); the unit-level pass still runs inside each line. **Every override records the actor**
+>   (CLIENT_DECISIONS 3.3): the cost line says who typed the split and when (`typed_by`, `typed_at`),
+>   keeps the first typist when someone else saves the list again with that split unchanged, and is
+>   kept in the recorded allocation inputs; a typed split nobody is recorded as typing cannot be
+>   received. A `PERIOD` cost is not shared and emits no event yet.
+> - **The database keeps its own promises against raw SQL too:** a received consignment, its lines,
+>   cost lines and typed shares cannot change (V5); **a row never moves between consignments or
+>   purchase orders**, and an order is attached only to a DRAFT consignment (found by the review: the
+>   freeze judged an UPDATE by the old parent only).
+> - **Whole numbers are whole.** A fraction where a count, a version or a weight in grams belongs
+>   (`1.9`, `0.9`) is a 400, not rounded (found by Codex: an order for 1.9 rings was recorded as
+>   one, and a version of 0.9 passed as 0). A variant's label is `TEXT`: it has no practical limit.
+> - **Invoices are stored by procurement itself** (`bytea`, 5 MB, PDF/JPEG/PNG by magic bytes,
+>   SHA-256, never edited, and deleted only together with a DRAFT consignment that is itself deleted; a mistaken one is voided with a reason), not in SeaweedFS: a handful a month, in
+>   the same transaction and backup as the thing they support. This overrides the SeaweedFS
+>   sentence above.
+> - **Phase 2's hand-offs are enforced:** an inactive supplier gets no new order; `DELETE` refuses
+>   a supplier any order names (409, "stop using it instead"); placing an order takes the supplier
+>   row `FOR SHARE` and deleting takes it `FOR UPDATE`, so the two serialize (a test parks the
+>   placing request mid-way and proves it); an order still reads after its supplier row is gone.
+> - **Catalog is asked once, when a line is placed** (the variant exists, is on, and its product is
+>   not deleted or archived), never at receive: goods already ordered and paid for are not stranded
+>   by a later archive. A failed call is a 503 with `Retry-After` and nothing saved; no answer is
+>   ever guessed. The call keeps the caller's token, so Resilience4j's circuit breaker is switched
+>   off for it (it would run the call on another thread and drop the header).
+> - **Cost reads need `PROCUREMENT_ADMIN` only** (decided while building, not by the client: no
+>   `COST_VIEWER` check; revisit if a role is ever given one without the other). Nothing leaks today
+>   because the two roles that hold `PROCUREMENT_ADMIN` (`OWNER`, `MANAGER`) both hold `COST_VIEWER`.
+>
+> **Verified live (2026-11-12):** every image rebuilt from the final code and the stack recreated. Smoke
+> **27/27 on its first attempt (117 s)**, including step 20d (the worked example live through the gateway: two
+> orders, a consignment, a bank charge refused, the allocation to the ngwee, an invoice stored and downloaded byte
+> for byte, receive, two events in the outbox and past the relay's cursor on the topic); error
+> goldens **23/23** (six new); OpenAPI **PASS** (the diff is additions plus the same 22 waived breaks, none
+> new); Postman **112** endpoints with its GET check PASS. Playwright was not re-run: `oriah-web` is unchanged.
+> **The memory check found a real fault, and that is why procurement's container is 768 MiB.** It sent
+> bursts of sixteen 5 MB invoices at once (the endpoint can be asked for more: Tomcat allows 50 requests at a
+> time). With no limit, half of the sixteen were a 500 (the heap is small and each file is held about three
+> times over) and the 640 MiB container read 614.5 MiB (96%). With the first fix, a gate of four, every upload
+> succeeded (604.6 MiB after the first burst, from an idle 536.7 MiB), and the **second** burst was killed by
+> the kernel (exit 137, out of memory) while the Java heap had only reached 178 of its 217 MiB: the rest of a
+> JVM is native memory (the kernel's count of the process's anonymous memory went from 430 MiB at idle to 592
+> MiB after one burst). The fix is a limit measured under the worst burst, repeated, as in Phase 2: **768 MiB
+> and two uploads at a time** (the others wait up to 20 s for a place, then get 503 with `Retry-After`, nothing
+> stored; the gate holds however many arrive). Six bursts of sixteen in a row: every upload 201, no restart,
+> memory plateaued at about 714 MiB of 768 (93%), heap peak 235 of 335 MiB; idle is 437 MiB.
+>
+> **Accepted for the MVP:** a go-live database starts empty (the smoke test leaves received
+> consignments behind on purpose, and opening stock cannot be received once a shipment has been);
+> the gateway has no request-size filter on the upload path (catalog's photographs are the same),
+> only Tomcat's 5/6 MB multipart limit; no short, extra or part shipments; a unit can come out at
+> K0.00 only when a line's landed total is smaller than its quantity in ngwee (an absurd input, such
+> as K0.01 for five pieces: the arithmetic is exact, and no screen offers it).
+>
+> **Open questions for the owner** (defaults chosen, none blocks): (a) staff must receive
+> shipments in the order they arrived, because oldest-first selling follows receipt order; (b) a
+> piece missed from the opening count after a shipment is entered as a normal consignment; (c)
+> goods carried home with no forwarder are a consignment with no cost lines (there is no third
+> charges-basis value); (d) a `PERIOD` cost belongs to the month it was received, unless
+> `incurredOn` says otherwise; (e) several opening consignments are allowed so long as no
+> shipment has been received; (f) a shipment may be received with its charges basis left blank
+> (recorded when known, no default; it matters only when a duty line is keyed): should receiving
+> require it?
+>
+> **What this phase hands on.**
+> - **Phase 5 (inventory):** consume `consignment.received` from `oriah.procurement`, **from the
+>   beginning** (replay), with `onceInOrder` on `(consignment_line, seq)`; one lot per slice,
+>   laid over the units dearer first; `received_at` is the FIFO key (the lines of ONE receipt share
+>   it: break the tie in event order, which is line order, then slice order); carry `isEstimated` onto the lot
+>   and the COGS row; `kind` says packaging. **Amending a received consignment** is the procurement
+>   half too: a new allocation revision with a reason and `consignment.amended` as the next `seq`
+>   of each affected line (the V5 triggers already refuse any in-place edit).
+> - **Phase 10 (finance):** a `PERIOD` cost line has no event today. Add a producer event and
+>   back-fill it from the stored revision inputs (`allocation_revision.inputs`, treatment `PERIOD`);
+>   its effect date is the receipt date unless `incurred_on` is set.
+> - **Phase 6:** the price guard reads landed cost from inventory's lots, not from here.
 
 ### Phase 5 — Cost-bearing inventory
 
@@ -2045,8 +2180,9 @@ through admin endpoints.
 
 This is deliberate and it buys something: it makes `smoke-test.ps1` the proof
 that the admin surface actually works end to end. The current smoke test (20
-numbered steps plus 4b, 5b, 6b and 20b since Phase 0, and 20c since Phase 2, which
-already drives the supplier lifecycle through the gateway) grows into an admin-driven setup — create supplier, create product and
+numbered steps plus 4b, 5b, 6b and 20b since Phase 0, 8b since Phase 3, 20c since Phase 2, which
+drives the supplier lifecycle through the gateway, and 20d since Phase 4, which drives the worked example's orders,
+consignment, allocation and receiving) grows into an admin-driven setup — create supplier, create product and
 variants, record consignment with costs, receive it, assert the landed cost to
 the ngwee (Part 4's `UNITS` default case), price it, publish it, then run the existing customer saga against
 stock that was genuinely procured.

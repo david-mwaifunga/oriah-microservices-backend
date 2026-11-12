@@ -55,7 +55,7 @@ oriah-api/
 ├── monitoring/             Prometheus, Grafana, Loki, Tempo, Alloy config
 ├── scripts/, s3-config/    helper scripts, SeaweedFS bucket setup
 ├── build-images.ps1        Buildpacks image build for every service
-├── smoke-test.ps1          20 numbered steps (plus 4b, 5b, 6b, 8b, 20b, 20c), full
+├── smoke-test.ps1          20 numbered steps (plus 4b, 5b, 6b, 8b, 20b, 20c, 20d), full
 │                           admin + customer saga
 ├── mvnw, mvnw.cmd, .mvn/   Maven wrapper — use this, not system Maven
 └── docs/                   ARCHITECTURE.md, MVP_PLAN.md, PROGRESS.md

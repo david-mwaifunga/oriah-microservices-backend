@@ -179,8 +179,16 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    then dividing by quantity leaks money, and the
    leak lands on your highest-count lines. The invariant, asserted exactly:
    `Σ(lot.unit_cost × qty_received) == goods value + Σ capitalized costs`.
+   **Built in Phase 4:** `LandedCostAllocator` (pure, tested to the ngwee against the
+   worked example and by a seeded property test) and `ConsignmentCosting`, which turns
+   a consignment into its inputs and the answer into kwacha, or into a list of plain
+   problems. Receiving records the result as an append-only **allocation revision**
+   (the inputs kept as JSON so it can be reproduced) and publishes it.
 4. **Cost flow is FIFO by `received_at`**, with the method and basis recorded
-   on the COGS row.
+   on the COGS row. **Built in Phase 4:** receipt order is time order: every receipt
+   goes through one gate (an advisory lock), each gets a `received_at` later than the
+   last even if the clock steps back, and **opening stock must be received before any
+   shipment** (otherwise it would count as newer than a shipment it predates).
 5. **Two new services: `procurement` and `finance`.** Procurement owns
    suppliers, POs, consignments, cost lines and the allocator — *what we paid*.
    Finance owns expenses, the append-only business event ledger and the profit
@@ -230,8 +238,9 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 
 **13 domain services:** catalog, inventory, cart, checkout, order, payment,
 promotion, shipping, customer, review, search, notification, **procurement**
-(Phase 2, 2026-11-10: suppliers so far; purchase orders and consignments come
-in Phase 4). `checkout` and `shipping` are **stateless** and own no database.
+(Phases 2 and 4: suppliers, purchase orders, consignments with the landed-cost
+allocator, receiving, and invoices; Flyway V1-V6). `checkout` and `shipping` are
+**stateless** and own no database.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -240,8 +249,12 @@ own git repo, with **its own `CLAUDE.md` — read that before touching it.**
 It is built and running, not pending.
 
 **Kafka topics (Phase 1, 2026-11-10):** `catalog.product` (catalog →
-inventory, search), `oriah.order` (order → notification) and `oriah.payment`
-(payment's `payment.succeeded` / `payment.failed`; nothing reads it yet). Three
+inventory, search), `oriah.order` (order → notification), `oriah.payment`
+(payment's `payment.succeeded` / `payment.failed`; nothing reads it yet) and, since
+Phase 4, `oriah.procurement` (one **`consignment.received` per consignment line**,
+aggregate `consignment_line`, a full snapshot with the unit-cost slices dearer
+first; nothing reads it until Phase 5's inventory, which must apply it with
+`onceInOrder`). Three
 more serve the event log itself: `oriah.outbox.replay-requests` (a late
 consumer asks a producer to send its history again),
 `oriah.replay.<consumer>` (the answer, one topic per consumer) and the
@@ -337,7 +350,7 @@ volumes.
 
 **Memory (Phase 2, measured 2026-11-11).** Every container has a `mem_limit`
 (and an equal `memswap_limit`, so no swap), with the measured peak written beside
-it in the compose file. The whole stack peaks at **8.8 GiB**, so Docker's VM must
+it in the compose file. **Procurement's limit is 768 MiB since Phase 4** (it was 640): with the upload gate at four, the second burst of sixteen 5 MB invoices got the 640 MiB container killed by the kernel (exit 137) although the Java heap had room: the rest is native memory. Two uploads are taken at a time now (`UploadGate`) and six bursts in a row plateau at about 714 MiB of 768, from an idle 437 MiB; a burst of uploads adds to procurement's idle figure what the 8.8 GiB below (measured before it) does not count. The whole stack peaks at **8.8 GiB**, so Docker's VM must
 be capped at **10 GB** in `%USERPROFILE%\.wslconfig` (`[wsl2] memory=10GB`,
 `[experimental] autoMemoryReclaim=dropcache`, then `wsl --shutdown` and restart
 Docker Desktop): uncapped, Docker takes whatever it is given and starves Windows.
@@ -365,7 +378,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b and 20c**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b, 20c and 20d**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, inventory,
 cart, checkout **quote then commit**, order transitions, Kafka-driven search
@@ -486,8 +499,13 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   still race.
 - **`Review.orderId` is client-supplied** and never verified against
   order-service, so "verified purchase" is self-asserted.
-- **No landed cost exists anywhere**, so cost of goods and profit cannot be
-  computed today.
+- **Landed cost is now worked out and recorded, but nothing consumes it yet**
+  (Phase 4, 2026-11-12): receiving a consignment records the allocation (revision 1,
+  append-only) and publishes one `consignment.received` per line, but inventory has
+  no cost lots until Phase 5, so cost of goods and profit still cannot be computed.
+  **The smoke test leaves received consignments behind on purpose** (history is never
+  deleted), and **opening stock can no longer be received on a stack where a shipment
+  has been**: a go-live database starts empty.
 - ✅ **FIXED in Phase 3 (2026-11-12): `search` indexed unpublished products.**
   Each row now carries `listed` (V4): true only for a product that is `ACTIVE`
   **and** `SELLABLE`, decided afresh by every snapshot, and the search query

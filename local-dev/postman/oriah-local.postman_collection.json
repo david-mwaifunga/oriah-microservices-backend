@@ -1194,6 +1194,38 @@
           }
         },
         {
+          "name": "Name up to 100 variants",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/admin/variants/lookup",
+              "host": [
+                "{{catalogUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "variants",
+                "lookup"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"variantIds\": [\n    \"00000000-0000-0000-0000-000000000000\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "**Not routed by the gateway** -- internal to the services, so this calls catalog directly on port 8081.\n\nInternal. Read-only despite being a POST. One entry per requested id, in request order: found = false for an id that is no variant. A deleted product's variant is found and flagged productDeleted. Identity only, never a price."
+          }
+        },
+        {
           "name": "The category tree, roots first, each with its children nested",
           "request": {
             "method": "GET",
@@ -3302,6 +3334,572 @@
       "name": "procurement",
       "item": [
         {
+          "name": "The consignments, newest first, optionally only drafts, received ones, or the opening one",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Which page, counting from 0"
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Consignments per page, 1 to 100"
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Only consignments in this status"
+                },
+                {
+                  "key": "opening",
+                  "value": "",
+                  "disabled": true,
+                  "description": "true: only the opening consignment; false: all the others"
+                },
+                {
+                  "key": "sort",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Start a consignment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"opening\": \"\",\n  \"note\": \"\",\n  \"purchaseOrders\": \"\",\n  \"lines\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "From WHOLE purchase orders (each with the version it was read at; they are frozen from now on), or, with opening = true, as the day-one stock typed in. Exactly one of the two."
+          }
+        },
+        {
+          "name": "One consignment, with its orders, lines and costs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Replace the header of a draft",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1,\n  \"note\": \"\",\n  \"estimated\": \"\",\n  \"chargesBasis\": \"DUTY_PAID\",\n  \"declarant\": \"\",\n  \"clearanceForm\": \"CE6\",\n  \"zraAssessmentRef\": \"\",\n  \"licensedAgentUsed\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The note, whether the costs are estimates, and the customs facts (charges basis, declarant, clearance form, ZRA assessment reference, licensed agent) are replaced as a whole: send every field you want kept. Send the version the change was made from."
+          }
+        },
+        {
+          "name": "Delete a draft",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id?version=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id"
+              ],
+              "query": [
+                {
+                  "key": "version",
+                  "value": "",
+                  "disabled": false,
+                  "description": "The consignment's version this was decided from"
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Its lines and costs go with it and its orders are set free. A received consignment is history and is never deleted."
+          }
+        },
+        {
+          "name": "What each unit costs, or would cost if received now",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/allocation",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "allocation"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "The courier's charge and every other cost shared out to the unit, to the ngwee. For a draft it is worked out afresh and changes nothing; when it cannot be costed yet, ready is false and problems says what to fix. For a received consignment it is the allocation recorded when the goods landed (revision, receivedAt), never recomputed."
+          }
+        },
+        {
+          "name": "Replace every cost line of a draft",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/cost-lines",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "cost-lines"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1,\n  \"costLines\": [\n    {\n      \"costType\": \"COURIER_INBOUND\",\n      \"amount\": \"6000.00\",\n      \"basis\": \"UNITS\",\n      \"treatment\": \"CAPITALIZE\",\n      \"incurredOn\": \"2026-11-08\",\n      \"note\": \"\",\n      \"shares\": \"\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "What the courier charged, and any duty, surtax or import VAT (typed, never calculated; zero today). A bank or transfer charge is refused: the supplier price already is the total that left the bank. An empty list clears them."
+          }
+        },
+        {
+          "name": "A consignment's documents, newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/documents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "includeVoided",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Those in use; with includeVoided, the voided ones too (with who, when and why). The files themselves are downloaded one at a time."
+          }
+        },
+        {
+          "name": "Attach an invoice to a consignment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/documents?kind=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "kind",
+                  "value": "",
+                  "disabled": false,
+                  "description": "SUPPLIER_INVOICE, COURIER_INVOICE, ZRA_ASSESSMENT or OTHER"
+                },
+                {
+                  "key": "note",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "value": null
+                }
+              ]
+            },
+            "description": "The courier's invoice, the supplier's, a ZRA assessment, or anything else that supports the costs. A PDF, JPEG or PNG of up to 5 MB, judged by its own first bytes. The same file is kept once while in use, and at most 10 are in use at a time. Allowed on a received consignment: an invoice often arrives after the goods."
+          }
+        },
+        {
+          "name": "Key what the line records about the goods",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/lines/:lineId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "lines",
+                ":lineId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                },
+                {
+                  "key": "lineId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1,\n  \"chargeableWeightGrams\": \"\",\n  \"originCountry\": \"CN\",\n  \"hsCode\": \"7113.19.00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The chargeable weight (for the whole line, in whole grams), the country the goods came from and the HS code. Replaced as a whole: a field left out is cleared."
+          }
+        },
+        {
+          "name": "Replace every line of the opening consignment",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/opening-lines",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "opening-lines"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1,\n  \"lines\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 7,\n      \"totalCost\": \"10000.00\",\n      \"chargeableWeightGrams\": \"\",\n      \"originCountry\": \"CN\",\n      \"hsCode\": \"7113.19.00\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Only for the opening consignment. Anything typed per line for a cost is cleared. Every variant is checked with the catalogue once."
+          }
+        },
+        {
+          "name": "Put one more whole purchase order into a draft",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/purchase-orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "purchase-orders"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1,\n  \"purchaseOrderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"purchaseOrderVersion\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Its lines are copied onto the consignment and the order is frozen. Send the consignment's version and the order's."
+          }
+        },
+        {
+          "name": "Take a purchase order out of a draft",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/purchase-orders/:orderId?version=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "purchase-orders",
+                ":orderId"
+              ],
+              "query": [
+                {
+                  "key": "version",
+                  "value": "",
+                  "disabled": false,
+                  "description": "The consignment's version this was decided from"
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                },
+                {
+                  "key": "orderId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Its lines go, the rest are renumbered, anything typed for those lines goes, and the order is free to be changed or cancelled again."
+          }
+        },
+        {
+          "name": "The goods have landed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/receive",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "receive"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Works out what each unit cost and records it for good (revision 1), makes the consignment and every order in it RECEIVED, and announces each line (consignment.received) for inventory. All or nothing. From now on nothing about it changes. The opening stock must be received before any shipment. Send the version it was decided from."
+          }
+        },
+        {
           "name": "Who owns the procurement service, and how to reach them",
           "request": {
             "method": "GET",
@@ -3322,6 +3920,365 @@
               "variable": []
             },
             "description": ""
+          }
+        },
+        {
+          "name": "Download a document",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/documents/:id/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "documents",
+                ":id",
+                "content"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Always an attachment, with the type it really is, marked not to be sniffed or cached, and with a policy that lets it do nothing. Voided documents can still be downloaded."
+          }
+        },
+        {
+          "name": "Void a document that should not be relied on",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/documents/:id/void",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "documents",
+                ":id",
+                "void"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"This was last month's bill\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "It stays on record and downloadable, marked as voided, with who, when and why. There is no delete and no replace. A corrected copy is uploaded as a new document."
+          }
+        },
+        {
+          "name": "The orders, newest first, optionally one supplier's or one status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Which page, counting from 0"
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Orders per page, 1 to 100"
+                },
+                {
+                  "key": "supplierId",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Only this supplier's orders"
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": "Only orders in this status"
+                },
+                {
+                  "key": "sort",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Place an order with one supplier",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"supplierId\": \"00000000-0000-0000-0000-000000000000\",\n  \"placedOn\": \"2026-11-08\",\n  \"note\": \"\",\n  \"lines\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 7,\n      \"totalPaid\": \"10500.00\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "One line per item: the variant, how many, and the all-in total paid (as the bank app shows it). Every variant is checked with the catalogue once, here: it must exist, be switched on, and belong to a product that is not deleted or archived (a DRAFT product and packaging are fine)."
+          }
+        },
+        {
+          "name": "One order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Change an open order",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1,\n  \"placedOn\": \"2026-11-08\",\n  \"note\": \"\",\n  \"lines\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Only while the order is OPEN and not in a consignment (take it out of the consignment first). Send the version the change was made from. Fields left out are unchanged; lines, when sent, replace all the lines and are checked with the catalogue again."
+          }
+        },
+        {
+          "name": "Cancel an open order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders/:id/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders",
+                ":id",
+                "cancel"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Only while OPEN and not in a consignment. A cancelled order is history and never changes again."
+          }
+        },
+        {
+          "name": "A purchase order's documents, newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders/:id/documents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders",
+                ":id",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "includeVoided",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Attach an invoice to a purchase order",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/purchase-orders/:id/documents?kind=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "purchase-orders",
+                ":id",
+                "documents"
+              ],
+              "query": [
+                {
+                  "key": "kind",
+                  "value": "",
+                  "disabled": false,
+                  "description": "SUPPLIER_INVOICE or OTHER"
+                },
+                {
+                  "key": "note",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "value": null
+                }
+              ]
+            },
+            "description": "The supplier's invoice, or anything else that supports the order. A courier invoice or a ZRA assessment belongs to a consignment, not an order. A PDF, JPEG or PNG of up to 5 MB."
           }
         },
         {
@@ -3467,7 +4424,7 @@
                 }
               ]
             },
-            "description": "Frees the name. To stop buying from a real supplier, switch it inactive instead."
+            "description": "Frees the name. To stop buying from a real supplier, switch it inactive instead: a supplier that any purchase order names, in any status, is never deleted."
           }
         },
         {

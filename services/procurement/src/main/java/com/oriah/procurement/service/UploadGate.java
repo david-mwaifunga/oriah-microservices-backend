@@ -13,8 +13,10 @@ import com.oriah.procurement.exception.ServerBusyException;
  * How many invoices are taken in at the same moment.
  *
  * <p>A 5 MB upload is held in memory about three times over while it is read, fingerprinted and written
- * (roughly 15 MB), and this service's heap is small (217 MiB of heap in a 768 MiB container). Measured live,
- * sixteen at once left half of them a 500 and the container at 96% of its limit. So only
+ * (roughly 15 MB), and this service's heap is small (a 335 MiB ceiling inside a 768 MiB container; the rest is
+ * native memory around it). Measured live: with no limit, sixteen at once left half of them a 500; with a gate of
+ * four in a 640 MiB container every upload succeeded, but the kernel killed the container on the second burst
+ * (exit 137) with the heap still under its ceiling. So only
  * {@code oriah.procurement.uploads.max-concurrent} (default 2: 30 MB at the worst) run together; the rest wait
  * up to {@code max-wait} (default 20 s) for a place, and if none comes they are told to try again ({@link
  * ServerBusyException}: 503 with {@code Retry-After}), never failed half-way. Catalog's photographs are held

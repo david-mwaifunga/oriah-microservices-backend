@@ -17,8 +17,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * How many invoices are taken in at once. A 5 MB upload is held in memory several times over while it is read,
- * fingerprinted and written (about 15 MB), and the service's heap is small (217 MiB): measured live, 16 uploads
- * at once left half of them a 500 and the container at 96% of its limit. So only a few run together; the rest wait
+ * fingerprinted and written (about 15 MB), and the service's heap is small (a 335 MiB ceiling in a 768 MiB
+ * container; it was 217 MiB in the old 640 MiB one): measured live, 16 uploads at once with no limit left half of
+ * them a 500. So only a few run together; the rest wait
  * a little, and if the wait runs out they are told to try again (503 with Retry-After), never failed half-way.
  */
 class UploadGateTest {
