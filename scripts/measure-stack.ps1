@@ -28,7 +28,10 @@ param(
     [string]$OutDir = "",
     # The host must keep at least this much memory free for a run to count.
     [double]$MinHostFreeGiB = 3.0,
-    # Windows paging above this many pages a second means it was swapping.
+    # Windows WRITING more than this many pages a second to its paging file means it
+    # was swapping memory out. Only writes count: "Pages/sec" also includes ordinary
+    # file reads (images, the Docker disk), which read 4,230/sec on a run where Windows
+    # still had over 10 GiB free and nothing was being squeezed.
     [double]$MaxPagesPerSec = 200
 )
 
@@ -62,10 +65,29 @@ function Get-HostFreeGiB {
     return [math]::Round($os.FreePhysicalMemory / 1MB, 2)
 }
 
-function Get-PagesPerSec {
+# Pages written out to the paging file per second: the sign of real memory pressure.
+function Get-PagesOutPerSec {
     try {
-        $c = Get-Counter '\Memory\Pages/sec' -ErrorAction Stop
+        $c = Get-Counter '\Memory\Pages Output/sec' -ErrorAction Stop
         return [math]::Round($c.CounterSamples[0].CookedValue, 1)
+    } catch { return -1 }
+}
+
+# Pages read in per second. Reported for information only: file reads count here.
+function Get-PagesInPerSec {
+    try {
+        $c = Get-Counter '\Memory\Pages Input/sec' -ErrorAction Stop
+        return [math]::Round($c.CounterSamples[0].CookedValue, 1)
+    } catch { return -1 }
+}
+
+# How fast the CPU is really running, as a percent of its rated speed. A laptop that is
+# hot or power-limited runs at a fraction, and every start-up then takes several times
+# longer. Memory readings are unaffected; timings are not, so the summary says so.
+function Get-CpuPerformancePct {
+    try {
+        $c = Get-Counter '\Processor Information(_Total)\% Processor Performance' -ErrorAction Stop
+        return [math]::Round($c.CounterSamples[0].CookedValue, 0)
     } catch { return -1 }
 }
 
@@ -74,7 +96,7 @@ $vmMiB = 0
 $vmBytes = (& docker info --format '{{.MemTotal}}' 2>$null)
 if ($vmBytes -match '^[0-9]+$') { $vmMiB = [math]::Round([double]$vmBytes / 1MB) }
 
-"time,container,mem_mib,limit_mib,cpu_pct,host_free_gib,pages_per_sec" | Set-Content -Path $csv -Encoding ASCII
+"time,container,mem_mib,limit_mib,cpu_pct,host_free_gib,pages_out_per_sec,pages_in_per_sec,host_cpu_perf_pct" | Set-Content -Path $csv -Encoding ASCII
 
 $peak = @{}          # container -> peak MiB
 $peakCpu = @{}       # container -> peak CPU %
@@ -82,6 +104,8 @@ $limits = @{}        # container -> limit MiB as docker reports it
 $maxTotal = 0.0
 $minFree = 1000.0
 $maxPages = 0.0
+$maxPagesIn = 0.0
+$minCpuPerf = 1000
 $samples = 0
 $start = Get-Date
 
@@ -90,9 +114,13 @@ Write-Host ("Sampling every {0}s for {1}s into {2}" -f $IntervalSeconds, $Durati
 while (((Get-Date) - $start).TotalSeconds -lt $DurationSeconds) {
     $tick = Get-Date
     $free = Get-HostFreeGiB
-    $pages = Get-PagesPerSec
+    $pages = Get-PagesOutPerSec
+    $pagesIn = Get-PagesInPerSec
+    $cpuPerf = Get-CpuPerformancePct
     if ($free -lt $minFree) { $minFree = $free }
     if ($pages -gt $maxPages) { $maxPages = $pages }
+    if ($pagesIn -gt $maxPagesIn) { $maxPagesIn = $pagesIn }
+    if ($cpuPerf -ge 0 -and $cpuPerf -lt $minCpuPerf) { $minCpuPerf = $cpuPerf }
 
     $lines = @(& docker stats --no-stream --format '{{.Name}};{{.MemUsage}};{{.CPUPerc}}' 2>$null)
     $total = 0.0
@@ -112,7 +140,7 @@ while (((Get-Date) - $start).TotalSeconds -lt $DurationSeconds) {
         if (-not $peakCpu.ContainsKey($name) -or $cpu -gt $peakCpu[$name]) { $peakCpu[$name] = $cpu }
         $limits[$name] = $limit
         # F formats, not N: N adds a thousands separator ("12,974"), which would split a CSV column.
-        ("{0},{1},{2:F1},{3:F0},{4:F1},{5},{6}" -f $stamp, $name, $used, $limit, $cpu, $free, $pages) | Add-Content -Path $csv -Encoding ASCII
+        ("{0},{1},{2:F1},{3:F0},{4:F1},{5},{6},{7},{8}" -f $stamp, $name, $used, $limit, $cpu, $free, $pages, $pagesIn, $cpuPerf) | Add-Content -Path $csv -Encoding ASCII
     }
     if ($total -gt $maxTotal) { $maxTotal = $total }
     $samples++
@@ -155,10 +183,12 @@ foreach ($n in $ids) {
 if ($bad -eq 0) { Write-Host "  none" }
 
 Write-Host ""
-Write-Host ("Host (Windows): lowest free memory {0:N2} GiB, highest paging {1:N1} pages/sec" -f $minFree, $maxPages)
+Write-Host ("Host (Windows): lowest free memory {0:N2} GiB, most written to the paging file {1:N1} pages/sec (most read in: {2:N1} pages/sec, for information)" -f $minFree, $maxPages, $maxPagesIn)
+if ($minCpuPerf -lt 1000) { Write-Host ("Host CPU: ran as slow as {0}% of its rated speed." -f $minCpuPerf) }
 $valid = $true
 if ($minFree -lt $MinHostFreeGiB) { $valid = $false; Write-Host ("  NOT VALID: Windows fell below {0} GiB free, so the containers were being squeezed." -f $MinHostFreeGiB) }
-if ($maxPages -gt $MaxPagesPerSec) { $valid = $false; Write-Host ("  NOT VALID: Windows was paging ({0:N0} pages/sec)." -f $maxPages) }
+if ($maxPages -gt $MaxPagesPerSec) { $valid = $false; Write-Host ("  NOT VALID: Windows was swapping memory out ({0:N0} pages/sec written)." -f $maxPages) }
 if ($valid) { Write-Host "  VALID: the host stayed healthy, so these readings are the containers' real need." }
 else { Write-Host "  Discard this run: free memory (close Chrome and other apps) and take it again." }
+if ($minCpuPerf -ge 0 -and $minCpuPerf -lt 60) { Write-Host "  NOTE: the CPU was throttled, so start-up TIMES in this run are slower than on a healthy PC. Memory readings are not affected." }
 Write-Host ("CSV: {0}" -f $csv)

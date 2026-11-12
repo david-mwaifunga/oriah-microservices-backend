@@ -58,8 +58,42 @@ services:
   microservice-base-config:
     extends:
       service: network-deploy-service
+    # Memory limit for every Java module (Phase 2). Without any limit each JVM sized its heap
+    # from the whole Docker VM (it picked -Xmx7038907K on a 13 GB VM), so the stack grew to
+    # fill whatever it was given and starved Windows. memswap_limit equal to mem_limit means
+    # no swap: a runaway is killed cleanly instead of making the PC page.
+    #
+    # MEASURED 2026-11-11 (scripts/measure-stack.ps1 over a cold start, the smoke saga and ten
+    # idle minutes; scripts/jvm-memory-report.ps1 for what is inside each JVM). The twelve
+    # ordinary services peak at 287-461 MiB, at most 72% of this 640m; heap peaks at most 59% of
+    # its ceiling, the compiled-code cache 18-31 MiB of 64, class metadata 75-165 MiB. Catalog is
+    # the exception (it decodes photographs: see its own block). The whole stack peaks at 8.7 GiB
+    # inside a Docker VM capped at 10 GB (.wslconfig), and Windows kept 3.85 GiB free.
+    #
+    # A bare limit also leaves the JVM almost no heap, because Paketo's memory calculator
+    # reserves 240 MB of code cache and 250 threads of stack before any heap, so those two are
+    # sized down with it. Threads: server.tomcat.threads.max: 50 (config-repo/application.yaml,
+    # pinned by TomcatThreadCapTest) plus the threads that are not requests (Kafka, Eureka,
+    # Hikari, schedulers, the trace exporter) with a quarter on top, 125: a service holds 35-53
+    # live threads when idle and 36-58 at its peak in the saga. Code cache by flag, below.
+    # BPL_JVM_HEAD_ROOM leaves a slice of the limit outside the heap, for what the JVM
+    # allocates beyond all of the above.
+    mem_limit: 640m
+    memswap_limit: 640m
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      BPL_JVM_THREAD_COUNT: "125"
+      BPL_JVM_HEAD_ROOM: "5"
+      # Paketo turns Native Memory Tracking on by default (-XX:NativeMemoryTracking=summary);
+      # it costs a few percent of CPU and memory and the JRE has no jcmd to read it, so it is off.
+      BPL_JAVA_NMT_ENABLED: "false"
+      # SweeperThreshold: the JVM runs a FULL garbage collection each time the code it has
+      # compiled since the last one reaches this share of ReservedCodeCacheSize. The default 15%
+      # of a 64M cache is 9.6 MiB, and a service compiles about 25-30 MiB while it starts, so
+      # every service ran 1-5 full collections at start-up (5-19 s each on a slow PC; measured
+      # 2026-11-11 from jvm_gc_pause_seconds, cause "CodeCache GC Threshold"). 50% is 32 MiB,
+      # which start-up does not reach; the JVM still collects on its own when the cache fills.
+      JAVA_TOOL_OPTIONS: "-XX:ReservedCodeCacheSize=64M -XX:SweeperThreshold=50"
     healthcheck:
       interval: 10s
       timeout: 5s
@@ -104,6 +138,11 @@ services:
     extends:
       service: network-deploy-service
     image: postgres:16-alpine
+    # Memory limit, measured 2026-11-11: an instance peaks at 31-54 MiB (at most 21% of this)
+    # through a cold start and the whole smoke saga. shared_buffers (128 MB by default) is
+    # only touched as data arrives, so the limit is headroom for real catalogs, not a reservation.
+    mem_limit: 256m
+    memswap_limit: 256m
     healthcheck:
       interval: 5s
       timeout: 5s

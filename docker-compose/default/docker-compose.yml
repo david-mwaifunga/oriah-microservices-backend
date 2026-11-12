@@ -333,6 +333,11 @@ services:
       service: network-deploy-service
     image: chrislusf/seaweedfs:3.80
     container_name: oriah-s3
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 76 MiB = 24% of it.
+    mem_limit: 320m
+    memswap_limit: 320m
+    environment:
+      GOMEMLIMIT: 256MiB
     command: ["server", "-s3", "-s3.config=/etc/seaweedfs/s3.json", "-dir=/data"]
     ports:
       - "127.0.0.1:8333:8333"
@@ -378,6 +383,9 @@ services:
       service: network-deploy-service
     image: chrislusf/seaweedfs:3.80
     container_name: oriah-s3-init
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1, a cold start): a one-minute job that peaks at 11 MiB = 9% of it.
+    mem_limit: 128m
+    memswap_limit: 128m
     restart: "no"
     depends_on:
       oriah-s3:
@@ -385,7 +393,6 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - |
-        set -e
         # -filer is REQUIRED, not optional. weed shell needs both addresses:
         # with only -master it reports
         #   "fail to dial : failed to exit idle mode: passthrough: received
@@ -394,17 +401,41 @@ services:
         # each line with `|| true`, so the container exited 0 having done
         # nothing at all -- catalog then started and failed its own bucket
         # check with a confusing error instead of this one.
-        weed shell -master=oriah-s3:9333 -filer=oriah-s3:8888 <<'CMD'
-        s3.bucket.create -name oriah-catalog
-        CMD
-        # Verified rather than assumed. s3.bucket.create is idempotent (a
-        # second run reports success for an existing bucket), so a restart is
-        # harmless -- but a create that silently failed would otherwise look
-        # identical to one that worked. grep makes the container exit non-zero
-        # in that case, which blocks catalog with the real cause.
-        weed shell -master=oriah-s3:9333 -filer=oriah-s3:8888 <<'CMD' | grep -q oriah-catalog
-        s3.bucket.list
-        CMD
+        #
+        # RETRIED, because the readiness check above and this job look at
+        # different ports. The check probes the S3 gateway on 8333, which opens
+        # first; weed shell needs the filer's gRPC, which opens a moment later.
+        # Starting right after "healthy" therefore failed on a cold start (it
+        # did, 2 starts out of 2), and with a one-shot script that meant catalog
+        # never started. Waiting is correct here: the filer is on its way up.
+        #
+        # What counts as success is the bucket being LISTED afterwards, not
+        # weed shell's exit status: weed shell can exit 0 having done nothing
+        # (see above). s3.bucket.create is idempotent (a second run reports
+        # success for an existing bucket), so a restart or a retry is harmless.
+        # Bounded: 30 tries about 3 s apart is roughly a minute and a half, and
+        # then the container exits non-zero, which blocks catalog with the real
+        # cause. (In this file a literal dollar sign for the shell is written as two.)
+        #
+        # Each attempt is also bounded to 20 s: weed shell waits for its master with no
+        # deadline of its own, so an attempt made while oriah-s3 is restarting would
+        # otherwise hang the loop forever and leave catalog waiting with no message.
+        # (busybox's timeout is used when the image has it.)
+        bounded() {
+          if command -v timeout >/dev/null 2>&1; then timeout 20 "$$@"; else "$$@"; fi
+        }
+        tries=0
+        until echo 's3.bucket.create -name oriah-catalog' | bounded weed shell -master=oriah-s3:9333 -filer=oriah-s3:8888 \
+              && echo 's3.bucket.list' | bounded weed shell -master=oriah-s3:9333 -filer=oriah-s3:8888 | grep -q oriah-catalog
+        do
+          tries=$$((tries + 1))
+          if [ "$$tries" -ge 30 ]; then
+            echo "oriah-s3-init: bucket oriah-catalog is still not listed after $$tries tries; giving up" >&2
+            exit 1
+          fi
+          echo "oriah-s3-init: the filer is not ready yet (try $$tries of 30); waiting 3 s"
+          sleep 3
+        done
         echo "bucket oriah-catalog is present"
 
   keycloak:
@@ -413,6 +444,9 @@ services:
       service: network-deploy-service
     image: quay.io/keycloak/keycloak:26.0
     container_name: oriah-keycloak
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 584 MiB = 46% of it.
+    mem_limit: 1280m
+    memswap_limit: 1280m
     # start-dev: no caching, hot-reload, plain HTTP -- local development only.
     # Production runs `start` (optimized build, hostname and TLS/proxy set) on
     # the same database settings below.
@@ -429,13 +463,14 @@ services:
     #   docker compose up -d keycloak
     # then restart order (docker compose restart order) -- its cached machine
     # token was signed by the old keys. Removing that one volume wipes dev
-    # logins, never the ten domain databases. Never `docker compose down -v`
+    # logins, never the eleven domain databases. Never `docker compose down -v`
     # (it wipes all twelve databases); never a console edit (it drifts from the
     # committed files).
     # After go-live a realm change is applied by an idempotent admin-API step
     # instead.
     command: ["start-dev", "--import-realm"]
     environment:
+      JAVA_OPTS_KC_HEAP: "-Xms128m -Xmx512m"
       # Bootstrap admin credentials (Keycloak 26+ uses KC_BOOTSTRAP_* naming).
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
@@ -505,6 +540,11 @@ services:
       service: network-deploy-service
     image: prom/prometheus:latest
     container_name: oriah-prometheus
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 83 MiB = 16% of it.
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      GOMEMLIMIT: 400MiB
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=7d
@@ -534,7 +574,11 @@ services:
       service: network-deploy-service
     image: grafana/grafana:latest
     container_name: oriah-grafana
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 287 MiB = 75% of it.
+    mem_limit: 384m
+    memswap_limit: 384m
     environment:
+      GOMEMLIMIT: 300MiB
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -567,6 +611,11 @@ services:
       service: network-deploy-service
     image: grafana/loki:latest
     container_name: oriah-loki
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 118 MiB = 31% of it.
+    mem_limit: 384m
+    memswap_limit: 384m
+    environment:
+      GOMEMLIMIT: 300MiB
     command: ["-config.file=/etc/loki/loki-config.yaml"]
     volumes:
       - ../../monitoring/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
@@ -589,6 +638,9 @@ services:
       service: network-deploy-service
     image: redis:7-alpine
     container_name: oriah-redis
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 12 MiB = 19% of it.
+    mem_limit: 64m
+    memswap_limit: 64m
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -606,7 +658,11 @@ services:
       service: network-deploy-service
     image: apache/kafka:3.9.0
     container_name: oriah-kafka
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 504 MiB = 56% of it.
+    mem_limit: 896m
+    memswap_limit: 896m
     environment:
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
       # Required KRaft single-node config — node-id 1 is both broker and controller.
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
@@ -674,6 +730,11 @@ services:
     # Tempo 2.x example uses. See the header of monitoring/tempo/tempo.yml.
     image: grafana/tempo:3.0.0
     container_name: oriah-tempo
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 293 MiB = 76% of it.
+    mem_limit: 384m
+    memswap_limit: 384m
+    environment:
+      GOMEMLIMIT: 300MiB
     command: ["-config.file=/etc/tempo/tempo.yml"]
     # The image runs as uid 10001, but a named volume is created root-owned, so
     # Tempo cannot write its WAL and exits. Running as root is the pragmatic
@@ -713,6 +774,11 @@ services:
       service: network-deploy-service
     image: grafana/alloy:latest
     container_name: oriah-alloy
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 120 MiB = 47% of it.
+    mem_limit: 256m
+    memswap_limit: 256m
+    environment:
+      GOMEMLIMIT: 200MiB
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -749,9 +815,20 @@ services:
     container_name: oriah-configserver
     environment:
       # Spring Cloud Config's git backend reads from the path mounted
-      # below. Using file:// (not https://) so dev works without GitHub
-      # auth; production would point at an https://... remote.
-      CONFIG_REPO_URI: file:///workspace/config-repo
+      # below, so dev works without GitHub auth; production would point at an
+      # https://... remote and behave the same way.
+      #
+      # A plain PATH, deliberately NOT a file:// URL. Spring Cloud Config reads a
+      # file:// repository in place and never clones it, so every request ran
+      # several git commands against the Windows folder mounted below (about 10 s
+      # each on this PC); thirteen services asking at once queued behind one
+      # another and the last ones died with "Read timed out" (2026-11-11). A plain
+      # path makes the server clone ONCE, at start, into the container's own disk
+      # and fetch from the mount at most every CONFIG_REPO_REFRESH_RATE seconds
+      # (default 10). The cost: only what is COMMITTED in config-repo reaches the
+      # services (an uncommitted edit does not), and a commit reaches them within
+      # 10 s. ConfigServerGitBackendTest pins all of this.
+      CONFIG_REPO_URI: /workspace/config-repo
       CONFIG_REPO_BRANCH: master
       # Tracing endpoint set directly here because configserver can't
       # bootstrap from itself — the 13 service modules inherit these
@@ -770,22 +847,42 @@ services:
       kafka:
         condition: service_healthy
     volumes:
-      # Read-write mount of the local config-repo. JGit (under Spring
-      # Cloud Config) needs write access to maintain its index/HEAD/
-      # reflog even when the URI is file:// — basedir indirection
-      # doesn't fully solve it for same-host file URIs. Force-pull is
-      # on so the configserver resets divergences; the host can still
-      # edit and commit normally.
-      - ../../../config-repo:/workspace/config-repo
+      # Read-only mount of the local config-repo: the server CLONES it into its
+      # own disk (see CONFIG_REPO_URI above) and only ever reads from here, so it
+      # can no longer write an index or lock file back into the host's repository.
+      # (It was read-write while the URI was file://, which JGit uses in place.)
+      # The host edits and commits normally.
+      - ../../../config-repo:/workspace/config-repo:ro
     ports:
       - "127.0.0.1:8888:8888"
     healthcheck:
       # bash + coreutils come from paketo run-noble-base (set per build in
       # build-images.ps1). The default run-jammy-tiny has none of these.
-      # `/dev/tcp/<host>/<port>` is a bash builtin — opens a TCP socket
-      # and exits 0 if the port is accepting connections. No curl needed
-      # (noble-base doesn't ship curl either).
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8888"]
+      # `/dev/tcp/<host>/<port>` is a bash builtin — opens a TCP socket. No
+      # curl needed (noble-base doesn't ship curl either).
+      #
+      # A REAL request, not just "is the port open". The port opens well before
+      # the Config Server can read the config repo, and every service waits on
+      # this check: with a bare TCP probe they started the moment 8888 accepted
+      # a connection, asked for their config, and died with "Read timed out"
+      # because the first answer takes several seconds on a cold start. So this
+      # asks for a real configuration, /customer/docker (any application name
+      # works; the Config Server answers 200 only if it can serve from the repo
+      # and 500 if it cannot), and requires the status to be EXACTLY 200: the
+      # status token is parsed out of the response line and compared as a
+      # whole, not grepped for the characters 200, which would also match "500"
+      # in "HTTP/1.0 500 ... 200 ms". Anything after the digits is dropped first
+      # (a status line of just "200" ends in a carriage return), so a server that
+      # writes no reason phrase is still a 200.
+      # Same quoting as Keycloak's probe below: $$ is a literal $ for bash
+      # (Compose would otherwise read $status as an empty variable), and \\r\\n
+      # is how a backslash gets through to printf.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8888 && printf 'GET /customer/docker HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -r proto status rest <&3 && [ \"$${status%%[!0-9]*}\" = 200 ]"]
+      interval: 10s
+      # Above the slowest first answer, so a slow cold start is waited for
+      # rather than counted as a failure. (The shared default is shorter.)
+      timeout: 20s
+      retries: 30
       start_period: 60s
 
   eurekaserver:
@@ -794,6 +891,9 @@ services:
       service: microservice-base-config
     image: oriah/eurekaserver:dev
     container_name: oriah-eurekaserver
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 279 MiB = 54% of it.
+    mem_limit: 512m
+    memswap_limit: 512m
     environment:
       # Tracing direct-set: eureka doesn't pull from configserver.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "1.0"
@@ -819,6 +919,9 @@ services:
       service: microservice-base-config
     image: oriah/gatewayserver:dev
     container_name: oriah-gatewayserver
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 353 MiB = 46% of it.
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       # Tracing direct-set: gateway doesn't pull from configserver.
       # The gateway is the trace entrypoint — Micrometer Tracing's
@@ -861,7 +964,20 @@ services:
       service: microservice-keycloak-config
     image: oriah/catalog:dev
     container_name: oriah-catalog
+    # Larger than the other Java modules on purpose: catalog decodes uploaded photographs in
+    # memory. The biggest it accepts is 8000 x 5000 (40 megapixels), which needs about 306 MiB
+    # of heap while it is decoded, turned upright and saved. Measured 2026-11-11 with
+    # scripts/ingest-load-test.ps1 (details in docs/MVP_PLAN.md Phase 2): without a gate 124
+    # large uploads at once killed the JVM (OutOfMemoryError); with the gate but a 1 GiB
+    # container (575 MiB heap) a SINGLE biggest picture pushed the heap to 79% and cost 16 full
+    # collections, 30% of its time. At 1.5 GiB Paketo gives catalog about 1 GiB of heap, and
+    # catalog's IngestGate budget below is 600 MiB of it: two big pictures never run at once, the
+    # rest wait, then get 503 + Retry-After. Raise the limit and the budget together.
+    mem_limit: 1536m
+    memswap_limit: 1536m
     environment:
+      # IngestGate budget (catalog.images.ingest.working-memory-mib), about 60% of the heap.
+      CATALOG_IMAGES_INGEST_WORKING_MEMORY_MIB: "600"
       # The bucket-SCOPED identity, not the storage admin. Development values;
       # see s3-config/README.md.
       CATALOG_S3_ACCESS_KEY: catalogkey
@@ -1142,7 +1258,11 @@ services:
       context: ../../../oriah-web
       dockerfile: Dockerfile
     container_name: oriah-web
+    # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 82 MiB = 21% of it.
+    mem_limit: 384m
+    memswap_limit: 384m
     environment:
+      NODE_OPTIONS: "--max-old-space-size=256"
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
       PORT: 3000
