@@ -30,6 +30,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -303,6 +304,25 @@ public abstract class OriahExceptionHandlerSupport {
         pd.setProperty("fieldErrors",
                 List.of(new FieldErrorView(ex.getParameterName(), "must be provided")));
         return pd;
+    }
+
+    /**
+     * 400 — a file upload the container could not read: the request says multipart but the body is not
+     * (no boundary, cut off, not parseable). The caller's mistake, and a 5xx would be retry-eligible.
+     *
+     * <p>{@code MaxUploadSizeExceededException} IS a {@code MultipartException} but carries its own
+     * status (413), so it is handed to the catch-all, which keeps it.
+     */
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<ProblemDetail> unreadableUpload(MultipartException ex) {
+        if (ex instanceof ErrorResponse) {
+            return unhandled(ex);
+        }
+        log.debug("400 unreadable multipart request: {}", ex.getMessage());
+        return new ResponseEntity<>(problem(HttpStatus.BAD_REQUEST, TYPE_BAD_REQUEST, "Bad Request",
+                "The upload could not be read. Send it as multipart/form-data, with the file in the part "
+                        + "the endpoint names, and let the client set the boundary itself."),
+                HttpStatus.BAD_REQUEST);
     }
 
     /** 400 — a required header was absent. */

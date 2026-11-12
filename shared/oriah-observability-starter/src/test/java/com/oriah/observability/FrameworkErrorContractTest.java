@@ -171,6 +171,28 @@ class FrameworkErrorContractTest {
     }
 
     @Test
+    @DisplayName("400: a file upload the container could not parse (no boundary, cut off) is the caller's mistake, not a 500")
+    void malformedMultipart() throws Exception {
+        // Found by review: Spring raises MultipartException when the multipart body cannot be read
+        // (a client that sets Content-Type: multipart/form-data by hand and so drops the boundary is
+        // the usual cause). It is a plain runtime exception, not an ErrorResponse, so it fell through
+        // to the catch-all: a 500 with an ERROR stack trace, and a 5xx is retry-eligible.
+        MvcResult result = mockMvc.perform(get("/contract/bad-upload")).andReturn();
+        String body = result.getResponse().getContentAsString();
+
+        assertThat(result.getResponse().getStatus()).as("body=%s", body).isEqualTo(400);
+        assertThat(body).contains("multipart/form-data").contains("\"status\":400")
+                .doesNotContain("Failed to parse");
+    }
+
+    @Test
+    @DisplayName("413: an upload over the size limit keeps its status, and is not turned into the 400 above")
+    void tooLargeUploadKeeps413() throws Exception {
+        // MaxUploadSizeExceededException IS a MultipartException, but it carries its own status.
+        assertStatusAndReport(get("/contract/huge-upload"), "413 upload-too-large", 413);
+    }
+
+    @Test
     @DisplayName("framework errors carry the traceId, same as domain errors")
     void frameworkErrorsCarryTraceId() throws Exception {
         org.slf4j.MDC.put("traceId", "abcdef00112233445566778899aabbcc");
@@ -234,6 +256,17 @@ class FrameworkErrorContractTest {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE,
                     "Unable to find instance for checkout");
+        }
+
+        @GetMapping("/bad-upload")
+        String badUpload() {
+            throw new org.springframework.web.multipart.MultipartException(
+                    "Failed to parse multipart servlet request", new java.io.IOException("no boundary"));
+        }
+
+        @GetMapping("/huge-upload")
+        String hugeUpload() {
+            throw new org.springframework.web.multipart.MaxUploadSizeExceededException(5L * 1024 * 1024);
         }
 
         @GetMapping("/needs-param")
