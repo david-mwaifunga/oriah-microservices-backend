@@ -53,15 +53,21 @@ public final class ConsignmentCosting {
                            BigDecimal amount, boolean typed, Map<UUID, BigDecimal> perLine) {
     }
 
+    /** Exactly what the allocator was given, in whole ngwee: line for line, cost for cost. */
+    public record Inputs(List<LineInput> lines, List<CostInput> costs) {
+    }
+
     /**
      * @param ready      whether every problem is cleared and the unit costs below are final
      * @param problems   what stops it, in plain words; empty when ready
      * @param lines      one per consignment line; empty while there are problems
      * @param costs      one per cost line, always (so a screen is never blank)
+     * @param inputs     what the allocator was given, so the receipt can record it; null when read
+     *                   back from a record, and when there were problems
      */
     public record Outcome(boolean ready, List<String> problems, List<LineView> lines, List<CostView> costs,
                           BigDecimal goodsTotal, BigDecimal capitalizedCostTotal, BigDecimal periodCostTotal,
-                          BigDecimal landedTotal) {
+                          BigDecimal landedTotal, Inputs inputs) {
     }
 
     public static Outcome of(Consignment consignment) {
@@ -107,7 +113,7 @@ public final class ConsignmentCosting {
                         cost.amount(), !cost.shares().isEmpty(), Map.of()));
             }
             return new Outcome(false, List.copyOf(problems), List.of(), shown, goodsTotal, capitalizedTotal,
-                    periodTotal, goodsTotal.add(capitalizedTotal));
+                    periodTotal, goodsTotal.add(capitalizedTotal), null);
         }
 
         List<LineView> lineViews = new ArrayList<>();
@@ -136,7 +142,8 @@ public final class ConsignmentCosting {
             costViews.add(new CostView(cost.id(), cost.position(), cost.costType(), cost.basis(), cost.treatment(),
                     cost.amount(), !cost.shares().isEmpty(), perLine));
         }
-        return new Outcome(true, List.of(), lineViews, costViews, goodsTotal, capitalizedTotal, periodTotal, landedTotal);
+        return new Outcome(true, List.of(), lineViews, costViews, goodsTotal, capitalizedTotal, periodTotal, landedTotal,
+                new Inputs(List.copyOf(inputs), List.copyOf(costInputs)));
     }
 
     /** One cost as the allocator takes it, noting in {@code problems} whatever stops it. */

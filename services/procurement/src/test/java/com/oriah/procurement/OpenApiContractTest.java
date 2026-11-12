@@ -333,6 +333,7 @@ class OpenApiContractTest {
     private static final String C_ORDERS = CONSIGNMENT + "/purchase-orders";
     private static final String C_ORDER = C_ORDERS + "/{orderId}";
     private static final String C_ALLOCATION = CONSIGNMENT + "/allocation";
+    private static final String C_RECEIVE = CONSIGNMENT + "/receive";
 
     @Test
     @DisplayName("consignments: every operation has the id the frontend calls it by, and success is documented as what it is")
@@ -348,6 +349,8 @@ class OpenApiContractTest {
         assertThat((String) at(operation(C_ORDERS, "post") + ".operationId")).isEqualTo("attachPurchaseOrder");
         assertThat((String) at(operation(C_ORDER, "delete") + ".operationId")).isEqualTo("detachPurchaseOrder");
         assertThat((String) at(operation(C_ALLOCATION, "get") + ".operationId")).isEqualTo("previewAllocation");
+        assertThat((String) at(operation(C_RECEIVE, "post") + ".operationId")).isEqualTo("receiveConsignment");
+        assertThat(responses(C_RECEIVE, "post")).containsKey("200").doesNotContainKey("201");
 
         assertThat(responses(CONSIGNMENTS, "post")).containsKey("201").doesNotContainKey("200");
         assertThat(responses(CONSIGNMENT, "delete")).containsKey("204").doesNotContainKey("200");
@@ -373,6 +376,8 @@ class OpenApiContractTest {
         expected.put("post " + C_ORDERS, List.of("400", "401", "403", "404", "409", "500"));
         expected.put("delete " + C_ORDER, List.of("400", "401", "403", "404", "409", "500"));
         expected.put("get " + C_ALLOCATION, List.of("400", "401", "403", "404", "500"));
+        // 409: stale, already received, cannot be costed yet, or opening stock after a shipment.
+        expected.put("post " + C_RECEIVE, List.of("400", "401", "403", "404", "409", "500"));
 
         expected.forEach((operation, statuses) -> {
             String[] parts = operation.split(" ");
@@ -389,7 +394,8 @@ class OpenApiContractTest {
                 .doesNotContainKey("503");
         assertThat(responses(CONSIGNMENT, "get")).doesNotContainKey("409").doesNotContainKey("503");
         assertThat(responses(C_ALLOCATION, "get")).doesNotContainKey("409");
-        // Only typing the opening stock asks the catalogue.
+        // Only typing the opening stock asks the catalogue; receiving asks nobody.
+        assertThat(responses(C_RECEIVE, "post")).doesNotContainKey("503");
         assertThat(responses(C_COSTS, "put")).doesNotContainKey("503");
         assertThat(responses(C_ORDERS, "post")).doesNotContainKey("503");
     }
@@ -435,6 +441,15 @@ class OpenApiContractTest {
                     .isTrue();
         }
         assertThat(isNullable("ConsignmentLine", "sku")).isFalse();
+        // A draft's preview has no revision and no receipt time; a received consignment's has both.
+        for (String optional : List.of("revision", "receivedAt")) {
+            assertThat(isNullable("AllocationPreview", optional))
+                    .as("AllocationPreview.%s may be null; the schema says %s", optional, describe("AllocationPreview", optional))
+                    .isTrue();
+        }
+        for (String always : List.of("ready", "problems", "lines", "costs", "landedTotal", "currency")) {
+            assertThat(isNullable("AllocationPreview", always)).as("AllocationPreview.%s", always).isFalse();
+        }
     }
 
     @Test

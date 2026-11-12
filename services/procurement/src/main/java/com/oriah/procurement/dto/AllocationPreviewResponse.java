@@ -1,6 +1,7 @@
 package com.oriah.procurement.dto;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -10,6 +11,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * What the consignment would cost per unit if it were received now.
+ *
+ * <p>For a DRAFT it is worked out afresh each time. For a RECEIVED consignment it is the allocation that
+ * was recorded when the goods landed ({@code revision}), never recomputed.
  *
  * <p>A consignment that cannot be costed yet is not an error: {@code ready} is false, {@code problems}
  * says in plain words what stops it (each naming the cost line or line), and {@code lines} is empty.
@@ -25,7 +29,11 @@ public record AllocationPreviewResponse(
         BigDecimal capitalizedCostTotal,
         BigDecimal periodCostTotal,
         @Schema(description = "Goods plus capitalized costs: what the units recover, to the ngwee") BigDecimal landedTotal,
-        String currency) {
+        String currency,
+        @Schema(description = "Which recorded allocation this is (1 is the receipt itself); null for a draft's preview, "
+                + "which is worked out afresh each time", types = {"integer", "null"}) Integer revision,
+        @Schema(description = "When the goods landed; null for a draft's preview", types = {"string", "null"})
+        Instant receivedAt) {
 
     /** What one line comes to. {@code slices} are the unit costs: at most two, a ngwee apart, dearer first. */
     @Schema(name = "AllocationLine")
@@ -51,7 +59,13 @@ public record AllocationPreviewResponse(
     public record Share(UUID lineId, BigDecimal amount) {
     }
 
+    /** A draft's preview, worked out now. */
     public static AllocationPreviewResponse of(ConsignmentCosting.Outcome outcome) {
+        return of(outcome, null, null);
+    }
+
+    /** A received consignment's recorded allocation, as stored. */
+    public static AllocationPreviewResponse of(ConsignmentCosting.Outcome outcome, Integer revision, Instant receivedAt) {
         return new AllocationPreviewResponse(outcome.ready(), outcome.problems(),
                 outcome.lines().stream().map(l -> new Line(l.lineId(), l.position(), l.sku(), l.quantity(),
                         l.goodsTotal(), l.sharedCost(), l.landedTotal(),
@@ -60,6 +74,6 @@ public record AllocationPreviewResponse(
                         c.basis().name(), c.treatment().name(), c.amount(), c.typed(),
                         c.perLine().entrySet().stream().map(e -> new Share(e.getKey(), e.getValue())).toList())).toList(),
                 outcome.goodsTotal(), outcome.capitalizedCostTotal(), outcome.periodCostTotal(), outcome.landedTotal(),
-                ConsignmentResponse.CURRENCY);
+                ConsignmentResponse.CURRENCY, revision, receivedAt);
     }
 }

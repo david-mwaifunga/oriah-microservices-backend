@@ -28,6 +28,7 @@ import com.oriah.procurement.dto.CreateConsignmentRequest;
 import com.oriah.procurement.dto.LineDetailsRequest;
 import com.oriah.procurement.dto.OpeningLinesRequest;
 import com.oriah.procurement.dto.UpdateConsignmentRequest;
+import com.oriah.procurement.dto.VersionRequest;
 import com.oriah.procurement.model.ConsignmentStatus;
 import com.oriah.procurement.service.ConsignmentService;
 
@@ -259,9 +260,29 @@ public class ConsignmentController {
         service.deleteDraft(id, version);
     }
 
-    @Operation(operationId = "previewAllocation", summary = "What each unit would cost if this were received now",
-            description = "The courier's charge and every other cost shared out to the unit, to the ngwee. Changes "
-                    + "nothing. When it cannot be costed yet, ready is false and problems says what to fix.")
+    @Operation(operationId = "receiveConsignment", summary = "The goods have landed",
+            description = "Works out what each unit cost and records it for good (revision 1), makes the consignment "
+                    + "and every order in it RECEIVED, and announces each line (consignment.received) for inventory. "
+                    + "All or nothing. From now on nothing about it changes. The opening stock must be received before "
+                    + "any shipment. Send the version it was decided from.")
+    @ApiResponse(responseCode = "200", description = "The consignment, now RECEIVED")
+    @ApiResponse(responseCode = "400", description = "The version is missing",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such consignment",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The consignment has changed since that version, is already received, "
+            + "cannot be costed yet (the answer says what to fix), or is opening stock and a shipment has already been received",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/{id}/receive")
+    public ConsignmentResponse receive(@PathVariable UUID id, @Valid @RequestBody VersionRequest request) {
+        return service.receive(id, request.version());
+    }
+
+    @Operation(operationId = "previewAllocation", summary = "What each unit costs, or would cost if received now",
+            description = "The courier's charge and every other cost shared out to the unit, to the ngwee. For a draft it "
+                    + "is worked out afresh and changes nothing; when it cannot be costed yet, ready is false and problems "
+                    + "says what to fix. For a received consignment it is the allocation recorded when the goods landed "
+                    + "(revision, receivedAt), never recomputed.")
     @ApiResponse(responseCode = "200", description = "The allocation, or the problems that stop it")
     @ApiResponse(responseCode = "400", description = "The id is not a UUID",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))

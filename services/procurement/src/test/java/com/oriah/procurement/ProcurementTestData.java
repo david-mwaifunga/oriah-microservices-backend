@@ -23,7 +23,8 @@ public final class ProcurementTestData {
     /** Everything a test may have made, suppliers included, except the event log. */
     public static void wipe(JdbcTemplate jdbc) {
         jdbc.execute("TRUNCATE purchase_order, purchase_order_line, consignment, consignment_line, cost_line, "
-                + "cost_line_share CASCADE");
+                + "cost_line_share, allocation_revision, allocation_line, allocation_slice, "
+                + "allocation_cost_share CASCADE");
         jdbc.update("DELETE FROM suppliers");
     }
 }

@@ -1,5 +1,8 @@
 package com.oriah.procurement.service;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -20,6 +23,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +42,7 @@ import com.oriah.procurement.dto.LineDetailsRequest;
 import com.oriah.procurement.dto.OpeningLineRequest;
 import com.oriah.procurement.dto.OpeningLinesRequest;
 import com.oriah.procurement.dto.UpdateConsignmentRequest;
+import com.oriah.procurement.events.ProcurementEvents;
 import com.oriah.procurement.exception.InvalidFieldsException;
 import com.oriah.procurement.model.Consignment;
 import com.oriah.procurement.model.Consignment.CostLineInput;
@@ -85,16 +91,25 @@ public class ConsignmentService {
     private final PurchaseOrderRepository orders;
     private final SupplierRepository suppliers;
     private final OrderableVariants variants;
+    private final ReceiptGate receiptGate;
+    private final ConsignmentAllocations allocations;
+    private final ProcurementEvents events;
+    private final Clock clock;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     public ConsignmentService(ConsignmentRepository consignments, PurchaseOrderRepository orders,
-                              SupplierRepository suppliers, OrderableVariants variants) {
+                              SupplierRepository suppliers, OrderableVariants variants, ReceiptGate receiptGate,
+                              ConsignmentAllocations allocations, ProcurementEvents events, Clock clock) {
         this.consignments = consignments;
         this.orders = orders;
         this.suppliers = suppliers;
         this.variants = variants;
+        this.receiptGate = receiptGate;
+        this.allocations = allocations;
+        this.events = events;
+        this.clock = clock;
     }
 
     // ----------------------------------------------------------------- create
@@ -182,10 +197,18 @@ public class ConsignmentService {
         return found.map(ConsignmentSummary::of);
     }
 
-    /** What the consignment would cost per unit if it were received now. Changes nothing. */
+    /**
+     * What the consignment would cost per unit if it were received now; for a received one, the
+     * allocation that was recorded when it landed. Changes nothing.
+     */
     @Transactional(readOnly = true)
     public AllocationPreviewResponse preview(UUID id) {
         Consignment consignment = consignments.findById(id).orElseThrow(() -> notFound(id));
+        if (consignment.status() == ConsignmentStatus.RECEIVED) {
+            ConsignmentAllocations.Recorded recorded = allocations.latest(consignment)
+                    .orElseThrow(() -> new IllegalStateException("received consignment " + id + " has no recorded allocation"));
+            return AllocationPreviewResponse.of(recorded.outcome(), recorded.revision(), recorded.receivedAt());
+        }
         return AllocationPreviewResponse.of(ConsignmentCosting.of(consignment));
     }
 
@@ -258,7 +281,84 @@ public class ConsignmentService {
         log.info("Deleted draft consignment id={}", id);
     }
 
+    // ----------------------------------------------------------------- receive
+
+    /**
+     * The goods have landed. In ONE transaction: the allocation is worked out and recorded (revision
+     * 1), every order in the consignment and the consignment itself become RECEIVED, and one
+     * {@code consignment.received} per line is appended to the outbox, as the last write. If any step
+     * fails nothing is left behind.
+     *
+     * <p>Locks, in this order and never another: the receipt gate (one receipt at a time, so receipt
+     * order is time order), the consignment's row, its purchase orders in id order, and finally the
+     * outbox's own lock when the events are appended.
+     */
+    public ConsignmentResponse receive(UUID id, long version) {
+        receiptGate.enter();
+        Consignment consignment = lockedAtVersion(id, version);
+        if (!consignment.isDraft()) {
+            throw new IllegalStateException("this consignment is already " + consignment.status());
+        }
+        List<PurchaseOrder> inIt = orders.findByConsignmentForUpdate(id);
+
+        ConsignmentCosting.Outcome outcome = ConsignmentCosting.of(consignment);
+        if (!outcome.ready()) {
+            throw new IllegalStateException("The consignment cannot be received yet. " + String.join(" ", outcome.problems()));
+        }
+        if (consignment.isOpening() && receiptGate.anyShipmentReceived()) {
+            throw new IllegalStateException("The opening stock must be received before any shipment: a shipment has "
+                    + "already been received, so these goods would count as newer than it and be sold in the wrong "
+                    + "order (oldest first). Record anything missed from the opening count as a normal consignment.");
+        }
+
+        Instant receivedAt = receiptTime();
+        for (PurchaseOrder order : inIt) {
+            order.markReceived();
+        }
+        consignment.markReceived(receivedAt);
+        consignments.saveAndFlush(consignment);
+        allocations.recordReceipt(consignment, outcome, subject());
+
+        ConsignmentResponse response = respond(consignment);
+        // Last: it takes the outbox's lock, which is held until commit.
+        events.consignmentReceived(consignment, outcome, suppliersOf(consignment, inIt), actor());
+        log.info("Received consignment id={} lines={} landed={}", id, consignment.lines().size(), outcome.landedTotal());
+        return response;
+    }
+
+    /**
+     * Now, to the microsecond the database keeps, and never earlier than the last receipt: the order
+     * goods were received in is the order of these times, whatever the clock does.
+     */
+    private Instant receiptTime() {
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        Instant latest = receiptGate.latestReceipt();
+        if (latest != null && !now.isAfter(latest)) {
+            return latest.plus(1, ChronoUnit.MICROS);
+        }
+        return now;
+    }
+
+    /** The Keycloak subject of the signed-in person, or null outside a request. */
+    private static String subject() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth instanceof JwtAuthenticationToken jwt ? jwt.getToken().getSubject() : null;
+    }
+
+    private static String actor() {
+        String subject = subject();
+        return subject == null ? "system:procurement" : "user:" + subject;
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private Map<UUID, Supplier> suppliersOf(Consignment consignment, List<PurchaseOrder> inIt) {
+        Set<UUID> supplierIds = new HashSet<>();
+        inIt.forEach(o -> supplierIds.add(o.supplierId()));
+        consignment.lines().stream().map(ConsignmentLine::supplierId).filter(Objects::nonNull).forEach(supplierIds::add);
+        // findAllById, not the live lookup: a line still names a supplier that has since been deleted.
+        return suppliers.findAllById(supplierIds).stream().collect(Collectors.toMap(Supplier::id, Function.identity()));
+    }
 
     private Consignment lockedAtVersion(UUID id, long version) {
         Consignment consignment = consignments.findByIdForUpdate(id).orElseThrow(() -> notFound(id));
@@ -330,12 +430,6 @@ public class ConsignmentService {
 
     private ConsignmentResponse respond(Consignment consignment) {
         List<PurchaseOrder> inIt = orders.findByConsignment(consignment.id());
-        Set<UUID> supplierIds = new HashSet<>();
-        inIt.forEach(o -> supplierIds.add(o.supplierId()));
-        consignment.lines().stream().map(ConsignmentLine::supplierId).filter(Objects::nonNull).forEach(supplierIds::add);
-        // findAllById, not the live lookup: a line still names a supplier that has since been deleted.
-        Map<UUID, Supplier> byId = suppliers.findAllById(supplierIds).stream()
-                .collect(Collectors.toMap(Supplier::id, Function.identity()));
-        return ConsignmentResponse.of(consignment, inIt, byId);
+        return ConsignmentResponse.of(consignment, inIt, suppliersOf(consignment, inIt));
     }
 }
