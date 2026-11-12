@@ -997,8 +997,129 @@ beginning, not from whatever Kafka still holds.
 
 ### Phase 2 — Suppliers and the procurement service is born
 
-New `procurement` module + Postgres instance + `V1`. Suppliers CRUD (admin).
-Gateway route (the matcher has existed since Phase 0). Nothing is seeded.
+> **Status: built, 2026-11-10/11.** The `procurement` service exists with
+> suppliers, and every container in the stack now has a memory limit that was
+> worked out from measurement. Committed (not pushed). Commits in `oriah-api`:
+> the service `ebde109`, `9165953`, `aa30fb5`, `9a4690a` (list), `460307c`
+> (PATCH), `d4efd51` (tests); the gateway route `344d2d9`; compose, monitoring,
+> scripts, smoke test and the service-registry guard `762bade`; findings of the
+> read-only review `076b2c1`, `92e6de7`; found on sight in other services
+> `99d58ab` (promotion), `216dd34` (customer); runtime pin `813b9c7`; docs
+> `fd26575`, `506818c`, `5f9d967`; guard, smoke step and measuring script
+> `441780a`; Tomcat cap pinned `bfb5fc8`. The memory work: `520be13` and
+> `b12932b` (catalog's photograph gate), `769bd53` and `5cab840` (config
+> server), `f909c57` (limits, JVM flags, measuring tools), `3d27270` (the health
+> budget), `58191b7` (error goldens, Postman). `config-repo`: `be20413`
+> (procurement.yaml), `ebc8c7c` (Tomcat cap).
+>
+> **What is true now.**
+> - **Suppliers.** Five calls under `/api/v1/admin/procurement/suppliers`
+>   (add, list, read, change with PATCH, delete), all behind
+>   `PROCUREMENT_ADMIN`, plus the owner's `contact-info`. A supplier's name is
+>   unique ignoring capitals among live suppliers, held by a partial unique index
+>   so two simultaneous adds make one 201 and one 409; a change must carry the
+>   `version` it read (a stale one is 409 `concurrent-update`); PATCH leaves out
+>   what it does not mention and clears what it sets to null or blank; the list
+>   is paged (50 by default, 100 at most) and filters on `active` and a search
+>   text; a deleted supplier frees its name. `FRONTEND_WORK.md` has the API as
+>   the screen sees it. Nothing is seeded. No money is stored (a supplier has
+>   *notes* on how it is paid, not a payment record).
+> - **The 13th service is wired everywhere**: gateway route and API docs,
+>   compose (Postgres on host port 5444, service on 8093), Prometheus, the
+>   smoke test (step 20c) and `scripts/check_service_registry.py`, which stops
+>   the smoke test when any of the 29 lists that name the services is missing
+>   one. Its own mutation self-test catches 1,036 of 1,036
+>   deliberate breakages.
+> - **The runtime is pinned**: build on JDK 25 only (maven-enforcer refuses any
+>   other), every image runs JDK 25, builder and run image pinned by digest in
+>   the root `pom.xml`.
+> - **Found on sight in other services**: a promotion code that already exists
+>   is 409, not 500; two first sign-ins at once make one customer profile and one
+>   201.
+>
+> **Memory — the second half of this phase.**
+> - **Every container has a limit and no swap** (`mem_limit` equal to
+>   `memswap_limit`), and the Docker VM is capped at 10 GB in
+>   `%USERPROFILE%\.wslconfig`. Measured over a cold start, the smoke saga, the
+>   biggest photograph at 1, 2, 4 and 50 uploads at once, and ten idle minutes
+>   (`scripts/measure-stack.ps1`; a run counts only if Windows kept 3 GiB free
+>   and wrote nothing to its paging file): the whole stack peaks at **8.8 GiB**
+>   and Windows kept 3.85 GiB; no container was OOM-killed or restarted. The
+>   twelve ordinary Java services peak at 287-461 MiB of their 640 MiB (72% at
+>   most), heap at most 59% of its ceiling. Keycloak 584 of 1,280, Kafka 504 of
+>   896, Tempo 293 of 384 (76%) and Grafana 287 of 384 (75%) are the tightest;
+>   all are under the 85% line. Each limit's peak is written beside it in the
+>   compose files.
+> - **Catalog gets 1,536 MiB** because of what it does: it decodes an uploaded
+>   photograph into memory, turns it upright into a second copy and re-encodes it,
+>   which needs about 306 MiB of heap for the largest picture it accepts (8000 x
+>   5000). With a 1 GiB container one such upload took the heap to 79% and cost
+>   16 full collections; with no limit on how many ran at once, **124 together
+>   killed catalog with `OutOfMemoryError`** and it stayed down. Now `IngestGate`
+>   gives each upload a share of a 600 MiB working-memory budget (about 60% of
+>   the 1 GiB heap): 8 bytes a pixel for an ordinary picture, 12 for a 16-bit
+>   PNG, held until the object is stored; an upload that cannot be served waits up
+>   to 20 s, then gets **503 with `Retry-After`**, and a picture too big for the
+>   whole budget is a 400. 1, 2, 4 and 50 at once: the heap stayed at 54-58%,
+>   one stored and the rest told to retry. The gate sits outside the database
+>   transaction, so waiting uploads hold no connection.
+> - **Found by measuring, fixed.** (1) The config server read the `config-repo`
+>   folder **in place** (a `file://` URL is never cloned), running several git
+>   commands on the Windows mount for every request, about 10 s each; twelve
+>   services asking at once queued, and all twelve died with "Read timed out".
+>   Now it clones once at start (path URI, read-only mount), fetches at most every
+>   10 s and waits up to 60 s for the mount (the default 5 s killed the first
+>   try): **no config timeout on either of two cold starts of the whole
+>   stack** that followed. Only *committed* configuration reaches the services,
+>   within 10 s of the commit. (2) Every JVM ran 1-5 full garbage
+>   collections at start-up because the 64M code cache made the JVM collect for
+>   every 9.6 MiB it compiled; `-XX:SweeperThreshold=50` removed them (GC per
+>   service 1-3 s instead of 8-74 s). (3) `measure-stack.ps1` called a healthy run
+>   invalid because Windows' `Pages/sec` counts ordinary file reads; it now
+>   judges what Windows wrote to its paging file.
+>
+> **The numbers each service must keep.** `server.tomcat.threads.max: 50` in
+> `config-repo/application.yaml` (pinned by `TomcatThreadCapTest`) and
+> `BPL_JVM_THREAD_COUNT: 125`: the limits above rest on them. A service that
+> raises its thread cap or adds a pool raises its memory. Catalog: limit 1,536
+> MiB, `catalog.images.ingest.working-memory-mib: 600`, heap 1 GiB (raise the
+> limit and the budget together; the service refuses a budget below 306 MiB).
+> Config server: `refresh-rate` 10, `timeout` 60, `clone-on-start`, `CONFIG_REPO_URI`
+> a plain path.
+>
+> **Verified on 2026-11-11/12** (this PC ran at 38% of its rated speed once the
+> stack was loaded, which is why several checks needed a second run; every
+> failed run is listed in `PROGRESS.md`):
+> - **Cold start, twice, no config timeout and nothing restarted or OOM-killed**:
+>   `Read timed out` appears in no service's log for either start, with the
+>   config server's clone at start in place. A cold start of the whole stack
+>   measured 7.4 GiB at its largest instant (7.8 GiB the sum of every
+>   container's own peak) and the Docker VM's memory pressure peaked at 10%.
+> - **Smoke test 25/25** (steps 1-20 plus 4b, 5b, 6b, 20b, 20c) on both starts, each
+>   on the fifth run; the four earlier runs of each stopped at a first call to a
+>   cold service (see below), never on a wrong answer.
+> - Error goldens 17/17 (two procurement cases added); OpenAPI diff PASS (42
+>   additions, 22 waived breaks, none new; procurement is now a baseline);
+>   Playwright 6/6 (with a 180 s test limit); Postman 87 endpoints; the registry
+>   guard 13 services / 29 lists and its self-test 1,036/1,036; both validators PASS.
+> - **A clean install of every module: 2,122 tests, 0 failures, 0 errors** (how the
+>   total was reached, and four flakes caused by Docker Desktop, are in `PROGRESS.md`).
+>
+> **Accepted for the MVP.** On a slow PC the first request to each service
+> after a cold start can time out (the gateway's 4 s breaker, order's 2 s call
+> to shipping, a 30 s token-key fetch): the smoke test needed five runs to get
+> past every cold first call, and its failures were all of that kind; a second
+> try always works. A cold start of the whole stack took 20-25 minutes here, so
+> the services' health budget is now twenty minutes (`retries: 120`) instead of
+> five, which made `docker compose up -d` give up on three cold starts in a row. The
+> largest sideways photograph (8000 x 5000) took 166 s to process on this PC,
+> throttled and with garbage collection taking a quarter of that; the cost grows
+> with the pixel count, so ordinary photographs are far quicker, but the admin
+> gallery's 30 s proxy limit would cut a maximum-size one off, which is recorded
+> in `FRONTEND_WORK.md`. Docker Desktop's port forwarder sometimes holds up every
+> container start for up to 15 minutes (its own log shows the call) and Buildpacks
+> image export fails or hangs now and then: neither is ours, and both clear on a
+> retry. `config-repo` edits must be committed to reach the stack.
 
 > **Corrected 2026-11-10, before building.** This phase used to say "packaging
 > types". Packaging is a **catalog** entry of `kind = PACKAGING` (Phase 3,

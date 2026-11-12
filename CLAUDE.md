@@ -325,6 +325,24 @@ just `include`s it, so plain `docker compose` commands still work — and it pin
 the project name to `default`, so both entry points run the same stack and
 volumes.
 
+**Memory (Phase 2, measured 2026-11-11).** Every container has a `mem_limit`
+(and an equal `memswap_limit`, so no swap), with the measured peak written beside
+it in the compose file. The whole stack peaks at **8.8 GiB**, so Docker's VM must
+be capped at **10 GB** in `%USERPROFILE%\.wslconfig` (`[wsl2] memory=10GB`,
+`[experimental] autoMemoryReclaim=dropcache`, then `wsl --shutdown` and restart
+Docker Desktop): uncapped, Docker takes whatever it is given and starves Windows.
+There is little room to spare: after a maximum-size photograph catalog keeps about
+1 GiB, the VM has no page cache left and everything slows many times over (its
+memory pressure reads 70%+); restart catalog, or stop `alloy`, `loki` and
+`grafana`, to get it back. `scripts/measure-stack.ps1` samples the containers (and
+says whether the run was valid), `scripts/jvm-memory-report.ps1` shows what is
+inside each JVM, `scripts/ingest-load-test.ps1` uploads the biggest photograph at
+1, 2, 4 and 50 at once. The config server **clones** `config-repo` once at start
+and fetches every 10 s, so only **committed** changes reach the containers, within
+10 s. On a slow PC the first request to each service after a cold start can time
+out (the smoke test needed five runs; Playwright needs `--timeout=180000`): see
+Phase 2's status block in `docs/MVP_PLAN.md`.
+
 > ⚠️ **`docker compose down -v` destroys all twelve Postgres volumes** — the
 > eleven domain databases *and* Keycloak's own (`postgres-keycloak`, added
 > 2026-11-08 so logins survive a restart; `scripts/keycloak-persistence-test.ps1`

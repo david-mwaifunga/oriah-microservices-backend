@@ -94,6 +94,16 @@ powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 Keycloak admin console http://localhost:7080 (admin/admin) · storefront
 http://localhost:4000 · Grafana for traces.
 
+> **Memory.** Every container has a limit, and the whole stack peaks at about
+> **8.8 GiB**, so cap Docker's VM at **10 GB** in `%USERPROFILE%\.wslconfig`
+> (`[wsl2]` `memory=10GB`, `[experimental]` `autoMemoryReclaim=dropcache`, then
+> `wsl --shutdown` and restart Docker Desktop) and close the browser first.
+> A cold start of all ~39 containers takes 20-25 minutes on a laptop that throttles
+> under load; the first request to each service afterwards can time out, so run
+> the smoke test again if its first attempt stops early. The config server serves
+> only what is **committed** in `config-repo`. Measuring tools and the numbers are
+> in `docs/MVP_PLAN.md`, Phase 2.
+
 > ⚠️ **`docker compose down -v` destroys all twelve Postgres volumes** — the
 > eleven domain databases *and* Keycloak's. Never use it to apply a realm change.
 > The realm (and, in dev, `keycloak/dev/oriah-users-0.json`) is imported only

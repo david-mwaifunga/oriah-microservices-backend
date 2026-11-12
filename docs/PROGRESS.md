@@ -20,6 +20,135 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-12 (MVP_PLAN Phase 2 complete: suppliers, the procurement service, and every container's memory measured)
+
+Phase 2 of `MVP_PLAN.md` is built, tested, reviewed and committed (**not
+pushed**). The `procurement` service exists — the 13th domain service — with
+suppliers only (packaging is catalog's, Phase 3): add, list, read, change with
+PATCH, delete, behind `PROCUREMENT_ADMIN`, a name that is unique ignoring
+capitals even when two requests race, and a `version` check so a stale edit is a
+409. It is wired into the gateway, compose, Prometheus, the smoke test and a new
+guard (`scripts/check_service_registry.py`) that fails when any of the 29 lists
+naming the services misses one. The second half of the phase was memory: **every
+container now has a limit, worked out from measurement**, and measuring found
+three real faults (below), all fixed test-first. Strict test-first throughout;
+Codex reviewed the plan twice and the photograph gate (its three findings were real and
+fixed), then the redesigned gate, the config server fix and the compose changes together
+(`520be13..3d27270`): no defects found. **`oriah-web`
+was not changed** (the frontend follows the backend); `config-repo` has two
+commits (`be20413`, `ebc8c7c`).
+
+| What | Commits |
+|---|---|
+| The service, suppliers added, read, listed and changed | `ebde109`, `9165953`, `aa30fb5`, `9a4690a`, `460307c`, `d4efd51` |
+| Gateway route and API docs; compose, monitoring, scripts, smoke step 20c, the registry guard | `344d2d9`, `762bade`, `441780a` |
+| Found by the read-only review, fixed (an oversized page, NUL text, lost updates, a version must be a whole number) | `076b2c1`, `92e6de7` |
+| Found on sight in other services (a duplicate promotion code is 409; two first sign-ins make one customer and one 201) | `99d58ab`, `216dd34` |
+| The runtime is pinned: JDK 25 everywhere, images by digest | `813b9c7` |
+| Tomcat's thread cap pinned (the number the memory budget rests on) | `bfb5fc8` |
+| Catalog's photograph gate (the first design, then the redesign Codex's review forced) | `520be13`, `b12932b` |
+| The config server clones once and fetches every 10 s; waits 60 s for the mount | `769bd53`, `5cab840` |
+| Limits, JVM flags, measuring tools | `f909c57` |
+| The services' health budget is twenty minutes, so `docker compose up -d` stops giving up on a slow PC | `3d27270` |
+| Error goldens (two procurement cases) and the Postman collection (87 endpoints) | `58191b7` |
+| Docs (plan, frontend handover, counts, this entry) and the measuring script's VM-pressure reading | `fd26575`, `506818c`, `5f9d967`, and the last commit of the phase |
+
+### Verified on 2026-11-11/12
+
+This PC ran at **38% of its rated speed** once the stack was loaded (the CPU's own
+counter, `% Processor Performance`), and the Docker VM ran out of memory for its page
+cache after a big photograph (below), so several checks needed a second run or a
+longer limit. Every such run is listed; none was hidden.
+
+- **Every module, `clean install`: 2,122 tests, 0 failures, 0 errors, 0 skipped** (1,903
+  at Phase 1; the 219 more are procurement's 166, catalog's 23 (the photograph gate),
+  the gateway's 13, promotion's 10, the config server's 5 and customer's 2). Per module: oriah-events 348,
+  catalog 375, checkout 251, gateway 199, order 199, payment 192, procurement 166,
+  inventory 78, cart 53, search 40, notification 37, shipping 37, observability starter 36,
+  promotion 33, quote 23, customer 19, review 13, money 9, config server 7, jpa-base 4,
+  eureka 3. **It took four builds, not one.** From about 04:10 to 05:20 Docker Desktop on
+  this PC intermittently failed to let the tests reach their database and Kafka containers
+  (`Could not connect to Ryuk`, `The connection attempt failed`, a broker restart that
+  never answered): a different module or test each time, none twice, and each passed alone
+  (events 348/348, notification's `ContactInfoTest` 2/2, the broker-restart test 3/3) or in
+  the next build. The totals above are each module's passing run. The last two modules ran
+  with Maven's retry (a failing test runs again twice and is counted as a flake) and Spring's
+  context-failure threshold raised, which turned four first-attempt failures into flakes:
+  search `ErrorAdviceRegistrationTest.theErrorContractIsPresentAtAll` and
+  `InboxSchemaTest.inboxTablesAreTheAgreedShape`, procurement
+  `ContactInfoTest.aPlainUserIsForbidden` and `.contactInfoRequiresAToken` (each a test
+  context that could not reach its database). No test or assertion was changed. If it
+  recurs, restart Docker Desktop first.
+- **Registry guard**: 13 services, 29 lists agree; its self-test catches **1,036 of
+  1,036** deliberate breakages. `validate_roles.py` self-test 11/11 and the real run
+  PASS (8 capability roles guard nothing yet, down from 9: procurement guards one);
+  the realm validator PASS.
+- **Live stack, 39 containers.** Cold start, **twice** (the whole stack stopped, then
+  started, at 23:47 and again at 02:57): no `Read timed out` in any service log, nothing
+  restarted or OOM-killed; the second measured **7.4 GiB at its largest instant** and
+  the VM's memory pressure peaked at 10%. Smoke test **25/25** (steps 1-20 plus 4b, 5b,
+  6b, 20b, 20c) on the **fifth** run after each start: runs 1-4 each stopped at a
+  different first call to a cold service (a 503 from the gateway's 4 s breaker or
+  order's 2 s call to shipping, and once a Prometheus query that timed out), and the
+  same steps passed once those services were warm. Error goldens **17/17** (the 15 from before plus two procurement cases,
+  an addition and nothing removed). OpenAPI diff PASS: 42 additions (procurement, and
+  catalog's new 503), **22 waived breaks, none new**; procurement's contract is now a
+  baseline. Postman collection regenerated: 87 endpoints (81 before). Playwright
+  **6/6** with `--timeout=180000`: with the default 30 s the same six failed on the
+  slow PC (the first two runs while the VM was out of memory), and after the VM was
+  relieved four still failed at 30 s while their real times were 31-40 s.
+- **Memory.** Cold start, the smoke saga, the biggest photograph 1/2/4/50 at once,
+  and ten idle minutes: the stack peaks at **8.8 GiB**, no container OOM-killed or
+  restarted, Windows kept 3.85 GiB. Twelve ordinary services 287-461 MiB of 640 (72%
+  at most); Tempo 76% and Grafana 75% of 384 are the tightest; catalog 974 of 1,536
+  (63%) under the photograph test. `jvm-memory-report.ps1`: **no forced collections**
+  in any service, GC 1-3 s per service (it was 8-74 s).
+- **Photographs.** The largest picture catalog accepts (8000 x 5000, EXIF rotate)
+  uploaded 1, 2, 4 and 50 at once: heap 54-58% of 1,027 MiB, nothing killed, one stored
+  and the rest told to retry (503 + `Retry-After`). Before the gate, 124 at once
+  killed catalog.
+
+### Things worth knowing that the code does not say
+
+- **A `file://` config repository is read in place, never cloned.** That is why the
+  config server took ~10 s per request here (several git commands on a Windows mount)
+  and twelve services starting together died with `Read timed out`. The stack now
+  gives a plain path, so the server clones once and fetches every 10 s; the cost is
+  that only **committed** `config-repo` changes reach the containers. Spring's git
+  timeout is 5 s and the first clone needs more (60 s now). It only shows at a cold
+  start, so a warm stack hides it.
+- **A JVM's code cache size sets how often it collects garbage.** The default
+  `SweeperThreshold` (15%) of a 64M cache is 9.6 MiB, so every service ran 1-5 full
+  collections at start-up; `-XX:SweeperThreshold=50` removed them. Anyone shrinking
+  `ReservedCodeCacheSize` again must move that with it.
+- **After a maximum-size photograph catalog keeps about 1 GiB, and with everything
+  else the Docker VM has no page cache left**: its memory pressure read 70%+, `docker
+  ps` took two minutes and a page took 30 s. Restart catalog (or stop `alloy`,
+  `loki`, `grafana`). A 10 GB VM holds the stack, not the stack plus a retained
+  catalog heap with comfort; the next step up is 12 GB, which leaves Windows under
+  3 GiB free on this PC. `measure-stack.ps1` now reports the VM's memory pressure.
+- **Docker Desktop on this PC is unreliable in ways that are not ours.** Its port
+  forwarder held up every container start for up to 15 minutes twice (its own log
+  shows `PUT /forwards/expose-container (15m40s)`), a Buildpacks image export hung
+  for 25 minutes (remove the `pack.local/builder` container the build created and the
+  script's next attempt works), and exports fail now and then with `unexpected EOF`.
+  `docker compose up -d` also exits 1 on a cold start when a service takes longer than
+  its health budget; with twelve services starting together here the last one was
+  healthy 20-25 minutes after it started, so run `up -d` again until it exits 0.
+- **The slow-PC checklist** is in the memory file
+  `project-oriah-full-stack-slow-host-traps.md`: read the failing container's own log,
+  `jvm-memory-report.ps1`, the VM's `/proc/pressure/*` (use `/mnt/host/c/...` to run a
+  script in the `docker-desktop` distro) and the CPU counter before blaming a change.
+  `docker stats` CPU% is inflated here, and `Pages/sec` counts file reads.
+- **The 30 s storefront proxy limit is shorter than a maximum-size photograph
+  (166 s here)**: recorded in `FRONTEND_WORK.md` with the 503 + `Retry-After` the
+  gallery must handle. Catalog is the only service whose memory a caller can steer.
+- **Frontend**: Phase 2's handover (the real API) is in `FRONTEND_WORK.md`, with three
+  changes in other services the storefront must expect (a duplicate promotion code is
+  409; customer's first sign-in answers 200 or 201; the image upload can answer 503).
+
+---
+
 ## CURRENT STATE — 2026-11-10 (MVP_PLAN Phase 1 complete: the event log)
 
 Phase 1 of `MVP_PLAN.md` — "the event log convention" — is built, tested,

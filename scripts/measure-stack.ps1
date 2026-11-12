@@ -81,6 +81,19 @@ function Get-PagesInPerSec {
     } catch { return -1 }
 }
 
+# How much of the time the Docker VM itself had a task waiting for memory (Linux pressure-stall
+# information, the "some avg10" figure, percent). Windows can be healthy while the VM has no
+# room left for its own page cache: the containers' sizes still read true, but every start-up
+# and every request is many times slower, and the run is not a picture of a comfortable stack.
+function Get-VmMemoryPressure {
+    try {
+        $o = (& wsl.exe -d docker-desktop -e cat /proc/pressure/memory 2>$null) -join "`n"
+        $m = [regex]::Match($o, 'some avg10=([0-9.]+)')
+        if ($m.Success) { return [double]::Parse($m.Groups[1].Value, [System.Globalization.CultureInfo]::InvariantCulture) }
+    } catch { }
+    return -1
+}
+
 # How fast the CPU is really running, as a percent of its rated speed. A laptop that is
 # hot or power-limited runs at a fraction, and every start-up then takes several times
 # longer. Memory readings are unaffected; timings are not, so the summary says so.
@@ -96,7 +109,7 @@ $vmMiB = 0
 $vmBytes = (& docker info --format '{{.MemTotal}}' 2>$null)
 if ($vmBytes -match '^[0-9]+$') { $vmMiB = [math]::Round([double]$vmBytes / 1MB) }
 
-"time,container,mem_mib,limit_mib,cpu_pct,host_free_gib,pages_out_per_sec,pages_in_per_sec,host_cpu_perf_pct" | Set-Content -Path $csv -Encoding ASCII
+"time,container,mem_mib,limit_mib,cpu_pct,host_free_gib,pages_out_per_sec,pages_in_per_sec,host_cpu_perf_pct,vm_mem_pressure_pct" | Set-Content -Path $csv -Encoding ASCII
 
 $peak = @{}          # container -> peak MiB
 $peakCpu = @{}       # container -> peak CPU %
@@ -106,6 +119,8 @@ $minFree = 1000.0
 $maxPages = 0.0
 $maxPagesIn = 0.0
 $minCpuPerf = 1000
+$maxVmPressure = -1.0      # -1 = the VM could not be asked
+$vmPressure = -1
 $samples = 0
 $start = Get-Date
 
@@ -117,6 +132,9 @@ while (((Get-Date) - $start).TotalSeconds -lt $DurationSeconds) {
     $pages = Get-PagesOutPerSec
     $pagesIn = Get-PagesInPerSec
     $cpuPerf = Get-CpuPerformancePct
+    # asking the VM costs a process start, so every fifth sample is enough for a figure that is itself a 10 s average
+    if ($samples % 5 -eq 0) { $vmPressure = Get-VmMemoryPressure }
+    if ($vmPressure -gt $maxVmPressure) { $maxVmPressure = $vmPressure }
     if ($free -lt $minFree) { $minFree = $free }
     if ($pages -gt $maxPages) { $maxPages = $pages }
     if ($pagesIn -gt $maxPagesIn) { $maxPagesIn = $pagesIn }
@@ -140,7 +158,7 @@ while (((Get-Date) - $start).TotalSeconds -lt $DurationSeconds) {
         if (-not $peakCpu.ContainsKey($name) -or $cpu -gt $peakCpu[$name]) { $peakCpu[$name] = $cpu }
         $limits[$name] = $limit
         # F formats, not N: N adds a thousands separator ("12,974"), which would split a CSV column.
-        ("{0},{1},{2:F1},{3:F0},{4:F1},{5},{6},{7},{8}" -f $stamp, $name, $used, $limit, $cpu, $free, $pages, $pagesIn, $cpuPerf) | Add-Content -Path $csv -Encoding ASCII
+        ("{0},{1},{2:F1},{3:F0},{4:F1},{5},{6},{7},{8},{9}" -f $stamp, $name, $used, $limit, $cpu, $free, $pages, $pagesIn, $cpuPerf, $vmPressure) | Add-Content -Path $csv -Encoding ASCII
     }
     if ($total -gt $maxTotal) { $maxTotal = $total }
     $samples++
@@ -191,4 +209,7 @@ if ($maxPages -gt $MaxPagesPerSec) { $valid = $false; Write-Host ("  NOT VALID: 
 if ($valid) { Write-Host "  VALID: the host stayed healthy, so these readings are the containers' real need." }
 else { Write-Host "  Discard this run: free memory (close Chrome and other apps) and take it again." }
 if ($minCpuPerf -ge 0 -and $minCpuPerf -lt 60) { Write-Host "  NOTE: the CPU was throttled, so start-up TIMES in this run are slower than on a healthy PC. Memory readings are not affected." }
+if ($maxVmPressure -ge 0) { Write-Host ("Docker VM: tasks waited for memory up to {0:N0}% of the time (10 s average)." -f $maxVmPressure) }
+else { Write-Host "Docker VM: its memory pressure could not be read (is the docker-desktop WSL distro running?)." }
+if ($maxVmPressure -gt 20) { Write-Host "  WARNING: the VM had no room left for its own page cache, so the stack ran many times slower than it should. The container sizes above are still true; the TIMES are not. Give the VM more memory or run fewer containers." }
 Write-Host ("CSV: {0}" -f $csv)
