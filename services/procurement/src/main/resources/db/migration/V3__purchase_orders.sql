@@ -52,7 +52,9 @@ CREATE TABLE purchase_order_line (
     -- The catalogue's name for it at the moment it was ordered.
     sku               VARCHAR(64)    NOT NULL,
     product_title     VARCHAR(200),
-    variant_title     VARCHAR(300)   NOT NULL,
+    -- TEXT, not VARCHAR: the catalogue composes it from the product title (up to 200) and one "axis value"
+    -- pair per option axis (64 + 1 + 64 each), so it has no practical limit. Catalog stores it as TEXT.
+    variant_title     TEXT           NOT NULL,
     kind              VARCHAR(10)    NOT NULL,
     created_at        TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ    NOT NULL DEFAULT now(),
@@ -92,6 +94,11 @@ BEGIN
             order_status := OLD.status;
         END IF;
     ELSE
+        -- A line never moves to another order: judged by the old order alone, a move INTO a closed
+        -- order would pass, and a closed order's lines would change after the fact.
+        IF TG_OP = 'UPDATE' AND NEW.purchase_order_id IS DISTINCT FROM OLD.purchase_order_id THEN
+            RAISE EXCEPTION 'a row never moves between purchase orders: UPDATE on % is refused', TG_TABLE_NAME;
+        END IF;
         IF TG_OP = 'INSERT' THEN
             order_id := NEW.purchase_order_id;
         ELSE

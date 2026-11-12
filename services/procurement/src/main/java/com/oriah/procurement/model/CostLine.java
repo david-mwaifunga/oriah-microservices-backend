@@ -1,6 +1,7 @@
 package com.oriah.procurement.model;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -66,6 +67,16 @@ public class CostLine extends BaseEntity {
     @Column(length = 200, updatable = false)
     private String note;
 
+    /**
+     * Who typed the split, and when: every override records the actor (CLIENT_DECISIONS 3.3), so a
+     * landed cost traces to either the algorithm or a person. Null unless a split was typed.
+     */
+    @Column(name = "typed_by", length = 64)
+    private String typedBy;
+
+    @Column(name = "typed_at")
+    private Instant typedAt;
+
     /** consignment line id to the amount typed for it. Empty unless a person typed the split. */
     @ElementCollection(fetch = FetchType.LAZY)
     @CollectionTable(name = "cost_line_share", joinColumns = @JoinColumn(name = "cost_line_id"))
@@ -126,6 +137,15 @@ public class CostLine extends BaseEntity {
         return note;
     }
 
+    /** The Keycloak subject of whoever typed the split; null when the algorithm shared it. */
+    public String typedBy() {
+        return typedBy;
+    }
+
+    public Instant typedAt() {
+        return typedAt;
+    }
+
     /** What a person typed for each line, or empty. A copy. */
     public Map<UUID, BigDecimal> shares() {
         return Map.copyOf(shares);
@@ -137,13 +157,56 @@ public class CostLine extends BaseEntity {
         this.position = newPosition;
     }
 
+    /** Is this the very split {@code other} holds: the same cost type, the same amount, the same amount for every line? */
+    boolean sameSplitAs(CostLine other) {
+        if (costType != other.costType || amount.compareTo(other.amount) != 0 || shares.size() != other.shares.size()) {
+            return false;
+        }
+        for (Map.Entry<UUID, BigDecimal> share : shares.entrySet()) {
+            BigDecimal theirs = other.shares.get(share.getKey());
+            if (theirs == null || theirs.compareTo(share.getValue()) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    boolean hasTypedSplit() {
+        return !shares.isEmpty();
+    }
+
+    boolean isStamped() {
+        return typedBy != null;
+    }
+
+    /** The same split, saved again: it keeps the person who first typed it. */
+    void carryStampFrom(CostLine previous) {
+        this.typedBy = previous.typedBy;
+        this.typedAt = previous.typedAt;
+    }
+
+    void stamp(String by, Instant at) {
+        this.typedBy = by;
+        this.typedAt = at;
+    }
+
     /** A consignment line left the consignment: what was typed for it goes too. */
     void dropSharesOf(Set<UUID> removedLines) {
         shares.keySet().removeAll(removedLines);
+        forgetTypistIfNothingTyped();
     }
 
     /** The lines were replaced wholesale: no typed share can still point at one. */
     void clearShares() {
         shares.clear();
+        forgetTypistIfNothingTyped();
+    }
+
+    /** With no typed split left there is nobody who typed one. */
+    private void forgetTypistIfNothingTyped() {
+        if (shares.isEmpty()) {
+            typedBy = null;
+            typedAt = null;
+        }
     }
 }

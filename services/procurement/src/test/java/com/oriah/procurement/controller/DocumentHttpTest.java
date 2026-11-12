@@ -347,6 +347,45 @@ class DocumentHttpTest {
         upload(path, pdf("one too many"), "OTHER").andExpect(status().isCreated());
     }
 
+    @Test
+    @DisplayName("uploads that arrive at the same moment cannot take an owner past 10 in use: exactly one more gets in")
+    void theCapHoldsWhenUploadsRace() throws Exception {
+        Draft draft = consignment();
+        String path = CONSIGNMENTS + "/" + draft.consignment() + "/documents";
+        for (int i = 0; i < 9; i++) {
+            uploaded(path, pdf("already there " + i), "OTHER");
+        }
+
+        int racers = 4;
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(racers);
+        java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(racers);
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        try {
+            List<java.util.concurrent.Future<Integer>> results = new ArrayList<>();
+            for (int i = 0; i < racers; i++) {
+                byte[] bytes = pdf("racing " + i);
+                results.add(pool.submit(() -> {
+                    ready.countDown();
+                    go.await();
+                    return upload(path, bytes, "OTHER").andReturn().getResponse().getStatus();
+                }));
+            }
+            assertThat(ready.await(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            go.countDown();
+
+            List<Integer> statuses = new ArrayList<>();
+            for (java.util.concurrent.Future<Integer> f : results) {
+                statuses.add(f.get(60, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            assertThat(statuses).as("one upload fits under the cap of 10, the others are refused")
+                    .containsExactlyInAnyOrder(201, 409, 409, 409);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM procurement_document WHERE voided_at IS NULL", Long.class))
+                    .isEqualTo(10);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     // -------------------------------------------------------------- reading
 
     @Test
@@ -448,6 +487,25 @@ class DocumentHttpTest {
                 .content("{\"reason\":\"again\"}")).andExpect(status().isConflict());
         mvc.perform(post(DOCUMENTS + "/" + UUID.randomUUID() + "/void").with(maya()).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"reason\":\"fine\"}")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("a reason with the NUL character is a 400, as for every other text this service takes: the database cannot hold it")
+    void aNulInTheReasonIsRefused() throws Exception {
+        Draft draft = consignment();
+        String id = uploaded(CONSIGNMENTS + "/" + draft.consignment() + "/documents", pdf("nul reason"), "OTHER");
+
+        mvc.perform(post(DOCUMENTS + "/" + id + "/void").with(maya()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"a\\u0000b\"}"))
+                .andExpect(status().isBadRequest());
+        // And the same for the note on an upload.
+        mvc.perform(multipart(CONSIGNMENTS + "/" + draft.consignment() + "/documents")
+                        .file(new MockMultipartFile("file", "a.pdf", "application/pdf", pdf("nul note")))
+                        .param("kind", "OTHER").param("note", "x\u0000y").with(maya()))
+                .andExpect(status().isBadRequest());
+
+        mvc.perform(post(DOCUMENTS + "/" + id + "/void").with(maya()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\":\"fine\"}")).andExpect(status().isOk());
     }
 
     @Test

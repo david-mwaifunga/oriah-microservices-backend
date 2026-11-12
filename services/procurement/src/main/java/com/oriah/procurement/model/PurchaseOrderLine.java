@@ -55,7 +55,7 @@ public class PurchaseOrderLine extends BaseEntity {
     @Column(name = "product_title", length = 200)
     private String productTitle;
 
-    @Column(name = "variant_title", nullable = false, length = 300)
+    @Column(name = "variant_title", nullable = false, columnDefinition = "text")
     private String variantTitle;
 
     @Column(nullable = false, length = 10)

@@ -244,6 +244,9 @@ public class ConsignmentService {
     public ConsignmentResponse replaceCostLines(UUID id, CostLinesRequest request) {
         Consignment consignment = lockedAtVersion(id, request.version());
         consignment.replaceCostLines(costLineInputs(request.costLines()));
+        // Every override records the actor: a split that is new or changed is this person's.
+        String typist = subject();
+        consignment.stampNewlyTyped(typist == null ? "system" : typist, clock.instant().truncatedTo(ChronoUnit.MICROS));
         return saved(consignment);
     }
 

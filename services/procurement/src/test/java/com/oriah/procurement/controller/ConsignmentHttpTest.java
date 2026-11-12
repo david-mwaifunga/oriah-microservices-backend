@@ -714,6 +714,53 @@ class ConsignmentHttpTest {
     }
 
     @Test
+    @DisplayName("every override records the actor: who typed a split, and when, is shown and survives someone else saving the list again")
+    void aTypedSplitSaysWhoTypedIt() throws Exception {
+        RingsAndBoxes shipment = ringsAndBoxes();
+        String ring = JsonPath.read(json(shipment.consignment()), "$.lines[0].id");
+        String box = JsonPath.read(json(shipment.consignment()), "$.lines[1].id");
+        String split = "{\"costType\":\"DUTY\",\"amount\":210.00,\"shares\":["
+                + "{\"lineId\":\"" + ring + "\",\"amount\":210.00},{\"lineId\":\"" + box + "\",\"amount\":0.00}]}";
+        RequestPostProcessor zoe = jwt().jwt(j -> j.subject("kc-zoe"))
+                .authorities(new SimpleGrantedAuthority("ROLE_PROCUREMENT_ADMIN"));
+
+        // Maya types a split. The courier's charge is shared by the allocator: nobody typed that.
+        putCosts(shipment.consignment(), 0, courier("6000.00"), split)
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.costLines[0].typedBy").doesNotExist())
+                .andExpect(jsonPath("$.costLines[0].typedAt").doesNotExist())
+                .andExpect(jsonPath("$.costLines[1].typedBy").value("kc-maya"))
+                .andExpect(jsonPath("$.costLines[1].typedAt").isNotEmpty());
+        String typedAt = JsonPath.read(json(shipment.consignment()), "$.costLines[1].typedAt");
+
+        // Zoe saves the whole list again, adding a line and re-sending Maya's split untouched.
+        mvc.perform(put(PATH + "/" + shipment.consignment() + "/cost-lines").with(zoe)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"costLines\":[" + courier("6000.00") + ","
+                                + "{\"costType\":\"FREIGHT\",\"amount\":10.00}," + split + "]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.costLines[2].typedBy").value("kc-maya"))
+                .andExpect(jsonPath("$.costLines[2].typedAt").value(typedAt))
+                .andExpect(jsonPath("$.costLines[1].typedBy").doesNotExist());
+
+        // Zoe changes the split: it is hers now.
+        String changed = "{\"costType\":\"DUTY\",\"amount\":210.00,\"shares\":["
+                + "{\"lineId\":\"" + ring + "\",\"amount\":200.00},{\"lineId\":\"" + box + "\",\"amount\":10.00}]}";
+        mvc.perform(put(PATH + "/" + shipment.consignment() + "/cost-lines").with(zoe)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":2,\"costLines\":[" + courier("6000.00") + "," + changed + "]}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.costLines[1].typedBy").value("kc-zoe"));
+
+        // And the preview, which is what a screen shows beside the sum, says the same.
+        mvc.perform(get(PATH + "/" + shipment.consignment() + "/allocation").with(maya()))
+                .andExpect(jsonPath("$.costs[0].typedBy").doesNotExist())
+                .andExpect(jsonPath("$.costs[1].typed").value(true))
+                .andExpect(jsonPath("$.costs[1].typedBy").value("kc-zoe"))
+                .andExpect(jsonPath("$.costs[1].typedAt").isNotEmpty());
+    }
+
+    @Test
     @DisplayName("a PERIOD cost is shown on the consignment and totalled apart")
     void periodCost() throws Exception {
         RingsAndBoxes shipment = ringsAndBoxes();

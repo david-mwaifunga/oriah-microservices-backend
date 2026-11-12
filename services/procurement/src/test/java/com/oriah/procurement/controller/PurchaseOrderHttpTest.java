@@ -306,14 +306,24 @@ class PurchaseOrderHttpTest {
         UUID packaging = UUID.randomUUID();
         catalogKnows(
                 new Entry(off, true, UUID.randomUUID(), "P", "P", "OFF", "SELLABLE", "DRAFT", false, false),
-                new Entry(deleted, true, UUID.randomUUID(), "P", "P", "DEL", "SELLABLE", "ARCHIVED", true, true),
+                // The deleted flag alone: the status says ACTIVE, so only the "deleted" rule can be what refuses it.
+                new Entry(deleted, true, UUID.randomUUID(), "P", "P", "DEL", "SELLABLE", "ACTIVE", true, true),
                 new Entry(archived, true, UUID.randomUUID(), "P", "P", "ARC", "SELLABLE", "ARCHIVED", true, false),
                 ring(draft, "DRAFT"), box(packaging, "PACK"));
 
-        for (UUID bad : List.of(off, deleted, archived)) {
-            place(order(supplier, line(bad, 1, "1.00"))).andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].variantId"));
-        }
+        Map<UUID, String> reasons = new java.util.LinkedHashMap<>();
+        reasons.put(off, "switched off");
+        reasons.put(deleted, "deleted product");
+        reasons.put(archived, "archived product");
+        reasons.forEach((bad, reason) -> {
+            try {
+                place(order(supplier, line(bad, 1, "1.00"))).andExpect(status().isBadRequest())
+                        .andExpect(jsonPath("$.fieldErrors[0].field").value("lines[0].variantId"))
+                        .andExpect(jsonPath("$.fieldErrors[0].message").value(containsString(reason)));
+            } catch (Exception e) {
+                throw new AssertionError("a variant that is " + reason + " should be refused for that reason", e);
+            }
+        });
         place(order(supplier, line(draft, 1, "1.00"), line(packaging, 1, "1.00"))).andExpect(status().isCreated());
     }
 

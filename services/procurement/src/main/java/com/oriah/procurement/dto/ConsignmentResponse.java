@@ -103,7 +103,11 @@ public record ConsignmentResponse(
             @Schema(types = {"string", "null"}) LocalDate incurredOn,
             @Schema(types = {"string", "null"}) String note,
             @Schema(description = "What a person typed for each line; empty when the split is by the basis")
-            List<Share> shares) {
+            List<Share> shares,
+            @Schema(description = "Who typed the split (every override records the actor); null when the allocator "
+                    + "shares the cost. Kept when someone else saves the list again with that split unchanged",
+                    types = {"string", "null"}) String typedBy,
+            @Schema(description = "When they typed it", types = {"string", "null"}) Instant typedAt) {
     }
 
     @Schema(name = "ConsignmentCostShare")
@@ -152,7 +156,8 @@ public record ConsignmentResponse(
         List<Share> shares = cost.shares().entrySet().stream()
                 .map(e -> new Share(e.getKey(), e.getValue())).toList();
         return new CostLineView(cost.id(), cost.position(), cost.costType().name(), cost.amount(),
-                cost.basis().name(), cost.treatment().name(), cost.incurredOn(), cost.note(), shares);
+                cost.basis().name(), cost.treatment().name(), cost.incurredOn(), cost.note(), shares,
+                cost.typedBy(), cost.typedAt());
     }
 
     private static PurchaseOrderResponse.SupplierSummary supplierOf(Map<UUID, Supplier> suppliers, UUID id) {

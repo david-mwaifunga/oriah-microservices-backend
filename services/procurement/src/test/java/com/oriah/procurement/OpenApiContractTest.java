@@ -504,8 +504,8 @@ class OpenApiContractTest {
     @DisplayName("documents: every failure an operation can answer is documented with ProblemDetail, and none that cannot happen")
     void documentFailuresAreDocumented() {
         Map<String, List<String>> expected = new java.util.HashMap<>();
-        expected.put("post " + C_DOCS, List.of("400", "401", "403", "404", "409", "500"));
-        expected.put("post " + O_DOCS, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("post " + C_DOCS, List.of("400", "401", "403", "404", "409", "413", "500"));
+        expected.put("post " + O_DOCS, List.of("400", "401", "403", "404", "409", "413", "500"));
         expected.put("get " + C_DOCS, List.of("400", "401", "403", "404", "500"));
         expected.put("get " + O_DOCS, List.of("400", "401", "403", "404", "500"));
         expected.put("get " + DOC_CONTENT, List.of("400", "401", "403", "404", "500"));

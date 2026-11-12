@@ -52,6 +52,9 @@ public record AllocationPreviewResponse(
     @Schema(name = "AllocationCost")
     public record Cost(UUID costLineId, int position, String costType, String basis, String treatment,
                        BigDecimal amount, @Schema(description = "A person typed the split") boolean typed,
+                       @Schema(description = "Who typed the split (every override records the actor); null when the "
+                               + "allocator shared the cost", types = {"string", "null"}) String typedBy,
+                       @Schema(description = "When they typed it", types = {"string", "null"}) Instant typedAt,
                        List<Share> perLine) {
     }
 
@@ -71,7 +74,7 @@ public record AllocationPreviewResponse(
                         l.goodsTotal(), l.sharedCost(), l.landedTotal(),
                         l.slices().stream().map(s -> new Slice(s.quantity(), s.unitCost())).toList())).toList(),
                 outcome.costs().stream().map(c -> new Cost(c.costLineId(), c.position(), c.costType().name(),
-                        c.basis().name(), c.treatment().name(), c.amount(), c.typed(),
+                        c.basis().name(), c.treatment().name(), c.amount(), c.typed(), c.typedBy(), c.typedAt(),
                         c.perLine().entrySet().stream().map(e -> new Share(e.getKey(), e.getValue())).toList())).toList(),
                 outcome.goodsTotal(), outcome.capitalizedCostTotal(), outcome.periodCostTotal(), outcome.landedTotal(),
                 ConsignmentResponse.CURRENCY, revision, receivedAt);

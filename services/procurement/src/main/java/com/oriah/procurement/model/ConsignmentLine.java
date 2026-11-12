@@ -65,7 +65,7 @@ public class ConsignmentLine extends BaseEntity {
     @Column(name = "product_title", length = 200, updatable = false)
     private String productTitle;
 
-    @Column(name = "variant_title", nullable = false, length = 300, updatable = false)
+    @Column(name = "variant_title", nullable = false, columnDefinition = "text", updatable = false)
     private String variantTitle;
 
     @Column(nullable = false, length = 10, updatable = false)

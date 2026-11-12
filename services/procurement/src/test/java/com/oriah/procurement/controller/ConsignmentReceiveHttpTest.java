@@ -63,6 +63,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -314,6 +315,56 @@ class ConsignmentReceiveHttpTest {
         Shipment shipment = shipment("{\"costType\":\"DUTY\",\"amount\":0.00}");
         receive(shipment.consignment()).andExpect(status().isOk());
 
+        assertTheRecordReproducesTheStoredSlices();
+    }
+
+    @Test
+    @DisplayName("a typed split is received too: kept with who typed it, shown as stored, and reproducible from the record")
+    void aTypedSplitIsReceivedAndRecorded() throws Exception {
+        Shipment shipment = shipment();
+        String ring = JsonPath.read(json(shipment.consignment()), "$.lines[0].id");
+        String box = JsonPath.read(json(shipment.consignment()), "$.lines[1].id");
+        mvc.perform(put(PATH + "/" + shipment.consignment() + "/cost-lines").with(maya())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"costLines\":[{\"costType\":\"COURIER_INBOUND\",\"amount\":6000.00},"
+                                + "{\"costType\":\"DUTY\",\"amount\":210.00,\"shares\":["
+                                + "{\"lineId\":\"" + ring + "\",\"amount\":200.00},{\"lineId\":\"" + box + "\",\"amount\":10.00}]}]}"))
+                .andExpect(status().isOk());
+
+        receive(shipment.consignment()).andExpect(status().isOk());
+
+        // Ring: 10,500.00 + courier 202.90 + duty 200.00 = 10,902.90 over 7 = 5 x 1,557.56 + 2 x 1,557.55.
+        // Box: 10,000.00 + courier 5,797.10 + duty 10.00 = 15,807.10 over 200 = 110 x 79.04 + 90 x 79.03.
+        mvc.perform(get(PATH + "/" + shipment.consignment() + "/allocation").with(maya()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.revision").value(1))
+                .andExpect(jsonPath("$.costs[0].typed").value(false))
+                .andExpect(jsonPath("$.costs[0].typedBy").doesNotExist())
+                .andExpect(jsonPath("$.costs[1].typed").value(true))
+                .andExpect(jsonPath("$.costs[1].typedBy").value("kc-maya"))
+                .andExpect(jsonPath("$.costs[1].typedAt").isNotEmpty())
+                .andExpect(jsonPath("$.lines[0].sharedCost").value(402.90))
+                .andExpect(jsonPath("$.lines[0].slices[0].quantity").value(5))
+                .andExpect(jsonPath("$.lines[0].slices[0].unitCost").value(1557.56))
+                .andExpect(jsonPath("$.lines[0].slices[1].quantity").value(2))
+                .andExpect(jsonPath("$.lines[0].slices[1].unitCost").value(1557.55))
+                .andExpect(jsonPath("$.lines[1].slices[0].quantity").value(110))
+                .andExpect(jsonPath("$.lines[1].slices[0].unitCost").value(79.04))
+                .andExpect(jsonPath("$.lines[1].slices[1].quantity").value(90))
+                .andExpect(jsonPath("$.lines[1].slices[1].unitCost").value(79.03));
+
+        // The record itself says who typed it, so a landed cost traces to the algorithm or to a person.
+        String inputs = jdbc.queryForObject("SELECT inputs::text FROM allocation_revision", String.class);
+        JsonNode typedCost = JSON.readTree(inputs).get("costs").get(1);
+        assertThat(typedCost.get("typedBy").asText()).isEqualTo("kc-maya");
+        assertThat(typedCost.get("typedAt").isNull()).isFalse();
+        assertThat(JSON.readTree(inputs).get("costs").get(0).get("typedBy").isNull()).isTrue();
+
+        assertTheRecordReproducesTheStoredSlices();
+    }
+
+    /** Works the allocation out again from nothing but the recorded inputs, and compares it with what was stored. */
+    private void assertTheRecordReproducesTheStoredSlices() throws Exception {
         String inputs = jdbc.queryForObject("SELECT inputs::text FROM allocation_revision", String.class);
         JsonNode snapshot = JSON.readTree(inputs);
         List<LineInput> lines = new ArrayList<>();
@@ -411,6 +462,25 @@ class ConsignmentReceiveHttpTest {
     }
 
     @Test
+    @DisplayName("a shipment marked 'costs are estimates' says so on every event: isEstimated follows the flag, not the kind of consignment")
+    void aShipmentMarkedEstimatedIsAnEstimateOnTheEvent() throws Exception {
+        Shipment shipment = shipment();
+        List<String> lines = lineIds(shipment.consignment());
+        mvc.perform(put(PATH + "/" + shipment.consignment()).with(maya()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"estimated\":true,\"note\":\"Courier bill not yet final\"}"))
+                .andExpect(status().isOk());
+
+        receive(shipment.consignment()).andExpect(status().isOk());
+
+        List<Event> events = events(lines);
+        assertThat(events).hasSize(2);
+        for (Event event : events) {
+            assertThat((Boolean) JsonPath.read(event.payload(), "$.isEstimated")).isTrue();
+            assertThat((Object) JsonPath.read(event.payload(), "$.supplierId")).as("a shipment has suppliers").isNotNull();
+        }
+    }
+
+    @Test
     @DisplayName("the wire format is pinned: field order, and an amount written plainly with its two decimals")
     void thePayloadWireFormat() throws Exception {
         Shipment shipment = shipment();
@@ -440,6 +510,9 @@ class ConsignmentReceiveHttpTest {
         receive(shipment.consignment()).andExpect(status().isOk());
 
         assertThat(events(lines)).hasSize(2);
+        // Not under any other aggregate either: nothing in the outbox mentions this consignment but its two lines.
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE payload::text LIKE ?", Long.class,
+                "%" + shipment.consignment() + "%")).isEqualTo(2);
         assertThat(jdbc.queryForObject("SELECT total_period FROM allocation_revision", BigDecimal.class))
                 .isEqualByComparingTo("40.00");
         assertThat(jdbc.queryForObject("SELECT inputs::text FROM allocation_revision", String.class))
@@ -532,9 +605,19 @@ class ConsignmentReceiveHttpTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.detail").value(containsString("history")));
 
-        // And an order that was received with it cannot be cancelled or edited.
+        // And an order that was received with it cannot be cancelled or edited: with its REAL version, so
+        // it is the status that refuses it, not a stale copy.
+        MvcResult order = mvc.perform(get(ORDERS + "/" + shipment.ringOrder()).with(maya())).andReturn();
+        long orderVersion = ((Number) JsonPath.read(order.getResponse().getContentAsString(), "$.version")).longValue();
         mvc.perform(post(ORDERS + "/" + shipment.ringOrder() + "/cancel").with(maya())
-                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + 99 + "}")).andExpect(status().isConflict());
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":" + orderVersion + "}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/conflict"))
+                .andExpect(jsonPath("$.detail").value(containsString("RECEIVED")));
+        mvc.perform(patch(ORDERS + "/" + shipment.ringOrder()).with(maya()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":" + orderVersion + ",\"note\":\"too late\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/conflict"));
     }
 
     @Test

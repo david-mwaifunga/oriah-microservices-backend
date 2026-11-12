@@ -368,8 +368,33 @@ public class Consignment extends BaseEntity {
         for (int i = 0; i < inputs.size(); i++) {
             built.add(checkedCostLine(i + 1, inputs.get(i), lineIds));
         }
+        // A split that is saved again unchanged keeps the person who first typed it, whoever saves the list.
+        for (CostLine fresh : built) {
+            if (fresh.hasTypedSplit()) {
+                costLines.stream().filter(old -> old.isStamped() && old.sameSplitAs(fresh)).findFirst()
+                        .ifPresent(fresh::carryStampFrom);
+            }
+        }
         costLines.clear();
         costLines.addAll(built);
+    }
+
+    /**
+     * Records who typed every split that has not been attributed yet, and when. Called by whoever saved
+     * the cost lines, straight after {@link #replaceCostLines}: a split that is new or changed is theirs,
+     * one that was saved again unchanged keeps its first typist (see {@code replaceCostLines}).
+     *
+     * @param actor the Keycloak subject of the person
+     */
+    public void stampNewlyTyped(String actor, Instant at) {
+        if (actor == null || actor.isBlank() || at == null) {
+            throw new IllegalArgumentException("say who typed the split, and when");
+        }
+        for (CostLine cost : costLines) {
+            if (cost.hasTypedSplit() && !cost.isStamped()) {
+                cost.stamp(actor, at);
+            }
+        }
     }
 
     private CostLine checkedCostLine(int position, CostLineInput input, Set<UUID> lineIds) {
@@ -445,6 +470,12 @@ public class Consignment extends BaseEntity {
         requireDraft("receive");
         if (lines.isEmpty()) {
             throw new IllegalStateException("a consignment with no lines cannot be received");
+        }
+        for (CostLine cost : costLines) {
+            if (cost.hasTypedSplit() && !cost.isStamped()) {
+                throw new IllegalStateException("cost line " + cost.position() + " has a split nobody is recorded as "
+                        + "typing: every override records who typed it, so it cannot be received like that");
+            }
         }
         this.status = ConsignmentStatus.RECEIVED;
         this.receivedAt = Objects.requireNonNull(at, "receivedAt");

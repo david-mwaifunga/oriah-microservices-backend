@@ -1,6 +1,7 @@
 package com.oriah.procurement.allocation;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,10 +51,12 @@ public final class ConsignmentCosting {
     /**
      * One cost as it was shared. {@code perLine} is what it put on each line (by line id, in line
      * order); empty for a PERIOD cost, which is not shared, and while the consignment cannot yet
-     * be costed. {@code typed} is true when a person typed the split.
+     * be costed. {@code typed} is true when a person typed the split, and {@code typedBy} and
+     * {@code typedAt} say who and when (every override records the actor).
      */
     public record CostView(UUID costLineId, int position, CostType costType, CostBasis basis, CostTreatment treatment,
-                           BigDecimal amount, boolean typed, Map<UUID, BigDecimal> perLine) {
+                           BigDecimal amount, boolean typed, String typedBy, Instant typedAt,
+                           Map<UUID, BigDecimal> perLine) {
     }
 
     /** Exactly what the allocator was given, in whole ngwee: line for line, cost for cost. */
@@ -125,7 +128,7 @@ public final class ConsignmentCosting {
             List<CostView> shown = new ArrayList<>();
             for (CostLine cost : costLines) {
                 shown.add(new CostView(cost.id(), cost.position(), cost.costType(), cost.basis(), cost.treatment(),
-                        cost.amount(), !cost.shares().isEmpty(), Map.of()));
+                        cost.amount(), !cost.shares().isEmpty(), cost.typedBy(), cost.typedAt(), Map.of()));
             }
             return new Outcome(false, List.copyOf(problems), List.of(), shown, goodsTotal, capitalizedTotal,
                     periodTotal, goodsTotal.add(capitalizedTotal), null);
@@ -155,7 +158,7 @@ public final class ConsignmentCosting {
                 }
             }
             costViews.add(new CostView(cost.id(), cost.position(), cost.costType(), cost.basis(), cost.treatment(),
-                    cost.amount(), !cost.shares().isEmpty(), perLine));
+                    cost.amount(), !cost.shares().isEmpty(), cost.typedBy(), cost.typedAt(), perLine));
         }
         return new Outcome(true, List.of(), lineViews, costViews, goodsTotal, capitalizedTotal, periodTotal, landedTotal,
                 new Inputs(List.copyOf(inputs), List.copyOf(costInputs)));

@@ -148,6 +148,70 @@ class ConsignmentCostingTest {
     // =====================================================================
 
     @Nested
+    @DisplayName("goods only, packaging only: a consignment need not be the mixed 7-ring / 200-box shape")
+    class GoodsOnlyAndPackagingOnly {
+
+        private NewLine box(String sku, int quantity, String total) {
+            return new NewLine(UUID.randomUUID(), quantity, new BigDecimal(total), sku, "Gift box", "Gift box " + sku,
+                    "PACKAGING");
+        }
+
+        @Test
+        @DisplayName("a packaging-only shipment shares its freight across the packaging units alone")
+        void packagingOnly() {
+            Consignment c = Consignment.draft(null);
+            c.attach(order(box("SMALL", 100, "500.00"), box("LARGE", 50, "400.00")));
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "300.00")));
+
+            Outcome outcome = ConsignmentCosting.of(c);
+
+            // 300.00 over 150 units: 200.00 to the 100 small, 100.00 to the 50 large.
+            assertThat(outcome.ready()).isTrue();
+            assertThat(outcome.lines().get(0).sharedCost()).isEqualByComparingTo("200.00");
+            assertThat(outcome.lines().get(1).sharedCost()).isEqualByComparingTo("100.00");
+            assertThat(slices(outcome.lines().get(0))).containsExactly(slice(100, "7.00"));
+            assertThat(slices(outcome.lines().get(1))).containsExactly(slice(50, "10.00"));
+            assertThat(outcome.landedTotal()).isEqualByComparingTo("1200.00");
+        }
+
+        @Test
+        @DisplayName("a goods-only shipment is shared between its pieces alone, by units or by value")
+        void goodsOnly() {
+            Consignment c = Consignment.draft(null);
+            c.attach(order(line("RING", 7, "10500.00")));
+            c.attach(order(line("CHAIN", 3, "1500.00")));
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "1000.00")));
+
+            Outcome byUnits = ConsignmentCosting.of(c);
+
+            // 1,000.00 over 10 pieces: 700.00 to the rings, 300.00 to the chains.
+            assertThat(byUnits.lines().get(0).sharedCost()).isEqualByComparingTo("700.00");
+            assertThat(byUnits.lines().get(1).sharedCost()).isEqualByComparingTo("300.00");
+            assertThat(byUnits.landedTotal()).isEqualByComparingTo("13000.00");
+
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "1000.00", CostBasis.VALUE)));
+            Outcome byValue = ConsignmentCosting.of(c);
+            // 1,000.00 over 12,000.00 of goods: 875.00 to the rings, 125.00 to the chains.
+            assertThat(byValue.lines().get(0).sharedCost()).isEqualByComparingTo("875.00");
+            assertThat(byValue.lines().get(1).sharedCost()).isEqualByComparingTo("125.00");
+        }
+
+        @Test
+        @DisplayName("packaging and goods in one shipment are shared between ALL the units, packaging included")
+        void mixed() {
+            Consignment c = Consignment.draft(null);
+            c.attach(order(line("RING", 7, "10500.00")));
+            c.attach(order(box("BOX", 200, "10000.00")));
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "6000.00")));
+
+            Outcome outcome = ConsignmentCosting.of(c);
+
+            assertThat(outcome.lines().get(1).sharedCost()).as("the 200 boxes carry most of a charge by units")
+                    .isEqualByComparingTo("5797.10");
+        }
+    }
+
+    @Nested
     @DisplayName("what is left out of the unit costs, and what is typed")
     class TreatmentsAndTypedShares {
 

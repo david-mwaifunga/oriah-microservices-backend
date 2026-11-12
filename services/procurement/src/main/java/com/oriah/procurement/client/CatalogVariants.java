@@ -28,20 +28,28 @@ public class CatalogVariants {
         this.catalog = catalog;
     }
 
+    /** The most variants catalog's lookup answers in one call: it refuses a longer list with a 400. */
+    public static final int MAX_PER_CALL = 100;
+
     /**
-     * What catalog says each variant is, by id. ONE call, however many ids (the lookup
-     * takes up to 100 and a purchase order holds at most that many lines).
+     * What catalog says each variant is, by id. One call for up to {@value #MAX_PER_CALL} ids (a
+     * purchase order holds at most that many lines); more (the opening stock may name 200) are asked
+     * in batches of {@value #MAX_PER_CALL} and the answers put together. If any batch fails, nothing
+     * is answered: a half-known list is never used.
      */
     public Map<UUID, Entry> lookup(List<UUID> variantIds) {
         List<UUID> distinct = variantIds.stream().distinct().toList();
+        Map<UUID, Entry> byId = new HashMap<>();
         try {
-            var result = catalog.lookup(new VariantLookupBody(distinct));
-            if (result == null || result.results() == null) {
-                throw new IllegalStateException("catalog answered the lookup with no results");
-            }
-            Map<UUID, Entry> byId = new HashMap<>();
-            for (Entry entry : result.results()) {
-                byId.put(entry.variantId(), entry);
+            for (int from = 0; from < distinct.size(); from += MAX_PER_CALL) {
+                List<UUID> batch = distinct.subList(from, Math.min(from + MAX_PER_CALL, distinct.size()));
+                var result = catalog.lookup(new VariantLookupBody(List.copyOf(batch)));
+                if (result == null || result.results() == null) {
+                    throw new IllegalStateException("catalog answered the lookup with no results");
+                }
+                for (Entry entry : result.results()) {
+                    byId.put(entry.variantId(), entry);
+                }
             }
             return byId;
         } catch (RuntimeException e) {

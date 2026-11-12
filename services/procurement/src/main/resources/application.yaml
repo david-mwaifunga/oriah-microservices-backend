@@ -26,6 +26,14 @@ spring:
       max-file-size: 5MB
       max-request-size: 6MB
 
+  # A count, a version and a weight in grams are WHOLE numbers. The platform's JSON reader turns
+  # 1.9 into 1 before validation sees it, so an order for "1.9" rings was recorded as one and a
+  # version of 0.9 passed as 0, defeating the stale-copy check. With this off, a fraction where a
+  # whole number belongs is a 400 (WholeNumbersAndNamesHttpTest).
+  jackson:
+    deserialization:
+      accept-float-as-int: false
+
   cloud:
     openfeign:
       circuitbreaker:

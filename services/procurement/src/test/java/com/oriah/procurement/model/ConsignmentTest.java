@@ -683,6 +683,119 @@ class ConsignmentTest {
     // =====================================================================
 
     @Nested
+    @DisplayName("who typed a split: every override records the actor")
+    class TypedSplitsAreAttributed {
+
+        private static final java.time.Instant FIRST = java.time.Instant.parse("2026-11-12T08:00:00Z");
+        private static final java.time.Instant LATER = java.time.Instant.parse("2026-11-12T09:30:00Z");
+
+        private Consignment withTwoLines() {
+            Consignment c = Consignment.draft(null);
+            c.attach(order(line("RING", 7, "10500.00")));
+            c.attach(order(line("BOX", 200, "10000.00")));
+            return c;
+        }
+
+        private CostLineInput duty(Consignment c, String ring, String box) {
+            Map<UUID, BigDecimal> shares = new LinkedHashMap<>();
+            shares.put(c.lines().get(0).id(), new BigDecimal(ring));
+            shares.put(c.lines().get(1).id(), new BigDecimal(box));
+            return new CostLineInput(CostType.DUTY, new BigDecimal(ring).add(new BigDecimal(box)), null, null, null, null, shares);
+        }
+
+        @Test
+        @DisplayName("a typed split is stamped with who typed it and when; a cost shared by a rule is not stamped at all")
+        void stamping() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "6000.00"), duty(c, "3.00", "2.00")));
+
+            c.stampNewlyTyped("kc-maya", FIRST);
+
+            assertThat(c.costLines().get(0).typedBy()).as("the algorithm shared it: nobody typed it").isNull();
+            assertThat(c.costLines().get(0).typedAt()).isNull();
+            assertThat(c.costLines().get(1).typedBy()).isEqualTo("kc-maya");
+            assertThat(c.costLines().get(1).typedAt()).isEqualTo(FIRST);
+        }
+
+        @Test
+        @DisplayName("saving the cost list again with that split unchanged keeps who typed it, however many other lines change")
+        void aResaveKeepsTheFirstTypist() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-maya", FIRST);
+
+            // Someone else saves the list again, adding a line and re-sending the same split.
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "6000.00"), duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-zoe", LATER);
+
+            assertThat(c.costLines().get(1).typedBy()).as("the split was Maya's, and still is").isEqualTo("kc-maya");
+            assertThat(c.costLines().get(1).typedAt()).isEqualTo(FIRST);
+            assertThat(c.costLines().get(0).typedBy()).isNull();
+        }
+
+        @Test
+        @DisplayName("changing the split makes the person who changed it the typist")
+        void aChangedSplitIsTheChangersAlone() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-maya", FIRST);
+
+            c.replaceCostLines(List.of(duty(c, "4.00", "1.00")));
+            c.stampNewlyTyped("kc-zoe", LATER);
+
+            assertThat(c.costLines().get(0).typedBy()).isEqualTo("kc-zoe");
+            assertThat(c.costLines().get(0).typedAt()).isEqualTo(LATER);
+        }
+
+        @Test
+        @DisplayName("a typed split that is replaced by a rule, or removed, has no typist left")
+        void aRemovedSplitHasNoTypist() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-maya", FIRST);
+
+            c.replaceCostLines(List.of(cost(CostType.COURIER_INBOUND, "6000.00")));
+            c.stampNewlyTyped("kc-zoe", LATER);
+
+            assertThat(c.costLines().get(0).typedBy()).isNull();
+        }
+
+        @Test
+        @DisplayName("stamping again changes nothing that is already stamped")
+        void stampingIsOnlyForTheUnstamped() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+            c.stampNewlyTyped("kc-maya", FIRST);
+
+            c.stampNewlyTyped("kc-zoe", LATER);
+
+            assertThat(c.costLines().get(0).typedBy()).isEqualTo("kc-maya");
+        }
+
+        @Test
+        @DisplayName("a consignment with a typed split nobody is recorded as typing cannot be received")
+        void anUnattributedSplitBlocksReceiving() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+
+            assertThatThrownBy(() -> c.markReceived(java.time.Instant.parse("2026-11-12T10:00:00Z")))
+                    .isInstanceOf(IllegalStateException.class).hasMessageContaining("who typed");
+            c.stampNewlyTyped("kc-maya", FIRST);
+            c.markReceived(java.time.Instant.parse("2026-11-12T10:00:00Z"));
+        }
+
+        @Test
+        @DisplayName("a typist must be named")
+        void aTypistMustBeNamed() {
+            Consignment c = withTwoLines();
+            c.replaceCostLines(List.of(duty(c, "3.00", "2.00")));
+
+            assertThatThrownBy(() -> c.stampNewlyTyped(null, FIRST)).isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> c.stampNewlyTyped("kc-maya", null)).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Nested
     @DisplayName("the closed list of cost types")
     class CostTypes {
 

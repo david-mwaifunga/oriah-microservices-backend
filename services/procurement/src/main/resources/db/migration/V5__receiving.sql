@@ -109,6 +109,24 @@ DECLARE
     v_status      VARCHAR(10);
     v_consignment UUID;
 BEGIN
+    -- A row never moves between consignments. The checks below judge an UPDATE by the parent a row
+    -- HAS (or, for a share, the one it arrives at), so a move into a received consignment, or a
+    -- share re-pointed out of one, would pass. Nothing in the application moves a row, so it is
+    -- refused outright. (Nested IFs, not one expression: PL/pgSQL would still look up a column the
+    -- other tables do not have.)
+    IF TG_OP = 'UPDATE' THEN
+        IF TG_TABLE_NAME = 'consignment_line' OR TG_TABLE_NAME = 'cost_line' THEN
+            IF NEW.consignment_id IS DISTINCT FROM OLD.consignment_id THEN
+                RAISE EXCEPTION 'a row never moves between consignments: UPDATE on % is refused', TG_TABLE_NAME;
+            END IF;
+        ELSIF TG_TABLE_NAME = 'cost_line_share' THEN
+            IF NEW.cost_line_id IS DISTINCT FROM OLD.cost_line_id
+               OR NEW.consignment_line_id IS DISTINCT FROM OLD.consignment_line_id THEN
+                RAISE EXCEPTION 'a row never moves between consignments: UPDATE on % is refused', TG_TABLE_NAME;
+            END IF;
+        END IF;
+    END IF;
+
     IF TG_TABLE_NAME = 'consignment' THEN
         -- Judged by the status the row HAS: the change that closes it (DRAFT -> RECEIVED) is the
         -- last change it may take.
@@ -150,3 +168,27 @@ CREATE TRIGGER cost_line_frozen_when_received
 CREATE TRIGGER cost_line_share_frozen_when_received
     BEFORE INSERT OR UPDATE OR DELETE ON cost_line_share
     FOR EACH ROW EXECUTE FUNCTION oriah_freeze_received_consignment();
+
+-- An order is attached only to a DRAFT consignment. The service refuses anything else, but the
+-- freeze above judges a purchase order by ITS OWN status, so by hand an OPEN order could be
+-- pointed at a received consignment, and no draft-only operation could ever release it again.
+CREATE FUNCTION oriah_order_joins_only_a_draft() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+    v_status VARCHAR(10);
+BEGIN
+    IF NEW.consignment_id IS NOT NULL
+       AND (TG_OP = 'INSERT' OR NEW.consignment_id IS DISTINCT FROM OLD.consignment_id) THEN
+        SELECT k.status INTO v_status FROM consignment k WHERE k.id = NEW.consignment_id;
+        -- A consignment that does not exist is the foreign key's to refuse, with its own name.
+        IF v_status IS NOT NULL AND v_status <> 'DRAFT' THEN
+            RAISE EXCEPTION 'an order is attached only to a draft consignment: this one is %', v_status;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER purchase_order_joins_only_a_draft
+    BEFORE INSERT OR UPDATE ON purchase_order
+    FOR EACH ROW EXECUTE FUNCTION oriah_order_joins_only_a_draft();

@@ -58,14 +58,19 @@ class ReceivedConsignmentSchemaTest {
 
     // ------------------------------------------------------------ fixtures
 
-    /** A draft with one line, one cost line and one typed share: everything that freezes on receipt. */
-    private record Draft(UUID consignment, UUID line, UUID cost) {
+    /**
+     * A draft with two lines (each from its own order), one cost line and one typed share, on the
+     * FIRST line only: everything that freezes on receipt, and a second line and an unused pair
+     * (cost, second line) so that a test of one rule breaks no other rule.
+     */
+    private record Draft(UUID consignment, UUID line, UUID cost, UUID line2, UUID order, UUID orderLine) {
     }
 
-    private Draft draft() {
-        UUID consignment = UUID.randomUUID();
-        jdbc.update("INSERT INTO consignment (id, status, is_opening, is_estimated) VALUES (?, 'DRAFT', false, false)",
-                consignment);
+    /** A purchase order (attached to {@code consignment} when given) with one line. */
+    private record Placed(UUID order, UUID orderLine) {
+    }
+
+    private Placed placed(UUID consignment) {
         UUID order = UUID.randomUUID();
         jdbc.update("INSERT INTO purchase_order (id, supplier_id, placed_on, status, consignment_id) "
                 + "VALUES (?, ?, current_date, 'OPEN', ?)", order, supplier, consignment);
@@ -74,18 +79,32 @@ class ReceivedConsignmentSchemaTest {
                 INSERT INTO purchase_order_line (id, purchase_order_id, position, variant_id, quantity, total_paid,
                                                  sku, variant_title, kind)
                 VALUES (?, ?, 1, ?, 7, 100.00, 'SKU-1', 'A ring', 'SELLABLE')""", orderLine, order, UUID.randomUUID());
+        return new Placed(order, orderLine);
+    }
+
+    private UUID consignmentLine(UUID consignment, int position, Placed from) {
         UUID line = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO consignment_line (id, consignment_id, is_opening, position, supplier_id, purchase_order_id,
                                               purchase_order_line_id, variant_id, sku, variant_title, kind, quantity, goods_total)
-                VALUES (?, ?, false, 1, ?, ?, ?, ?, 'SKU-1', 'A ring', 'SELLABLE', 7, 100.00)""",
-                line, consignment, supplier, order, orderLine, UUID.randomUUID());
+                VALUES (?, ?, false, ?, ?, ?, ?, ?, 'SKU-1', 'A ring', 'SELLABLE', 7, 100.00)""",
+                line, consignment, position, supplier, from.order(), from.orderLine(), UUID.randomUUID());
+        return line;
+    }
+
+    private Draft draft() {
+        UUID consignment = UUID.randomUUID();
+        jdbc.update("INSERT INTO consignment (id, status, is_opening, is_estimated) VALUES (?, 'DRAFT', false, false)",
+                consignment);
+        Placed first = placed(consignment);
+        UUID line = consignmentLine(consignment, 1, first);
+        UUID line2 = consignmentLine(consignment, 2, placed(consignment));
         UUID cost = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO cost_line (id, consignment_id, position, cost_type, amount, basis, treatment)
                 VALUES (?, ?, 1, 'DUTY', 5.00, 'DIRECT', 'CAPITALIZE')""", cost, consignment);
         jdbc.update("INSERT INTO cost_line_share (cost_line_id, consignment_line_id, amount) VALUES (?, ?, 5.00)", cost, line);
-        return new Draft(consignment, line, cost);
+        return new Draft(consignment, line, cost, line2, first.order(), first.orderLine());
     }
 
     private Draft received() {
@@ -151,13 +170,10 @@ class ReceivedConsignmentSchemaTest {
                 .isInstanceOf(DataAccessException.class).hasMessageContaining("received consignment is frozen");
         assertThatThrownBy(() -> jdbc.update("DELETE FROM consignment_line WHERE id = ?", received.line()))
                 .isInstanceOf(DataAccessException.class).hasMessageContaining("received consignment is frozen");
-        assertThatThrownBy(() -> jdbc.update("""
-                INSERT INTO consignment_line (id, consignment_id, is_opening, position, supplier_id, purchase_order_id,
-                                              purchase_order_line_id, variant_id, sku, variant_title, kind, quantity, goods_total)
-                SELECT ?, consignment_id, false, 2, supplier_id, purchase_order_id, purchase_order_line_id, variant_id,
-                       sku, variant_title, kind, quantity, goods_total FROM consignment_line WHERE id = ?""",
-                UUID.randomUUID(), received.line()))
-                .isInstanceOf(DataAccessException.class);
+        // A genuinely new line (its own order line, a free position): only the freeze can refuse it.
+        Placed fresh = placed(null);
+        assertThatThrownBy(() -> consignmentLine(received.consignment(), 3, fresh))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("received consignment is frozen");
     }
 
     @Test
@@ -177,10 +193,11 @@ class ReceivedConsignmentSchemaTest {
                 .isInstanceOf(DataAccessException.class).hasMessageContaining("received consignment is frozen");
         assertThatThrownBy(() -> jdbc.update("DELETE FROM cost_line_share WHERE cost_line_id = ?", received.cost()))
                 .isInstanceOf(DataAccessException.class).hasMessageContaining("received consignment is frozen");
+        // A share for a real line the cost has none for yet: only the freeze can refuse it.
         assertThatThrownBy(() -> jdbc.update(
                 "INSERT INTO cost_line_share (cost_line_id, consignment_line_id, amount) VALUES (?, ?, 1.00)",
-                received.cost(), UUID.randomUUID()))
-                .isInstanceOf(DataAccessException.class);
+                received.cost(), received.line2()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("received consignment is frozen");
     }
 
     @Test
@@ -238,10 +255,65 @@ class ReceivedConsignmentSchemaTest {
                 INSERT INTO allocation_line (id, revision_id, consignment_line_id, goods_total, shared_cost, landed_total)
                 VALUES (?, ?, ?, 1.00, 0.00, 1.00)""", UUID.randomUUID(), revision, draft.line()))
                 .isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("uq_allocation_line_revision_line");
+        // A real, unused (cost, line) pair, so only the sign can be what refuses it.
         assertThatThrownBy(() -> jdbc.update(
                 "INSERT INTO allocation_cost_share (revision_id, cost_line_id, consignment_line_id, amount) VALUES (?, ?, ?, -1.00)",
-                revision, draft.cost(), UUID.randomUUID()))
-                .isInstanceOf(DataIntegrityViolationException.class);
+                revision, draft.cost(), draft.line2()))
+                .isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("ck_allocation_cost_share_amount");
+    }
+
+    // --------------------------------------------------- rows never move
+
+    @Test
+    @DisplayName("a row never moves between consignments: not into a received one, not out of one, not between drafts")
+    void rowsNeverMoveBetweenConsignments() {
+        Draft received = received();
+        Draft other = draft();
+
+        // Into a received consignment (the old parent is a draft, so judging the old parent alone passes it).
+        assertThatThrownBy(() -> jdbc.update("UPDATE cost_line SET consignment_id = ?, position = 9 WHERE id = ?",
+                received.consignment(), other.cost()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("never moves");
+        assertThatThrownBy(() -> jdbc.update("UPDATE consignment_line SET consignment_id = ?, position = 9 WHERE id = ?",
+                received.consignment(), other.line()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("never moves");
+        // Between two drafts is no better: nothing in the application ever does it.
+        Draft third = draft();
+        assertThatThrownBy(() -> jdbc.update("UPDATE cost_line SET consignment_id = ?, position = 9 WHERE id = ?",
+                third.consignment(), other.cost()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("never moves");
+        // A typed share is not re-pointed at another cost line, or another line.
+        assertThatThrownBy(() -> jdbc.update("UPDATE cost_line_share SET cost_line_id = ? WHERE cost_line_id = ?",
+                other.cost(), received.cost()))
+                .isInstanceOf(DataAccessException.class);
+        assertThatThrownBy(() -> jdbc.update("UPDATE cost_line_share SET consignment_line_id = ? WHERE cost_line_id = ?",
+                other.line2(), other.cost()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("never moves");
+    }
+
+    @Test
+    @DisplayName("an order is attached only to a DRAFT consignment: not to a received one, even by hand")
+    void anOrderIsAttachedOnlyToADraft() {
+        Draft received = received();
+        Placed loose = placed(null);
+
+        assertThatThrownBy(() -> jdbc.update("UPDATE purchase_order SET consignment_id = ? WHERE id = ?",
+                received.consignment(), loose.order()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("only to a draft");
+        Draft draft = draft();
+        jdbc.update("UPDATE purchase_order SET consignment_id = ? WHERE id = ?", draft.consignment(), loose.order());
+        jdbc.update("UPDATE purchase_order SET consignment_id = NULL WHERE id = ?", loose.order());
+    }
+
+    @Test
+    @DisplayName("an order's line never moves to another order")
+    void anOrderLineNeverMovesToAnotherOrder() {
+        Placed one = placed(null);
+        Placed two = placed(null);
+
+        assertThatThrownBy(() -> jdbc.update("UPDATE purchase_order_line SET purchase_order_id = ?, position = 9 WHERE id = ?",
+                two.order(), one.orderLine()))
+                .isInstanceOf(DataAccessException.class).hasMessageContaining("never moves");
     }
 
     @Test

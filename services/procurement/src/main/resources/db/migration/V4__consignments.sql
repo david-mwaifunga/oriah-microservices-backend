@@ -69,7 +69,8 @@ CREATE TABLE consignment_line (
     -- when a product is renamed, and the receipt event carries them.
     sku                    VARCHAR(64)    NOT NULL,
     product_title          VARCHAR(200),
-    variant_title          VARCHAR(300)   NOT NULL,
+    -- TEXT: see purchase_order_line. The catalogue's label has no practical limit.
+    variant_title          TEXT           NOT NULL,
     kind                   VARCHAR(10)    NOT NULL,
     quantity               INTEGER        NOT NULL,
     -- All-in, as the bank app shows it. Never a unit price times a quantity.
@@ -132,6 +133,12 @@ CREATE TABLE cost_line (
     -- month it belongs to.
     incurred_on    DATE,
     note           VARCHAR(200),
+    -- Who typed the split (cost_line_share), and when: "every override records the actor"
+    -- (CLIENT_DECISIONS 3.3), so a landed cost traces to either the algorithm or a person. NULL
+    -- when the algorithm shared the cost. Carried over when the list is saved again with that
+    -- split unchanged, so it stays the first typist's.
+    typed_by       VARCHAR(64),
+    typed_at       TIMESTAMPTZ,
     created_at     TIMESTAMPTZ    NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ    NOT NULL DEFAULT now(),
     created_by     VARCHAR(64),
@@ -144,7 +151,8 @@ CREATE TABLE cost_line (
         'INBOUND_TRANSPORT', 'AGENT_FEE', 'DUTY', 'SURTAX', 'IMPORT_VAT')),
     CONSTRAINT ck_cost_line_amount CHECK (amount >= 0),
     CONSTRAINT ck_cost_line_basis CHECK (basis IN ('UNITS', 'VALUE', 'WEIGHT', 'DIRECT')),
-    CONSTRAINT ck_cost_line_treatment CHECK (treatment IN ('CAPITALIZE', 'PERIOD'))
+    CONSTRAINT ck_cost_line_treatment CHECK (treatment IN ('CAPITALIZE', 'PERIOD')),
+    CONSTRAINT ck_cost_line_typed CHECK ((typed_by IS NULL) = (typed_at IS NULL))
 );
 
 CREATE INDEX idx_cost_line_consignment ON cost_line (consignment_id, position);

@@ -40,8 +40,9 @@ import java.time.Clock;
  * A listing must never load the files, and an entity would drag a 5 MB column into every read. The
  * list asks for the details only; the bytes are read by one statement, when someone downloads.
  *
- * <p>The owner's row is read FOR SHARE when a document is added, so a draft consignment cannot be
- * deleted (which takes its documents with it) while one is being attached to it.
+ * <p>The owner's row is locked FOR UPDATE when a document is added: a draft consignment cannot be
+ * deleted (which takes its documents with it) while one is being attached to it, and uploads to one
+ * owner take their turns, so the "at most 10 in use" count cannot be raced past.
  */
 @Service
 @Transactional
@@ -122,9 +123,12 @@ public class DocumentService {
         DocumentType type = DocumentType.detect(bytes);
         String tidyNote = tidyNote(note);
 
-        // Hold the owner still while the document is attached: a draft consignment that is deleted
-        // takes its documents with it, and must not do that halfway through this.
-        List<Integer> found = jdbc.queryForList("SELECT 1 FROM " + owner.table + " WHERE id = ? FOR SHARE",
+        // Hold the owner's row EXCLUSIVELY while the document is attached. It does two jobs: a draft
+        // consignment that is deleted takes its documents with it and must not do that halfway
+        // through this, and uploads to one owner take their turns, so the count below is the count
+        // the insert sees (a shared lock let two uploads both count nine and both insert, leaving
+        // eleven in use). Uploads to different owners do not wait for each other.
+        List<Integer> found = jdbc.queryForList("SELECT 1 FROM " + owner.table + " WHERE id = ? FOR UPDATE",
                 Integer.class, ownerId);
         if (found.isEmpty()) {
             throw new ResourceNotFoundException(owner.resource, "id", ownerId.toString());
@@ -178,7 +182,14 @@ public class DocumentService {
 
     /** Marks a document as not to be relied on. It stays on record, with who, when and why. */
     public DocumentResponse voidDocument(UUID id, String reason, String voidedBy) {
-        int changed = jdbc.update("UPDATE procurement_document SET voided_at = ?, voided_by = ?, void_reason = ? "
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("reason is required: say why this document is being voided");
+        }
+        // PostgreSQL cannot store the NUL character in text: refused here, as every other free text is.
+        if (reason.indexOf('\0') >= 0) {
+            throw new IllegalArgumentException("reason must not contain the NUL character");
+        }
+        int changed =jdbc.update("UPDATE procurement_document SET voided_at = ?, voided_by = ?, void_reason = ? "
                         + "WHERE id = ? AND voided_at IS NULL",
                 Timestamp.from(clock.instant().truncatedTo(ChronoUnit.MICROS)), voidedBy == null ? "system" : voidedBy,
                 reason.strip(), id);

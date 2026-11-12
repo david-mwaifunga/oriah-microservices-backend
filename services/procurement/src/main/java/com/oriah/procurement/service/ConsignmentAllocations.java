@@ -59,7 +59,7 @@ public class ConsignmentAllocations {
     }
 
     record SnapshotCost(UUID costLineId, int position, String costType, String basis, String treatment,
-                        long amountNgwee, List<Long> typedSharesNgwee) {
+                        long amountNgwee, List<Long> typedSharesNgwee, String typedBy, Instant typedAt) {
     }
 
     /** Records revision 1: the receipt itself. Part of the receiving transaction. */
@@ -91,7 +91,7 @@ public class ConsignmentAllocations {
                 }
             }
             snapshotCosts.add(new SnapshotCost(cost.id(), cost.position(), cost.costType().name(), cost.basis().name(),
-                    cost.treatment().name(), input.amountNgwee(), typed));
+                    cost.treatment().name(), input.amountNgwee(), typed, cost.typedBy(), cost.typedAt()));
         }
         String snapshot = EventJson.write(new Snapshot(SNAPSHOT_SCHEMA_VERSION, snapshotLines, snapshotCosts));
 
@@ -179,7 +179,7 @@ public class ConsignmentAllocations {
                 }
             }
             costs.add(new CostView(cost.id(), cost.position(), cost.costType(), cost.basis(), cost.treatment(),
-                    cost.amount(), !cost.shares().isEmpty(), perLine));
+                    cost.amount(), !cost.shares().isEmpty(), cost.typedBy(), cost.typedAt(), perLine));
         }
 
         Outcome outcome = new Outcome(true, List.of(), lines, costs, (BigDecimal) revisionRow.get("total_goods"),

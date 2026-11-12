@@ -78,10 +78,13 @@ public class DocumentController {
                     + "while in use, and at most 10 are in use at a time. Allowed on a received consignment: an invoice "
                     + "often arrives after the goods.")
     @ApiResponse(responseCode = "201", description = "The document was stored; Location points at its download")
-    @ApiResponse(responseCode = "400", description = "No file, an empty file, one over 5 MB, one that is not a PDF, JPEG "
+    @ApiResponse(responseCode = "400", description = "No file, an unreadable upload, an empty file, one that is not a PDF, JPEG "
             + "or PNG, or a kind that is missing or unknown",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "404", description = "No such consignment",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "413", description = "The file is over 5 MB: refused by the server before it is read "
+            + "(the 400 above is for a file that gets past that limit)",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "The same file is already attached, or 10 are already in use",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
@@ -98,10 +101,13 @@ public class DocumentController {
             description = "The supplier's invoice, or anything else that supports the order. A courier invoice or a ZRA "
                     + "assessment belongs to a consignment, not an order. A PDF, JPEG or PNG of up to 5 MB.")
     @ApiResponse(responseCode = "201", description = "The document was stored; Location points at its download")
-    @ApiResponse(responseCode = "400", description = "No file, an empty file, one over 5 MB, one that is not a PDF, JPEG "
+    @ApiResponse(responseCode = "400", description = "No file, an unreadable upload, an empty file, one that is not a PDF, JPEG "
             + "or PNG, or a kind that is missing, unknown, or does not belong to an order",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "404", description = "No such purchase order",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "413", description = "The file is over 5 MB: refused by the server before it is read "
+            + "(the 400 above is for a file that gets past that limit)",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "The same file is already attached, or 10 are already in use",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))

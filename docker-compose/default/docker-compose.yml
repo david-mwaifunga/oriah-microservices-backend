@@ -1226,8 +1226,8 @@ services:
     # (Phases 2 and 4). It waits for its own Postgres AND for Kafka: receiving a
     # consignment appends consignment.received to its outbox, and the relay publishes it.
     # Kafka being down at that moment is safe (the event stays in the outbox and goes out
-    # when Kafka is back), but a service whose relay and replay listener cannot reach a broker
-    # at start refuses to run its startup checks, so it starts after Kafka like the others.
+    # when Kafka is back); it starts after Kafka only so that its relay and its replay
+    # listener find a broker at start, as every other service that publishes events does.
     #
     # It also calls catalog (a variant lookup, Feign, by name through Eureka) when a line is
     # placed. That is a call at request time, not a start-up dependency: no depends_on.
