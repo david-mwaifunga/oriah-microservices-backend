@@ -325,6 +325,45 @@ class ConsignmentCostingTest {
         }
 
         @Test
+        @DisplayName("totals that the books cannot hold are a problem, not a database error at the moment of receiving")
+        void totalsTooLargeToRecord() {
+            // Each amount fits its column (ten whole digits); their SUM does not fit the recorded total.
+            Consignment c = Consignment.draft(null);
+            c.attach(order(line("A", 1, "9000000000.00")));
+            c.attach(order(line("B", 1, "9000000000.00")));
+
+            Outcome outcome = ConsignmentCosting.of(c);
+
+            assertThat(outcome.ready()).isFalse();
+            assertThat(outcome.problems()).singleElement().asString()
+                    .contains("too large").contains("9,999,999,999.99");
+            assertThat(outcome.lines()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the same for a month's bills, and for goods plus costs when each is within its limit")
+        void costTotalsTooLargeToRecord() {
+            Consignment c = Consignment.draft(null);
+            c.attach(order(line("A", 1, "9000000000.00")));
+            c.replaceCostLines(List.of(cost(CostType.FREIGHT, "2000000000.00")));
+
+            Outcome goodsPlusCosts = ConsignmentCosting.of(c);
+
+            assertThat(goodsPlusCosts.ready()).isFalse();
+            assertThat(goodsPlusCosts.problems()).singleElement().asString().contains("too large");
+
+            Consignment months = Consignment.draft(null);
+            months.attach(order(line("B", 1, "10.00")));
+            months.replaceCostLines(List.of(
+                    new CostLineInput(CostType.PORT_INCIDENTALS, new BigDecimal("6000000000.00"), CostBasis.UNITS,
+                            CostTreatment.PERIOD, null, null, null),
+                    new CostLineInput(CostType.PORT_INCIDENTALS, new BigDecimal("6000000000.00"), CostBasis.UNITS,
+                            CostTreatment.PERIOD, null, null, null)));
+
+            assertThat(ConsignmentCosting.of(months).problems()).singleElement().asString().contains("too large");
+        }
+
+        @Test
         @DisplayName("every problem is reported together, so they can all be fixed at once")
         void allTogether() {
             Consignment c = ringsAndBoxes();

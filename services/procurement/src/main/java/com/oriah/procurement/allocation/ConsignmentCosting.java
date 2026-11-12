@@ -32,6 +32,9 @@ import com.oriah.procurement.model.CostType;
  */
 public final class ConsignmentCosting {
 
+    /** The most a recorded total (NUMERIC(12,2)) can hold: ten whole digits and two decimals. */
+    private static final BigDecimal LARGEST_RECORDABLE = new BigDecimal("9999999999.99");
+
     private ConsignmentCosting() {
     }
 
@@ -94,6 +97,18 @@ public final class ConsignmentCosting {
         BigDecimal goodsTotal = lines.stream().map(ConsignmentLine::goodsTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal capitalizedTotal = costLines.stream().filter(c -> c.treatment() == CostTreatment.CAPITALIZE)
                 .map(CostLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Each amount fits its column, but their SUM is what is recorded (NUMERIC(12,2)): a total the
+        // books cannot hold is said here, in plain words, not as a database error while receiving.
+        if (goodsTotal.add(capitalizedTotal).compareTo(LARGEST_RECORDABLE) > 0) {
+            problems.add("The consignment is too large to record: its goods and the costs added to them come to K"
+                    + goodsTotal.add(capitalizedTotal).toPlainString() + ", and the most one consignment can hold is K"
+                    + "9,999,999,999.99. Split it into two consignments.");
+        }
+        if (periodTotal.compareTo(LARGEST_RECORDABLE) > 0) {
+            problems.add("The month's bills on this consignment are too large to record: they come to K"
+                    + periodTotal.toPlainString() + ", and the most is K9,999,999,999.99.");
+        }
 
         Result result = null;
         if (problems.isEmpty()) {
