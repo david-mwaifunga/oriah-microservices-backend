@@ -45,7 +45,9 @@ public record ProductUpdatedEvent(
         String productType,
         String status,
         List<VariantPayload> variants,
-        String kind
+        String kind,
+        UUID defaultPackagingVariantId,
+        int unpublishCount
 ) {
     public static final String TYPE = "product.updated";
 }

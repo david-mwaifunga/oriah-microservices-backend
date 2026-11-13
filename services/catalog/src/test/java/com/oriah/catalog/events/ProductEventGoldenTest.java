@@ -33,6 +33,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -97,16 +98,18 @@ class ProductEventGoldenTest {
         mvc.perform(post("/api/v1/admin/products/" + productId + "/variants")
                         .with(admin())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sku\":\"AUR-1\",\"unitPrice\":4500.00}"))
+                        .content("{\"sku\":\"AUR-1\"}"))
                 .andExpect(status().isCreated());
         String variantId = firstVariantId(productId);
         Map<String, String> ids = Map.of("productId", productId, "variantId", variantId);
         assertNext(productId, "product.updated", "product.updated.variant-added.json", ids);
 
-        mvc.perform(patch("/api/v1/admin/products/" + productId + "/variants/" + variantId)
-                        .with(admin())
+        // The one way to a price: the pricing endpoint, as staff who may set prices and see what stock cost. Nothing is held, so no cost is known.
+        mvc.perform(put("/api/v1/admin/pricing/variants/" + variantId + "/price")
+                        .with(jwt().jwt(token -> token.subject("golden-admin"))
+                                .authorities(CATALOG_ADMIN, new SimpleGrantedAuthority("ROLE_COST_VIEWER")))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"unitPrice\":4600.50}"))
+                        .content("{\"unitPrice\":4600.50,\"expectedPriceId\":null}"))
                 .andExpect(status().isOk());
         assertNext(productId, "product.updated", "product.updated.repriced.json", ids);
 

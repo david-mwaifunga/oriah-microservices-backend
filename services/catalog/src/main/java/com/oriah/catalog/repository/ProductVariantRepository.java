@@ -24,4 +24,13 @@ public interface ProductVariantRepository extends JpaRepository<ProductVariant, 
      */
     @Query("SELECT v FROM ProductVariant v JOIN FETCH v.product WHERE v.id IN :ids")
     List<ProductVariant> findAllByIdInWithProduct(@Param("ids") List<UUID> ids);
+
+    /**
+     * Every variant that has a price and is on offer: active, priced above zero, of a SELLABLE product that has not been deleted
+     * (drafts included: a priced draft is still a price). The list that compares every price with the cost starts here. Packaging is
+     * never priced, and a deleted product's variants are not on offer.
+     */
+    @Query("SELECT v FROM ProductVariant v JOIN FETCH v.product p WHERE v.active = true AND v.unitPrice > 0 "
+            + "AND p.kind = com.oriah.catalog.model.ProductKind.SELLABLE AND p.deleted = false ORDER BY p.title, v.sku")
+    List<ProductVariant> findPricedForSale();
 }

@@ -72,6 +72,16 @@ public final class CatalogConstants {
      */
     public static final String ROLE_PROCUREMENT_ADMIN = "PROCUREMENT_ADMIN";
 
+    /**
+     * Reading what stock cost. The pricing screen shows landed cost, so everything under {@link #PRICING_BASE} needs it as well
+     * as {@link #ROLE_CATALOG_ADMIN}: cost is gated at the API, never by hiding a column in a screen. Defined in the realm like
+     * every capability; validate_roles.py checks it.
+     */
+    public static final String ROLE_COST_VIEWER = "COST_VIEWER";
+
+    /** Setting prices and reading what they were compared with; CATALOG_ADMIN and COST_VIEWER both. */
+    public static final String PRICING_BASE = "/api/v1/admin/pricing";
+
     /** Default page size for the public product list. */
     public static final int DEFAULT_PAGE_SIZE = 20;
 

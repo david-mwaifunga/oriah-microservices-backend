@@ -84,7 +84,7 @@ class FeignCircuitBreakerSafetyTest {
     }
 
     @Test
-    @DisplayName("the only Feign client targets inventory's anonymous read path")
+    @DisplayName("the stock badge's Feign client targets inventory's anonymous read path")
     void feignClientCallsOnlyThePublicInventoryPath() {
         // The other half of the invariant. inventory permits
         // GET /api/v1/inventory/** with no token; /api/v1/admin/inventory/**
@@ -107,6 +107,70 @@ class FeignCircuitBreakerSafetyTest {
                             method.getName())
                     .doesNotContain("/admin/");
         }
+    }
+
+    /**
+     * Phase 6 added a SECOND client that does need the caller's token: the price check asks inventory what stock cost, as the
+     * person pricing. It is safe only because it differs from the first in every way that matters, so each way is pinned here,
+     * and a client that goes back to sharing the first one's setup fails one of these. Merely finding no RequestInterceptor above
+     * would not catch that: the danger is a token-carrying call on a thread-hopping, degrading client, not an interceptor.
+     */
+    @Test
+    @DisplayName("the cost client passes the caller's token as an explicit parameter on every call, never from a thread-bound context")
+    void costClientPassesTheTokenExplicitly() {
+        for (Method method : InventoryCostClient.class.getDeclaredMethods()) {
+            boolean hasAuthorizationHeader = Arrays.stream(method.getParameters())
+                    .map(p -> p.getAnnotation(org.springframework.web.bind.annotation.RequestHeader.class))
+                    .anyMatch(h -> h != null && org.springframework.http.HttpHeaders.AUTHORIZATION.equalsIgnoreCase(
+                            h.value().isEmpty() ? h.name() : h.value()));
+
+            assertThat(hasAuthorizationHeader)
+                    .as("%s must take the Authorization header as a parameter: the caller reads it on the request thread", method.getName())
+                    .isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("the cost client has no fallback and does not turn a 404 into an answer: it must never degrade into 'no cost known'")
+    void costClientNeverDegrades() {
+        FeignClient annotation = InventoryCostClient.class.getAnnotation(FeignClient.class);
+
+        assertThat(annotation).as("InventoryCostClient must stay a @FeignClient").isNotNull();
+        assertThat(annotation.fallback()).as("a fallback answering 'nothing held' would let a price below cost through unseen").isEqualTo(void.class);
+        assertThat(annotation.fallbackFactory()).isEqualTo(void.class);
+        assertThat(annotation.dismiss404()).as("a 404 from the cost read is a fault, not 'no stock'").isFalse();
+        assertThat(annotation.contextId()).as("its own context, so the stock badge's breaker and fallback never apply to it").isEqualTo("inventory-costs");
+    }
+
+    @Test
+    @DisplayName("the cost client's configuration declares a plain prototype Feign builder, which is what keeps it out of the thread-hopping breaker")
+    void costClientIsKeptOutOfTheBreaker() throws Exception {
+        FeignClient annotation = InventoryCostClient.class.getAnnotation(FeignClient.class);
+        assertThat(annotation.configuration()).containsExactly(InventoryCostClientConfiguration.class);
+
+        Method[] beans = InventoryCostClientConfiguration.class.getDeclaredMethods();
+        Method builder = Arrays.stream(beans).filter(m -> feign.Feign.Builder.class.equals(m.getReturnType())).findFirst().orElse(null);
+
+        assertThat(builder).as("a Feign.Builder bean in the cost client's configuration").isNotNull();
+        assertThat(builder.getAnnotation(org.springframework.context.annotation.Scope.class).value()).isEqualTo("prototype");
+        assertThat(InventoryCostClientConfiguration.class.getAnnotation(org.springframework.context.annotation.Configuration.class))
+                .as("not a @Configuration, or component scanning would apply it to every Feign client in the service")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("no circuit breaker and no time limiter is configured for the cost client by name: its timeouts are plain Feign ones")
+    void costClientHasNoLimiterConfiguredByName() {
+        org.springframework.beans.factory.config.YamlPropertiesFactoryBean yaml = new org.springframework.beans.factory.config.YamlPropertiesFactoryBean();
+        yaml.setResources(new org.springframework.core.io.ClassPathResource("application.yaml"));
+        java.util.Properties properties = java.util.Objects.requireNonNull(yaml.getObject());
+
+        assertThat(properties.stringPropertyNames())
+                .filteredOn(key -> key.startsWith("resilience4j.") && key.contains("inventory-costs"))
+                .as("a time limiter dispatches the call to another thread; the cost client is timed by Feign's own timeouts")
+                .isEmpty();
+        assertThat(properties.getProperty("spring.cloud.openfeign.client.config.inventory-costs.read-timeout")).isNotBlank();
+        assertThat(properties.getProperty("spring.cloud.openfeign.client.config.inventory-costs.connect-timeout")).isNotBlank();
     }
 
     @Test

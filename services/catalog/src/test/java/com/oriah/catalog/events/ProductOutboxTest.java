@@ -97,11 +97,11 @@ class ProductOutboxTest {
         String productId = admin.create("{\"title\":\"Aurelia Solitaire Ring\",\"tags\":[\"rings\",\"gold\"]}");
         assertThat(rows(productId)).hasSize(1);
 
-        admin.addVariant(productId, "{\"sku\":\"" + sku + "\",\"unitPrice\":4500.00}").andExpect(status().isCreated());
+        admin.addVariant(productId, "{\"sku\":\"" + sku + "\"}").andExpect(status().isCreated());
         assertThat(rows(productId)).hasSize(2);
         String variantId = admin.variantId(productId, 0);
 
-        admin.reprice(productId, variantId, "{\"unitPrice\":4600.50}").andExpect(status().isOk());
+        admin.price(variantId, "{\"unitPrice\":4600.50,\"expectedPriceId\":null}").andExpect(status().isOk());
         assertThat(rows(productId)).hasSize(3);
 
         admin.publish(productId).andExpect(status().isOk());
@@ -147,11 +147,11 @@ class ProductOutboxTest {
         admin.publish(productId).andExpect(status().isConflict());
         assertThat(rows(productId)).extracting(row -> row.get("event_type")).containsExactly("product.created");
 
-        admin.addVariant(productId, "{\"sku\":\"UP-1\",\"unitPrice\":10.00}").andExpect(status().isCreated());
+        admin.addVariant(productId, "{\"sku\":\"UP-1\"}").andExpect(status().isCreated());
         // A product with no option axes has room for one variant: a second
         // is refused by the aggregate (400), again after the transaction
         // began, and again nothing is appended.
-        admin.addVariant(productId, "{\"sku\":\"UP-2\",\"unitPrice\":12.00}").andExpect(status().isBadRequest());
+        admin.addVariant(productId, "{\"sku\":\"UP-2\"}").andExpect(status().isBadRequest());
         assertThat(rows(productId)).extracting(row -> row.get("event_type"))
                 .containsExactly("product.created", "product.updated");
 
@@ -171,12 +171,13 @@ class ProductOutboxTest {
         // back on the storefront -- and publish would even set it ACTIVE again.
         String sku = freshSku();
         String ring = admin.create("{\"title\":\"Withdrawn Ring\",\"tags\":[]}");
-        admin.addVariant(ring, "{\"sku\":\"" + sku + "\",\"unitPrice\":4500.00}").andExpect(status().isCreated());
+        admin.addVariant(ring, "{\"sku\":\"" + sku + "\"}").andExpect(status().isCreated());
         String variantId = admin.variantId(ring, 0);
+        com.oriah.catalog.PricedCatalogue.priceDirectly(jdbc, UUID.fromString(variantId), "4500.00");
         admin.publish(ring).andExpect(status().isOk());
         admin.remove(ring).andExpect(status().isNoContent());
 
-        admin.reprice(ring, variantId, "{\"unitPrice\":1.00}").andExpect(status().isNotFound());
+        admin.price(variantId, "{\"unitPrice\":1.00,\"expectedPriceId\":null}").andExpect(status().isNotFound());
         admin.publish(ring).andExpect(status().isNotFound());
         admin.update(ring, "{\"title\":\"Back Again\"}").andExpect(status().isNotFound());
         admin.remove(ring).andExpect(status().isNotFound());
@@ -196,7 +197,7 @@ class ProductOutboxTest {
         String bare = admin.create("{\"title\":\"Withdrawn Bangle\",\"tags\":[]}");
         admin.remove(bare).andExpect(status().isNoContent());
 
-        admin.addVariant(bare, "{\"sku\":\"" + freshSku() + "\",\"unitPrice\":10.00}").andExpect(status().isNotFound());
+        admin.addVariant(bare, "{\"sku\":\"" + freshSku() + "\"}").andExpect(status().isNotFound());
 
         assertThat(rows(bare)).extracting(row -> row.get("event_type"))
                 .containsExactly("product.created", "product.deleted");

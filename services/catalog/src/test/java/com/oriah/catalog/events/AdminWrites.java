@@ -14,6 +14,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -60,9 +61,13 @@ final class AdminWrites {
                 .content(json));
     }
 
-    ResultActions reprice(String productId, String variantId, String json) throws Exception {
-        return mvc.perform(patch("/api/v1/admin/products/" + productId + "/variants/" + variantId)
-                .with(token())
+    /**
+     * A price, set the only way it can be: the pricing endpoint, as a member of staff who may both set prices and see what stock cost
+     * (CATALOG_ADMIN and COST_VIEWER). Inventory is the shared stand-in, which holds nothing unless a test says otherwise.
+     */
+    ResultActions price(String variantId, String json) throws Exception {
+        return mvc.perform(put("/api/v1/admin/pricing/variants/" + variantId + "/price")
+                .with(jwt().jwt(jwt -> jwt.subject(subject)).authorities(CATALOG_ADMIN, new SimpleGrantedAuthority("ROLE_COST_VIEWER")))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(json));
     }

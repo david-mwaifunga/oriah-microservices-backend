@@ -39,7 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
-        "eureka.client.enabled=false"
+        "eureka.client.enabled=false",
+        "oriah.test.stub-inventory=false"
 })
 class InventoryClientNotFoundTest {
 

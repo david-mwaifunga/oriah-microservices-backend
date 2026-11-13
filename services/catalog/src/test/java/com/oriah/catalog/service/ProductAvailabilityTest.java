@@ -19,6 +19,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.client.InventoryClient;
 import com.oriah.catalog.client.InventoryDto;
@@ -82,9 +83,8 @@ class ProductAvailabilityTest {
 
         productId = products.create("Aurelia Solitaire Ring", null, List.of("rings"), null, null, null, null, null,
                 List.of("Ring Size"), STAFF).id();
-        products.addVariant(productId, new VariantCreateRequest("AUR-S", new BigDecimal("4500.00"), "ZMW", Map.of("Ring Size", "S")), STAFF);
-        var withBoth = products.addVariant(productId, new VariantCreateRequest("AUR-L", new BigDecimal("4600.00"), "ZMW", Map.of("Ring Size", "L")), STAFF)
-                .orElseThrow();
+        PricedCatalogue.addPricedVariant(products, jdbc, productId, "AUR-S", "4500.00", Map.of("Ring Size", "S"), STAFF);
+        var withBoth = PricedCatalogue.addPricedVariant(products, jdbc, productId, "AUR-L", "4600.00", Map.of("Ring Size", "L"), STAFF);
         small = withBoth.variants().get(0).id();
         large = withBoth.variants().get(1).id();
         products.publish(productId, STAFF);

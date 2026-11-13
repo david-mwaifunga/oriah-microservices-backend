@@ -86,7 +86,8 @@ public final class ProductMapper {
                 product.highestActivePrice().orElse(null),
                 product.currency().orElse(null),
                 null,
-                toImages(product)
+                toImages(product),
+                null
         );
     }
 
@@ -117,7 +118,9 @@ public final class ProductMapper {
                 product.highestActivePrice().orElse(null),
                 product.currency().orElse(null),
                 toVariants(product, enriched.variants()),
-                toImages(product)
+                toImages(product),
+                // How a piece is packed is for staff, not for a shopper
+                null
         );
     }
 
@@ -158,7 +161,8 @@ public final class ProductMapper {
                 product.highestActivePrice().orElse(null),
                 product.currency().orElse(null),
                 toVariants(product),
-                toImages(product));
+                toImages(product),
+                product.defaultPackagingVariantId());
     }
 
     /**

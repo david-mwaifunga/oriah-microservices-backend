@@ -59,7 +59,9 @@ public record ProductCreatedEvent(
         String productType,
         String status,
         List<VariantPayload> variants,
-        String kind
+        String kind,
+        UUID defaultPackagingVariantId,
+        int unpublishCount
 ) {
     /**
      * Event-type marker used by consumers that subscribe to a single topic

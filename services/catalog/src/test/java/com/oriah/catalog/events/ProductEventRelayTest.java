@@ -78,7 +78,7 @@ class ProductEventRelayTest {
         AdminWrites admin = new AdminWrites(mvc, objectMapper, "relay-admin");
         String sku = ProductOutboxTest.freshSku();
         String productId = admin.create("{\"title\":\"Aurelia Solitaire Ring\",\"tags\":[\"rings\",\"gold\"]}");
-        admin.addVariant(productId, "{\"sku\":\"" + sku + "\",\"unitPrice\":4500.00}").andExpect(status().isCreated());
+        admin.addVariant(productId, "{\"sku\":\"" + sku + "\"}").andExpect(status().isCreated());
         String variantId = admin.variantId(productId, 0);
         Map<String, String> ids = Map.of("productId", productId, "variantId", variantId);
 

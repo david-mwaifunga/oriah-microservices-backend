@@ -106,6 +106,18 @@ public record ProductResponse(
         List<VariantResponse> variants,
 
         /** Ordered; the first is the card image. */
-        List<ProductImageResponse> images
+        List<ProductImageResponse> images,
+
+        /**
+         * The box this product normally goes out in (a variant of a packaging entry), when one is chosen. Admin reads only; a shopper is
+         * never told how a piece is packed, so the public reads omit it.
+         */
+        UUID defaultPackagingVariantId
 ) {
+
+    /** This response with the product's default box set: for the admin reads only, because how a piece is packed is for staff. */
+    public ProductResponse withDefaultPackagingVariantId(UUID boxVariantId) {
+        return new ProductResponse(id, title, description, tags, availability, slug, status, productType, kind, attributes, optionNames, categories,
+                primaryCategory, priceFrom, priceTo, currency, variants, images, boxVariantId);
+    }
 }

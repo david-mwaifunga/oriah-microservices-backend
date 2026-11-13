@@ -18,6 +18,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.repository.ProductImageRepository;
@@ -100,8 +101,7 @@ class ProductImageServiceTest {
         // service methods own their transaction, which is also how the
         // production admin endpoints do this.
         liveProduct = products.create("Aurelia Solitaire Ring", null, List.of(), STAFF).id();
-        products.addVariant(liveProduct, new VariantCreateRequest(
-                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()), STAFF);
+        PricedCatalogue.addPricedVariant(products, jdbc, liveProduct, "AUR-1", "4500.00", Map.of(), STAFF);
         products.publish(liveProduct, STAFF);
     }
 

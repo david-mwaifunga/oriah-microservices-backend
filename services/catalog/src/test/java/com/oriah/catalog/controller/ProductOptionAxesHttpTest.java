@@ -19,6 +19,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +48,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class ProductOptionAxesHttpTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -240,9 +245,14 @@ class ProductOptionAxesHttpTest {
      */
     private static final String RUN = java.util.UUID.randomUUID().toString().substring(0, 8);
 
+    /** Adds a variant (unpriced, as every variant now starts); a wanted price is given directly once it exists: this test is about option axes. */
     private ResultActions variant(String productId, String sku, String price, String optionsJson) throws Exception {
-        return mvc.perform(post("/api/v1/admin/products/" + productId + "/variants").with(admin())
+        ResultActions added = mvc.perform(post("/api/v1/admin/products/" + productId + "/variants").with(admin())
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"sku\":\"" + sku + "-" + RUN + "\",\"unitPrice\":" + price + ",\"options\":" + optionsJson + "}"));
+                .content("{\"sku\":\"" + sku + "-" + RUN + "\",\"options\":" + optionsJson + "}"));
+        if (added.andReturn().getResponse().getStatus() == 201 && new java.math.BigDecimal(price).signum() > 0) {
+            PricedCatalogue.priceLastAdded(jdbc, added.andReturn().getResponse().getContentAsString(), price);
+        }
+        return added;
     }
 }

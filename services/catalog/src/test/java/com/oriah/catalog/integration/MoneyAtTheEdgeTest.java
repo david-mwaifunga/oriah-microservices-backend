@@ -28,6 +28,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -43,6 +44,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class MoneyAtTheEdgeTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -99,20 +104,21 @@ class MoneyAtTheEdgeTest {
     }
 
     @Test
-    @DisplayName("a reprice to a tenth of a ngwee is refused, and the price stays as it was")
-    void aRepriceFinerThanANgweeIsRefused() throws Exception {
+    @DisplayName("a price finer than a ngwee is refused by the pricing endpoint, and the price stays as it was")
+    void aPriceFinerThanANgweeIsRefused() throws Exception {
         String id = createProduct("Aurelia 18k");
         mvc.perform(post("/api/v1/admin/products/" + id + "/variants")
                         .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sku\":\"AUR-1\",\"unitPrice\":4500.00}"))
+                        .content("{\"sku\":\"AUR-1\"}"))
                 .andExpect(status().isCreated());
         String variantId = objectMapper.readTree(adminProduct(id)).get("variants").get(0).get("id").asText();
+        jdbc.update("UPDATE product_variants SET unit_price = 4500.00 WHERE id = ?::uuid", variantId);
 
-        mvc.perform(patch("/api/v1/admin/products/" + id + "/variants/" + variantId)
-                        .with(jwt().authorities(CATALOG_ADMIN))
+        mvc.perform(put("/api/v1/admin/pricing/variants/" + variantId + "/price")
+                        .with(jwt().authorities(CATALOG_ADMIN, new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_COST_VIEWER")))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"unitPrice\":4600.001}"))
+                        .content("{\"unitPrice\":4600.001,\"expectedPriceId\":null}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("unitPrice")));
 

@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +48,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class VariantLookupHttpTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final String LOOKUP = "/api/v1/admin/variants/lookup";
 
@@ -78,10 +83,14 @@ class VariantLookupHttpTest {
     private String addVariant(String productId, String sku, String price, String optionsJson) throws Exception {
         MvcResult added = mvc.perform(post("/api/v1/admin/products/" + productId + "/variants").with(catalogAdmin())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sku\":\"" + sku + "\",\"unitPrice\":" + price + ",\"options\":" + optionsJson + "}"))
+                        .content("{\"sku\":\"" + sku + "\",\"options\":" + optionsJson + "}"))
                 .andExpect(status().isCreated()).andReturn();
         JsonNode variants = mapper.readTree(added.getResponse().getContentAsString()).get("variants");
-        return variants.get(variants.size() - 1).get("id").asText();
+        String id = variants.get(variants.size() - 1).get("id").asText();
+        if (new java.math.BigDecimal(price).signum() > 0) {
+            PricedCatalogue.priceDirectly(jdbc, java.util.UUID.fromString(id), price);
+        }
+        return id;
     }
 
     private JsonNode lookup(RequestPostProcessor who, String... ids) throws Exception {

@@ -10,7 +10,6 @@ import org.springframework.transaction.annotation.Transactional;
 import com.oriah.catalog.dto.CategoryCreateRequest;
 import com.oriah.catalog.dto.CategoryUpdateRequest;
 import com.oriah.catalog.dto.CategoryResponse;
-import com.oriah.catalog.model.Product;
 import com.oriah.catalog.repository.ProductRepository;
 import com.oriah.catalog.model.Category;
 import com.oriah.catalog.repository.CategoryRepository;
@@ -166,13 +165,16 @@ public class DefaultCategoryService implements CategoryService {
             // the delete violates it and the operator sees a 409 for a
             // taxonomy edit that should simply have worked -- or, worse, we
             // would be tempted to cascade it and take sellable products with
-            // it. assignCategories re-checks the invariant, with the remaining
-            // memberships minus this one.
-            for (Product affected : products.findByPrimaryCategoryId(id)) {
-                var remaining = new java.util.LinkedHashSet<>(affected.categories());
-                remaining.remove(category);
-                affected.assignCategories(remaining, null);
-                log.info("Cleared primary category {} from product {}", category.slug(), affected.id());
+            // it. The membership rows go by the foreign key's cascade, so a
+            // product that used this category as its primary is left with no
+            // primary, which the breadcrumb rule (primary must be one of its
+            // categories) is satisfied by. ONE statement that touches only
+            // that column: loading the products and saving them wrote back
+            // every column from an unlocked copy, and undid a publish, a box
+            // chosen or a delete that committed meanwhile.
+            int cleared = products.clearPrimaryCategory(id, java.time.Instant.now());
+            if (cleared > 0) {
+                log.info("Cleared primary category {} from {} product{}", category.slug(), cleared, cleared == 1 ? "" : "s");
             }
             categories.delete(category);
             log.info("Deleted category id={} slug={}", id, category.slug());

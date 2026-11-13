@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -27,7 +28,7 @@ import com.oriah.catalog.model.ProductKind;
 import com.oriah.catalog.model.ProductStatus;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
-import com.oriah.catalog.dto.VariantUpdateRequest;
+import com.oriah.catalog.dto.DefaultPackagingRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.observability.ResourceNotFoundException;
 import java.io.IOException;
@@ -252,51 +253,50 @@ public class AdminProductController {
     }
 
     /**
-     * Reprice an existing variant.
+     * Take a published product off sale.
      *
-     * <p>PATCH rather than PUT because it changes one attribute of a variant
-     * and leaves the rest -- SKU, options, active flag -- alone. Omitting
-     * {@code currency} keeps the variant's own, which matters: catalog reads
-     * an absent currency as ZMW everywhere else, and a dollar-priced piece
-     * must not be redenominated by a request that never mentioned currency.
-     *
-     * <p>404 for an unknown VARIANT as well as an unknown product. The
-     * aggregate reports a missing variant as IllegalArgumentException, which
-     * the shared advice renders 400 -- telling an operator their request was
-     * malformed when what is actually wrong is the id they addressed.
-     *
-     * <p>409 when the variant is the last purchasable one on a published
-     * product and the new price is zero: the request is well formed and the
-     * product's state is what refuses it. A storefront list filters on
-     * {@code unit_price > 0}, so allowing it would drop a live piece out of
-     * the grid while it still answered on its own URL.
+     * <p>ACTIVE goes back to DRAFT, so the piece can be changed and published again; the shop stops showing it, search stops listing
+     * it, and the unpublish is counted so inventory lets go of the boxes it set aside for the product. 409 when it is not published.
      */
-    @PatchMapping("/{id}/variants/{variantId}")
-    @Operation(operationId = "repriceVariant", summary = "Change an existing variant's price")
-    @ApiResponse(responseCode = "200", description = "The product, with the new price")
-    @ApiResponse(responseCode = "400",
-            description = "Validation failure: a missing, negative or implausibly large "
-                    + "price, or a currency differing from the product's other variants",
+    @PostMapping("/{id}/unpublish")
+    @Operation(operationId = "unpublishProduct", summary = "Take a published product off sale (back to DRAFT)")
+    @ApiResponse(responseCode = "200", description = "The product, now a DRAFT")
+    @ApiResponse(responseCode = "404", description = "No product with that id",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "404", description = "No such product, or no such variant on it",
+    @ApiResponse(responseCode = "409", description = "The product is not published",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409",
-            description = "The variant is the last purchasable one on a published product "
-                    + "and the new price is zero",
+    public ProductResponse unpublish(@PathVariable("id") UUID id, @AuthenticationPrincipal Jwt jwt) {
+        log.debug("POST /api/v1/admin/products/{}/unpublish", id);
+        return service.unpublish(id, actor(jwt))
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
+    }
+
+    /**
+     * Choose, change or clear the box a product normally goes out in.
+     *
+     * <p>Part of what a sale costs, so the pricing check adds the box's dearest held cost to the piece's; inventory also lets go of the
+     * boxes it set aside for the product when the box changes. The body's {@code packagingVariantId} is an active variant of a packaging
+     * entry, or null to clear. PUT, because it states the whole choice.
+     */
+    @PutMapping("/{id}/default-packaging")
+    @Operation(operationId = "chooseDefaultPackaging", summary = "Choose, change or clear a product's default box")
+    @ApiResponse(responseCode = "200", description = "The product, with its default box")
+    @ApiResponse(responseCode = "400", description = "The id is not an active variant of a packaging entry that exists",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    public ProductResponse repriceVariant(
-            @PathVariable("id") UUID id,
-            @PathVariable("variantId") UUID variantId,
-            @Valid @RequestBody VariantUpdateRequest request,
-            @AuthenticationPrincipal Jwt jwt) {
-        log.debug("PATCH /api/v1/admin/products/{}/variants/{} price={}",
-                id, variantId, request.unitPrice());
-        return service.repriceVariant(id, variantId, request, actor(jwt))
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "Variant", "id", variantId.toString()));
+    @ApiResponse(responseCode = "404", description = "No product with that id",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "The product is itself packaging, which has no default box",
+            content = @Content(mediaType = "application/problem+json",
+                    schema = @Schema(implementation = ProblemDetail.class)))
+    public ProductResponse chooseDefaultPackaging(@PathVariable("id") UUID id, @Valid @RequestBody DefaultPackagingRequest request,
+                                                  @AuthenticationPrincipal Jwt jwt) {
+        log.debug("PUT /api/v1/admin/products/{}/default-packaging {}", id, request.packagingVariantId());
+        return service.chooseDefaultPackaging(id, request.packagingVariantId(), actor(jwt))
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
     }
 
     /**
@@ -445,6 +445,10 @@ public class AdminProductController {
     @Operation(operationId = "delete", summary = "Delete a product")
     @ApiResponse(responseCode = "204", description = "Deleted; no body")
     @ApiResponse(responseCode = "404", description = "No product with that id",
+            content = @Content(mediaType = "application/problem+json",
+                        schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409",
+            description = "A box that products still go out in (their default box): problem type packaging-in-use, with a 'products' list of the ones that hold it. Choose another box for each, or none, then delete it",
             content = @Content(mediaType = "application/problem+json",
                         schema = @Schema(implementation = ProblemDetail.class)))
     public ResponseEntity<Void> delete(@PathVariable("id") UUID id, @AuthenticationPrincipal Jwt jwt) {

@@ -67,6 +67,14 @@ spring:
         # When the circuit is open or the call fails, Feign delegates to
         # the bean named in the @FeignClient(fallback = ...) attribute.
         enabled: true
+      client:
+        config:
+          # Inventory's cost read, asked for a person pricing a piece (InventoryCostClient). Plain Feign timeouts on this client
+          # alone, because it is NOT wrapped in the circuit breaker and its time limiter. A hundred variants with their lots is a
+          # small answer, so 5 s is generous; nothing is retried. Slower than that is a 503 for the person, never a guess.
+          inventory-costs:
+            connect-timeout: 1000
+            read-timeout: 5000
     stream:
       # No binding for catalog.product: the outbox relay (shared/oriah-events)
       # sends each outbox row to the topic named on the row, which is how a
@@ -218,6 +226,15 @@ eureka:
 # spring.cloud.openfeign.circuitbreaker.enabled: true must both go -- otherwise
 # every product page silently loses its availability badge, degrading to the
 # fallback rather than failing visibly. FeignCircuitBreakerSafetyTest guards it.
+#
+# Phase 6 added a SECOND client that DOES carry a token: InventoryCostClient (contextId
+# inventory-costs) asks inventory what stock cost, as the person pricing. It is safe because it
+# differs from the first in every way that matters, and the same test pins each: the token is an
+# explicit parameter read on the request thread (no interceptor), its configuration declares a
+# plain prototype Feign builder so it is NOT wrapped in the circuit breaker and its time limiter,
+# it has no fallback (a fallback answering "nothing held" would let a price below cost through
+# unseen), and nothing resilience4j is configured under its name. Its timeouts are plain Feign
+# ones under spring.cloud.openfeign.client.config.inventory-costs, set above.
 resilience4j:
   circuitbreaker:
     # configs.default held locally, not in config-repo: a base-config reference
@@ -276,7 +293,9 @@ oriah:
   # -------------------------------------------------------------------------
   events:
     producer: catalog                 # sent with every message as the `producer` header
-    topics: catalog.product           # an append to any other topic is refused
+    # catalog.product: the product snapshots. catalog.price: one price.set per saved price (who, what, why, against which cost);
+    # nothing consumes it yet (finance and the audit trail will). An append to any other topic is refused.
+    topics: catalog.product,catalog.price
     outbox:
       enabled: true
     relay:

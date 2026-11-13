@@ -8,6 +8,7 @@ import jakarta.persistence.LockModeType;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -33,15 +34,22 @@ public interface ProductRepository
     Optional<Product> findByIdForUpdate(@Param("id") UUID id);
 
     /**
-     * Products whose breadcrumb trail points at this category.
+     * Clears the breadcrumb of every product that uses this category as its primary: ONE statement that touches only that column (and
+     * the time it was changed).
      *
-     * <p>Needed when a category is deleted. {@code product_categories} is
-     * {@code ON DELETE CASCADE} so the MEMBERSHIP rows go on their own, but
-     * {@code products.primary_category_id} is a plain reference -- deleting a
-     * category some product uses as its primary violates it, and the operator
-     * sees a 409 for a taxonomy edit that should simply have worked.
+     * <p>Needed when a category is deleted. {@code product_categories} is {@code ON DELETE CASCADE} so the MEMBERSHIP rows go on their
+     * own, but {@code products.primary_category_id} is a plain reference: deleting a category some product uses as its primary violates
+     * it, and the operator sees a 409 for a taxonomy edit that should simply have worked.
+     *
+     * <p>It is not done by loading the products and changing them. Those copies are unlocked, and the entity has no version, so saving
+     * one writes back EVERY column from the copy: a publish, an unpublish, a box chosen or a delete that committed in between was
+     * silently undone (reproduced: a published product went back to a draft). The statement waits for any other write to the same row
+     * and then changes only what it names. Pending changes are flushed first (the delete re-parents children before it); no product is
+     * ever loaded here, so there is no stale copy to clear afterwards.
      */
-    List<Product> findByPrimaryCategoryId(UUID categoryId);
+    @Modifying(flushAutomatically = true)
+    @Query("update Product p set p.primaryCategory = null, p.updatedAt = :now where p.primaryCategory.id = :categoryId")
+    int clearPrimaryCategory(@Param("categoryId") UUID categoryId, @Param("now") java.time.Instant now);
 
     /**
      * Used to resolve a slug collision before insert.

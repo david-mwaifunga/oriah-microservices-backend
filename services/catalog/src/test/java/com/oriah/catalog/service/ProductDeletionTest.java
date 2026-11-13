@@ -17,6 +17,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.model.ProductSort;
@@ -97,8 +98,7 @@ class ProductDeletionTest {
         jdbc.update("DELETE FROM products");
 
         productId = products.create("Aurelia Solitaire Ring", null, List.of("rings"), STAFF).id();
-        var withVariant = products.addVariant(productId, new VariantCreateRequest(
-                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()), STAFF).orElseThrow();
+        var withVariant = PricedCatalogue.addPricedVariant(products, jdbc, productId, "AUR-1", "4500.00", Map.of(), STAFF);
         variantId = withVariant.variants().getFirst().id();
         products.publish(productId, STAFF);
     }

@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import com.oriah.catalog.model.AttributeValidationException;
+import com.oriah.catalog.pricing.PriceRuleViolation;
 import com.oriah.observability.OriahExceptionHandlerSupport;
 
 import lombok.extern.slf4j.Slf4j;
@@ -74,6 +75,26 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
         log.warn("409 data integrity violation: {}", ex.getMostSpecificCause().getMessage());
         return problem(HttpStatus.CONFLICT, TYPE_CONFLICT, "Conflict",
                 "The request conflicts with existing data.");
+    }
+
+    /**
+     * A pricing request that was understood and cannot be done: below cost without a reason, a stale price, a currency that is not
+     * Kwacha, packaging. The problem's type is its stable name, so a screen can switch on it; the figures behind a below-cost warning
+     * ride along as members of the body.
+     */
+    @ExceptionHandler(PricingProblem.class)
+    public ProblemDetail pricingProblem(PricingProblem ex) {
+        log.debug("{} pricing problem {}: {}", ex.status().value(), ex.code(), ex.getMessage());
+        ProblemDetail pd = problem(ex.status(), java.net.URI.create("https://oriah.dev/problems/" + ex.code()), ex.status().getReasonPhrase(), ex.getMessage());
+        ex.properties().forEach(pd::setProperty);
+        return pd;
+    }
+
+    /** A price's date broke a rule: its own stable name, as a 400. Declared here so it outranks the generic 400 for a bad argument. */
+    @ExceptionHandler(PriceRuleViolation.class)
+    public ProblemDetail priceRuleViolation(PriceRuleViolation ex) {
+        log.debug("400 price rule {}: {}", ex.code(), ex.getMessage());
+        return problem(HttpStatus.BAD_REQUEST, java.net.URI.create("https://oriah.dev/problems/" + ex.code()), "Bad Request", ex.getMessage());
     }
 
     /**

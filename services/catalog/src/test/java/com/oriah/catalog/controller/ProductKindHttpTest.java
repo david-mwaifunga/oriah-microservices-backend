@@ -19,6 +19,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +45,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class ProductKindHttpTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -165,28 +170,11 @@ class ProductKindHttpTest {
     }
 
     @Test
-    @DisplayName("packaging has no selling price: repricing a packaging variant above zero is refused")
-    void packagingVariantCannotBeRepriced() throws Exception {
-        String box = createPackaging("Gift box, xl");
-        MvcResult added = addVariant(box, "BOX-XL", "0.00").andExpect(status().isCreated()).andReturn();
-        String variantId = mapper.readTree(added.getResponse().getContentAsString())
-                .get("variants").get(0).get("id").asText();
-
-        mvc.perform(patch("/api/v1/admin/products/" + box + "/variants/" + variantId).with(admin())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"unitPrice\":10.00}"))
-                .andExpect(status().isBadRequest());
-        mvc.perform(patch("/api/v1/admin/products/" + box + "/variants/" + variantId).with(admin())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"unitPrice\":0.00}"))
-                .andExpect(status().isOk());
-    }
-
-    @Test
     @DisplayName("a sellable product is priced and published exactly as before, and its kind shows on the public read")
     void sellableIsUnchanged() throws Exception {
         String ring = createProduct("{\"title\":\"Kind Test Ring\"}");
-        addVariant(ring, "KIND-RING", "4500.00").andExpect(status().isCreated());
+        MvcResult added = addVariant(ring, "KIND-RING", "0.00").andExpect(status().isCreated()).andReturn();
+        PricedCatalogue.priceLastAdded(jdbc, added.getResponse().getContentAsString(), "4500.00");
         mvc.perform(post("/api/v1/admin/products/" + ring + "/publish").with(admin()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.kind").value("SELLABLE"));

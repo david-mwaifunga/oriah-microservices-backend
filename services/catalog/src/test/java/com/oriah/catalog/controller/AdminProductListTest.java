@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +50,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class AdminProductListTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -320,11 +325,16 @@ class AdminProductListTest {
         return mapper.readTree(created.getResponse().getContentAsString()).get("id").asText();
     }
 
+    /** Adds a variant (unpriced, as every variant now starts) and, if a price is wanted, gives it one directly: this test is about lists, not pricing. */
     private ResultActions addVariant(String productId, String sku, String price) throws Exception {
-        return mvc.perform(post("/api/v1/admin/products/" + productId + "/variants").with(admin())
+        ResultActions added = mvc.perform(post("/api/v1/admin/products/" + productId + "/variants").with(admin())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"sku\":\"" + sku + "\",\"unitPrice\":" + price + "}"))
+                        .content("{\"sku\":\"" + sku + "\"}"))
                 .andExpect(status().isCreated());
+        if (new java.math.BigDecimal(price).signum() > 0) {
+            PricedCatalogue.priceLastAdded(jdbc, added.andReturn().getResponse().getContentAsString(), price);
+        }
+        return added;
     }
 
     private void publishWithPrice(String productId, String sku) throws Exception {

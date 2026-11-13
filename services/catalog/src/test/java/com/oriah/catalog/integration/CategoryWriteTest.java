@@ -17,6 +17,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.repository.CategoryRepository;
 import com.oriah.catalog.repository.ProductRepository;
@@ -60,6 +61,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
 class CategoryWriteTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -366,12 +371,13 @@ class CategoryWriteTest {
     }
 
     private void sellable(String productId) throws Exception {
-        mvc.perform(post("/api/v1/admin/products/" + productId + "/variants")
+        var added = mvc.perform(post("/api/v1/admin/products/" + productId + "/variants")
                         .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"sku\":\"C-" + productId.substring(0, 8)
-                                + "\",\"unitPrice\":4500.00,\"currency\":\"ZMW\"}"))
-                .andExpect(status().isCreated());
+                                + "\",\"currency\":\"ZMW\"}"))
+                .andExpect(status().isCreated()).andReturn();
+        PricedCatalogue.priceLastAdded(jdbc, added.getResponse().getContentAsString(), "4500.00");
         mvc.perform(post("/api/v1/admin/products/" + productId + "/publish")
                         .with(jwt().authorities(CATALOG_ADMIN)))
                 .andExpect(status().isOk());

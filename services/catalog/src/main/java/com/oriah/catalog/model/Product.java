@@ -122,6 +122,22 @@ public class Product extends BaseEntity {
     private ProductKind kind;
 
     /**
+     * The box this product normally goes out in: a variant of a PACKAGING product, or null for none. Catalog's service checks that
+     * the variant is one (this class cannot see other products). It feeds the below-cost check (the box is part of what a sale
+     * costs) and, through the product's events, the boxes inventory sets aside for the product.
+     */
+    @Column(name = "default_packaging_variant_id")
+    private UUID defaultPackagingVariantId;
+
+    /**
+     * How many times this product has been taken off sale after being published. It only ever goes up, so a consumer that missed
+     * or reordered snapshots can still tell, by comparing counts, that an unpublish happened (inventory releases the boxes set
+     * aside for the product then).
+     */
+    @Column(name = "unpublish_count", nullable = false)
+    private int unpublishCount;
+
+    /**
      * The category used for breadcrumbs and the canonical URL. Must also be a
      * member of {@link #categories} — otherwise a breadcrumb points at a
      * category the product is not in. That is a cross-row rule the database
@@ -271,6 +287,44 @@ public class Product extends BaseEntity {
     /** What this entry is for; fixed when it is created. See {@link ProductKind}. */
     public ProductKind kind() {
         return kind;
+    }
+
+    public UUID defaultPackagingVariantId() {
+        return defaultPackagingVariantId;
+    }
+
+    public int unpublishCount() {
+        return unpublishCount;
+    }
+
+    /**
+     * Chooses (or, with null, clears) the box this product normally goes out in.
+     *
+     * <p>That the variant exists, is active and belongs to a PACKAGING product is catalog's service's check: a product cannot see
+     * another one. What it can say is that packaging is not boxed, and that a box is chosen for something sold.
+     *
+     * @throws IllegalStateException if this product is itself packaging (409)
+     */
+    public void chooseDefaultPackaging(UUID packagingVariantId) {
+        if (packagingVariantId != null && kind == ProductKind.PACKAGING) {
+            throw new IllegalStateException(
+                    "product '" + slug + "' is packaging: a box does not go out in a box, so it has no default packaging");
+        }
+        this.defaultPackagingVariantId = packagingVariantId;
+    }
+
+    /**
+     * Takes the product off sale: ACTIVE goes back to DRAFT, so it can be changed and published again. Counted, and the count only
+     * grows.
+     *
+     * @throws IllegalStateException if the product is not published (409)
+     */
+    public void unpublish() {
+        if (status != ProductStatus.ACTIVE) {
+            throw new IllegalStateException("product '" + slug + "' is not published, so it cannot be unpublished");
+        }
+        this.status = ProductStatus.DRAFT;
+        this.unpublishCount++;
     }
 
     public String slug() {

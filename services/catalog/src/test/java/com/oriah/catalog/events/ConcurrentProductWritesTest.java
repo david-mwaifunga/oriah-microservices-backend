@@ -18,6 +18,8 @@ import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -38,10 +40,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.dto.VariantCreateRequest;
-import com.oriah.catalog.dto.VariantUpdateRequest;
+import com.oriah.catalog.exception.PricingProblem;
+import com.oriah.catalog.pricing.GuardResult;
+import com.oriah.catalog.pricing.HeldCost;
+import com.oriah.catalog.pricing.PriceGuard;
+import com.oriah.catalog.pricing.PricingFixtures;
+import com.oriah.catalog.service.PriceCheck;
+import com.oriah.observability.ResourceNotFoundException;
+import com.oriah.catalog.model.Category;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.model.ProductVariant;
+import com.oriah.catalog.repository.CategoryRepository;
 import com.oriah.catalog.repository.ProductRepository;
+import com.oriah.catalog.service.CategoryService;
 import com.oriah.catalog.service.ProductService;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -100,6 +111,12 @@ class ConcurrentProductWritesTest {
     private ProductRepository repository;
 
     @Autowired
+    private CategoryRepository categoryRepository;
+
+    @Autowired
+    private CategoryService categoryService;
+
+    @Autowired
     private PlatformTransactionManager transactionManager;
 
     @Autowired
@@ -126,15 +143,14 @@ class ConcurrentProductWritesTest {
     static Stream<Arguments> writesThatRecordASnapshot() {
         return Stream.of(
                 Arguments.of("a reprice of the other size", new Change(
-                        (products, ring) -> products.repriceVariant(ring.id(), ring.large(),
-                                new VariantUpdateRequest(new BigDecimal("5200.00"), null), STAFF_B),
+                        (products, ring) -> reprice(products, ring, ring.large(), "5200.00", STAFF_B),
                         (snapshot, ring) -> assertThat(pricesBySku(snapshot).get(ring.largeSku()))
                                 .as("the second reprice, in the later snapshot").isEqualByComparingTo("5200.00"))),
                 Arguments.of("a new size", new Change(
                         (products, ring) -> products.addVariant(ring.id(), new VariantCreateRequest(
-                                ring.extraSku(), new BigDecimal("6000.00"), "ZMW", Map.of("Ring Size", "XL")), STAFF_B),
+                                ring.extraSku(), null, "ZMW", Map.of("Ring Size", "XL")), STAFF_B),
                         (snapshot, ring) -> assertThat(pricesBySku(snapshot).get(ring.extraSku()))
-                                .as("the new size, in the later snapshot").isEqualByComparingTo("6000.00"))),
+                                .as("the new size (unpriced), in the later snapshot").isEqualByComparingTo("0.00"))),
                 Arguments.of("publishing it", new Change(
                         (products, ring) -> products.publish(ring.id(), STAFF_B),
                         (snapshot, ring) -> assertThat(snapshot.get("status").asText())
@@ -152,8 +168,7 @@ class ConcurrentProductWritesTest {
         Ring ring = aRing();
 
         secondWaitsForFirst(
-                () -> products.repriceVariant(ring.id(), ring.small(),
-                        new VariantUpdateRequest(new BigDecimal("4100.00"), null), STAFF_A),
+                () -> reprice(products, ring, ring.small(), "4100.00", STAFF_A),
                 () -> second.apply().apply(products, ring));
 
         assertThat(price(ring.small())).as("the first reprice persisted").isEqualByComparingTo("4100.00");
@@ -171,12 +186,17 @@ class ConcurrentProductWritesTest {
 
     static Stream<Arguments> writesAfterADelete() {
         return Stream.of(
-                Arguments.of("a reprice", (BiFunction<ProductService, Ring, Object>) (products, ring) ->
-                        products.repriceVariant(ring.id(), ring.small(),
-                                new VariantUpdateRequest(new BigDecimal("1.00"), null), STAFF_B)),
+                Arguments.of("a reprice", (BiFunction<ProductService, Ring, Object>) (products, ring) -> {
+                    try {
+                        return reprice(products, ring, ring.small(), "1.00", STAFF_B);
+                    } catch (ResourceNotFoundException gone) {
+                        // The pricing write answers a deleted product with a 404, where the others answer empty: the same finding.
+                        return Optional.empty();
+                    }
+                }),
                 Arguments.of("a new size", (BiFunction<ProductService, Ring, Object>) (products, ring) ->
                         products.addVariant(ring.id(), new VariantCreateRequest(
-                                ring.extraSku(), new BigDecimal("6000.00"), "ZMW", Map.of("Ring Size", "XL")), STAFF_B)),
+                                ring.extraSku(), null, "ZMW", Map.of("Ring Size", "XL")), STAFF_B)),
                 Arguments.of("publishing it", (BiFunction<ProductService, Ring, Object>) (products, ring) ->
                         products.publish(ring.id(), STAFF_B)),
                 Arguments.of("a rename", (BiFunction<ProductService, Ring, Object>) (products, ring) ->
@@ -214,7 +234,143 @@ class ConcurrentProductWritesTest {
         assertThat(price(ring.large())).isEqualByComparingTo(LARGE_PRICE);
     }
 
+    // ------------------------------------------- a box and the products that go out in it
+
+    @Test
+    @DisplayName("choosing a box, made while the box's own product is being deleted, waits for the delete, finds the box gone and is refused: nothing is assigned")
+    void choosingABoxWaitsForItsDeleteAndFindsItGone() throws Exception {
+        Ring ring = aRing();
+        PricingFixtures.Piece box = new PricingFixtures(repository).box("Gift box " + ring.suffix());
+
+        Object outcome = secondWaitsForFirst(
+                () -> products.deleteById(box.productId(), STAFF_A),
+                () -> {
+                    try {
+                        products.chooseDefaultPackaging(ring.id(), box.variantId(), STAFF_B);
+                        return "assigned";
+                    } catch (IllegalArgumentException refused) {
+                        return "refused";
+                    }
+                });
+
+        assertThat(outcome).as("the choice waited for the delete and then saw a box that is gone").isEqualTo("refused");
+        assertThat(jdbc.queryForObject("SELECT default_packaging_variant_id FROM products WHERE id = ?", UUID.class, ring.id())).isNull();
+        assertThat(jdbc.queryForObject("SELECT is_deleted FROM products WHERE id = ?", Boolean.class, box.productId())).isTrue();
+    }
+
+    @Test
+    @DisplayName("deleting a box, made while a product is choosing it, waits for the choice, sees the box in use and is refused: the box survives and the product keeps it")
+    void deletingABoxWaitsForAChoiceAndSeesItInUse() throws Exception {
+        Ring ring = aRing();
+        PricingFixtures.Piece box = new PricingFixtures(repository).box("Gift box " + ring.suffix());
+
+        Object outcome = secondWaitsForFirst(
+                () -> products.chooseDefaultPackaging(ring.id(), box.variantId(), STAFF_A),
+                () -> {
+                    try {
+                        products.deleteById(box.productId(), STAFF_B);
+                        return "deleted";
+                    } catch (PricingProblem inUse) {
+                        return inUse.code();
+                    }
+                });
+
+        assertThat(outcome).as("the delete waited for the choice and then saw the box in use").isEqualTo("packaging-in-use");
+        assertThat(jdbc.queryForObject("SELECT is_deleted FROM products WHERE id = ?", Boolean.class, box.productId())).isFalse();
+        assertThat(jdbc.queryForObject("SELECT default_packaging_variant_id FROM products WHERE id = ?", UUID.class, ring.id())).isEqualTo(box.variantId());
+    }
+
+    @Test
+    @DisplayName("a packaging entry that tries to choose a box is refused at once, without waiting on the box it named: two of them naming each other could otherwise wait for each other")
+    void aPackagingEntryIsRefusedBeforeAnyBoxIsLocked() throws Exception {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        PricingFixtures fixtures = new PricingFixtures(repository);
+        PricingFixtures.Piece one = fixtures.box("Box one " + suffix);
+        PricingFixtures.Piece two = fixtures.box("Box two " + suffix);
+
+        assertRefusedAtOnceWhileLocked(two.productId(), () -> {
+            try {
+                products.chooseDefaultPackaging(one.productId(), two.variantId(), STAFF_B);
+                return "chosen";
+            } catch (IllegalStateException refused) {
+                return "refused";
+            }
+        });
+    }
+
+    @Test
+    @DisplayName("naming a variant of a piece that is not packaging is refused at once, without waiting on that piece's lock: two products naming each other's variants could otherwise wait for each other")
+    void aVariantThatIsNotPackagingIsRefusedBeforeItsProductIsLocked() throws Exception {
+        Ring one = aRing();
+        Ring other = aRing();
+
+        assertRefusedAtOnceWhileLocked(other.id(), () -> {
+            try {
+                products.chooseDefaultPackaging(one.id(), other.small(), STAFF_B);
+                return "chosen";
+            } catch (IllegalArgumentException refused) {
+                return "refused";
+            }
+        });
+    }
+
+    /**
+     * Locks a product in another transaction, runs {@code attempt}, and requires its answer "refused" within 5 s, i.e. without waiting on
+     * that lock. A TimeoutException means it queued behind the lock, which two writes naming each other's products would do forever.
+     */
+    private void assertRefusedAtOnceWhileLocked(UUID lockedProductId, Callable<String> attempt) throws Exception {
+        CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Future<?> holder = staff.submit(() -> new TransactionTemplate(transactionManager).executeWithoutResult(tx -> {
+            repository.findByIdForUpdate(lockedProductId);   // the product it names, locked by someone else
+            held.countDown();
+            awaitQuietly(release);
+        }));
+        assertThat(held.await(10, TimeUnit.SECONDS)).as("the other product is locked").isTrue();
+        try {
+            assertThat(staff.submit(attempt).get(5, TimeUnit.SECONDS)).isEqualTo("refused");
+        } finally {
+            release.countDown();
+            holder.get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    // ------------------------------------------------ deleting a category while a product that uses it is written
+
+    @Test
+    @DisplayName("deleting a category, made while another write to a product whose primary category it is, waits for that write and does not undo it: the product keeps the change and only loses the category")
+    void aCategoryDeleteDoesNotUndoAConcurrentWrite() throws Exception {
+        Ring ring = aRing();
+        Category rings = categoryRepository.save(new Category("Rings " + ring.suffix(), null, null));
+        jdbc.update("INSERT INTO product_categories (product_id, category_id) VALUES (?, ?)", ring.id(), rings.id());
+        jdbc.update("UPDATE products SET primary_category_id = ? WHERE id = ?", rings.id(), ring.id());
+
+        Object deleted = secondWaitsForFirst(
+                () -> products.publish(ring.id(), STAFF_A),
+                () -> categoryService.delete(rings.id()));
+
+        assertThat(deleted).isEqualTo(true);
+        assertThat(jdbc.queryForMap("SELECT status, primary_category_id FROM products WHERE id = ?", ring.id()))
+                .as("the publish that was in flight survives the category delete, and only the category is gone from the product")
+                .containsEntry("status", "ACTIVE")
+                .containsEntry("primary_category_id", null);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM categories WHERE id = ?", Long.class, rings.id())).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM product_categories WHERE product_id = ?", Long.class, ring.id())).isZero();
+    }
+
     // ------------------------------------------------------------- helpers
+
+    /**
+     * A reprice, as the pricing endpoint makes one once it has looked at the cost: no stock is held in these cases, so no cost is known.
+     * The ring's sizes were saved past the service with prices and no history, so no earlier price is expected.
+     */
+    private static Object reprice(ProductService products, Ring ring, UUID variant, String price, String actor) {
+        HeldCost nothingHeld = new HeldCost(variant, 0, 0, null, null, null, false, List.of());
+        PriceCheck.Reading reading = new PriceCheck.Reading(variant, null, nothingHeld, null, java.time.Instant.now());
+        GuardResult result = PriceGuard.evaluate(new BigDecimal(price), "ZMW", nothingHeld, null, null);
+        return products.setVariantPrice(ring.id(), new ProductService.PriceWrite(variant, new BigDecimal(price), "ZMW", null, null, null,
+                result, reading, null, null), actor);
+    }
 
     /** The ring, its two sizes, and the SKUs its cases use (SKUs are unique catalogue-wide). */
     record Ring(UUID id, UUID small, UUID large, String suffix) {

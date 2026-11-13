@@ -22,6 +22,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.dto.VariantCreateRequest;
 import com.oriah.catalog.repository.ProductImageRepository;
@@ -80,6 +81,9 @@ class ProductImageHttpTest {
     private UUID liveProduct;
     private UUID draftProduct;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
     @BeforeEach
     void seed() {
         imageRepository.deleteAll();
@@ -88,8 +92,7 @@ class ProductImageHttpTest {
         draftProduct = products.create("Unreleased Ring", null, List.of(), STAFF).id();
 
         liveProduct = products.create("Aurelia Solitaire Ring", null, List.of(), STAFF).id();
-        products.addVariant(liveProduct, new VariantCreateRequest(
-                "AUR-1", new BigDecimal("4500.00"), "ZMW", Map.of()), STAFF);
+        PricedCatalogue.addPricedVariant(products, jdbc, liveProduct, "AUR-1", "4500.00", Map.of(), STAFF);
         products.publish(liveProduct, STAFF);
     }
 

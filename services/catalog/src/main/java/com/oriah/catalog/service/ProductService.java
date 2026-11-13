@@ -19,9 +19,19 @@ import org.springframework.transaction.annotation.Transactional;
 import com.oriah.catalog.client.InventoryClient;
 import com.oriah.catalog.client.InventoryDto;
 import com.oriah.catalog.config.CatalogProperties;
+import com.oriah.catalog.config.PricingProperties;
+import com.oriah.catalog.events.PriceSetEvent;
+import com.oriah.catalog.exception.PricingProblem;
+import com.oriah.catalog.pricing.GuardResult;
+import com.oriah.catalog.pricing.PriceAssessment;
+import com.oriah.catalog.pricing.PriceHistory;
+import com.oriah.catalog.repository.PriceHistoryRepository;
+import com.oriah.events.EventJson;
+import com.oriah.observability.ResourceNotFoundException;
+import org.springframework.http.HttpStatus;
+import java.time.Clock;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantCreateRequest;
-import com.oriah.catalog.dto.VariantUpdateRequest;
 import com.oriah.catalog.dto.ProductUpdateRequest;
 import com.oriah.catalog.events.ProductCreatedEvent;
 import com.oriah.catalog.events.VariantPayload;
@@ -91,6 +101,13 @@ public class ProductService {
     static final String AGGREGATE = "product";
     static final int SCHEMA_VERSION = 1;
 
+    /** What a variant is made at: 0.00, the marker for "not priced yet" (two decimals, like every amount, so it is written as 0.00). */
+    private static final BigDecimal UNPRICED = new BigDecimal("0.00");
+
+    /** Each saved price is announced once, on its own topic, as {@code price.set}, about the history row it made. */
+    static final String PRICE_TOPIC = "catalog.price";
+    static final String PRICE_AGGREGATE = "variant_price";
+
     /**
      * Every write to an existing product applies this right after taking the
      * product's lock, so a deleted product answers 404 to all of them.
@@ -124,6 +141,10 @@ public class ProductService {
     // Joins the JPA transaction (JpaTransactionManager exposes its connection),
     // so the slug lock below is held until that transaction ends.
     private final JdbcTemplate jdbc;
+    // A price is dated history, written in the same transaction as the variant's current price and the events that announce it.
+    private final PriceHistoryRepository priceHistory;
+    private final PricingProperties pricing;
+    private final Clock clock;
 
     /**
      * How many readable discriminators to try before falling back to the id
@@ -140,7 +161,10 @@ public class ProductService {
             CategoryService categoryService,
             CategoryRepository categoryRepository,
             ProductImageService imageService,
-            JdbcTemplate jdbc) {
+            JdbcTemplate jdbc,
+            PriceHistoryRepository priceHistory,
+            PricingProperties pricing,
+            Clock clock) {
         this.repository = repository;
         this.inventoryClient = inventoryClient;
         this.outbox = outbox;
@@ -149,6 +173,80 @@ public class ProductService {
         this.categoryRepository = categoryRepository;
         this.imageService = imageService;
         this.jdbc = jdbc;
+        this.priceHistory = priceHistory;
+        this.pricing = pricing;
+        this.clock = clock;
+    }
+
+    /**
+     * What a saved price is made of, as {@link PricingService} hands it over after it has looked at the cost: the price and its date, the
+     * price the person saw in force and the default box the cost was read for, what the rule found and the reading behind it.
+     */
+    public record PriceWrite(UUID variantId, BigDecimal unitPrice, String currency, Instant requestedEffectiveFrom, UUID expectedPriceId,
+                             UUID evaluatedBoxVariantId, GuardResult result, PriceCheck.Reading reading, String reason, String setByName) {
+    }
+
+    /** What was written: the history row, and where the product stands now. */
+    public record PriceApplied(PriceHistoryRepository.Entry row, ProductStatus productStatus, boolean publishable) {
+    }
+
+    /**
+     * Writes a price: a history row, the variant's current price, and the two events, in ONE transaction under the product's lock.
+     *
+     * <p>The cost was read BEFORE this, with no lock held (a remote call under a row lock would hold every other write to the product for
+     * as long as inventory took to answer). So what that reading depended on is checked again here, under the lock: the default box it
+     * was read for, and the price the person saw in force. Either having changed is a conflict to retry, never a save against stale
+     * ground. What can still change between the reading and this commit is the cost itself (a sale, a receipt, a correction): the price
+     * row keeps the reading as observed, with its time, and the below-cost list is what tells anyone where a price stands now.
+     *
+     * @throws PricingProblem packaging-is-not-priced, concurrent-update (the box changed), stale-price, nothing-changed (400)
+     * @throws PriceRuleViolation the date asked for breaks a rule
+     */
+    @Transactional
+    public PriceApplied setVariantPrice(UUID productId, PriceWrite write, String actor) {
+        Product product = repository.findByIdForUpdate(productId).filter(NOT_DELETED)
+                .orElseThrow(() -> new ResourceNotFoundException("Variant", "id", write.variantId().toString()));
+        ProductVariant variant = product.variants().stream().filter(v -> v.id().equals(write.variantId())).findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException("Variant", "id", write.variantId().toString()));
+        if (product.kind() == ProductKind.PACKAGING) {
+            throw new PricingProblem(HttpStatus.CONFLICT, "packaging-is-not-priced",
+                    "'" + product.title() + "' is packaging: a box is bought, stocked and costed but never priced, because it is never sold on its own");
+        }
+        if (!java.util.Objects.equals(product.defaultPackagingVariantId(), write.evaluatedBoxVariantId())) {
+            throw new PricingProblem(HttpStatus.CONFLICT, "concurrent-update",
+                    "the product's default box changed while its cost was being read, so the price was not compared with the right cost: try again");
+        }
+        Optional<PriceHistoryRepository.Entry> latest = priceHistory.latest(write.variantId());
+        UUID latestId = latest.map(PriceHistoryRepository.Entry::id).orElse(null);
+        if (!java.util.Objects.equals(latestId, write.expectedPriceId())) {
+            throw new PricingProblem(HttpStatus.CONFLICT, "stale-price",
+                    "the price changed since it was read: someone else has priced this variant")
+                    .with("currentPriceId", latestId);
+        }
+        // The same number in another currency is a change: a legacy dollar piece is moved to Kwacha by saying ZMW, even at the same figure.
+        if (latest.isPresent() && variant.unitPrice().compareTo(write.unitPrice()) == 0 && write.currency().equalsIgnoreCase(variant.currency())) {
+            throw new PricingProblem(HttpStatus.BAD_REQUEST, "nothing-changed", "the price is already " + write.unitPrice().toPlainString() + " " + write.currency());
+        }
+
+        Instant now = clock.instant();
+        Instant effectiveFrom = PriceHistory.effectiveFrom(write.requestedEffectiveFrom(), now,
+                latest.map(PriceHistoryRepository.Entry::effectiveFrom).orElse(null), pricing.getBackdateWindow());
+        BigDecimal was = variant.unitPrice();
+
+        product.repriceVariant(write.variantId(), write.unitPrice(), write.currency());
+        PriceAssessment observed = write.result().assessment();
+        String reason = PriceCheck.needsReason(observed) ? write.reason() : null;
+        PriceHistoryRepository.Entry row = priceHistory.append(new PriceHistoryRepository.NewEntry(UUID.randomUUID(), write.variantId(),
+                write.unitPrice(), write.currency(), effectiveFrom, now, actor, write.setByName(), observed.name(), reason,
+                EventJson.write(PriceCheck.basis(write.result(), write.reading()))));
+
+        record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
+        outbox.append(new EventDraft(PRICE_AGGREGATE, row.id().toString(), PriceSetEvent.TYPE, SCHEMA_VERSION, PRICE_TOPIC, effectiveFrom, actor,
+                new PriceSetEvent(write.variantId(), product.id(), write.unitPrice(), was.signum() == 0 ? null : was, write.currency(), effectiveFrom,
+                        now, observed.name(), reason, write.setByName(), PriceCheck.summary(write.result(), write.reading()))));
+        log.info("Priced variant id={} sku=\"{}\" on product id={} from {} to {} {} ({})", write.variantId(), variant.sku(), productId, was,
+                write.unitPrice(), write.currency(), observed);
+        return new PriceApplied(row, product.status(), product.isPublishable());
     }
 
     /**
@@ -373,7 +471,8 @@ public class ProductService {
                 // endpoint would resurrect something the audit trail says is
                 // gone.
                 .filter(product -> !product.isDeleted())
-                .map(this::withAvailability);
+                // The admin read also carries the default box (how a piece is packed is for staff), so an edit screen can reload its choice.
+                .map(product -> withAvailability(product).withDefaultPackagingVariantId(product.defaultPackagingVariantId()));
     }
 
     /**
@@ -430,16 +529,24 @@ public class ProductService {
     public Optional<ProductResponse> addVariant(UUID productId, VariantCreateRequest request, String actor) {
         // Locked first, so a concurrent write to this product waits for this
         // one and its snapshot includes this variant (see findByIdForUpdate).
+        // A variant is created UNPRICED, always: the only way to a price is the pricing endpoint, which compares it with what the stock
+        // cost and writes the history. A second way in would let a price skip that check and leave history without its first row.
+        // The request may still carry a price field (0.00 reads as "not priced"); anything above zero is refused, not dropped, so a
+        // client that still sends one hears about it.
+        if (request.unitPrice() != null && request.unitPrice().signum() != 0) {
+            throw new IllegalArgumentException(
+                    "a variant is created unpriced: set its price with PUT " + CatalogConstants.PRICING_BASE + "/variants/{variantId}/price, which compares it with what the stock cost");
+        }
         return repository.findByIdForUpdate(productId).filter(NOT_DELETED).map(product -> {
             ProductVariant variant = new ProductVariant(
                     product,
                     request.sku(),
-                    request.unitPrice(),
+                    UNPRICED,
                     request.currency(),
                     request.options());
             product.addVariant(variant);
-            log.info("Added variant sku=\"{}\" to product id={} price={} {}",
-                    variant.sku(), productId, variant.unitPrice(), variant.currency());
+            log.info("Added variant sku=\"{}\" to product id={} (unpriced) {}",
+                    variant.sku(), productId, variant.currency());
             // Recorded so inventory learns about the new variant. Without this,
             // a variant added after creation would never reach product_index
             // and the admin inventory screen would show a bare UUID with no
@@ -452,61 +559,74 @@ public class ProductService {
     }
 
     /**
-     * Reprices one of a product's existing variants.
+     * Takes a published product off sale: ACTIVE goes back to DRAFT, so it can be changed and published again, and the unpublish is
+     * counted. The count rides on the product's snapshot, and inventory lets go of the boxes it set aside for the product when it goes
+     * up. Search stops listing it (its snapshot says DRAFT).
      *
-     * <h2>Why this routes through the aggregate</h2>
-     *
-     * {@code ProductVariant.reprice} is public and would do the job, and would
-     * bypass both rules that live on {@link Product} because a variant cannot
-     * see its siblings: one currency per product, so a card never shows two,
-     * and the refusal to leave a published product with nothing purchasable.
-     *
-     * <h2>Why an absent currency is resolved HERE</h2>
-     *
-     * {@code ProductVariant.normaliseCurrency} reads a null as ZMW, so passing
-     * the absent value through would redenominate a dollar piece to Kwacha at
-     * the same number -- or, on a multi-variant product, be refused by the
-     * uniformity rule against its own siblings, with no currency control on
-     * the admin form to correct it with. A PATCH that omits a field leaves it
-     * alone, so the variant's current currency is what gets passed.
-     *
-     * @param actor who is making the change, {@code user:<keycloak subject>};
-     *              recorded on the event
-     * @return empty when the product does not exist OR carries no such
-     *         variant, so the caller can answer 404 for both. The aggregate
-     *         reports an unknown variant as IllegalArgumentException, which
-     *         the shared advice renders 400 -- the wrong thing to tell someone
-     *         who addressed a variant that is not there.
+     * @param actor who is making the change, {@code user:<keycloak subject>}; recorded on the event
+     * @throws IllegalStateException when the product is not published: 409, and nothing is written or counted
      */
     @Transactional
-    public Optional<ProductResponse> repriceVariant(
-            UUID productId, UUID variantId, VariantUpdateRequest request, String actor) {
-        // Locked first: a concurrent reprice of another variant of this
-        // product waits for this one to commit, then reads this price, so
-        // whichever snapshot is recorded last carries both.
-        return repository.findByIdForUpdate(productId)
-                .filter(NOT_DELETED)
-                .flatMap(product -> product.variants().stream()
-                .filter(v -> v.id().equals(variantId))
-                .findFirst()
-                .map(variant -> {
-                    String currency = request.currency() == null || request.currency().isBlank()
-                            ? variant.currency()
-                            : request.currency();
-                    BigDecimal was = variant.unitPrice();
+    public Optional<ProductResponse> unpublish(UUID productId, String actor) {
+        return repository.findByIdForUpdate(productId).filter(NOT_DELETED).map(product -> {
+            product.unpublish();
+            log.info("Unpublished product id={} slug=\"{}\" (count now {})", productId, product.slug(), product.unpublishCount());
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
+            return ProductMapper.toAdminResponse(product);
+        });
+    }
 
-                    product.repriceVariant(variantId, request.unitPrice(), currency);
+    /**
+     * Chooses, changes or (with null) clears the box a product normally goes out in.
+     *
+     * <p>The box must be an ACTIVE variant of a PACKAGING entry that exists and has not been deleted (400 otherwise: another piece, an
+     * unknown id, a withdrawn or deleted box). Choosing the box it already has changes nothing and writes nothing. The choice rides on
+     * the snapshot: the pricing check adds the box's cost to a piece's, and inventory lets go of boxes it set aside for the product
+     * when the box changes.
+     *
+     * @throws IllegalStateException when the product is itself packaging: 409
+     */
+    @Transactional
+    public Optional<ProductResponse> chooseDefaultPackaging(UUID productId, UUID packagingVariantId, String actor) {
+        return repository.findByIdForUpdate(productId).filter(NOT_DELETED).map(product -> {
+            if (packagingVariantId != null) {
+                if (product.kind() == ProductKind.PACKAGING) {
+                    // Refuses (packaging has no box). Said BEFORE the box's product is locked, so two packaging entries naming each other's
+                    // variants cannot each hold one lock and wait for the other (see requireUsableBox).
+                    product.chooseDefaultPackaging(packagingVariantId);
+                }
+                requireUsableBox(packagingVariantId);
+            }
+            if (java.util.Objects.equals(product.defaultPackagingVariantId(), packagingVariantId)) {
+                return ProductMapper.toAdminResponse(product);
+            }
+            product.chooseDefaultPackaging(packagingVariantId);
+            log.info("Default packaging of product id={} is now {}", productId, packagingVariantId);
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
+            return ProductMapper.toAdminResponse(product);
+        });
+    }
 
-                    log.info("Repriced variant id={} sku=\"{}\" on product id={} from {} to {} {}",
-                            variantId, variant.sku(), productId, was,
-                            variant.unitPrice(), variant.currency());
-                    // The same event addVariant records. Its VariantPayload
-                    // carries unitPrice and currency, so the log holds every
-                    // price the product has ever had, and when -- prices
-                    // decide revenue, which is why this is a logged fact.
-                    record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
-                    return ProductMapper.toAdminResponse(product);
-                }));
+    /**
+     * The box has to be something a sale can go out in: an active variant of a packaging entry that exists.
+     *
+     * <p>The box's product is LOCKED and only then read, so a delete of it that is in flight finishes first and is seen: a choice made
+     * meanwhile waits and is refused, and a delete that arrives after the choice sees the box in use
+     * ({@link #refuseWhileUsedAsADefaultBox}). The owner is found with a plain query and never loaded before the lock, because an entity
+     * loaded earlier would keep the state it had before that delete committed. That query only answers for PACKAGING (a product's kind
+     * never changes), so a variant of anything else is refused before any lock is taken. The product being changed is locked first and
+     * only a packaging product is ever locked after it, while a packaging product's own choice is refused before it locks anything
+     * (see {@link #chooseDefaultPackaging}): so two such writes cannot wait for each other.
+     */
+    private void requireUsableBox(UUID variantId) {
+        UUID boxProductId = jdbc.query("SELECT v.product_id FROM product_variants v JOIN products p ON p.id = v.product_id WHERE v.id = ? AND p.kind = ?",
+                rs -> rs.next() ? rs.getObject(1, UUID.class) : null, variantId, ProductKind.PACKAGING.name());
+        Product box = boxProductId == null ? null : repository.findByIdForUpdate(boxProductId).orElse(null);
+        ProductVariant variant = box == null ? null : box.variants().stream().filter(v -> v.id().equals(variantId)).findFirst().orElse(null);
+        if (variant == null || box.isDeleted() || box.kind() != ProductKind.PACKAGING || !variant.isActive()) {
+            throw new IllegalArgumentException(
+                    "packagingVariantId must be an active variant of a packaging entry that exists (a box, a pouch, a ribbon); " + variantId + " is not");
+        }
     }
 
     /**
@@ -640,7 +760,9 @@ public class ProductService {
                 // against yet. The variants arrive on the first
                 // product.updated after a variant is added.
                 variantPayloads(saved),
-                saved.kind().name()
+                saved.kind().name(),
+                saved.defaultPackagingVariantId(),
+                saved.unpublishCount()
         ), actor);
         // Mapped inside the transaction like every other read path here. A
         // freshly constructed product would in fact survive mapping outside
@@ -893,7 +1015,9 @@ public class ProductService {
                 product.productTypeCode(),
                 product.status().name(),
                 variantPayloads(product),
-                product.kind().name());
+                product.kind().name(),
+                product.defaultPackagingVariantId(),
+                product.unpublishCount());
     }
 
     /**
@@ -951,6 +1075,7 @@ public class ProductService {
         boolean removed = repository.findByIdForUpdate(id)
                 .filter(NOT_DELETED)
                 .map(product -> {
+                    refuseWhileUsedAsADefaultBox(product);
                     // Image OBJECTS are still reclaimed: nobody will ever
                     // serve them again, and object storage is the one place
                     // where keeping the bytes buys nothing. The product_images
@@ -1003,5 +1128,32 @@ public class ProductService {
             log.debug("Delete skipped, product not found id={}", id);
         }
         return removed;
+    }
+
+    /**
+     * A box that products still go out in is not deleted: their default would point at a box that is gone, their price would go on adding
+     * its cost, and inventory would go on holding boxes for them, and none of them would be announced. Refused (409 packaging-in-use), naming
+     * the products, so each is moved to another box, or to none, first. A product that has itself been deleted no longer holds its box.
+     * Only packaging can be a default box. Called with the box's own product locked, which a choice of that box also takes: see
+     * {@link #requireUsableBox}.
+     */
+    private void refuseWhileUsedAsADefaultBox(Product product) {
+        if (product.kind() != ProductKind.PACKAGING) {
+            return;
+        }
+        List<Map<String, Object>> holders = jdbc.queryForList("""
+                SELECT p.id, p.title FROM products p
+                 WHERE p.is_deleted = FALSE
+                   AND p.default_packaging_variant_id IN (SELECT v.id FROM product_variants v WHERE v.product_id = ?)
+                 ORDER BY p.title, p.id""", product.id());
+        if (holders.isEmpty()) {
+            return;
+        }
+        String shown = holders.stream().limit(5).map(row -> "'" + row.get("title") + "'").collect(java.util.stream.Collectors.joining(", "));
+        String more = holders.size() > 5 ? " and " + (holders.size() - 5) + " more" : "";
+        throw new PricingProblem(HttpStatus.CONFLICT, "packaging-in-use",
+                "'" + product.title() + "' is the default box of " + holders.size() + (holders.size() == 1 ? " product" : " products") + ": " + shown + more
+                        + ". Choose another box for each (or none), then delete it.")
+                .with("products", holders.stream().map(row -> Map.of("id", row.get("id"), "title", row.get("title"))).toList());
     }
 }

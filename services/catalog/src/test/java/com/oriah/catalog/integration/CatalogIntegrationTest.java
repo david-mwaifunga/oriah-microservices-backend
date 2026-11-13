@@ -18,6 +18,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
+import com.oriah.catalog.PricedCatalogue;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.repository.ProductRepository;
 
@@ -62,6 +63,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "eureka.client.enabled=false"
 })
 class CatalogIntegrationTest {
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
 
     private static final SimpleGrantedAuthority CATALOG_ADMIN =
             new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN");
@@ -309,14 +314,17 @@ class CatalogIntegrationTest {
         return location.substring(location.lastIndexOf('/') + 1);
     }
 
+    /** Adds a variant (unpriced, as every variant now starts) and, if a price is wanted, gives it one directly: this test is about the catalogue, not pricing. */
     private void addVariant(String productId, String sku, String price) throws Exception {
-        String body = "{\"sku\": \"" + sku + "\", \"unitPrice\": " + price
-                + ", \"currency\": \"ZMW\", \"options\": {}}";
-        mvc.perform(post("/api/v1/admin/products/{id}/variants", productId)
+        String body = "{\"sku\": \"" + sku + "\", \"currency\": \"ZMW\", \"options\": {}}";
+        var added = mvc.perform(post("/api/v1/admin/products/{id}/variants", productId)
                         .with(jwt().authorities(CATALOG_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isCreated());
+                .andExpect(status().isCreated()).andReturn();
+        if (new java.math.BigDecimal(price).signum() > 0) {
+            PricedCatalogue.priceLastAdded(jdbc, added.getResponse().getContentAsString(), price);
+        }
     }
 
     private void publish(String productId) throws Exception {
