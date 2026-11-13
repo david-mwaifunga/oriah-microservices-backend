@@ -1,11 +1,14 @@
 package com.oriah.catalog.mapper;
 
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 import com.oriah.catalog.dto.CategoryResponse;
 import com.oriah.catalog.dto.ProductImageResponse;
 import com.oriah.catalog.dto.ProductResponse;
 import com.oriah.catalog.dto.VariantResponse;
+import com.oriah.catalog.model.Availability;
 import com.oriah.catalog.model.Category;
 import com.oriah.catalog.model.Product;
 import com.oriah.catalog.service.ProductWithAvailability;
@@ -113,7 +116,7 @@ public final class ProductMapper {
                 product.lowestActivePrice().orElse(null),
                 product.highestActivePrice().orElse(null),
                 product.currency().orElse(null),
-                toVariants(product),
+                toVariants(product, enriched.variants()),
                 toImages(product)
         );
     }
@@ -167,10 +170,14 @@ public final class ProductMapper {
      * flag is what the selector greys out.
      *
      * <p>{@code availability} is left null here -- stock lives in
-     * inventory-service, and resolving it per variant means a bulk lookup the
-     * detail path does not yet make.
+     * inventory-service, and one call per variant is not made for a list or an
+     * admin write. The single-product read passes each variant's badge in.
      */
     private static List<VariantResponse> toVariants(Product product) {
+        return toVariants(product, Map.of());
+    }
+
+    private static List<VariantResponse> toVariants(Product product, Map<UUID, Availability> badges) {
         return product.variants().stream()
                 .map(v -> new VariantResponse(
                         v.id(),
@@ -180,7 +187,7 @@ public final class ProductMapper {
                         v.options(),
                         v.isActive(),
                         List.of(),
-                        null))
+                        badges.containsKey(v.id()) ? badges.get(v.id()).name() : null))
                 .toList();
     }
 

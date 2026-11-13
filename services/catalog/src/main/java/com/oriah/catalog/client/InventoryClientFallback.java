@@ -2,6 +2,7 @@ package com.oriah.catalog.client;
 
 import java.util.UUID;
 
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 
 import lombok.extern.slf4j.Slf4j;
@@ -18,14 +19,15 @@ import lombok.extern.slf4j.Slf4j;
  * <p>Strategy: return {@code null} so callers (see
  * {@code ProductService.lookupAvailability}) translate that to
  * {@code Availability.UNKNOWN}. Catalog stays up, the PDP just doesn't
- * show a stock badge until inventory recovers.
+ * show a stock badge until inventory recovers. (A 404, "no stock row", is
+ * not a failure and never reaches here: see {@link InventoryClient}.)
  */
 @Component
 @Slf4j
 class InventoryClientFallback implements InventoryClient {
 
     @Override
-    public InventoryDto getByVariantId(UUID variantId) {
+    public ResponseEntity<InventoryDto> getByVariantId(UUID variantId) {
         log.warn("Inventory call failed (fallback engaged) variantId={}", variantId);
         return null;
     }

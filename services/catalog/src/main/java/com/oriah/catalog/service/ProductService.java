@@ -2,6 +2,7 @@ package com.oriah.catalog.service;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -9,6 +10,7 @@ import java.util.UUID;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Service;
@@ -161,7 +163,8 @@ public class ProductService {
 
     /**
      * Find a product and enrich it with stock availability looked up from
-     * the inventory service.
+     * the inventory service, for the product as a whole and for each variant
+     * that can be bought.
      *
      * <p>The inventory call goes through the Resilience4j circuit breaker
      * wrapping {@link InventoryClient}. If inventory is down or slow, the
@@ -169,10 +172,10 @@ public class ProductService {
      * {@link Availability#UNKNOWN} rather than failing — catalog stays up
      * even when inventory doesn't.
      *
-     * <p>Catalog doesn't have a {@code Variant} entity yet, so we use
-     * the product's id as the variant id when calling inventory. When
-     * variants land (future iteration), this becomes a per-variant
-     * lookup instead.
+     * <p>Inventory keys its stock on the VARIANT's id, so each purchasable
+     * variant is asked for by its own id (the product's id is a variant's id
+     * only for the products that predate variants). See
+     * {@link #lookupAvailability(Product)}.
      */
     @Transactional(readOnly = true)
     public Optional<ProductResponse> findByIdWithAvailability(UUID id) {
@@ -204,27 +207,92 @@ public class ProductService {
                 // this codebase already fixed once in CustomerService, so the
                 // fix is the same shape: the transaction that loaded the
                 // entity is the transaction that reads it.
-                .map(product -> ProductMapper.toResponse(
-                        new ProductWithAvailability(product, lookupAvailability(product.id()))));
+                .map(this::withAvailability);
+    }
+
+    /** The product as the single-product reads answer it: with its stock badge, and each purchasable variant's. */
+    private ProductResponse withAvailability(Product product) {
+        StockBadges badges = lookupAvailability(product);
+        return ProductMapper.toResponse(new ProductWithAvailability(product, badges.product(), badges.variants()));
+    }
+
+    /** The product's badge and each purchasable variant's own. */
+    private record StockBadges(Availability product, Map<UUID, Availability> variants) {
     }
 
     /**
-     * Translates the inventory service's numeric response into the
-     * domain {@link Availability} enum the wire format exposes.
+     * Asks inventory about each variant that can be bought, by the variant's own id, and works out the badges.
+     *
+     * <ul>
+     *   <li>No stock row at inventory (a 404) means NONE in stock, an answer and not a failure: a variant exists in
+     *       inventory only once goods of it have been received.</li>
+     *   <li>The product is as available as its variants TOGETHER: 3 of one size and 3 of another is IN_STOCK (5 or more).</li>
+     *   <li>When a call fails, that variant is UNKNOWN and the others are not asked (inventory is not answering, and
+     *       each ask can wait for the time limit). Stock already found still stands: it is known to be there. With
+     *       none found, the product is UNKNOWN, never OUT_OF_STOCK: not knowing is not the same as none.</li>
+     * </ul>
      */
-    private Availability lookupAvailability(UUID variantId) {
-        InventoryDto inventory = inventoryClient.getByVariantId(variantId);
-        if (inventory == null) {
-            return Availability.UNKNOWN;
+    private StockBadges lookupAvailability(Product product) {
+        Map<UUID, Availability> byVariant = new LinkedHashMap<>();
+        long total = 0;
+        boolean unknown = false;
+        for (ProductVariant variant : product.variants()) {
+            if (!variant.isPurchasable()) {
+                continue;
+            }
+            if (unknown) {
+                byVariant.put(variant.id(), Availability.UNKNOWN);
+                continue;
+            }
+            Integer available = availableOf(variant.id());
+            if (available == null) {
+                unknown = true;
+                byVariant.put(variant.id(), Availability.UNKNOWN);
+                continue;
+            }
+            total += available;
+            byVariant.put(variant.id(), classify(available));
         }
-        if (inventory.available() <= 0) {
+        Availability overall;
+        if (total > 0) {
+            overall = classify(total);
+        } else if (unknown) {
+            overall = Availability.UNKNOWN;
+        } else {
+            overall = Availability.OUT_OF_STOCK;
+        }
+        return new StockBadges(overall, byVariant);
+    }
+
+    /** What inventory says can be sold of a variant: 0 when it has no stock row, null when it could not be asked. */
+    private Integer availableOf(UUID variantId) {
+        ResponseEntity<InventoryDto> answer = inventoryClient.getByVariantId(variantId);
+        if (answer == null) {
+            return null;
+        }
+        if (answer.getStatusCode().value() == 404) {
+            return 0;
+        }
+        InventoryDto body = answer.getBody();
+        if (body == null || body.available() == null) {
+            return null;
+        }
+        return Math.max(0, body.available());
+    }
+
+    /**
+     * Translates a number of units available into the domain {@link Availability}
+     * enum the wire format exposes.
+     */
+    private Availability classify(long available) {
+        if (available <= 0) {
             return Availability.OUT_OF_STOCK;
         }
         // Threshold lives in config-repo (oriah.catalog.low-stock-threshold)
         // and is rebound in place on /actuator/refresh (broadcast by
         // Spring Cloud Bus on /actuator/busrefresh from the configserver),
         // so this read returns the latest value without a service restart.
-        if (inventory.available() < props.getLowStockThreshold()) {
+        if (available < props.getLowStockThreshold()) {
             return Availability.LOW_STOCK;
         }
         return Availability.IN_STOCK;
@@ -305,8 +373,7 @@ public class ProductService {
                 // endpoint would resurrect something the audit trail says is
                 // gone.
                 .filter(product -> !product.isDeleted())
-                .map(product -> ProductMapper.toResponse(
-                        new ProductWithAvailability(product, lookupAvailability(product.id()))));
+                .map(this::withAvailability);
     }
 
     /**
