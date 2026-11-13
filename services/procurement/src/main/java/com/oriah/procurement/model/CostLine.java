@@ -185,6 +185,11 @@ public class CostLine extends BaseEntity {
         this.typedAt = previous.typedAt;
     }
 
+    /** A cost line rebuilt from a recorded revision keeps the id it was recorded under, so its shares still find it. */
+    void restoreId(UUID recorded) {
+        this.id = recorded;
+    }
+
     void stamp(String by, Instant at) {
         this.typedBy = by;
         this.typedAt = at;

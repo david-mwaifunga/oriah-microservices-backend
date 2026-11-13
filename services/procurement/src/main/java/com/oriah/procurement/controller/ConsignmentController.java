@@ -1,6 +1,7 @@
 package com.oriah.procurement.controller;
 
 import java.net.URI;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -20,6 +21,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.procurement.dto.AllocationPreviewResponse;
+import com.oriah.procurement.dto.AmendConsignmentRequest;
+import com.oriah.procurement.dto.AmendmentResponse;
 import com.oriah.procurement.dto.AttachOrderRequest;
 import com.oriah.procurement.dto.ConsignmentResponse;
 import com.oriah.procurement.dto.ConsignmentSummary;
@@ -27,6 +30,7 @@ import com.oriah.procurement.dto.CostLinesRequest;
 import com.oriah.procurement.dto.CreateConsignmentRequest;
 import com.oriah.procurement.dto.LineDetailsRequest;
 import com.oriah.procurement.dto.OpeningLinesRequest;
+import com.oriah.procurement.dto.RevisionSummary;
 import com.oriah.procurement.dto.UpdateConsignmentRequest;
 import com.oriah.procurement.dto.VersionRequest;
 import com.oriah.procurement.model.ConsignmentStatus;
@@ -46,8 +50,9 @@ import jakarta.validation.Valid;
  * across them. Only the people who hold the procurement capability touch it, costs included:
  * the gateway requires the same capability for this prefix and the service requires it again.
  *
- * <p>This is the draft half. The preview shows what each unit would cost; receiving (Phase 4,
- * next) makes it final.
+ * <p>The draft half: the preview shows what each unit would cost, and receiving makes it final. After that
+ * nothing about the consignment changes; a correction of its cost is a new revision of its allocation
+ * ({@code POST .../amendments}, Phase 5), never an edit.
  */
 @RestController
 @RequestMapping(ConsignmentController.BASE_PATH)
@@ -282,14 +287,53 @@ public class ConsignmentController {
             description = "The courier's charge and every other cost shared out to the unit, to the ngwee. For a draft it "
                     + "is worked out afresh and changes nothing; when it cannot be costed yet, ready is false and problems "
                     + "says what to fix. For a received consignment it is the allocation recorded when the goods landed "
-                    + "(revision, receivedAt), never recomputed.")
+                    + "(revision, receivedAt), never recomputed; after a correction it is the latest revision unless one is asked for.")
     @ApiResponse(responseCode = "200", description = "The allocation, or the problems that stop it")
+    @ApiResponse(responseCode = "400", description = "The id is not a UUID, or the revision is not a number",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such consignment, or no such revision of it",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping("/{id}/allocation")
+    public AllocationPreviewResponse preview(@PathVariable UUID id,
+                                             @Parameter(description = "A received consignment's earlier revision (1 is the receipt itself); "
+                                                     + "left out, the revision that stands")
+                                             @RequestParam(name = "revision", required = false) Integer revision) {
+        return service.preview(id, revision);
+    }
+
+    @Operation(operationId = "amendConsignment", summary = "Correct the cost of a received consignment",
+            description = "The courier's bill was keyed wrong, a duty assessment arrived late, a supplier's total was mistyped. "
+                    + "Nothing already recorded is edited: this adds a NEW revision of the allocation with the reason and who "
+                    + "made it, worked out from the revision before it by the rules a draft is costed by, and announces "
+                    + "(consignment.amended) each line whose cost it changed so inventory re-lays the new unit costs over the "
+                    + "stock. Send fromRevision, the revision you were looking at, so two people never overwrite each other. "
+                    + "costLines, when present, replaces the whole cost list; goodsLines corrects the goods totals it names. "
+                    + "All or nothing.")
+    @ApiResponse(responseCode = "201", description = "The correction was recorded; Location points at the new revision")
+    @ApiResponse(responseCode = "400", description = "A field breaks a rule, a cost is not allowed, a split does not add up, "
+            + "or the correction changes nothing; see fieldErrors / detail",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such consignment",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "Another correction was made since fromRevision (concurrent-update), or "
+            + "the consignment is still a draft",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/{id}/amendments")
+    public ResponseEntity<AmendmentResponse> amend(@PathVariable UUID id, @Valid @RequestBody AmendConsignmentRequest request) {
+        AmendmentResponse amended = service.amend(id, request);
+        return ResponseEntity.created(URI.create(BASE_PATH + "/" + id + "/allocation?revision=" + amended.revision())).body(amended);
+    }
+
+    @Operation(operationId = "listConsignmentRevisions", summary = "Every revision of a received consignment's allocation",
+            description = "Oldest first: the receipt (1) and each correction with who made it, why, the totals and the lines "
+                    + "whose cost it changed. A draft has none.")
+    @ApiResponse(responseCode = "200", description = "The revisions")
     @ApiResponse(responseCode = "400", description = "The id is not a UUID",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "404", description = "No such consignment",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
-    @GetMapping("/{id}/allocation")
-    public AllocationPreviewResponse preview(@PathVariable UUID id) {
-        return service.preview(id);
+    @GetMapping("/{id}/revisions")
+    public List<RevisionSummary> revisions(@PathVariable UUID id) {
+        return service.revisions(id);
     }
 }

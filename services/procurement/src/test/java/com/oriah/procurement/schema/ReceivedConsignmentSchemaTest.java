@@ -230,10 +230,11 @@ class ReceivedConsignmentSchemaTest {
                                                  total_period, total_landed)
                 VALUES (?, ?, 0, '{}'::jsonb, 1.00, 0.00, 0.00, 1.00)""", UUID.randomUUID(), draft.consignment()))
                 .isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("ck_allocation_revision_number");
+        // From V7 a revision after the first says whether the consignment is still an estimate (AmendmentSchemaTest).
         jdbc.update("""
                 INSERT INTO allocation_revision (id, consignment_id, revision, reason, inputs, total_goods,
-                                                 total_capitalized, total_period, total_landed)
-                VALUES (?, ?, 2, 'courier re-billed', '{}'::jsonb, 1.00, 0.00, 0.00, 1.00)""", UUID.randomUUID(), draft.consignment());
+                                                 total_capitalized, total_period, total_landed, is_estimated)
+                VALUES (?, ?, 2, 'courier re-billed', '{}'::jsonb, 1.00, 0.00, 0.00, 1.00, false)""", UUID.randomUUID(), draft.consignment());
     }
 
     @Test

@@ -1,14 +1,17 @@
 package com.oriah.procurement.service;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -31,7 +34,11 @@ import org.springframework.transaction.annotation.Transactional;
 import com.oriah.observability.OriahExceptionHandlerSupport.FieldErrorView;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.procurement.allocation.ConsignmentCosting;
+import com.oriah.procurement.allocation.ConsignmentCosting.LineBasis;
+import com.oriah.procurement.allocation.ConsignmentCosting.LineView;
 import com.oriah.procurement.dto.AllocationPreviewResponse;
+import com.oriah.procurement.dto.AmendConsignmentRequest;
+import com.oriah.procurement.dto.AmendmentResponse;
 import com.oriah.procurement.dto.AttachOrderRequest;
 import com.oriah.procurement.dto.ConsignmentResponse;
 import com.oriah.procurement.dto.ConsignmentSummary;
@@ -41,6 +48,7 @@ import com.oriah.procurement.dto.CreateConsignmentRequest;
 import com.oriah.procurement.dto.LineDetailsRequest;
 import com.oriah.procurement.dto.OpeningLineRequest;
 import com.oriah.procurement.dto.OpeningLinesRequest;
+import com.oriah.procurement.dto.RevisionSummary;
 import com.oriah.procurement.dto.UpdateConsignmentRequest;
 import com.oriah.procurement.events.ProcurementEvents;
 import com.oriah.procurement.exception.InvalidFieldsException;
@@ -50,12 +58,14 @@ import com.oriah.procurement.model.Consignment.Header;
 import com.oriah.procurement.model.Consignment.OpeningLine;
 import com.oriah.procurement.model.ConsignmentLine;
 import com.oriah.procurement.model.ConsignmentStatus;
+import com.oriah.procurement.model.CostLine;
 import com.oriah.procurement.model.CostType;
 import com.oriah.procurement.model.PurchaseOrder;
 import com.oriah.procurement.model.Supplier;
 import com.oriah.procurement.repository.ConsignmentRepository;
 import com.oriah.procurement.repository.PurchaseOrderRepository;
 import com.oriah.procurement.repository.SupplierRepository;
+import com.oriah.procurement.service.ConsignmentAllocations.RevisionState;
 
 /**
  * Building a consignment: starting one from whole purchase orders (or typing in the opening
@@ -203,13 +213,38 @@ public class ConsignmentService {
      */
     @Transactional(readOnly = true)
     public AllocationPreviewResponse preview(UUID id) {
+        return preview(id, null);
+    }
+
+    /**
+     * The same, for one recorded revision of a received consignment (1 is the receipt itself); null is the latest.
+     * A draft has none recorded, so asking for a revision of it is a 404.
+     */
+    @Transactional(readOnly = true)
+    public AllocationPreviewResponse preview(UUID id, Integer revision) {
         Consignment consignment = consignments.findById(id).orElseThrow(() -> notFound(id));
         if (consignment.status() == ConsignmentStatus.RECEIVED) {
-            ConsignmentAllocations.Recorded recorded = allocations.latest(consignment)
-                    .orElseThrow(() -> new IllegalStateException("received consignment " + id + " has no recorded allocation"));
+            Optional<ConsignmentAllocations.Recorded> found = revision == null
+                    ? allocations.latest(consignment) : allocations.at(consignment, revision);
+            ConsignmentAllocations.Recorded recorded = found.orElseThrow(() -> revision == null
+                    ? new IllegalStateException("received consignment " + id + " has no recorded allocation")
+                    : new ResourceNotFoundException("AllocationRevision", "revision", revision.toString()));
             return AllocationPreviewResponse.of(recorded.outcome(), recorded.revision(), recorded.receivedAt());
         }
+        if (revision != null) {
+            throw new ResourceNotFoundException("AllocationRevision", "revision", revision.toString());
+        }
         return AllocationPreviewResponse.of(ConsignmentCosting.of(consignment));
+    }
+
+    /** Every revision of a received consignment's allocation, oldest first; a draft has none. */
+    @Transactional(readOnly = true)
+    public List<RevisionSummary> revisions(UUID id) {
+        Consignment consignment = consignments.findById(id).orElseThrow(() -> notFound(id));
+        if (consignment.status() != ConsignmentStatus.RECEIVED) {
+            return List.of();
+        }
+        return allocations.revisions(consignment).stream().map(RevisionSummary::of).toList();
     }
 
     // ----------------------------------------------------------------- change
@@ -342,6 +377,147 @@ public class ConsignmentService {
         return now;
     }
 
+    // ------------------------------------------------------------------- amend
+
+    /**
+     * The cost of a received consignment was keyed wrong, or arrived late. The consignment is never edited: this
+     * records a NEW revision of its allocation (with the reason and who made it), worked out from the revision before
+     * it by exactly the rules a draft is costed by, and appends one {@code consignment.amended} for each line whose
+     * unit costs, totals or estimate flag it changed, so inventory can re-lay the new costs over the stock. One
+     * transaction: if any step fails nothing is left behind.
+     *
+     * <p>Made from the revision the person saw ({@code fromRevision}): the consignment's row is locked first, so two
+     * corrections run one after the other and the second, finding a newer revision than it was made from, is a 409.
+     * Locks, in this order: the consignment's row, then the outbox's own when the events are appended.
+     */
+    public AmendmentResponse amend(UUID id, AmendConsignmentRequest request) {
+        Consignment consignment = consignments.findByIdForUpdate(id).orElseThrow(() -> notFound(id));
+        if (consignment.status() != ConsignmentStatus.RECEIVED) {
+            throw new IllegalStateException("this consignment is still " + consignment.status() + ": change it directly. Only "
+                    + "a received consignment is corrected by a new revision");
+        }
+        int latest = allocations.latestRevision(id);
+        if (request.fromRevision() != latest) {
+            throw new ObjectOptimisticLockingFailureException(Consignment.class, id);
+        }
+        if (consignment.isOpening() && Boolean.FALSE.equals(request.estimated())) {
+            throw new IllegalArgumentException("the opening stock is an estimate for good: its costs come from the old book, "
+                    + "so it cannot be marked as no longer an estimate");
+        }
+
+        RevisionState previous = allocations.stateOf(consignment, latest);
+        boolean estimated = request.estimated() != null ? request.estimated() : previous.estimated();
+
+        // Never earlier than the revision before it, nor than the receipt, whatever the clock does.
+        Instant amendedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        for (Instant floor : List.of(previous.createdAt(), consignment.receivedAt())) {
+            if (!amendedAt.isAfter(floor)) {
+                amendedAt = floor.plus(1, ChronoUnit.MICROS);
+            }
+        }
+        String typist = subject();
+
+        List<LineBasis> lines = withCorrectedGoods(previous.lines(), request.goodsLines());
+        List<CostLine> costs = previous.costs();
+        if (request.costLines() != null) {
+            Set<UUID> lineIds = lines.stream().map(LineBasis::id).collect(Collectors.toSet());
+            List<CostLine> built = consignment.checkedCostLinesForCorrection(costLineInputs(request.costLines()), lineIds);
+            // A split that is sent again unchanged keeps its typist; a new or changed one is this person's.
+            Consignment.carryStamps(previous.costs(), built);
+            Consignment.stampNewlyTyped(built, typist == null ? "system" : typist, amendedAt);
+            costs = built;
+        }
+        if (sameInputs(previous, lines, costs, estimated)) {
+            throw new IllegalArgumentException("This correction changes nothing: the goods, the costs and the estimate "
+                    + "are as revision " + latest + " has them. Say what was wrong.");
+        }
+
+        ConsignmentCosting.Outcome outcome = ConsignmentCosting.of(lines, costs);
+        if (!outcome.ready()) {
+            throw new IllegalArgumentException("The correction cannot be costed. " + String.join(" ", outcome.problems()));
+        }
+
+        // Which lines the correction moved, against what revision `latest` recorded.
+        Map<UUID, String> was = ConsignmentAllocations.figuresOf(allocations.at(consignment, latest).orElseThrow().outcome());
+        Map<UUID, String> now = ConsignmentAllocations.figuresOf(outcome);
+        boolean estimateMoved = previous.estimated() != estimated;
+        Set<UUID> changed = new LinkedHashSet<>();
+        for (LineView line : outcome.lines()) {
+            if (estimateMoved || !now.get(line.lineId()).equals(was.get(line.lineId()))) {
+                changed.add(line.lineId());
+            }
+        }
+
+        int revision = latest + 1;
+        String reason = request.reason().strip();
+        allocations.record(id, revision, reason, estimated, lines, costs, outcome, typist, amendedAt);
+
+        // Last: it takes the outbox's lock, which is held until commit.
+        events.consignmentAmended(consignment, outcome, suppliersOf(consignment, orders.findByConsignment(id)), actor(), revision,
+                reason, estimated, changed, amendedAt);
+        log.info("Amended consignment id={} to revision {}: {} of {} lines changed, landed={}", id, revision, changed.size(),
+                lines.size(), outcome.landedTotal());
+        return new AmendmentResponse(revision, reason, typist, amendedAt, estimated,
+                AllocationPreviewResponse.of(outcome, revision, consignment.receivedAt()), List.copyOf(changed));
+    }
+
+    /** The lines with the goods totals the person corrected; a line they did not name keeps its own. */
+    private static List<LineBasis> withCorrectedGoods(List<LineBasis> lines, List<AmendConsignmentRequest.GoodsLineRequest> corrections) {
+        if (corrections == null || corrections.isEmpty()) {
+            return lines;
+        }
+        Map<UUID, BigDecimal> byLine = new LinkedHashMap<>();
+        Set<UUID> known = lines.stream().map(LineBasis::id).collect(Collectors.toSet());
+        for (AmendConsignmentRequest.GoodsLineRequest correction : corrections) {
+            if (!known.contains(correction.lineId())) {
+                throw new IllegalArgumentException("goodsLines names a line that is not in this consignment: " + correction.lineId());
+            }
+            if (correction.goodsTotal().signum() <= 0) {
+                throw new IllegalArgumentException("goods are never free: the goods total of line " + correction.lineId() + " must be above zero");
+            }
+            if (byLine.put(correction.lineId(), correction.goodsTotal()) != null) {
+                throw new IllegalArgumentException("the same line appears more than once in goodsLines: " + correction.lineId());
+            }
+        }
+        return lines.stream().map(l -> byLine.containsKey(l.id())
+                ? new LineBasis(l.id(), l.position(), l.variantId(), l.sku(), l.quantity(), byLine.get(l.id()), l.chargeableWeightGrams())
+                : l).toList();
+    }
+
+    /** True when the correction asks for exactly what the revision before already has: goods, every cost and the estimate. */
+    private static boolean sameInputs(RevisionState previous, List<LineBasis> lines, List<CostLine> costs, boolean estimated) {
+        if (previous.estimated() != estimated || previous.lines().size() != lines.size() || previous.costs().size() != costs.size()) {
+            return false;
+        }
+        for (int i = 0; i < lines.size(); i++) {
+            if (previous.lines().get(i).goodsTotal().compareTo(lines.get(i).goodsTotal()) != 0) {
+                return false;
+            }
+        }
+        for (int i = 0; i < costs.size(); i++) {
+            if (!costSignature(previous.costs().get(i), lines).equals(costSignature(costs.get(i), lines))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** A cost as one comparable string: what it is, how much, how it is shared, and the split a person typed, in line order. */
+    private static String costSignature(CostLine cost, List<LineBasis> lines) {
+        StringBuilder signature = new StringBuilder().append(cost.costType()).append('|').append(plain(cost.amount())).append('|')
+                .append(cost.basis()).append('|').append(cost.treatment()).append('|').append(cost.incurredOn()).append('|')
+                .append(cost.note()).append('|');
+        for (LineBasis line : lines) {
+            BigDecimal share = cost.shares().get(line.id());
+            signature.append(share == null ? "-" : plain(share)).append(',');
+        }
+        return signature.toString();
+    }
+
+    private static String plain(BigDecimal amount) {
+        return amount.signum() == 0 ? "0" : amount.stripTrailingZeros().toPlainString();
+    }
+
     /** The Keycloak subject of the signed-in person, or null outside a request. */
     private static String subject() {
         var auth = SecurityContextHolder.getContext().getAuthentication();
@@ -431,8 +607,21 @@ public class ConsignmentService {
         return inputs;
     }
 
+    /**
+     * The consignment as it stands. A received one carries the revision of its allocation that stands; after a
+     * correction its lines' goods and its cost lines are the ones that revision was worked out from, because the
+     * consignment's own rows are frozen as they were received.
+     */
     private ConsignmentResponse respond(Consignment consignment) {
         List<PurchaseOrder> inIt = orders.findByConsignment(consignment.id());
-        return ConsignmentResponse.of(consignment, inIt, suppliersOf(consignment, inIt));
+        Map<UUID, Supplier> named = suppliersOf(consignment, inIt);
+        if (consignment.status() == ConsignmentStatus.RECEIVED) {
+            int latest = allocations.latestRevision(consignment.id());
+            if (latest > 1) {
+                return ConsignmentResponse.of(consignment, inIt, named, latest, allocations.stateOf(consignment, latest));
+            }
+            return ConsignmentResponse.of(consignment, inIt, named, latest == 0 ? null : latest, null);
+        }
+        return ConsignmentResponse.of(consignment, inIt, named);
     }
 }

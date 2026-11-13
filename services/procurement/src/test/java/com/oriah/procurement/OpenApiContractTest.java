@@ -426,7 +426,7 @@ class OpenApiContractTest {
     @DisplayName("consignments: a reply says which of its fields may be null")
     void consignmentResponseSaysWhatMayBeNull() {
         for (String optional : List.of("note", "chargesBasis", "declarant", "clearanceForm", "zraAssessmentRef",
-                "licensedAgentUsed", "receivedAt")) {
+                "licensedAgentUsed", "receivedAt", "revision")) {
             assertThat(isNullable("Consignment", optional))
                     .as("Consignment.%s may be null; the schema says %s", optional, describe("Consignment", optional))
                     .isTrue();
@@ -473,6 +473,68 @@ class OpenApiContractTest {
                     .orElseThrow(() -> new AssertionError("no version parameter on delete " + path));
             assertThat(version.get("required")).as("delete %s: version", path).isEqualTo(true);
             assertThat(version.get("in")).isEqualTo("query");
+        }
+    }
+
+    // -------------------------------------------------------------- corrections
+
+    private static final String C_AMEND = CONSIGNMENT + "/amendments";
+    private static final String C_REVISIONS = CONSIGNMENT + "/revisions";
+
+    @Test
+    @DisplayName("corrections: the operations have the ids the frontend calls them by, a correction is 201, and every failure is a ProblemDetail")
+    void correctionOperationsArePinned() {
+        assertThat((String) at(operation(C_AMEND, "post") + ".operationId")).isEqualTo("amendConsignment");
+        assertThat((String) at(operation(C_REVISIONS, "get") + ".operationId")).isEqualTo("listConsignmentRevisions");
+        assertThat(responses(C_AMEND, "post")).containsKey("201").doesNotContainKey("200");
+        assertThat(responses(C_REVISIONS, "get")).containsKey("200");
+
+        // 400: a rule is broken, or the correction changes nothing. 409: another correction was made since, or it is a draft.
+        Map<String, List<String>> expected = new java.util.HashMap<>();
+        expected.put("post " + C_AMEND, List.of("400", "401", "403", "404", "409", "500"));
+        expected.put("get " + C_REVISIONS, List.of("400", "401", "403", "404", "500"));
+        expected.put("get " + C_ALLOCATION, List.of("400", "401", "403", "404", "500"));
+        expected.forEach((operation, statuses) -> {
+            String[] parts = operation.split(" ");
+            Map<String, Object> responses = responses(parts[1], parts[0]);
+            for (String status : statuses) {
+                assertThat(responses).as("%s must document %s", operation, status).containsKey(status);
+                assertThat(String.valueOf(responses.get(status)))
+                        .as("%s %s must reference ProblemDetail", operation, status)
+                        .contains(PROBLEM_REF)
+                        .contains("application/problem+json");
+            }
+        });
+        assertThat(responses(C_REVISIONS, "get")).doesNotContainKey("409").doesNotContainKey("503");
+        assertThat(responses(C_AMEND, "post")).doesNotContainKey("503");
+    }
+
+    @Test
+    @DisplayName("corrections: the allocation read documents the revision it can be asked for")
+    void allocationReadDocumentsItsRevision() {
+        List<Map<String, Object>> parameters = at(operation(C_ALLOCATION, "get") + ".parameters");
+
+        assertThat(parameters).extracting(p -> p.get("name")).contains("id", "revision");
+        Map<String, Object> revision = parameters.stream().filter(p -> "revision".equals(p.get("name"))).findFirst().orElseThrow();
+        assertThat(revision.get("in")).isEqualTo("query");
+        assertThat(revision.get("required")).as("left out, the revision that stands").isNotEqualTo(true);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("corrections: what a request must carry is said, and what a reply may leave null")
+    void correctionSchemasSayWhatIsRequiredAndWhatMayBeNull() {
+        assertThat((List<String>) at("$.components.schemas.AmendConsignmentRequest.required")).contains("fromRevision", "reason")
+                .as("a correction says only what changes").doesNotContain("costLines", "goodsLines", "estimated");
+        assertThat((List<String>) at("$.components.schemas.AmendGoodsLine.required")).contains("lineId", "goodsTotal");
+
+        assertThat(isNullable("AllocationRevision", "reason")).as("the receipt has no reason").isTrue();
+        assertThat(isNullable("AllocationRevision", "createdBy")).isTrue();
+        for (String always : List.of("revision", "createdAt", "estimated", "goodsTotal", "landedTotal", "changedLines")) {
+            assertThat(isNullable("AllocationRevision", always)).as("AllocationRevision.%s", always).isFalse();
+        }
+        for (String always : List.of("revision", "reason", "amendedAt", "estimated", "allocation", "recutLines")) {
+            assertThat(isNullable("Amendment", always)).as("Amendment.%s", always).isFalse();
         }
     }
 

@@ -13,6 +13,7 @@ import com.oriah.procurement.model.CostLine;
 import com.oriah.procurement.model.CostTreatment;
 import com.oriah.procurement.model.PurchaseOrder;
 import com.oriah.procurement.model.Supplier;
+import com.oriah.procurement.service.ConsignmentAllocations;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -39,6 +40,9 @@ public record ConsignmentResponse(
         @Schema(types = {"string", "null"}) String zraAssessmentRef,
         @Schema(types = {"boolean", "null"}) Boolean licensedAgentUsed,
         @Schema(description = "When the goods landed; null while a draft", types = {"string", "null"}) Instant receivedAt,
+        @Schema(description = "Which revision of the allocation stands (1 is the receipt, 2 and up are corrections); null "
+                + "while a draft. When it is above 1 the lines' goods and the cost lines below are as that revision has "
+                + "them", types = {"integer", "null"}) Integer revision,
         String currency,
         @Schema(description = "Every line's all-in goods total") BigDecimal goodsTotal,
         @Schema(description = "Cost lines that ride on the goods into the unit costs") BigDecimal capitalizedCostTotal,
@@ -119,6 +123,19 @@ public record ConsignmentResponse(
      * @param suppliers every supplier they name, deleted ones included
      */
     public static ConsignmentResponse of(Consignment c, List<PurchaseOrder> orders, Map<UUID, Supplier> suppliers) {
+        return of(c, orders, suppliers, null, null);
+    }
+
+    /**
+     * The consignment as its latest recorded revision stands. A received consignment's own rows never change, so
+     * after a correction the lines' goods and the cost lines come from the revision's recorded inputs.
+     *
+     * @param revision the revision that stands (null for a draft)
+     * @param state    the recorded inputs of that revision when it is a correction (2 and up); null when the
+     *                 consignment's own rows already say it (a draft, or the receipt)
+     */
+    public static ConsignmentResponse of(Consignment c, List<PurchaseOrder> orders, Map<UUID, Supplier> suppliers,
+                                         Integer revision, ConsignmentAllocations.RevisionState state) {
         Map<UUID, PurchaseOrder> orderById = new java.util.HashMap<>();
         orders.forEach(o -> orderById.put(o.id(), o));
 
@@ -126,29 +143,39 @@ public record ConsignmentResponse(
                 PurchaseOrderResponse.reference(o.refNo()), o.status().name(), supplierOf(suppliers, o.supplierId()),
                 o.placedOn(), o.totalPaid(), o.version() == null ? 0L : o.version())).toList();
 
-        List<Line> lineViews = c.lines().stream().map(l -> lineOf(l, orderById, suppliers)).toList();
-        List<CostLineView> costViews = c.costLines().stream().map(ConsignmentResponse::costOf).toList();
+        Map<UUID, BigDecimal> goodsNow = new java.util.HashMap<>();
+        List<CostLine> costs = c.costLines();
+        boolean estimated = c.isEstimated();
+        if (state != null) {
+            state.lines().forEach(l -> goodsNow.put(l.id(), l.goodsTotal()));
+            costs = state.costs();
+            estimated = state.estimated();
+        }
 
-        BigDecimal goods = c.lines().stream().map(ConsignmentLine::goodsTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal capitalized = c.costLines().stream().filter(x -> x.treatment() == CostTreatment.CAPITALIZE)
+        List<Line> lineViews = c.lines().stream()
+                .map(l -> lineOf(l, goodsNow.getOrDefault(l.id(), l.goodsTotal()), orderById, suppliers)).toList();
+        List<CostLineView> costViews = costs.stream().map(ConsignmentResponse::costOf).toList();
+
+        BigDecimal goods = lineViews.stream().map(Line::goodsTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal capitalized = costs.stream().filter(x -> x.treatment() == CostTreatment.CAPITALIZE)
                 .map(CostLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal period = c.costLines().stream().filter(x -> x.treatment() == CostTreatment.PERIOD)
+        BigDecimal period = costs.stream().filter(x -> x.treatment() == CostTreatment.PERIOD)
                 .map(CostLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        return new ConsignmentResponse(c.id(), reference(c.refNo()), c.status().name(), c.isOpening(), c.isEstimated(),
+        return new ConsignmentResponse(c.id(), reference(c.refNo()), c.status().name(), c.isOpening(), estimated,
                 c.note(), c.chargesBasis() == null ? null : c.chargesBasis().name(), c.declarant(),
                 c.clearanceForm() == null ? null : c.clearanceForm().name(), c.zraAssessmentRef(),
-                c.licensedAgentUsed(), c.receivedAt(), CURRENCY, goods, capitalized, period, orderViews, lineViews,
+                c.licensedAgentUsed(), c.receivedAt(), revision, CURRENCY, goods, capitalized, period, orderViews, lineViews,
                 costViews, c.version() == null ? 0L : c.version(), c.createdAt(), c.updatedAt(), c.createdBy(),
                 c.updatedBy());
     }
 
-    private static Line lineOf(ConsignmentLine l, Map<UUID, PurchaseOrder> orders, Map<UUID, Supplier> suppliers) {
+    private static Line lineOf(ConsignmentLine l, BigDecimal goodsTotal, Map<UUID, PurchaseOrder> orders, Map<UUID, Supplier> suppliers) {
         PurchaseOrder order = l.purchaseOrderId() == null ? null : orders.get(l.purchaseOrderId());
         return new Line(l.id(), l.position(),
                 l.supplierId() == null ? null : supplierOf(suppliers, l.supplierId()),
                 order == null ? null : new LineOrder(order.id(), PurchaseOrderResponse.reference(order.refNo())),
-                l.variantId(), l.sku(), l.productTitle(), l.variantTitle(), l.kind(), l.quantity(), l.goodsTotal(),
+                l.variantId(), l.sku(), l.productTitle(), l.variantTitle(), l.kind(), l.quantity(), goodsTotal,
                 l.chargeableWeightGrams(), l.originCountry(), l.hsCode());
     }
 

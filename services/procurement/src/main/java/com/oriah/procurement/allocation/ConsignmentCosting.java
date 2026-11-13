@@ -39,6 +39,19 @@ public final class ConsignmentCosting {
     private ConsignmentCosting() {
     }
 
+    /**
+     * A line as the costing needs it: what it is, how many, what it cost, and what the courier billed it on. A
+     * consignment's lines are turned into these, and so are the lines of a recorded revision (whose goods may have been
+     * corrected since the lines were copied), so a correction is costed by exactly the rules a draft is.
+     */
+    public record LineBasis(UUID id, int position, UUID variantId, String sku, int quantity, BigDecimal goodsTotal, Long chargeableWeightGrams) {
+
+        public static LineBasis of(ConsignmentLine line) {
+            return new LineBasis(line.id(), line.position(), line.variantId(), line.sku(), line.quantity(), line.goodsTotal(),
+                    line.chargeableWeightGrams());
+        }
+    }
+
     /** {@code quantity} units, each costing {@code unitCost}. */
     public record SliceView(int quantity, BigDecimal unitCost) {
     }
@@ -77,8 +90,14 @@ public final class ConsignmentCosting {
     }
 
     public static Outcome of(Consignment consignment) {
-        List<ConsignmentLine> lines = consignment.lines();
-        List<CostLine> costLines = consignment.costLines();
+        return of(consignment.lines().stream().map(LineBasis::of).toList(), consignment.costLines());
+    }
+
+    /**
+     * Costs these lines under these costs. The costs may be a draft's own cost lines or detached ones rebuilt from a
+     * recorded revision; nothing here reads or changes the consignment.
+     */
+    public static Outcome of(List<LineBasis> lines, List<CostLine> costLines) {
 
         List<String> problems = new ArrayList<>();
         if (lines.isEmpty()) {
@@ -86,7 +105,7 @@ public final class ConsignmentCosting {
         }
 
         List<LineInput> inputs = new ArrayList<>();
-        for (ConsignmentLine line : lines) {
+        for (LineBasis line : lines) {
             inputs.add(new LineInput(line.quantity(), ngwee(line.goodsTotal()), line.chargeableWeightGrams()));
         }
 
@@ -97,7 +116,7 @@ public final class ConsignmentCosting {
 
         BigDecimal periodTotal = costLines.stream().filter(c -> c.treatment() == CostTreatment.PERIOD)
                 .map(CostLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal goodsTotal = lines.stream().map(ConsignmentLine::goodsTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal goodsTotal = lines.stream().map(LineBasis::goodsTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal capitalizedTotal = costLines.stream().filter(c -> c.treatment() == CostTreatment.CAPITALIZE)
                 .map(CostLine::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
 
@@ -137,7 +156,7 @@ public final class ConsignmentCosting {
         List<LineView> lineViews = new ArrayList<>();
         BigDecimal landedTotal = BigDecimal.ZERO;
         for (int i = 0; i < lines.size(); i++) {
-            ConsignmentLine line = lines.get(i);
+            LineBasis line = lines.get(i);
             LandedCostAllocator.LineResult r = result.lines().get(i);
             List<SliceView> slices = r.slices().stream()
                     .map(s -> new SliceView(s.quantity(), BigDecimal.valueOf(s.unitNgwee(), 2))).toList();
@@ -165,7 +184,7 @@ public final class ConsignmentCosting {
     }
 
     /** One cost as the allocator takes it, noting in {@code problems} whatever stops it. */
-    private static CostInput costInput(CostLine cost, List<ConsignmentLine> lines, List<String> problems) {
+    private static CostInput costInput(CostLine cost, List<LineBasis> lines, List<String> problems) {
         long amount = ngwee(cost.amount());
         String where = "Cost line " + cost.position() + " (" + cost.costType() + ")";
         if (cost.treatment() == CostTreatment.PERIOD) {
@@ -204,7 +223,7 @@ public final class ConsignmentCosting {
         }
         if (cost.basis() == CostBasis.WEIGHT && amount > 0) {
             List<Integer> missing = new ArrayList<>();
-            for (ConsignmentLine line : lines) {
+            for (LineBasis line : lines) {
                 if (line.chargeableWeightGrams() == null) {
                     missing.add(line.position());
                 }

@@ -368,24 +368,78 @@ public class Consignment extends BaseEntity {
         for (int i = 0; i < inputs.size(); i++) {
             built.add(checkedCostLine(i + 1, inputs.get(i), lineIds));
         }
-        // A split that is saved again unchanged keeps the person who first typed it, whoever saves the list.
-        // One old split is matched to ONE new one: if the same split now appears twice, the second is a
-        // new override and is its saver's, and two identical old splits keep their own typists in order.
-        List<CostLine> unclaimed = new ArrayList<>(costLines.stream().filter(CostLine::isStamped).toList());
-        for (CostLine fresh : built) {
-            if (fresh.hasTypedSplit()) {
+        carryStamps(costLines, built);
+        costLines.clear();
+        costLines.addAll(built);
+    }
+
+    /**
+     * A split that is saved again unchanged keeps the person who first typed it, whoever saves the list. One old
+     * split is matched to ONE new one: if the same split now appears twice, the second is a new override and is its
+     * saver's, and two identical old splits keep their own typists in order. The same rule for a draft's cost lines
+     * and for a correction's (where {@code previous} is the revision before).
+     */
+    public static void carryStamps(List<CostLine> previous, List<CostLine> fresh) {
+        List<CostLine> unclaimed = new ArrayList<>(previous.stream().filter(CostLine::isStamped).toList());
+        for (CostLine next : fresh) {
+            if (next.hasTypedSplit()) {
                 for (java.util.Iterator<CostLine> it = unclaimed.iterator(); it.hasNext(); ) {
                     CostLine old = it.next();
-                    if (old.sameSplitAs(fresh)) {
-                        fresh.carryStampFrom(old);
+                    if (old.sameSplitAs(next)) {
+                        next.carryStampFrom(old);
                         it.remove();
                         break;
                     }
                 }
             }
         }
-        costLines.clear();
-        costLines.addAll(built);
+    }
+
+    /**
+     * Records who typed every split in {@code lines} that has not been attributed yet, and when: the same rule as
+     * {@link #stampNewlyTyped}, for a list that is not this consignment's own (a correction's).
+     */
+    public static void stampNewlyTyped(List<CostLine> lines, String actor, Instant at) {
+        if (actor == null || actor.isBlank() || at == null) {
+            throw new IllegalArgumentException("say who typed the split, and when");
+        }
+        for (CostLine cost : lines) {
+            if (cost.hasTypedSplit() && !cost.isStamped()) {
+                cost.stamp(actor, at);
+            }
+        }
+    }
+
+    /**
+     * Cost lines checked by exactly the rules of a draft's (the closed list of types, no bank charge, duty only
+     * per line, the charges basis, typed splits naming every line and adding up), but DETACHED: nothing about this
+     * consignment changes. A correction's costs are built with it.
+     *
+     * @param lineIds the ids of the lines the costs are shared over
+     */
+    public List<CostLine> checkedCostLinesForCorrection(List<CostLineInput> inputs, Set<UUID> lineIds) {
+        if (inputs.size() > MAX_COST_LINES) {
+            throw new IllegalArgumentException("a consignment holds at most " + MAX_COST_LINES + " cost lines");
+        }
+        List<CostLine> built = new ArrayList<>(inputs.size());
+        for (int i = 0; i < inputs.size(); i++) {
+            built.add(checkedCostLine(i + 1, inputs.get(i), lineIds));
+        }
+        return built;
+    }
+
+    /**
+     * A cost line rebuilt from a recorded revision: detached, with the typist as it was recorded. (Its shares are by
+     * line id, as typed.)
+     */
+    public CostLine rebuiltCostLine(UUID id, int position, CostType type, BigDecimal amount, CostBasis basis, CostTreatment treatment,
+                                    LocalDate incurredOn, String note, Map<UUID, BigDecimal> shares, String typedBy, Instant typedAt) {
+        CostLine cost = new CostLine(this, position, type, amount, basis, treatment, incurredOn, note, shares);
+        cost.restoreId(id);
+        if (typedBy != null && typedAt != null) {
+            cost.stamp(typedBy, typedAt);
+        }
+        return cost;
     }
 
     /**
@@ -396,14 +450,7 @@ public class Consignment extends BaseEntity {
      * @param actor the Keycloak subject of the person
      */
     public void stampNewlyTyped(String actor, Instant at) {
-        if (actor == null || actor.isBlank() || at == null) {
-            throw new IllegalArgumentException("say who typed the split, and when");
-        }
-        for (CostLine cost : costLines) {
-            if (cost.hasTypedSplit() && !cost.isStamped()) {
-                cost.stamp(actor, at);
-            }
-        }
+        stampNewlyTyped(costLines, actor, at);
     }
 
     private CostLine checkedCostLine(int position, CostLineInput input, Set<UUID> lineIds) {
