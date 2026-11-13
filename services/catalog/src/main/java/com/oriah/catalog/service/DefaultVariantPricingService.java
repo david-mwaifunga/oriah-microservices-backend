@@ -1,5 +1,7 @@
 package com.oriah.catalog.service;
 
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -7,8 +9,10 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import com.oriah.catalog.promotion.Discount;
 import com.oriah.catalog.dto.VariantPricingResponse;
 import com.oriah.catalog.dto.VariantPricingResponse.Entry;
 import com.oriah.catalog.dto.VariantPricingResponse.Status;
@@ -52,17 +56,27 @@ import lombok.extern.slf4j.Slf4j;
 public class DefaultVariantPricingService implements VariantPricingService {
 
     private final ProductVariantRepository variants;
+    private final PromotionPricing promotions;
+    private final TransactionTemplate readOnly;
 
-    public DefaultVariantPricingService(ProductVariantRepository variants) {
+    public DefaultVariantPricingService(ProductVariantRepository variants, PromotionPricing promotions, PlatformTransactionManager transactions) {
         this.variants = variants;
+        this.promotions = promotions;
+        this.readOnly = new TransactionTemplate(transactions);
+        this.readOnly.setReadOnly(true);
     }
 
     /**
-     * One query for the whole batch, with every requested id answered.
+     * One query for the whole batch, with every requested id answered, and ONE question to promotion for the whole bag.
      *
-     * <p>Read-only transaction because the variant's {@code product} is
-     * fetch-joined but its own collections are not; keeping the session open
-     * for the mapping below avoids a lazy-load failure on the product title.
+     * <p>The variants are read in a read-only transaction because the variant's {@code product} is fetch-joined but its own collections are
+     * not; keeping the session open for the mapping avoids a lazy-load failure on the product title. The transaction ENDS before promotion is
+     * asked: a slow promotion service (up to its two-second limit) must not hold a database connection, or a promotion outage would take the
+     * connection pool with it.
+     *
+     * <p>The price in each entry is the LIST price; a promotion's discount per piece, the promotion that gives it and the net price (what one
+     * piece costs) are alongside it. If promotion cannot be asked the whole read is a 503, never the list price: a customer is not quoted the
+     * full price during a promotion. Nothing priced is no question: a bag of unknown or withdrawn pieces is answered without promotion.
      *
      * @return one entry per requested id, in request order, including
      *         duplicates. The caller can zip it against its own lines
@@ -72,7 +86,6 @@ public class DefaultVariantPricingService implements VariantPricingService {
      *         and leave the line holding its stale price.
      */
     @Override
-    @Transactional(readOnly = true)
     public VariantPricingResponse priceAll(List<UUID> variantIds) {
         if (variantIds == null || variantIds.isEmpty()) {
             // No query for nothing to look up. cart calls this on every bag
@@ -84,12 +97,21 @@ public class DefaultVariantPricingService implements VariantPricingService {
         // same variant twice in one request and the database should not be
         // asked twice.
         List<UUID> distinctIds = variantIds.stream().distinct().toList();
-        Map<UUID, ProductVariant> found = variants.findAllByIdInWithProduct(distinctIds).stream()
-                .collect(Collectors.toMap(ProductVariant::id, Function.identity()));
+        List<Entry> listed = readOnly.execute(status -> {
+            Map<UUID, ProductVariant> found = variants.findAllByIdInWithProduct(distinctIds).stream()
+                    .collect(Collectors.toMap(ProductVariant::id, Function.identity()));
+            return variantIds.stream().map(id -> toEntry(id, found.get(id))).toList();
+        });
 
-        List<Entry> results = variantIds.stream()
-                .map(id -> toEntry(id, found.get(id)))
-                .toList();
+        Map<UUID, PromotionPricing.Piece> toDiscount = new LinkedHashMap<>();
+        for (Entry entry : listed) {
+            if (entry.status() == Status.PRICED) {
+                toDiscount.putIfAbsent(entry.variantId(), new PromotionPricing.Piece(entry.variantId(), entry.productId(), entry.unitPrice()));
+            }
+        }
+        Map<UUID, Discount> discounts = promotions.discountsAt(toDiscount.values(), null);
+
+        List<Entry> results = listed.stream().map(entry -> entry.status() == Status.PRICED ? discounted(entry, discounts.get(entry.variantId())) : entry).toList();
 
         long unresolved = results.stream().filter(e -> e.status() != Status.PRICED).count();
         if (unresolved > 0) {
@@ -99,6 +121,13 @@ public class DefaultVariantPricingService implements VariantPricingService {
             log.debug("priced {} variants, {} not sellable", variantIds.size(), unresolved);
         }
         return new VariantPricingResponse(results);
+    }
+
+    /** The entry with its discount: none is 0.00 off and the list price as the net price. */
+    private static Entry discounted(Entry entry, Discount discount) {
+        BigDecimal off = discount == null ? BigDecimal.ZERO.setScale(2) : discount.perPiece();
+        return new Entry(entry.variantId(), entry.status(), entry.productId(), entry.productTitle(), entry.variantTitle(), entry.unitPrice(),
+                entry.currency(), off, discount == null ? null : discount.promotionId(), entry.unitPrice().subtract(off));
     }
 
     private static Entry toEntry(UUID requestedId, ProductVariant variant) {
@@ -133,7 +162,8 @@ public class DefaultVariantPricingService implements VariantPricingService {
                 product.title(),
                 variantTitle(product, variant),
                 variant.unitPrice(),
-                variant.currency());
+                variant.currency(),
+                null, null, null);
     }
 
     /**

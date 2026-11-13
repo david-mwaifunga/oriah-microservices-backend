@@ -173,6 +173,69 @@ class FeignCircuitBreakerSafetyTest {
         assertThat(properties.getProperty("spring.cloud.openfeign.client.config.inventory-costs.connect-timeout")).isNotBlank();
     }
 
+    /**
+     * Phase 7 added a THIRD client: promotion's in-force read, which catalog asks to price every piece. It is anonymous (no token to drop),
+     * but it must never degrade: a fallback answering "no promotion in force" would charge the list price during a promotion and quote it
+     * to the customer. So it is kept out of the breaker and the time limiter like the cost client, and a promotion service that cannot
+     * answer is a 503.
+     */
+    @Test
+    @DisplayName("the promotion client is anonymous: no Authorization parameter, no token to forward, and only promotion's internal read")
+    void promotionClientIsAnonymousAndInternal() {
+        for (Method method : PromotionClient.class.getDeclaredMethods()) {
+            boolean takesAuthorization = Arrays.stream(method.getParameters())
+                    .map(p -> p.getAnnotation(org.springframework.web.bind.annotation.RequestHeader.class))
+                    .anyMatch(h -> h != null);
+            assertThat(takesAuthorization).as("%s is anonymous: catalog prices for the storefront and has no token to forward", method.getName()).isFalse();
+
+            String mappings = Arrays.stream(method.getAnnotations()).map(Object::toString).reduce("", String::concat);
+            assertThat(mappings).as("%s reads promotion's internal list, which the gateway never routes", method.getName())
+                    .contains("/internal/promotions/").doesNotContain("/admin/");
+        }
+    }
+
+    @Test
+    @DisplayName("the promotion client has no fallback and does not turn a 404 into an answer: it must never degrade into 'no promotion in force'")
+    void promotionClientNeverDegrades() {
+        FeignClient annotation = PromotionClient.class.getAnnotation(FeignClient.class);
+
+        assertThat(annotation).as("PromotionClient must stay a @FeignClient").isNotNull();
+        assertThat(annotation.name()).isEqualTo("promotion");
+        assertThat(annotation.fallback()).as("a fallback answering 'no promotion' would charge the list price during a promotion").isEqualTo(void.class);
+        assertThat(annotation.fallbackFactory()).isEqualTo(void.class);
+        assertThat(annotation.dismiss404()).isFalse();
+        assertThat(annotation.contextId()).as("its own context, so the stock badge's breaker and fallback never apply to it").isEqualTo("promotion-in-force");
+    }
+
+    @Test
+    @DisplayName("the promotion client's configuration declares a plain prototype Feign builder, which keeps it out of the breaker and its time limiter")
+    void promotionClientIsKeptOutOfTheBreaker() {
+        FeignClient annotation = PromotionClient.class.getAnnotation(FeignClient.class);
+        assertThat(annotation.configuration()).containsExactly(PromotionClientConfiguration.class);
+
+        Method builder = Arrays.stream(PromotionClientConfiguration.class.getDeclaredMethods())
+                .filter(m -> feign.Feign.Builder.class.equals(m.getReturnType())).findFirst().orElse(null);
+
+        assertThat(builder).as("a Feign.Builder bean in the promotion client's configuration").isNotNull();
+        assertThat(builder.getAnnotation(org.springframework.context.annotation.Scope.class).value()).isEqualTo("prototype");
+        assertThat(PromotionClientConfiguration.class.getAnnotation(org.springframework.context.annotation.Configuration.class))
+                .as("not a @Configuration, or component scanning would apply it to every Feign client in the service").isNull();
+    }
+
+    @Test
+    @DisplayName("promotion's timeouts are plain Feign ones (half a second to connect, a second and a half to read) and no limiter is configured for it by name")
+    void promotionClientTimeouts() {
+        org.springframework.beans.factory.config.YamlPropertiesFactoryBean yaml = new org.springframework.beans.factory.config.YamlPropertiesFactoryBean();
+        yaml.setResources(new org.springframework.core.io.ClassPathResource("application.yaml"));
+        java.util.Properties properties = java.util.Objects.requireNonNull(yaml.getObject());
+
+        assertThat(properties.stringPropertyNames())
+                .filteredOn(key -> key.startsWith("resilience4j.") && key.contains("promotion"))
+                .as("a time limiter dispatches the call to another thread; the promotion client is timed by Feign's own timeouts").isEmpty();
+        assertThat(properties.getProperty("spring.cloud.openfeign.client.config.promotion-in-force.connect-timeout")).isEqualTo("500");
+        assertThat(properties.getProperty("spring.cloud.openfeign.client.config.promotion-in-force.read-timeout")).isEqualTo("1500");
+    }
+
     @Test
     @DisplayName("a fallback is declared, so a tripped breaker degrades rather than failing the page")
     void fallbackIsDeclared() {

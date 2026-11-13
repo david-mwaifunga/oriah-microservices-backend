@@ -29,4 +29,14 @@ public class TestcontainersConfiguration {
     DynamicPropertyRegistrar inventoryIsTheStub() {
         return registry -> registry.add("spring.cloud.discovery.client.simple.instances.inventory[0].uri", StubInventory::uri);
     }
+
+    /**
+     * Promotion, likewise, is {@link StubPromotion}: with nothing registered it says no promotion is in force, so a test that is not about
+     * promotions prices at the list price. A test that stands up a server of its own says {@code oriah.test.stub-promotion=false}.
+     */
+    @Bean
+    @ConditionalOnProperty(name = "oriah.test.stub-promotion", havingValue = "true", matchIfMissing = true)
+    DynamicPropertyRegistrar promotionIsTheStub() {
+        return registry -> registry.add("spring.cloud.discovery.client.simple.instances.promotion[0].uri", StubPromotion::uri);
+    }
 }

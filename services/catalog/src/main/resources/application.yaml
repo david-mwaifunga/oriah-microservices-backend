@@ -75,6 +75,13 @@ spring:
           inventory-costs:
             connect-timeout: 1000
             read-timeout: 5000
+          # Promotion's in-force read (PromotionClient), asked to price every piece. Plain Feign timeouts on this client alone, for the same
+          # reason as above: it is NOT wrapped in the circuit breaker and its time limiter, because nothing may answer for it. Half a second
+          # to connect and a second and a half to read fit inside catalog's 3 to 4 second slot in the order path (WritePathBudgetTest);
+          # nothing is retried. Slower than that is a 503, never a full price.
+          promotion-in-force:
+            connect-timeout: 500
+            read-timeout: 1500
     stream:
       # No binding for catalog.product: the outbox relay (shared/oriah-events)
       # sends each outbox row to the topic named on the row, which is how a

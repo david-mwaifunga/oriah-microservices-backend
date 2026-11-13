@@ -40,10 +40,14 @@ public record VariantPricingResponse(List<Entry> results) {
     }
 
     /**
-     * @param variantTitle the product title plus a summary of this variant's
-     *                     options, e.g. "Aurelia Solitaire Ring - Ring Size M",
-     *                     so cart can snapshot a label a human recognises
-     *                     instead of a bare SKU
+     * @param variantTitle     the product title plus a summary of this variant's
+     *                         options, e.g. "Aurelia Solitaire Ring - Ring Size M",
+     *                         so cart can snapshot a label a human recognises
+     *                         instead of a bare SKU
+     * @param unitPrice        the LIST price of one piece (what the price list says), before any promotion
+     * @param discountPerPiece the Kwacha a promotion takes off EACH piece, never more than the price: 0.00 when none applies
+     * @param promotionId      the promotion that gives it; absent when none applies
+     * @param netUnitPrice     what one piece costs after the discount: {@code unitPrice - discountPerPiece}. This is what a customer pays per piece.
      */
     public record Entry(
             UUID variantId,
@@ -52,15 +56,18 @@ public record VariantPricingResponse(List<Entry> results) {
             String productTitle,
             String variantTitle,
             BigDecimal unitPrice,
-            String currency
+            String currency,
+            BigDecimal discountPerPiece,
+            UUID promotionId,
+            BigDecimal netUnitPrice
     ) {
 
         public static Entry unknown(UUID variantId) {
-            return new Entry(variantId, Status.UNKNOWN, null, null, null, null, null);
+            return new Entry(variantId, Status.UNKNOWN, null, null, null, null, null, null, null, null);
         }
 
         public static Entry unpublished(UUID variantId, UUID productId, String productTitle) {
-            return new Entry(variantId, Status.UNPUBLISHED, productId, productTitle, null, null, null);
+            return new Entry(variantId, Status.UNPUBLISHED, productId, productTitle, null, null, null, null, null, null);
         }
     }
 }

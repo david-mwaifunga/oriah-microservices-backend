@@ -15,6 +15,8 @@ import com.oriah.catalog.model.ProductVariant;
 import com.oriah.catalog.repository.ProductVariantRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -54,7 +56,10 @@ class VariantPricingServiceTest {
     @BeforeEach
     void setUp() {
         variants = mock(ProductVariantRepository.class);
-        service = new DefaultVariantPricingService(variants);
+        // These tests are about status and price withholding, not promotions: nothing is in force. VariantPricingPromotionHttpTest covers the rest.
+        PromotionPricing promotions = mock(PromotionPricing.class);
+        when(promotions.discountsAt(anyCollection(), any())).thenReturn(Map.of());
+        service = new DefaultVariantPricingService(variants, promotions, mock(org.springframework.transaction.PlatformTransactionManager.class));
     }
 
     private static Product publishedRing() {
