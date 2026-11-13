@@ -2,12 +2,13 @@ package com.oriah.inventory.ledger;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 /**
  * When a stock change happened: one rule, in one place.
  *
  * <ul>
- *   <li>Left out, it is now.</li>
+ *   <li>Left out, it is now. Every time is kept to the microsecond, which is all the database keeps.</li>
  *   <li>It is never in the future (five minutes of allowance for clocks that disagree).</li>
  *   <li>Where the stock could not have left before it arrived (a write-off, a give-away, a take-back), it is never
  *       before the lot it touches arrived: the caller passes that time as {@code notBefore}. A paid sale is never
@@ -30,7 +31,7 @@ public final class MovementTimes {
      */
     public static Instant resolve(Instant requested, Instant now, Instant notBefore) {
         if (requested == null) {
-            return now;
+            return now.truncatedTo(ChronoUnit.MICROS);
         }
         if (requested.isAfter(now.plus(CLOCK_ALLOWANCE))) {
             throw new IllegalArgumentException("occurredAt " + requested + " is in the future");
@@ -38,6 +39,7 @@ public final class MovementTimes {
         if (notBefore != null && requested.isBefore(notBefore)) {
             throw new IllegalArgumentException("occurredAt " + requested + " is before the stock arrived (" + notBefore + ")");
         }
-        return requested;
+        // The database keeps microseconds. Kept to the same, so what is recorded is what is answered when it is asked again.
+        return requested.truncatedTo(ChronoUnit.MICROS);
     }
 }

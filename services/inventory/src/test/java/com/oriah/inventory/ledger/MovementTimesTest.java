@@ -25,6 +25,16 @@ class MovementTimesTest {
     }
 
     @Test
+    @DisplayName("times are kept to the microsecond, which is all the database keeps, so an answer given again is the same answer")
+    void microsecondsAreAllThatIsKept() {
+        Instant nowWithNanos = Instant.parse("2026-11-13T10:00:00.123456789Z");
+
+        assertThat(MovementTimes.resolve(null, nowWithNanos, null)).isEqualTo(Instant.parse("2026-11-13T10:00:00.123456Z"));
+        assertThat(MovementTimes.resolve(Instant.parse("2026-03-05T09:30:00.999999999Z"), nowWithNanos, null))
+                .isEqualTo(Instant.parse("2026-03-05T09:30:00.999999Z"));
+    }
+
+    @Test
     @DisplayName("a date in the past is kept as keyed")
     void thePastIsKept() {
         Instant march = Instant.parse("2026-03-05T09:30:00Z");

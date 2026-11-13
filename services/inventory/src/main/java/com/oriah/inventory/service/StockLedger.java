@@ -67,15 +67,33 @@ class StockLedger {
         return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM stock_action WHERE id = ?)", Boolean.class, actionId));
     }
 
-    /** An action as it was recorded, for deciding whether a repeat is the same request. */
-    record ActionRow(UUID id, UUID variantId, String kind, int qty, String digest) {
+    /** An action as it was recorded, for deciding whether a repeat is the same request, and for answering it again. */
+    record ActionRow(UUID id, UUID variantId, String kind, StockReason reason, int qty, Instant occurredAt, Instant recordedAt, String actor,
+                     String note, UUID reversesActionId, String digest) {
     }
 
     java.util.Optional<ActionRow> findAction(UUID id) {
-        return jdbc.query("SELECT id, variant_id, kind, qty, request_digest FROM stock_action WHERE id = ?",
+        return jdbc.query("""
+                SELECT id, variant_id, kind, reason, qty, occurred_at, recorded_at, actor, note, reverses_action_id, request_digest
+                  FROM stock_action WHERE id = ?""",
                 (rs, n) -> new ActionRow(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getString("kind"),
-                        rs.getInt("qty"), rs.getString("request_digest")),
+                        StockReason.fromCode(rs.getString("reason")), rs.getInt("qty"), rs.getTimestamp("occurred_at").toInstant(),
+                        rs.getTimestamp("recorded_at").toInstant(), rs.getString("actor"), rs.getString("note"),
+                        rs.getObject("reverses_action_id", UUID.class), rs.getString("request_digest")),
                 id).stream().findFirst();
+    }
+
+    /** How many units of a write-off or give-away have been taken back. */
+    int takenBack(UUID writeOffActionId) {
+        return jdbc.queryForObject("SELECT coalesce(sum(qty), 0) FROM stock_action WHERE reverses_action_id = ?", Integer.class, writeOffActionId);
+    }
+
+    /** When the newest lot an action's live rows touch was received: the earliest the action could have happened. */
+    Instant latestReceivedAmongLiveRows(UUID actionId) {
+        Timestamp at = jdbc.queryForObject("""
+                SELECT max(l.received_at) FROM live_movement m JOIN cost_lot l ON l.id = m.lot_id WHERE m.action_id = ?""",
+                Timestamp.class, actionId);
+        return at == null ? null : at.toInstant();
     }
 
     void insertAction(UUID id, UUID variantId, String kind, StockReason reason, int qty, Instant occurredAt, String actor, String note,
