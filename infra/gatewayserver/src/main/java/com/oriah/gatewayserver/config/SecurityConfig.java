@@ -175,6 +175,12 @@ public class SecurityConfig {
                         // building phase adds the route, and the service keeps
                         // its own method-level check behind this one.
                         .pathMatchers("/api/v1/admin/inventory/write-offs/**").hasRole("STOCK_WRITE_OFF")
+                        // Selling stock is the ORDER SYSTEM's act, never a person's button: it drains cost lots
+                        // and books cost of goods against a sale line, so a person who could call it (MANAGER
+                        // holds INVENTORY_ADMIN) could fabricate a sale and sidestep the owner-only write-off
+                        // rule (Q8). The service endpoint stays; the order system calls inventory directly
+                        // (service to service), as the Feign clients do, and never through this gateway.
+                        .pathMatchers("/api/v1/admin/inventory/*/confirm").denyAll()
                         .pathMatchers("/api/v1/admin/orders/*/dispatch/**").hasRole("FULFILMENT_AGENT")
                         .pathMatchers("/api/v1/admin/orders/*/delivery-waiver/**").hasRole("DELIVERY_WAIVER")
                         // A sale recorded more than 72 hours after it was paid

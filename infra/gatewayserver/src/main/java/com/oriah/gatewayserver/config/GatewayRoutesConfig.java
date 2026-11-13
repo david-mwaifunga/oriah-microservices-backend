@@ -218,6 +218,10 @@ public class GatewayRoutesConfig {
         routes = simple(routes, "catalog-admin-route", "/api/v1/admin/products/**", "catalog");
         routes = simple(routes, "catalog-categories-admin-route", "/api/v1/admin/categories/**", "catalog");
         routes = simple(routes, "inventory-admin-route", "/api/v1/admin/inventory/**", "inventory");
+        // Cost and margin reads: the lots and the sale rows of the stock ledger. A prefix of their own, so
+        // BOOKKEEPER (COST_VIEWER, but not INVENTORY_ADMIN) can read cost and SALES cannot; the matcher in
+        // SecurityConfig has guarded it since Phase 0, and inventory's controller checks COST_VIEWER again.
+        routes = simple(routes, "inventory-costs-admin-route", "/api/v1/admin/costs/**", "inventory");
         routes = simple(routes, "customer-admin-route", "/api/v1/admin/customers/**", "customer");
         routes = simple(routes, "order-admin-route", "/api/v1/admin/orders/**", "order");
         routes = simple(routes, "promotion-admin-route", "/api/v1/admin/promotions/**", "promotion");

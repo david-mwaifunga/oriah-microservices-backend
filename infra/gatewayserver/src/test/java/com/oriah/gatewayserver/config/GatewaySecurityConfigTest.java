@@ -368,6 +368,27 @@ class GatewaySecurityConfigTest {
         assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/costs/lots"));
     }
 
+    @ParameterizedTest(name = "{0} cannot sell stock by hand")
+    @DisplayName("consuming reserved stock for a sale is the order system's act: the gateway refuses it to every person, owner included")
+    @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
+    void nobodyCanSellStockByHand(String jobRole) {
+        // Draining stock books cost of goods against a sale line. If a MANAGER (who holds INVENTORY_ADMIN) could call it with
+        // an invented sale line, the owner-only write-off rule (Q8) would be a formality. The service call stays: the order
+        // system's machine identity calls inventory directly (service to service), never through the gateway.
+        String confirm = "/api/v1/admin/inventory/00000000-0000-0000-0000-000000000001/confirm";
+
+        as(jobRole).post().uri(confirm).exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("reserving and releasing stay with INVENTORY_ADMIN: only the sale is walled off")
+    void reserveAndReleaseAreUnchanged() {
+        String variant = "/api/v1/admin/inventory/00000000-0000-0000-0000-000000000001";
+
+        assertAdmitted(as("MANAGER").post().uri(variant + "/reserve"));
+        assertAdmitted(as("MANAGER").post().uri(variant + "/release"));
+    }
+
     @ParameterizedTest(name = "{0} cannot reach the suppliers")
     @DisplayName("SALES, DISPATCH and BOOKKEEPER get 403 on every supplier call: a supplier's contact and payment details are procurement's")
     @ValueSource(strings = {"SALES", "DISPATCH", "BOOKKEEPER"})

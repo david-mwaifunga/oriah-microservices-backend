@@ -89,6 +89,10 @@ class RouteSnapshotTest {
             // Phase 2: suppliers, and every later procurement endpoint (the
             // gateway already guarded the prefix; nothing was routed to it).
             "procurement-admin-route",
+            // Phase 5: cost and margin reads (lots, the sale rows of the ledger) live under a prefix of their own,
+            // /api/v1/admin/costs/, which the security chain has guarded with COST_VIEWER since Phase 0 and which
+            // nothing was routed to until inventory built them.
+            "inventory-costs-admin-route",
             "shipping-route",
             "checkout-route",
             "notification-route",
@@ -119,7 +123,7 @@ class RouteSnapshotTest {
     private RouteLocator routeLocator;
 
     @Test
-    @DisplayName("route id set is exactly the 36-route snapshot")
+    @DisplayName("route id set is exactly the 37-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
         List<String> actual = routes().stream().map(Route::getId).toList();
 
@@ -140,6 +144,7 @@ class RouteSnapshotTest {
                 .containsEntry("catalog-admin-route", "lb://catalog")
                 .containsEntry("catalog-docs", "lb://catalog")
                 .containsEntry("inventory-admin-route", "lb://inventory")
+                .containsEntry("inventory-costs-admin-route", "lb://inventory")
                 .containsEntry("customer-route", "lb://customer")
                 .containsEntry("customer-admin-route", "lb://customer")
                 .containsEntry("cart-route", "lb://cart")
@@ -174,6 +179,8 @@ class RouteSnapshotTest {
             "/api/v1/products/11111111-1111-1111-1111-111111111111, catalog-public-route",
             "/api/v1/admin/products,                             catalog-admin-route",
             "/api/v1/admin/inventory,                            inventory-admin-route",
+            "/api/v1/admin/costs/lots,                           inventory-costs-admin-route",
+            "/api/v1/admin/costs/movements,                      inventory-costs-admin-route",
             "/api/v1/customers/me,                               customer-route",
             "/api/v1/admin/customers,                            customer-admin-route",
             "/api/v1/carts/me,                                   cart-route",
