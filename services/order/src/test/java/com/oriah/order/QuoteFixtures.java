@@ -34,6 +34,11 @@ public final class QuoteFixtures {
         return new QuoteLine(variantId, quantity, new BigDecimal(unitPrice), BigDecimal.ZERO);
     }
 
+    /** One line as the shopper saw it, with a promotion taking {@code discountPerPiece} off each piece. */
+    public static QuoteLine line(UUID variantId, int quantity, String unitPrice, String discountPerPiece, UUID promotionId) {
+        return new QuoteLine(variantId, quantity, new BigDecimal(unitPrice), new BigDecimal(discountPerPiece), promotionId);
+    }
+
     /** The digest of a quote with this option, delivery amount and lines. */
     public static String digest(String currency, String option, String delivery, QuoteLine... lines) {
         return QuoteDigest.of(new Quote(List.of(lines), currency, option, new BigDecimal(delivery)));

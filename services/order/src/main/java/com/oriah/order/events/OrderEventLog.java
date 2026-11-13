@@ -70,6 +70,64 @@ public class OrderEventLog {
         return append(order, previousStatus, actor);
     }
 
+    /**
+     * {@code order.payment_submitted}: the shopper's claim to have paid, once the hold has been stretched for it. A fact about the claim, in
+     * the shape payment reads ({@link PaymentSubmittedEvent}), at the moment the claim was made.
+     *
+     * @param actor the shopper, {@code user:<keycloak subject>}
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AppendedEvent claimSubmitted(Order order, String actor) {
+        orders.flush();
+        return outbox.append(new EventDraft(
+                OrderEvent.AGGREGATE_TYPE,
+                order.id().toString(),
+                PaymentSubmittedEvent.EVENT_TYPE,
+                PaymentSubmittedEvent.SCHEMA_VERSION,
+                OrderEvent.TOPIC,
+                order.claimSubmittedAt(),
+                actor,
+                PaymentSubmittedEvent.of(order)));
+    }
+
+    /**
+     * {@code order.paid} (version 2), at the moment the money ARRIVED: the sale as it was made and the confirmation that paid it. Written in the
+     * transaction that made the order PAID. Called again for the same confirmation it is the SAME answer announced again ({@code republished}).
+     *
+     * @param previousStatus what the order was before it was paid; null when announcing the same answer again
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AppendedEvent paid(Order order, OrderStatus previousStatus, OrderPaidEvent.Payment payment, boolean republished, String actor) {
+        orders.flush();
+        return outbox.append(new EventDraft(
+                OrderEvent.AGGREGATE_TYPE,
+                order.id().toString(),
+                OrderPaidEvent.TYPE,
+                OrderPaidEvent.SCHEMA_VERSION,
+                OrderEvent.TOPIC,
+                payment.arrivedAt(),
+                actor,
+                OrderPaidEvent.of(order, previousStatus, payment, republished)));
+    }
+
+    /**
+     * {@code order.payment_unsettled}: confirmed money that could not pay the sale. Keyed by the order id the money NAMED, which may be no order at
+     * all (a mistyped id): the event is about the money, and payment must hear of it either way.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AppendedEvent paymentUnsettled(java.util.UUID orderId, java.util.UUID confirmationId, String reason, String currency,
+                                          java.time.Instant occurredAt, String actor) {
+        return outbox.append(new EventDraft(
+                OrderEvent.AGGREGATE_TYPE,
+                orderId.toString(),
+                PaymentUnsettledEvent.TYPE,
+                PaymentUnsettledEvent.SCHEMA_VERSION,
+                OrderEvent.TOPIC,
+                occurredAt,
+                actor,
+                new PaymentUnsettledEvent(confirmationId, orderId, reason, currency)));
+    }
+
     private AppendedEvent append(Order order, OrderStatus previousStatus, String actor) {
         orders.flush();
         return outbox.append(new EventDraft(

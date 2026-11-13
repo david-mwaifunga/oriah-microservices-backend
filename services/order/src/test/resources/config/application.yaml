@@ -1,0 +1,17 @@
+# Test-only settings, layered OVER src/main/resources/application.yaml.
+#
+# Spring Boot reads classpath:/config/application.yaml after classpath:/application.yaml, and a key here wins over the same key there; every other
+# key still comes from the main file. Only the test classpath has this file, so the service as shipped never sees it.
+#
+# The hold job's schedule is off in tests. A test context stays alive for the whole run once it has started, and a pass landing mid-test would give
+# back the PENDING order a test is asserting on, or finish the extension a test is counting. Tests call HoldJob.run() themselves;
+# HoldJobScheduleTest switches the schedule back on to prove it, and HoldJobSettingsTest pins that the main file ships it on.
+#
+# The settlement job's schedule is off in tests too, for the same reason: a pass landing mid-test would drive the very settlements a test is holding in
+# flight. Tests call SettlementJob.run() themselves; SettlementJobScheduleTest switches the schedule back on to prove it.
+oriah:
+  sales:
+    hold-job:
+      enabled: false
+    settlement-job:
+      enabled: false

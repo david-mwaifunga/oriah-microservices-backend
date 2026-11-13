@@ -102,7 +102,9 @@ class WritePathBudgetTest {
     private static final Map<String, Class<?>> WRITE_PATH = Map.of(
             "customer", CustomerClient.class,
             "catalog", CatalogPricingClient.class,
-            "shipping", ShippingClient.class);
+            "shipping", ShippingClient.class,
+            // Phase 7: the hold on the pieces is the fifth call.
+            "inventory", InventoryClient.class);
 
     @Autowired
     private FeignClientProperties feignClientProperties;
@@ -152,6 +154,18 @@ class WritePathBudgetTest {
         // the network is healthy. It was 1s + 3s, which left order's own
         // save and reply no time at all.
         FeignClientProperties.FeignClientConfiguration config = configFor("shipping");
+
+        assertThat(config.getConnectTimeout()).isEqualTo(500);
+        assertThat(config.getReadTimeout()).isEqualTo(2_000);
+    }
+
+    @Test
+    @DisplayName("inventory has its own timeouts: 0.5s to connect, 2s to answer")
+    void inventoryHasItsOwnTimeouts() {
+        // The hold is one transaction that locks the stock rows of one bag and writes the reservation: milliseconds warm. 2s to answer covers
+        // a cold first call and a lock wait behind another shopper's hold of the same piece; half a second to connect, as for every service
+        // on the same network. It is the fifth call, and the reason checkout's wait for order is 20s rather than 15s.
+        FeignClientProperties.FeignClientConfiguration config = configFor("inventory");
 
         assertThat(config.getConnectTimeout()).isEqualTo(500);
         assertThat(config.getReadTimeout()).isEqualTo(2_000);

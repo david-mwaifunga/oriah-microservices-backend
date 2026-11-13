@@ -90,8 +90,12 @@ CREATE TABLE order_settlement (
     deferred_end     VARCHAR(8),                              -- a lapse or a rejection that arrived while this was in flight: applied when it ends unsettled
     received_at      TIMESTAMPTZ    NOT NULL,
     settled_at       TIMESTAMPTZ,
+    -- Payment voided this confirmation (staff cancelled money that had no outcome yet). Set whatever state the settlement is in: before it was applied,
+    -- the sale is never settled with it (reason VOIDED, no event: payment already holds the fact); after, the sale is flagged for staff (the pieces
+    -- cannot be un-sold) and payment marks the confirmation SETTLED_AFTER_VOID.
+    voided_at        TIMESTAMPTZ,
     CONSTRAINT order_settlement_state_known CHECK (state IN ('RECEIVED', 'CONSUMING', 'BLOCKED_BOX', 'DONE', 'UNSETTLED')),
-    CONSTRAINT order_settlement_reason_known CHECK (reason IS NULL OR reason IN ('WRONG_AMOUNT', 'ORDER_UNKNOWN', 'ORDER_CANCELLED', 'ALREADY_PAID', 'PIECE_SOLD')),
+    CONSTRAINT order_settlement_reason_known CHECK (reason IS NULL OR reason IN ('WRONG_AMOUNT', 'ORDER_UNKNOWN', 'ORDER_CANCELLED', 'ALREADY_PAID', 'PIECE_SOLD', 'VOIDED')),
     CONSTRAINT order_settlement_unsettled_has_reason CHECK (state <> 'UNSETTLED' OR reason IS NOT NULL),
     CONSTRAINT order_settlement_deferred_end_known CHECK (deferred_end IS NULL OR deferred_end IN ('EXPIRED', 'REJECTED')),
     CONSTRAINT order_settlement_gross_positive CHECK (gross > 0),

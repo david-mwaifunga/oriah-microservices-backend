@@ -194,13 +194,18 @@ class V6SaleMigrationTest {
         settlement(UUID.randomUUID(), confirmation, "CONSUMING");
 
         assertThatThrownBy(() -> settlement(UUID.randomUUID(), UUID.randomUUID(), "LOST")).isInstanceOf(SQLException.class).hasMessageContaining("order_settlement_state_known");
-        for (String reason : new String[] {"WRONG_AMOUNT", "ORDER_UNKNOWN", "ORDER_CANCELLED", "ALREADY_PAID", "PIECE_SOLD"}) {
+        // VOIDED is not a reason payment is ever told (payment voided the money itself): it is the mark order keeps when a confirmation was voided before
+        // it could be applied, so a late announcement of the same confirmation can never settle a sale.
+        for (String reason : new String[] {"WRONG_AMOUNT", "ORDER_UNKNOWN", "ORDER_CANCELLED", "ALREADY_PAID", "PIECE_SOLD", "VOIDED"}) {
             execute("UPDATE order_settlement SET state = 'UNSETTLED', reason = '%s' WHERE confirmation_id = '%s'".formatted(reason, confirmation));
         }
         assertThatThrownBy(() -> execute("UPDATE order_settlement SET reason = 'BECAUSE' WHERE confirmation_id = '%s'".formatted(confirmation)))
                 .isInstanceOf(SQLException.class).hasMessageContaining("order_settlement_reason_known");
         assertThatThrownBy(() -> execute("UPDATE order_settlement SET state = 'UNSETTLED', reason = NULL WHERE confirmation_id = '%s'".formatted(confirmation)))
                 .isInstanceOf(SQLException.class).hasMessageContaining("order_settlement_unsettled_has_reason");
+        assertThat(stringOf("SELECT voided_at::text FROM order_settlement WHERE confirmation_id = '" + confirmation + "'")).as("not voided").isNull();
+        execute("UPDATE order_settlement SET voided_at = now() WHERE confirmation_id = '%s'".formatted(confirmation));
+        assertThat(stringOf("SELECT voided_at::text FROM order_settlement WHERE confirmation_id = '" + confirmation + "'")).as("voided_at records the void").isNotNull();
         execute("UPDATE order_settlement SET deferred_end = 'EXPIRED' WHERE confirmation_id = '%s'".formatted(confirmation));
         assertThatThrownBy(() -> execute("UPDATE order_settlement SET deferred_end = 'LAPSED' WHERE confirmation_id = '%s'".formatted(confirmation)))
                 .isInstanceOf(SQLException.class).hasMessageContaining("order_settlement_deferred_end_known");

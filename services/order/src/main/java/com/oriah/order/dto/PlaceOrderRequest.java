@@ -50,6 +50,7 @@ import jakarta.validation.constraints.Size;
  * part of this one; until then their bounds keep a malformed line a 400.
  */
 @AddressUnlessSelfCollect
+@TownUnlessSelfCollect
 public record PlaceOrderRequest(
         /**
          * Where to deliver. Not needed when the shopper collects
@@ -100,6 +101,19 @@ public record PlaceOrderRequest(
         @Pattern(regexp = Quote.DELIVERY_OPTION_PATTERN,
                 message = "must be a delivery option code such as SELF_COLLECT")
         String deliveryOption,
+
+        /**
+         * The town the delivery is priced for (Phase 7: delivery is priced per town). Required for every option but self-collect, which
+         * needs none ({@link TownUnlessSelfCollect}). Shipping validates it against what is published and switched on.
+         */
+        UUID deliveryTownId,
+
+        /**
+         * Who pays the courier: {@code ORIAH_COLLECTS} (it is in the total) or {@code RECIPIENT_PAYS} (paid on arrival: K0 on this order).
+         * Absent takes the one the town's price offers. Shipping says which it resolved, and the order records that.
+         */
+        @Pattern(regexp = "^(ORIAH_COLLECTS|RECIPIENT_PAYS)$", message = "must be ORIAH_COLLECTS or RECIPIENT_PAYS")
+        String payer,
 
         /**
          * The digest of the quote the shopper saw at preview -- quote, then

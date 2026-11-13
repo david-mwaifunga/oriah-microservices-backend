@@ -20,8 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * without them.
  *
  * <p>Order is a producer: it appends (outbox), publishes (relay) and answers
- * replay requests (replay). It consumes no events, so the Inbox stays off;
- * the replay listener dedupes requests through processed_event on its own.
+ * replay requests (replay). Since Phase 7 it also consumes: it owns the sale,
+ * so it hears what became of the money (oriah.payment) and of the hold
+ * (oriah.inventory) through the Inbox, each event applied once.
  *
  * <p>The binder settings are the ones the relay depends on. {@code sync=true}
  * makes a send return only once Kafka has the record (the relay refuses to
@@ -47,12 +48,13 @@ class EventLogConfigTest {
     }
 
     @Test
-    @DisplayName("order writes, publishes and replays its log; it consumes nothing, so its Inbox is off")
+    @DisplayName("order writes, publishes and replays its log, and (Phase 7) reads payment's and inventory's, each event once: its Inbox is on")
     void switches() {
         assertThat(value("oriah.events.outbox.enabled")).isEqualTo("true");
         assertThat(value("oriah.events.relay.enabled")).isEqualTo("true");
         assertThat(value("oriah.events.replay.enabled")).isEqualTo("true");
-        assertThat(value("oriah.events.inbox.enabled")).isEqualTo("false");
+        assertThat(value("oriah.events.inbox.enabled")).isEqualTo("true");
+        assertThat(value("oriah.events.inbox.topics")).isEqualTo("oriah.payment,oriah.inventory");
         assertThat(value("oriah.events.producer")).isEqualTo("order");
         assertThat(value("oriah.events.topics")).isEqualTo("oriah.order");
         assertThat(value("spring.application.name")).isEqualTo("order");

@@ -109,6 +109,9 @@ class PlaceOrderAddressTest {
     private ShippingClient shipping;
 
     @MockitoBean
+    private com.oriah.order.client.InventoryClient inventory;
+
+    @MockitoBean
     private CustomerClient customer;
 
     @MockitoBean
@@ -122,9 +125,8 @@ class PlaceOrderAddressTest {
                 new CatalogPricingClient.Entry(VARIANT, "PRICED", UUID.randomUUID(),
                         "Aurelia 18k", "Aurelia 18k / Ring Size M", new BigDecimal("4500.00"), "ZMW"))))
                 .when(catalog).price(any());
-        doReturn(new ShippingClient.RateResponse("ZM", List.of(
-                new ShippingClient.ShippingOption("SELF_COLLECT", new BigDecimal("0.00"), "ZMW"))))
-                .when(shipping).rates(any());
+        com.oriah.order.SaleStubs.shippingSelfCollect(shipping);
+        com.oriah.order.SaleStubs.inventoryHolds(inventory);
         // alice has two addresses, and STRANGERS is not one of them.
         doReturn(List.of(new CustomerClient.Address(HOME), new CustomerClient.Address(OFFICE)))
                 .when(customer).myAddresses();
@@ -213,12 +215,12 @@ class PlaceOrderAddressTest {
     void aDeliveryToSomebodyElseIsRefused() throws Exception {
         // From Phase 7 this is the order a parcel follows. The rule must not
         // depend on the option.
-        doReturn(new ShippingClient.RateResponse("ZM", List.of(
-                new ShippingClient.ShippingOption("OWN_DELIVERY", new BigDecimal("125.00"), "ZMW"))))
-                .when(shipping).rates(any());
+        UUID town = UUID.fromString("33333333-3333-4333-8333-333333333333");
+        com.oriah.order.SaleStubs.shippingDelivers(shipping, "OWN_DELIVERY", town, "ORIAH_COLLECTS", "125.00", "ZMW");
         String body = "{\"shippingAddressId\":\"" + STRANGERS + "\",\"currency\":\"ZMW\","
-                + "\"deliveryOption\":\"OWN_DELIVERY\","
-                + "\"quoteDigest\":\"" + digest("ZMW", "OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")) + "\","
+                + "\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + town + "\",\"payer\":\"ORIAH_COLLECTS\","
+                + "\"quoteDigest\":\"" + com.oriah.quote.QuoteDigest.of(new com.oriah.quote.Quote(
+                        List.of(line(VARIANT, 1, "4500.00")), "ZMW", "OWN_DELIVERY", new BigDecimal("125.00"), town, "ORIAH_COLLECTS")) + "\","
                 + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,"
                 + "\"unitPrice\":4500.00}]}";
 

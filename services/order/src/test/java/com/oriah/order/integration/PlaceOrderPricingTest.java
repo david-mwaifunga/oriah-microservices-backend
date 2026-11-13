@@ -116,6 +116,10 @@ class PlaceOrderPricingTest {
     @MockitoBean
     private ShippingClient shipping;
 
+    /** Inventory holds whatever an order asks it to hold: a placement takes a hold, and stock is not this class's subject. */
+    @MockitoBean
+    private com.oriah.order.client.InventoryClient inventory;
+
     /**
      * customer, listing {@link #ADDRESS} as alice's. Every body here sends
      * that address, and order now checks it is the caller's before pricing;
@@ -139,15 +143,34 @@ class PlaceOrderPricingTest {
         // Shipping as it is until Phase 7: self-collect at no charge. Every
         // placement now asks it; a missing stub would read as an outage.
         shippingOffers("SELF_COLLECT", "0.00", "ZMW");
+        com.oriah.order.SaleStubs.inventoryHolds(inventory);
         doReturn(List.of(new com.oriah.order.client.CustomerClient.Address(UUID.fromString(ADDRESS))))
                 .when(customer).myAddresses();
     }
 
-    /** Shipping answering with exactly this option. */
+    /** The town every delivered body here names. */
+    private static final UUID TOWN = UUID.fromString("33333333-3333-4333-8333-333333333333");
+
+    /** Shipping answering with exactly this option: self-collect has no town or payer, any delivery is to {@link #TOWN} with Oriah collecting. */
     private void shippingOffers(String code, String cost, String currency) {
-        doReturn(new ShippingClient.RateResponse("ZM", List.of(
-                new ShippingClient.ShippingOption(code, new BigDecimal(cost), currency))))
-                .when(shipping).rates(any());
+        if ("SELF_COLLECT".equals(code)) {
+            doReturn(new ShippingClient.QuoteReply(null, null, code, null, new BigDecimal(cost), currency, null))
+                    .when(shipping).quote(any());
+        } else {
+            com.oriah.order.SaleStubs.shippingDelivers(shipping, code, TOWN, "ORIAH_COLLECTS", cost, currency);
+        }
+    }
+
+    /** The JSON fields a delivered body carries beyond the option: the town and the payer. Self-collect carries neither. */
+    private static String townFields(String option) {
+        return "SELF_COLLECT".equals(option) ? "" : "\"deliveryTownId\":\"" + TOWN + "\",\"payer\":\"ORIAH_COLLECTS\",";
+    }
+
+    /** The digest of a quote with this option and delivery, to {@link #TOWN} with Oriah collecting when it is a delivery. */
+    private static String optionDigest(String option, String delivery, com.oriah.quote.QuoteLine... lines) {
+        return "SELF_COLLECT".equals(option)
+                ? digest("ZMW", option, delivery, lines)
+                : com.oriah.quote.QuoteDigest.of(new com.oriah.quote.Quote(List.of(lines), "ZMW", option, new BigDecimal(delivery), TOWN, "ORIAH_COLLECTS"));
     }
 
     /**
@@ -157,13 +180,14 @@ class PlaceOrderPricingTest {
     private static String bodyWithOption(UUID variantId, int quantity, String claimedPrice,
                                          String option, String delivery) {
         return withDigest(variantId, quantity, claimedPrice, option,
-                digest("ZMW", option, delivery, line(variantId, quantity, claimedPrice)));
+                optionDigest(option, delivery, line(variantId, quantity, claimedPrice)));
     }
 
-    /** One self-collect line carrying exactly the digest given. */
+    /** One line carrying exactly the digest given. */
     private static String withDigest(UUID variantId, int quantity, String claimedPrice,
                                      String option, String quoteDigest) {
         return "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"" + option + "\","
+                + townFields(option)
                 + "\"quoteDigest\":\"" + quoteDigest + "\","
                 + "\"items\":[{\"variantId\":\"" + variantId + "\",\"title\":\"x\",\"quantity\":" + quantity
                 + ",\"unitPrice\":" + claimedPrice + "}]}";
@@ -512,12 +536,18 @@ class PlaceOrderPricingTest {
         boolean[] insideTransaction = {false};
         boolean[] shippingCalled = {false};
         boolean[] shippingInsideTransaction = {false};
+        boolean[] inventoryCalled = {false};
+        boolean[] inventoryInsideTransaction = {false};
         doAnswer(inv -> {
             shippingCalled[0] = true;
             shippingInsideTransaction[0] = TransactionSynchronizationManager.isActualTransactionActive();
-            return new ShippingClient.RateResponse("ZM", List.of(
-                    new ShippingClient.ShippingOption("SELF_COLLECT", new BigDecimal("0.00"), "ZMW")));
-        }).when(shipping).rates(any());
+            return new ShippingClient.QuoteReply(null, null, "SELF_COLLECT", null, new BigDecimal("0.00"), "ZMW", null);
+        }).when(shipping).quote(any());
+        doAnswer(inv -> {
+            inventoryCalled[0] = true;
+            inventoryInsideTransaction[0] = TransactionSynchronizationManager.isActualTransactionActive();
+            return com.oriah.order.SaleStubs.held(inv.getArgument(0), java.time.Instant.now().plusSeconds(600));
+        }).when(inventory).reserve(any());
         doAnswer(inv -> {
             called[0] = true;
             insideTransaction[0] = TransactionSynchronizationManager.isActualTransactionActive();
@@ -543,6 +573,11 @@ class PlaceOrderPricingTest {
         assertThat(shippingCalled[0]).as("shipping was never asked").isTrue();
         assertThat(shippingInsideTransaction[0])
                 .as("the shipping call held a database connection open")
+                .isFalse();
+        // Inventory's hold is the third (Phase 7); same rule.
+        assertThat(inventoryCalled[0]).as("inventory was never asked to hold the pieces").isTrue();
+        assertThat(inventoryInsideTransaction[0])
+                .as("the hold held a database connection open")
                 .isFalse();
     }
 
@@ -603,19 +638,19 @@ class PlaceOrderPricingTest {
     }
 
     @Test
-    @DisplayName("order asks shipping for Zambia, its OWN subtotal, the currency and the chosen option")
+    @DisplayName("order asks shipping for its OWN goods total, the currency and the chosen option (no town for self-collect)")
     void orderAsksShippingWhatTheChosenOptionCosts() throws Exception {
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(bodyWithOption(VARIANT, 2, "4500.00", "SELF_COLLECT", "0.00")))
                 .andExpect(status().isCreated());
 
-        var asked = org.mockito.ArgumentCaptor.forClass(ShippingClient.RateRequest.class);
-        org.mockito.Mockito.verify(shipping).rates(asked.capture());
-        assertThat(asked.getValue().destinationCountry()).isEqualTo("ZM");
-        assertThat(asked.getValue().subtotal()).isEqualByComparingTo("9000.00");
+        var asked = org.mockito.ArgumentCaptor.forClass(ShippingClient.QuoteAsk.class);
+        org.mockito.Mockito.verify(shipping).quote(asked.capture());
+        assertThat(asked.getValue().goodsTotal()).isEqualByComparingTo("9000.00");
         assertThat(asked.getValue().currency()).isEqualTo("ZMW");
-        assertThat(asked.getValue().deliveryOption()).isEqualTo("SELF_COLLECT");
+        assertThat(asked.getValue().optionCode()).isEqualTo("SELF_COLLECT");
+        assertThat(asked.getValue().townId()).isNull();
     }
 
     @Test
@@ -623,8 +658,8 @@ class PlaceOrderPricingTest {
     void theCallerCannotNameTheShippingAmount() throws Exception {
         shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
         String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
-                + "\"deliveryOption\":\"OWN_DELIVERY\",\"shippingAmount\":0,\"total\":1.00,"
-                + "\"quoteDigest\":\"" + digest("ZMW", "OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")) + "\","
+                + "\"deliveryOption\":\"OWN_DELIVERY\"," + townFields("OWN_DELIVERY") + "\"shippingAmount\":0,\"total\":1.00,"
+                + "\"quoteDigest\":\"" + optionDigest("OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")) + "\","
                 + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
 
         mvc.perform(post("/api/v1/orders").with(alice())
@@ -641,9 +676,9 @@ class PlaceOrderPricingTest {
     @DisplayName("shipping unreachable: 503, nothing placed -- never an order with delivery at zero")
     void aShippingOutageRefusesToPlace() throws Exception {
         doThrow(new feign.RetryableException(-1, "connect timed out", Request.HttpMethod.POST,
-                (Long) null, Request.create(Request.HttpMethod.POST, "/api/v1/shipping/rates",
+                (Long) null, Request.create(Request.HttpMethod.POST, "/api/v1/shipping/quote",
                         java.util.Map.of(), null, new RequestTemplate())))
-                .when(shipping).rates(any());
+                .when(shipping).quote(any());
 
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -660,7 +695,7 @@ class PlaceOrderPricingTest {
         // order treats a dependency's 5xx as "could not get a price", as it does
         // for catalog: nothing is saved, and the shopper may try again. Never
         // a 500 "our bug", and never an order with delivery at zero.
-        doThrow(shippingFailed(status)).when(shipping).rates(any());
+        doThrow(shippingFailed(status)).when(shipping).quote(any());
 
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -672,15 +707,15 @@ class PlaceOrderPricingTest {
     @Test
     @DisplayName("shipping refusing order's request is OUR bug: 500, not free delivery and not the shopper's fault")
     void aShippingRefusalIsLoudNotFree() throws Exception {
-        doThrow(shippingFailed(403)).when(shipping).rates(any());
+        doThrow(shippingFailed(403)).when(shipping).quote(any());
 
         refused(body(VARIANT, "x", 1, "4500.00"), 500);
     }
 
     @Test
-    @DisplayName("an option shipping no longer offers is a 409 pricing-changed: the shopper re-quotes")
+    @DisplayName("an option shipping no longer offers (its 409 town-not-offered) is a 409 pricing-changed: the shopper re-quotes")
     void anOptionShippingDoesNotOfferIsAConflict() throws Exception {
-        doReturn(new ShippingClient.RateResponse("ZM", List.of())).when(shipping).rates(any());
+        doThrow(shippingFailed(409)).when(shipping).quote(any());
 
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -818,7 +853,7 @@ class PlaceOrderPricingTest {
     @DisplayName("a delivery price changed after preview is refused -- a price published in between")
     void aDeliveryPriceChangedAfterPreviewIsRefused() throws Exception {
         shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
-        String saw = digest("ZMW", "OWN_DELIVERY", "100.00", line(VARIANT, 1, "4500.00"));
+        String saw = optionDigest("OWN_DELIVERY", "100.00", line(VARIANT, 1, "4500.00"));
 
         quoteChanged(withDigest(VARIANT, 1, "4500.00", "OWN_DELIVERY", saw));
     }
@@ -837,7 +872,7 @@ class PlaceOrderPricingTest {
         mvc.perform(post("/api/v1/orders").with(alice())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(withDigest(a, 1, "100.00", "SELF_COLLECT",
-                                "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802c")))
+                                "aec7f876488fe689849ec2234df2c58030c1ff404eba191a25d1f3d561ee9f4a")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.total").value(100.00));
     }

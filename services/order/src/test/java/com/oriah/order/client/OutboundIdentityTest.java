@@ -74,6 +74,8 @@ class OutboundIdentityTest {
 
     private static final String TOKEN_PATH = "/realms/oriah/protocol/openid-connect/token";
     private static final String ADDRESSES_PATH = "/api/v1/customers/me/addresses";
+    private static final String SHIPPING_QUOTE = "/api/v1/shipping/quote";
+    private static final String RESERVE = "/api/v1/admin/inventory/reservations";
     /** The address every placement here sends, and the one customer lists as the shopper's. */
     private static final String ADDRESS = "11111111-2222-3333-4444-555555555555";
     private static final UUID VARIANT = UUID.fromString("22222222-3333-4444-5555-666666666666");
@@ -97,7 +99,7 @@ class OutboundIdentityTest {
     static void downstreamsAreTheFakeServer(DynamicPropertyRegistry r) {
         // A configured URL bypasses service discovery for that client.
         r.add("spring.cloud.openfeign.client.config.shipping.url", WM::baseUrl);
-        r.add("spring.cloud.openfeign.client.config.payment.url", WM::baseUrl);
+        r.add("spring.cloud.openfeign.client.config.inventory.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.catalog.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.customer.url", WM::baseUrl);
         r.add("spring.security.oauth2.client.provider.keycloak.token-uri", () -> WM.baseUrl() + TOKEN_PATH);
@@ -134,8 +136,13 @@ class OutboundIdentityTest {
                 "{\"results\":[{\"variantId\":\"" + VARIANT + "\",\"status\":\"PRICED\",\"productId\":\""
                         + UUID.randomUUID() + "\",\"productTitle\":\"Aurelia\",\"variantTitle\":\"Aurelia 18k\","
                         + "\"unitPrice\":100.00,\"currency\":\"ZMW\"}]}")));
-        WM.stubFor(post(urlEqualTo("/api/v1/shipping/rates")).willReturn(okJson(
-                "{\"destinationCountry\":\"ZM\",\"options\":[{\"code\":\"SELF_COLLECT\",\"cost\":0.00,\"currency\":\"ZMW\"}]}")));
+        WM.stubFor(post(urlEqualTo(SHIPPING_QUOTE)).willReturn(okJson(
+                "{\"optionCode\":\"SELF_COLLECT\",\"optionName\":\"Self-collect\",\"amount\":0.00,\"currency\":\"ZMW\","
+                        + "\"listAmount\":0.00,\"freeByThreshold\":false}")));
+        // inventory holds the pieces (a static answer: HELD, lapsing long after any test)
+        WM.stubFor(post(urlEqualTo(RESERVE)).willReturn(okJson(
+                "{\"reservationId\":\"" + UUID.randomUUID() + "\",\"orderId\":\"" + UUID.randomUUID() + "\",\"status\":\"HELD\","
+                        + "\"heldAt\":\"2099-01-01T00:00:00Z\",\"expiresAt\":\"2099-01-01T00:10:00Z\",\"endedAt\":null,\"lines\":[]}")));
         // customer's real response shape, every field included, so the
         // id-only binding is proved to tolerate the ones order does not read.
         WM.stubFor(get(urlEqualTo(ADDRESSES_PATH)).willReturn(okJson(
@@ -170,7 +177,17 @@ class OutboundIdentityTest {
     void shippingSeesTheServiceAccountNotTheShopper() throws Exception {
         place(shopper("kc-alice", "shopper-token"));
 
-        var calls = WM.findAll(postRequestedFor(urlEqualTo("/api/v1/shipping/rates")));
+        var calls = WM.findAll(postRequestedFor(urlEqualTo(SHIPPING_QUOTE)));
+        assertThat(calls).hasSize(1);
+        assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer machine-token");
+    }
+
+    @Test
+    @DisplayName("inventory receives order's own machine token -- once, and never the shopper's: its reservation endpoints are for the order system only")
+    void inventorySeesTheServiceAccountNotTheShopper() throws Exception {
+        place(shopper("kc-alice", "shopper-token"));
+
+        var calls = WM.findAll(postRequestedFor(urlEqualTo(RESERVE)));
         assertThat(calls).hasSize(1);
         assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer machine-token");
     }
@@ -195,7 +212,8 @@ class OutboundIdentityTest {
 
         // A per-shopper principal would fetch -- and keep -- a token per shopper.
         WM.verify(1, postRequestedFor(urlEqualTo(TOKEN_PATH)));
-        WM.verify(2, postRequestedFor(urlEqualTo("/api/v1/shipping/rates")));
+        WM.verify(2, postRequestedFor(urlEqualTo(SHIPPING_QUOTE)));
+        WM.verify(2, postRequestedFor(urlEqualTo(RESERVE)));
     }
 
     @Test
@@ -206,28 +224,6 @@ class OutboundIdentityTest {
         var calls = WM.findAll(postRequestedFor(urlEqualTo("/api/v1/variants/pricing")));
         assertThat(calls).hasSize(1);
         assertThat(authorizationOf(calls.get(0))).isEmpty();
-    }
-
-    @Test
-    @DisplayName("payment still receives the SHOPPER's token: its owner check needs who is paying")
-    void paymentStillSeesTheShopper() throws Exception {
-        String placed = place(shopper("kc-alice", "shopper-token"));
-        String orderId = com.jayway.jsonpath.JsonPath.read(placed, "$.id");
-        UUID intent = UUID.randomUUID();
-        WM.stubFor(get(urlEqualTo("/api/v1/payments/intents/" + intent)).willReturn(okJson(
-                "{\"id\":\"" + intent + "\",\"orderId\":\"" + orderId + "\",\"amount\":100.00,"
-                        + "\"currency\":\"ZMW\",\"status\":\"SUCCEEDED\"}")));
-
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                        .post("/api/v1/orders/" + orderId + "/pay")
-                        .with(shopper("kc-alice", "shopper-token"))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"paymentIntentId\":\"" + intent + "\"}"))
-                .andExpect(status().isOk());
-
-        var calls = WM.findAll(getRequestedFor(urlPathMatching("/api/v1/payments/intents/.*")));
-        assertThat(calls).hasSize(1);
-        assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer shopper-token");
     }
 
     @Test
@@ -330,8 +326,8 @@ class OutboundIdentityTest {
     @DisplayName("shipping hanging: order gives up within its own budget with a 503, and saves nothing")
     void aHangingShippingTimesOut() throws Exception {
         warmUpTheWritePath();
-        WM.stubFor(post(urlEqualTo("/api/v1/shipping/rates")).willReturn(okJson(
-                "{\"destinationCountry\":\"ZM\",\"options\":[]}").withFixedDelay(6000)));
+        WM.stubFor(post(urlEqualTo(SHIPPING_QUOTE)).willReturn(okJson(
+                "{\"optionCode\":\"SELF_COLLECT\",\"amount\":0.00,\"currency\":\"ZMW\"}").withFixedDelay(6000)));
 
         long began = System.nanoTime();
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/orders")
@@ -377,6 +373,31 @@ class OutboundIdentityTest {
         // The check runs before pricing, so a placement that could not be
         // checked never reached catalog or shipping.
         WM.verify(0, postRequestedFor(urlEqualTo("/api/v1/variants/pricing")));
-        WM.verify(0, postRequestedFor(urlEqualTo("/api/v1/shipping/rates")));
+        WM.verify(0, postRequestedFor(urlEqualTo(SHIPPING_QUOTE)));
+    }
+
+    @Test
+    @DisplayName("inventory hanging: order gives up within its own budget with a 503; the PENDING order stays, unannounced, for the repeat to finish")
+    void aHangingInventoryTimesOut() throws Exception {
+        warmUpTheWritePath();
+        WM.stubFor(post(urlEqualTo(RESERVE)).willReturn(okJson("{}").withFixedDelay(6000)));
+
+        long began = System.nanoTime();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/orders")
+                        .with(shopper("kc-alice", "shopper-token"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"currency\":\"ZMW\",\"deliveryOption\":\"SELF_COLLECT\",\"quoteDigest\":\"" + SEEN + "\","
+                                + "\"shippingAddressId\":\"11111111-2222-3333-4444-555555555555\","
+                                + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,"
+                                + "\"unitPrice\":100.00}]}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/upstream-unavailable"));
+        long tookMs = (System.nanoTime() - began) / 1_000_000;
+
+        // Read timeout 2s (connect 0.5s), the last call inside checkout's 20s wait for the whole placement. Feign's own default would wait 60s.
+        assertThat(tookMs).isLessThan(5_500);
+        // Nobody has been told of the order: it is written, PENDING, and the shopper's repeat finishes it with the same reservation id.
+        assertThat(orders.count()).isEqualTo(1);
+        assertThat(orders.findAll().get(0).holdState()).isEqualTo(com.oriah.order.model.HoldState.PENDING);
     }
 }

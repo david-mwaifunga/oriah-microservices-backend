@@ -135,10 +135,25 @@ public interface CatalogPricingClient {
             String productTitle,
             String variantTitle,
             BigDecimal unitPrice,
-            String currency
+            String currency,
+            /** What a promotion takes off EACH piece (0.00 when none applies); absent from a catalog that does not send it. */
+            BigDecimal discountPerPiece,
+            /** The promotion that gives it; absent when none applies. */
+            UUID promotionId,
+            BigDecimal netUnitPrice
     ) {
 
+        /** An entry with no promotion: the shape catalog answered in before Phase 7, and the one every non-promoted line still has. */
+        public Entry(UUID variantId, String status, UUID productId, String productTitle, String variantTitle, BigDecimal unitPrice, String currency) {
+            this(variantId, status, productId, productTitle, variantTitle, unitPrice, currency, null, null, null);
+        }
+
         static final String PRICED = "PRICED";
+
+        /** The discount per piece, zero when none is named (an absent field is no discount, never a missing price). */
+        public BigDecimal discountOrZero() {
+            return discountPerPiece == null ? BigDecimal.ZERO : discountPerPiece;
+        }
 
         /**
          * Whether this entry can be sold, which is a stronger question than
@@ -157,7 +172,12 @@ public interface CatalogPricingClient {
                     && unitPrice != null
                     && unitPrice.signum() > 0
                     && currency != null && !currency.isBlank()
-                    && variantTitle != null && !variantTitle.isBlank();
+                    && variantTitle != null && !variantTitle.isBlank()
+                    // A discount that is not a whole number of ngwee, is negative, or is more than the piece costs is catalog's bug: the
+                    // line is not sellable rather than a negative price or a 500 from the column.
+                    && discountOrZero().signum() >= 0
+                    && discountOrZero().compareTo(unitPrice) <= 0
+                    && com.oriah.money.Ngwee.isWholeNgwee(discountOrZero());
         }
     }
 }

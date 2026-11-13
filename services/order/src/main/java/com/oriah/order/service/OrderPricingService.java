@@ -77,14 +77,17 @@ public class OrderPricingService {
         this.shipping = shipping;
     }
 
-    /** One line as catalog prices it, with the caller's quantity. */
-    public record PricedLine(UUID variantId, String title, int quantity, BigDecimal unitPrice) {
+    /**
+     * One line as catalog prices it, with the caller's quantity: the LIST price, and what a promotion takes off each piece (zero, with no
+     * promotion id, when none applies). The product is carried because inventory sets a box aside per product.
+     */
+    public record PricedLine(UUID variantId, UUID productId, String title, int quantity, BigDecimal unitPrice,
+                             BigDecimal discountPerPiece, UUID promotionId) {
     }
 
     /**
-     * The order as order itself prices it: catalog's prices for the lines, and
-     * shipping's price for the option the shopper chose, held as the shared
-     * {@link Quote} whose {@code total()} is the one formula the digest binds.
+     * The order as order itself prices it: catalog's prices for the lines (less any promotion's discount per piece), and shipping's price for
+     * the town, option and payer the shopper chose, held as the shared {@link Quote} whose {@code total()} is the one formula the digest binds.
      */
     public record PricedOrder(List<PricedLine> lines, BigDecimal subtotal, String currency, Quote quote) {
 
@@ -94,6 +97,22 @@ public class OrderPricingService {
 
         public BigDecimal shippingAmount() {
             return quote.deliveryAmount();
+        }
+
+        public java.util.UUID deliveryTownId() {
+            return quote.deliveryTownId();
+        }
+
+        public String payer() {
+            return quote.payer();
+        }
+
+        public String quoteDigest() {
+            return QuoteDigest.of(quote);
+        }
+
+        public int pieces() {
+            return lines.stream().mapToInt(PricedLine::quantity).sum();
         }
     }
 
@@ -134,6 +153,7 @@ public class OrderPricingService {
 
         List<PricedLine> lines = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO.setScale(MONEY_SCALE);
+        BigDecimal discount = BigDecimal.ZERO.setScale(MONEY_SCALE);
         String currency = null;
         List<UUID> unsellable = new ArrayList<>();
 
@@ -159,10 +179,16 @@ public class OrderPricingService {
             BigDecimal price = entry.unitPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
             requireClaimHolds(item, price, entryCurrency, req.currency());
 
-            lines.add(new PricedLine(item.variantId(), entry.variantTitle(),
-                    item.quantity(), price));
+            // A promotion takes a fixed amount off each PIECE, worked out by catalog and stored per line; it is named only where it discounts.
+            BigDecimal discountPerPiece = entry.discountOrZero().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+            UUID promotionId = discountPerPiece.signum() > 0 ? entry.promotionId() : null;
+            lines.add(new PricedLine(item.variantId(), entry.productId(), entry.variantTitle(),
+                    item.quantity(), price, discountPerPiece, promotionId));
             subtotal = subtotal.add(
                     price.multiply(BigDecimal.valueOf(item.quantity()))
+                            .setScale(MONEY_SCALE, RoundingMode.HALF_UP));
+            discount = discount.add(
+                    discountPerPiece.multiply(BigDecimal.valueOf(item.quantity()))
                             .setScale(MONEY_SCALE, RoundingMode.HALF_UP));
         }
 
@@ -180,12 +206,18 @@ public class OrderPricingService {
             throw new TotalTooLargeException();
         }
 
-        // Delivery is priced by order itself, from the option the shopper
-        // chose -- outside any transaction, like the catalog call above.
-        BigDecimal delivery = shipping.costOf(req.deliveryOption(), subtotal, currency);
+        // Delivery is priced by SHIPPING, for the town and payer the shopper
+        // chose, on the goods after discount (that is what a free-delivery
+        // threshold is judged on) -- asked here, outside any transaction, like
+        // the catalog call above. Order never works the amount out itself.
+        ShippingQuotes.Delivery delivery = shipping.quote(req.deliveryOption(), req.deliveryTownId(), req.payer(),
+                subtotal.subtract(discount), currency);
+        boolean collect = Quote.SELF_COLLECT.equals(req.deliveryOption());
         Quote quote = new Quote(lines.stream()
-                .map(l -> new QuoteLine(l.variantId(), l.quantity(), l.unitPrice(), BigDecimal.ZERO))
-                .toList(), currency, req.deliveryOption(), delivery);
+                .map(l -> new QuoteLine(l.variantId(), l.quantity(), l.unitPrice(), l.discountPerPiece(), l.promotionId()))
+                .toList(), currency, req.deliveryOption(), delivery.amount(),
+                collect ? null : (delivery.townId() != null ? delivery.townId() : req.deliveryTownId()),
+                collect ? null : delivery.payer());
 
         // The bound is on what is CHARGED, delivery included: a subtotal just
         // under the column's capacity plus delivery would overflow orders.total.

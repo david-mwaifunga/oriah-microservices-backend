@@ -15,14 +15,16 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.oriah.order.dto.AttachPaymentRequest;
 import com.oriah.order.dto.OrderResponse;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.order.dto.PlaceOrderRequest;
+import com.oriah.order.dto.SubmitPaymentRequest;
 import com.oriah.order.model.Order;
+import com.oriah.order.service.OrderClaimService;
 import com.oriah.order.service.OrderService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -52,9 +54,31 @@ import jakarta.validation.Valid;
 public class OrderController {
 
     private final OrderService service;
+    private final OrderClaimService claimService;
 
-    public OrderController(OrderService service) {
+    public OrderController(OrderService service, OrderClaimService claimService) {
         this.service = service;
+        this.claimService = claimService;
+    }
+
+    @Operation(operationId = "claimPayment", summary = "Say how you paid: a mobile-money or bank-transfer reference",
+            description = "Not money: staff confirm the payment (or tell you they cannot find it). Giving a reference stretches the hold on your pieces "
+                    + "to a day so they have time to look. Only an order waiting for payment can take one, and only once: the same reference again "
+                    + "is the same claim, another is refused.")
+    @ApiResponse(responseCode = "200", description = "The order, now PAYMENT_SUBMITTED")
+    @ApiResponse(responseCode = "400", description = "The method is not one that can be claimed online (cash is paid in person), or the reference is "
+            + "not a reference; see fieldErrors", content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such resource",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "payment-already-submitted (another reference was given), order-not-awaiting-payment, "
+            + "order-not-held, hold-expired (the pieces are no longer held: place the order again), payment-being-applied",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/{id}/payment-claim")
+    public OrderResponse claimPayment(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody SubmitPaymentRequest body) {
+        return OrderResponse.from(claimService.submit(jwt.getSubject(), id, body.method(), body.reference(), Actor.of(jwt)));
     }
 
     @Operation(operationId = "place", summary = "Place an order")
@@ -77,9 +101,18 @@ public class OrderController {
     @PostMapping
     public ResponseEntity<OrderResponse> place(
             @AuthenticationPrincipal Jwt jwt,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody PlaceOrderRequest body) {
-        Order o = service.placeOrder(jwt.getSubject(), body, Actor.of(jwt));
-        return ResponseEntity.created(URI.create("/api/v1/orders/" + o.id()))
+        String key = idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey.trim();
+        if (key != null && key.length() > 128) {
+            throw new IllegalArgumentException("Idempotency-Key must be at most 128 characters");
+        }
+        OrderService.Placement placement = service.placeOrder(jwt.getSubject(), body, key, Actor.of(jwt));
+        Order o = placement.order();
+        // 201 when this call made the order; 200 when the same placement (the same key, or the same bag still waiting for payment) had already been made.
+        return (placement.created()
+                ? ResponseEntity.created(URI.create("/api/v1/orders/" + o.id()))
+                : ResponseEntity.ok().location(URI.create("/api/v1/orders/" + o.id())))
                 .body(OrderResponse.from(o));
     }
 
@@ -120,62 +153,6 @@ public class OrderController {
             @PathVariable("id") UUID id) {
         return service.findById(id)
                 .filter(o -> o.keycloakId().equals(jwt.getSubject()))
-                .map(OrderResponse::from)
-                .orElseThrow(() -> unknownOrder(id));
-    }
-
-    /**
-     * Attach a settled PaymentIntent to one of the caller's own orders and
-     * transition it to PAID.
-     *
-     * <p>The claim in the body is verified against payment-service before
-     * anything is attached: the intent must be SUCCEEDED, must name this
-     * order, must be in this order's currency, and -- for every order placed
-     * since V4, whose total is authoritative -- must be for exactly its total.
-     * An order placed before V4 is not held to the amount: its total left out
-     * delivery. See {@link com.oriah.order.service.PaymentIntentVerifier}.
-     * This endpoint previously trusted the body, so any shopper could post a
-     * random UUID against their own order and receive a PAID order having
-     * paid nothing.
-     *
-     * <p>Then ONE transaction attaches the payment, moves the order to PAID
-     * and records {@code order.paid} in the event log, with the caller as its
-     * actor.
-     *
-     * <p>Note that the verification is a property of the ENDPOINT, not of the
-     * checkout orchestrator. Checkout reaches this same path forwarding the
-     * shopper's own JWT, so there is no way to tell an orchestrated call from
-     * a hand-rolled one; the only defence is checking the claim, which means
-     * checkout gets no special treatment and needs none.
-     */
-    @Operation(operationId = "pay", summary = "Attach a settled payment intent and transition to PAID")
-    @ApiResponse(responseCode = "200", description = "The order, now PAID")
-    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "404", description = "No such resource",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409",
-            description = "The request conflicts with current state, or the payment intent "
-                    + "could not be verified as a settled payment for this order",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "503",
-            description = "Payment could not be consulted; the order has NOT been marked paid",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @PostMapping("/{id}/pay")
-    public OrderResponse pay(
-            @AuthenticationPrincipal Jwt jwt,
-            @PathVariable("id") UUID id,
-            @Valid @RequestBody AttachPaymentRequest body) {
-        // Verify first, outside any transaction, and only then mark paid: one
-        // transaction that attaches the payment, moves the order to PAID and
-        // records order.paid. Each call goes through the service proxy, so
-        // markPaid keeps its own transactional boundary.
-        return service.verifyPaymentClaim(jwt.getSubject(), id, body.paymentIntentId())
-                .flatMap(o -> service.markPaid(jwt.getSubject(), id, body.paymentIntentId(), Actor.of(jwt)))
                 .map(OrderResponse::from)
                 .orElseThrow(() -> unknownOrder(id));
     }

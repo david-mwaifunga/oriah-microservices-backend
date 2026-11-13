@@ -32,7 +32,11 @@ public record OrderResponse(
         UUID shippingAddressId,
         Instant placedAt,
         Instant updatedAt,
-        List<OrderItemResponse> items
+        List<OrderItemResponse> items,
+        UUID deliveryTownId,
+        String deliveryPayer,
+        /** When the hold on the pieces lapses unless the shopper pays or submits a payment reference; absent on an order with no hold. */
+        Instant holdExpiresAt
 ) {
     public static OrderResponse from(Order o) {
         return new OrderResponse(
@@ -41,7 +45,8 @@ public record OrderResponse(
                 o.deliveryOption(),
                 o.paymentIntentId(), o.shippingAddressId(),
                 o.placedAt(), o.updatedAt(),
-                o.items().stream().map(OrderItemResponse::from).toList()
+                o.items().stream().map(OrderItemResponse::from).toList(),
+                o.deliveryTownId(), o.deliveryPayer(), o.holdExpiresAt()
         );
     }
 }

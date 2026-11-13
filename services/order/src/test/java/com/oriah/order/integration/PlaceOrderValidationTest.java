@@ -91,7 +91,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
-        "eureka.client.enabled=false"
+        "eureka.client.enabled=false",
+        // This class pins the REQUEST's bounds, among them 99 pieces on one line. The shopper's hold limit (20 pieces held at once, Phase 7)
+        // is a different rule with its own tests (PlaceOrderSaleTest), and would answer 409 to the boundary case here.
+        "oriah.sales.max-held-pieces=1000"
 })
 class PlaceOrderValidationTest {
 
@@ -126,6 +129,10 @@ class PlaceOrderValidationTest {
     @MockitoBean
     private com.oriah.order.client.ShippingClient shipping;
 
+    /** Inventory holds whatever an order asks it to hold: the two happy paths place an order, which takes a hold. */
+    @MockitoBean
+    private com.oriah.order.client.InventoryClient inventory;
+
     /**
      * customer, listing {@link #ADDRESS} as alice's: the two happy paths send
      * it, and order checks it is the caller's before pricing. The bodies this
@@ -139,12 +146,8 @@ class PlaceOrderValidationTest {
         org.mockito.Mockito.doReturn(java.util.List.of(
                         new com.oriah.order.client.CustomerClient.Address(UUID.fromString(ADDRESS))))
                 .when(customer).myAddresses();
-        org.mockito.Mockito.doAnswer(inv -> {
-            com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
-            return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(
-                    new com.oriah.order.client.ShippingClient.ShippingOption(
-                            "SELF_COLLECT", new java.math.BigDecimal("0.00"), asked.currency())));
-        }).when(shipping).rates(org.mockito.ArgumentMatchers.any());
+        com.oriah.order.SaleStubs.shippingSelfCollect(shipping);
+        com.oriah.order.SaleStubs.inventoryHolds(inventory);
         repository.deleteAll();
         doAnswer(inv -> {
             CatalogPricingClient.PricingRequest asked = inv.getArgument(0);

@@ -140,6 +140,19 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
                 "An unexpected error occurred. Use the traceId to correlate with logs and traces."));
     }
 
+    /**
+     * A refusal in the sale the caller can act on: no stock (naming every short line), a hold limit, a key reused for another quote. The type
+     * is the problem's own code, with any extra properties (such as {@code shortages}) alongside.
+     */
+    @ExceptionHandler(SalesProblem.class)
+    public ResponseEntity<ProblemDetail> salesProblem(SalesProblem ex) {
+        log.info("{} {}: {}", ex.status().value(), ex.code(), ex.getMessage());
+        ProblemDetail pd = problem(ex.status(), URI.create("https://oriah.dev/problems/" + ex.code()),
+                ex.status().getReasonPhrase(), ex.getMessage());
+        ex.properties().forEach(pd::setProperty);
+        return ResponseEntity.status(ex.status()).body(pd);
+    }
+
     @ExceptionHandler(TotalTooLargeException.class)
     public ResponseEntity<ProblemDetail> totalTooLarge(TotalTooLargeException ex) {
         log.error("422 order total exceeds the money column: {}", ex.getMessage());

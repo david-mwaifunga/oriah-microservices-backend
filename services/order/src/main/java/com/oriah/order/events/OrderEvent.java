@@ -46,7 +46,7 @@ import com.oriah.order.model.OrderStatus;
  * consumers are built against.
  */
 @JsonPropertyOrder({"orderId", "keycloakId", "previousStatus", "newStatus", "total", "currency",
-        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines"})
+        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId"})
 public record OrderEvent(
         UUID orderId,
         String keycloakId,
@@ -59,7 +59,14 @@ public record OrderEvent(
         BigDecimal discountAmount,
         String deliveryOption,
         UUID paymentIntentId,
-        List<Line> lines
+        List<Line> lines,
+        /**
+         * Only on {@code order.cancelled} and {@code order.expired}, and only for an order that took a hold: the reservation the pieces were held
+         * under, so inventory lets go of THAT hold and a stale event can never touch a newer one. Absent (not null) everywhere else, so the bytes
+         * of every other event are what they always were.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        UUID reservationId
 ) {
     public static final String TOPIC = "oriah.order";
     public static final String AGGREGATE_TYPE = "order";
@@ -101,7 +108,8 @@ public record OrderEvent(
                 stored(order.discountAmount()),
                 order.deliveryOption(),
                 order.paymentIntentId(),
-                order.items().stream().map(OrderEvent::line).sorted(LINE_ORDER).toList());
+                order.items().stream().map(OrderEvent::line).sorted(LINE_ORDER).toList(),
+                order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.EXPIRED ? order.reservationId() : null);
     }
 
     /** {@code order.<status in lower case>}: order.created, order.paid, ... order.cancelled. */

@@ -19,6 +19,15 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     @EntityGraph(attributePaths = "items")
     Page<Order> findByKeycloakIdOrderByPlacedAtDesc(String keycloakId, Pageable pageable);
 
+    /** The order a shopper's Idempotency-Key already made, if any. */
+    @EntityGraph(attributePaths = "items")
+    Optional<Order> findByKeycloakIdAndIdempotencyKey(String keycloakId, String idempotencyKey);
+
+    /** The shopper's live order for this very bag (the quote's fingerprint), if one is still waiting for payment. */
+    @EntityGraph(attributePaths = "items")
+    Optional<Order> findFirstByKeycloakIdAndQuoteDigestAndStatusIn(String keycloakId, String quoteDigest,
+                                                                  java.util.Collection<com.oriah.order.model.OrderStatus> statuses);
+
     @Override
     @EntityGraph(attributePaths = "items")
     Page<Order> findAll(Pageable pageable);

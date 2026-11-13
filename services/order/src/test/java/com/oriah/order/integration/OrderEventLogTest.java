@@ -47,7 +47,6 @@ import com.oriah.order.QuoteFixtures;
 import com.oriah.order.TestcontainersConfiguration;
 import com.oriah.order.client.CatalogPricingClient;
 import com.oriah.order.client.CustomerClient;
-import com.oriah.order.client.PaymentClient;
 import com.oriah.order.client.ShippingClient;
 import com.oriah.order.events.OrderEvent;
 import com.oriah.order.model.Order;
@@ -118,9 +117,9 @@ class OrderEventLogTest {
     @MockitoBean
     private CatalogPricingClient catalog;
     @MockitoBean
-    private PaymentClient payment;
-    @MockitoBean
     private ShippingClient shipping;
+    @MockitoBean
+    private com.oriah.order.client.InventoryClient inventory;
     @MockitoBean
     private CustomerClient customer;
     @MockitoBean
@@ -131,12 +130,12 @@ class OrderEventLogTest {
 
     @BeforeEach
     void stubs() {
+        // A shopper may hold three orders at once (Phase 7), and these tests all place as the same few shoppers. The outbox is append-only and
+        // is not touched: each test reads the rows of its own order, by its id.
+        orders.deleteAll();
         doReturn(List.of(new CustomerClient.Address(UUID.fromString(ADDRESS)))).when(customer).myAddresses();
-        doAnswer(inv -> {
-            ShippingClient.RateRequest asked = inv.getArgument(0);
-            return new ShippingClient.RateResponse("ZM", List.of(
-                    new ShippingClient.ShippingOption("SELF_COLLECT", new BigDecimal("0.00"), asked.currency())));
-        }).when(shipping).rates(any());
+        com.oriah.order.SaleStubs.shippingSelfCollect(shipping);
+        com.oriah.order.SaleStubs.inventoryHolds(inventory);
         doAnswer(inv -> {
             CatalogPricingClient.PricingRequest asked = inv.getArgument(0);
             return new CatalogPricingClient.PricingResponse(asked.variantIds().stream()
@@ -175,18 +174,6 @@ class OrderEventLogTest {
     private UUID placeAs(String subject) throws Exception {
         String json = place(subject).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         return UUID.fromString(objectMapper.readTree(json).get("id").asText());
-    }
-
-    /** Payment answering that {@code intent} is a settled K250.00 payment for this order. */
-    private void settled(UUID orderId, UUID intent, String amount) {
-        when(payment.findIntent(intent)).thenReturn(new PaymentClient.IntentResponse(
-                intent, orderId, new BigDecimal(amount), CURRENCY, "SUCCEEDED"));
-    }
-
-    private ResultActions pay(UUID orderId, UUID intent, String subject) throws Exception {
-        return mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(customer(subject))
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"paymentIntentId\":\"" + intent + "\"}"));
     }
 
     private void adminMoves(UUID orderId, String target, String staffSubject) throws Exception {
@@ -302,31 +289,33 @@ class OrderEventLogTest {
     }
 
     @Test
-    @DisplayName("order.created is part of the placement's own transaction: a placement that fails at commit takes it along")
-    void createdCommitsWithThePlacement() throws Exception {
+    @DisplayName("order.created is part of the transaction that makes the order HELD: a hold that fails at commit takes it along")
+    void createdCommitsWithTheHold() throws Exception {
+        // A placement is two transactions since Phase 7: the order is written PENDING (nobody told), inventory holds the pieces, and ONE
+        // transaction then marks the order HELD and appends order.created. A failure at THAT commit must take the event along.
         jdbc.execute("""
                 CREATE FUNCTION test_refuse_commit() RETURNS trigger LANGUAGE plpgsql AS $$
                 BEGIN
-                    RAISE EXCEPTION 'test: this placement fails at commit';
+                    RAISE EXCEPTION 'test: this hold fails at commit';
                 END;
                 $$""");
         jdbc.execute("""
-                CREATE CONSTRAINT TRIGGER orders_test_commit_fails AFTER INSERT ON orders
+                CREATE CONSTRAINT TRIGGER orders_test_commit_fails AFTER UPDATE ON orders
                 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
-                WHEN (NEW.keycloak_id = 'kc-commit-fails') EXECUTE FUNCTION test_refuse_commit()""");
+                WHEN (NEW.keycloak_id = 'kc-commit-fails' AND NEW.hold_state = 'HELD') EXECUTE FUNCTION test_refuse_commit()""");
         try {
             long idsBefore = outboxIdsHandedOut();
             long rowsBefore = outboxRows();
 
             place("kc-commit-fails").andExpect(status().is5xxServerError());
 
-            assertThat(jdbc.queryForObject("SELECT count(*) FROM orders WHERE keycloak_id = 'kc-commit-fails'",
-                    Long.class)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM orders WHERE keycloak_id = 'kc-commit-fails' AND hold_state = 'PENDING'",
+                    Long.class)).as("the order stays PENDING: written, never announced, for the shopper's repeat to finish").isEqualTo(1);
             assertThat(outboxIdsHandedOut())
-                    .as("order.created was appended inside the placement's transaction (it drew an outbox id)")
+                    .as("order.created was appended inside the hold's transaction (it drew an outbox id)")
                     .isEqualTo(idsBefore + 1);
             assertThat(outboxRows())
-                    .as("... and was rolled back with the order it describes")
+                    .as("... and was rolled back with the HELD marking it describes")
                     .isEqualTo(rowsBefore);
         } finally {
             jdbc.execute("DROP TRIGGER orders_test_commit_fails ON orders");
@@ -358,125 +347,26 @@ class OrderEventLogTest {
         }
     }
 
-    // -------------------------------------------------------------- paying
-
-    @Test
-    @DisplayName("paying appends order.paid as seq 2, with the payment intent, by the customer, when it was marked paid")
-    void payingAppendsPaid() throws Exception {
-        UUID orderId = placeAs("kc-alice");
-        UUID intent = UUID.randomUUID();
-        settled(orderId, intent, "250.00");
-
-        pay(orderId, intent, "kc-alice").andExpect(status().isOk());
-
-        List<Row> rows = rows(orderId);
-        assertThat(rows).extracting(Row::eventType).containsExactly("order.created", "order.paid");
-        Row paid = rows.get(1);
-        assertThat(paid.seq()).isEqualTo(2);
-        assertThat(paid.actor()).isEqualTo("user:kc-alice");
-        Order order = orders.findById(orderId).orElseThrow();
-        assertThat(paid.occurredAt()).isCloseTo(order.updatedAt(), within(1, ChronoUnit.MICROS));
-        assertThat(paid.payload()).isEqualTo(EventJson.write(OrderEvent.of(order, OrderStatus.CREATED)));
-        assertThat(paid.payload()).contains("\"previousStatus\":\"CREATED\",\"newStatus\":\"PAID\"",
-                "\"paymentIntentId\":\"" + intent + "\"");
-    }
-
-    @Test
-    @DisplayName("marking paid is ONE transaction: if it fails at commit, the payment, the status and order.paid all go")
-    void markPaidIsOneTransaction() throws Exception {
-        UUID orderId = placeAs("kc-alice");
-        UUID doomed = UUID.randomUUID();
-        settled(orderId, doomed, "250.00");
-        jdbc.execute("""
-                CREATE FUNCTION test_refuse_commit() RETURNS trigger LANGUAGE plpgsql AS $$
-                BEGIN
-                    RAISE EXCEPTION 'test: this payment fails at commit';
-                END;
-                $$""");
-        jdbc.execute("""
-                CREATE CONSTRAINT TRIGGER orders_test_commit_fails AFTER UPDATE ON orders
-                DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
-                WHEN (NEW.payment_intent_id = '%s') EXECUTE FUNCTION test_refuse_commit()""".formatted(doomed));
-        try {
-            long idsBefore = outboxIdsHandedOut();
-
-            pay(orderId, doomed, "kc-alice").andExpect(status().is5xxServerError());
-
-            Order order = orders.findById(orderId).orElseThrow();
-            assertThat(order.status()).isEqualTo(OrderStatus.CREATED);
-            assertThat(order.paymentIntentId()).as("the payment was attached in the same transaction").isNull();
-            assertThat(outboxIdsHandedOut())
-                    .as("order.paid was appended inside that transaction (it drew an outbox id)")
-                    .isEqualTo(idsBefore + 1);
-            assertThat(rows(orderId)).extracting(Row::eventType)
-                    .as("... and was rolled back with it")
-                    .containsExactly("order.created");
-        } finally {
-            jdbc.execute("DROP TRIGGER orders_test_commit_fails ON orders");
-            jdbc.execute("DROP FUNCTION test_refuse_commit()");
-        }
-    }
-
-    @Test
-    @DisplayName("payment is consulted with no transaction open; only then is the order marked paid")
-    void paymentIsConsultedOutsideTheTransaction() throws Exception {
-        UUID orderId = placeAs("kc-alice");
-        UUID intent = UUID.randomUUID();
-        boolean[] consulted = {false};
-        boolean[] insideTransaction = {true};
-        when(payment.findIntent(intent)).thenAnswer(inv -> {
-            consulted[0] = true;
-            insideTransaction[0] = TransactionSynchronizationManager.isActualTransactionActive();
-            return new PaymentClient.IntentResponse(intent, orderId, new BigDecimal("250.00"), CURRENCY, "SUCCEEDED");
-        });
-
-        pay(orderId, intent, "kc-alice").andExpect(status().isOk());
-
-        assertThat(consulted[0]).as("payment was never consulted").isTrue();
-        assertThat(insideTransaction[0]).as("the call to payment held a database transaction open").isFalse();
-    }
-
-    @Test
-    @DisplayName("an order placed before V4 is paid with its unknown amounts written as null, never as zero")
-    void aLegacyOrderIsPaidWithItsNulls() throws Exception {
-        UUID orderId = UUID.randomUUID();
-        jdbc.update("INSERT INTO orders (id, keycloak_id, status, subtotal, total, currency) "
-                + "VALUES (?, 'kc-alice', 'CREATED', 250.00, 250.00, ?)", orderId, CURRENCY);
-        UUID intent = UUID.randomUUID();
-        settled(orderId, intent, "375.00");
-
-        pay(orderId, intent, "kc-alice").andExpect(status().isOk());
-
-        // Placed before the log existed, so its history in the log starts here.
-        List<Row> rows = rows(orderId);
-        assertThat(rows).extracting(Row::eventType).containsExactly("order.paid");
-        assertThat(rows.get(0).seq()).isEqualTo(1);
-        assertThat(rows.get(0).payload()).contains("\"total\":250.00,\"currency\":\"ZMW\",\"subtotal\":250.00,"
-                + "\"shippingAmount\":null,\"discountAmount\":null,\"deliveryOption\":null,"
-                + "\"paymentIntentId\":\"" + intent + "\",\"lines\":[]");
-    }
-
     // ------------------------------------------- every transition, and who
 
     @Test
     @DisplayName("every change appends its snapshot in order, naming who acted: the customer, or the staff member")
     void everyChangeNamesItsActor() throws Exception {
         UUID orderId = placeAs("kc-alice");
-        UUID intent = UUID.randomUUID();
-        settled(orderId, intent, "250.00");
-        pay(orderId, intent, "kc-alice").andExpect(status().isOk());
+        // Only money makes an order PAID (the settlement saga, tested in SettlementReceiveTest, which also pins order.paid): here the sale is made
+        // by hand so this test is about the changes AFTER it, and who made them.
+        jdbc.update("UPDATE orders SET status = 'PAID' WHERE id = ?", orderId);
         adminMoves(orderId, "FULFILLED", "kc-maya");
         adminMoves(orderId, "SHIPPED", "kc-maya");
         adminMoves(orderId, "DELIVERED", "kc-maya");
 
         List<Row> rows = rows(orderId);
-        assertThat(rows).extracting(Row::seq).containsExactly(1L, 2L, 3L, 4L, 5L);
+        assertThat(rows).extracting(Row::seq).containsExactly(1L, 2L, 3L, 4L);
         assertThat(rows).extracting(Row::eventType).containsExactly(
-                "order.created", "order.paid", "order.fulfilled", "order.shipped", "order.delivered");
+                "order.created", "order.fulfilled", "order.shipped", "order.delivered");
         assertThat(rows).extracting(Row::actor).containsExactly(
-                "user:kc-alice", "user:kc-alice", "user:kc-maya", "user:kc-maya", "user:kc-maya");
-        assertThat(rows.get(4).payload()).contains("\"previousStatus\":\"SHIPPED\",\"newStatus\":\"DELIVERED\"",
-                "\"paymentIntentId\":\"" + intent + "\"");
+                "user:kc-alice", "user:kc-maya", "user:kc-maya", "user:kc-maya");
+        assertThat(rows.get(3).payload()).contains("\"previousStatus\":\"SHIPPED\",\"newStatus\":\"DELIVERED\"");
 
         UUID cancelled = placeAs("kc-alice");
         mvc.perform(post("/api/v1/orders/" + cancelled + "/cancel").with(customer("kc-alice")))
@@ -504,11 +394,13 @@ class OrderEventLogTest {
     // ------------------------------------------------- two changes at once
 
     /**
-     * Paying and cancelling one order at the same moment. Both read it as
-     * CREATED, and from CREATED both moves are legal -- so without a version
-     * on the order, both would succeed and the log would say it was paid AND
-     * cancelled. Exactly one may win; the other must be told (409), and only
-     * the winner is in the log.
+     * Two changes to one order at the same moment (the shopper cancelling from
+     * two tabs). Both read it as CREATED, and from CREATED the move is legal --
+     * so without a version on the order, both would succeed and the log would
+     * say it was cancelled TWICE. Exactly one may win; the other must be told
+     * (409), and only the winner is in the log. (Money arriving at the same
+     * moment is a different race, kept apart by the settlement's own marker:
+     * SettlementSagaTest.)
      *
      * <p>To make "the same moment" certain rather than lucky, the test holds
      * the outbox table shut: no event can be appended, so neither change can
@@ -517,38 +409,33 @@ class OrderEventLogTest {
      * Then it lets go.
      */
     @Test
-    @DisplayName("paying and cancelling at the same moment: one wins, the other is 409, and only the winner is logged")
-    void payAndCancelAtOnce() throws Exception {
+    @DisplayName("cancelling twice at the same moment: one wins, the other is 409, and only the winner is logged")
+    void cancelAndCancelAtOnce() throws Exception {
         UUID orderId = placeAs("kc-alice");
-        UUID intent = UUID.randomUUID();
-        settled(orderId, intent, "250.00");
         ExecutorService pool = Executors.newFixedThreadPool(2);
-        Future<Integer> paying;
-        Future<Integer> cancelling;
+        Future<Integer> firstCancel;
+        Future<Integer> secondCancel;
         try (Connection gate = dataSource.getConnection()) {
             gate.setAutoCommit(false);
             try (Statement lock = gate.createStatement()) {
                 // Reads still pass (the relay keeps running); appends wait.
                 lock.execute("LOCK TABLE outbox IN EXCLUSIVE MODE");
             }
-            paying = pool.submit(() -> pay(orderId, intent, "kc-alice")
-                    .andReturn().getResponse().getStatus());
-            cancelling = pool.submit(() -> mvc.perform(post("/api/v1/orders/" + orderId + "/cancel")
+            firstCancel = pool.submit(() -> mvc.perform(post("/api/v1/orders/" + orderId + "/cancel")
+                    .with(customer("kc-alice"))).andReturn().getResponse().getStatus());
+            secondCancel = pool.submit(() -> mvc.perform(post("/api/v1/orders/" + orderId + "/cancel")
                     .with(customer("kc-alice"))).andReturn().getResponse().getStatus());
             awaitWaiting(2);
             gate.rollback();
         } finally {
             pool.shutdown();
         }
-        int paid = paying.get(30, TimeUnit.SECONDS);
-        int cancelled = cancelling.get(30, TimeUnit.SECONDS);
+        int first = firstCancel.get(30, TimeUnit.SECONDS);
+        int second = secondCancel.get(30, TimeUnit.SECONDS);
 
-        assertThat(List.of(paid, cancelled)).as("[pay, cancel]").containsExactlyInAnyOrder(200, 409);
-        boolean payWon = paid == 200;
-        assertThat(rows(orderId)).extracting(Row::eventType)
-                .containsExactly("order.created", payWon ? "order.paid" : "order.cancelled");
-        assertThat(orders.findById(orderId).orElseThrow().status())
-                .isEqualTo(payWon ? OrderStatus.PAID : OrderStatus.CANCELLED);
+        assertThat(List.of(first, second)).as("[cancel, cancel]").containsExactlyInAnyOrder(200, 409);
+        assertThat(rows(orderId)).extracting(Row::eventType).containsExactly("order.created", "order.cancelled");
+        assertThat(orders.findById(orderId).orElseThrow().status()).isEqualTo(OrderStatus.CANCELLED);
     }
 
     /** Waits until this many statements are blocked on a lock in the database. */

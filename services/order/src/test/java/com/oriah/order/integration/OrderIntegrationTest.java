@@ -23,7 +23,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.order.TestcontainersConfiguration;
 import com.oriah.order.client.CatalogPricingClient;
-import com.oriah.order.client.PaymentClient;
 import com.oriah.order.repository.OrderRepository;
 
 import com.oriah.order.QuoteFixtures;
@@ -82,18 +81,17 @@ class OrderIntegrationTest {
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
-    /**
-     * POST /orders/{id}/pay now verifies the payment claim against
-     * payment-service, so the paying tests below have to stub a real settled
-     * intent. They previously posted {@code UUID.randomUUID()} and passed,
-     * which is exactly the hole {@link PayVerificationTest} was written for.
-     */
-    @MockitoBean
-    private PaymentClient payment;
+    /** Setup only: an order is PAID by money (SettlementReceiveTest), and the admin-path test below starts from a paid one. */
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     /** Shipping as it is until Phase 7: self-collect at no charge, in the order's currency. */
     @MockitoBean
     private com.oriah.order.client.ShippingClient shipping;
+
+    /** Inventory holds whatever an order asks it to hold (a placement takes a hold; stock is not this class's subject). */
+    @MockitoBean
+    private com.oriah.order.client.InventoryClient inventory;
 
     /**
      * customer, listing the fixture's address as the caller's -- whoever the
@@ -108,12 +106,8 @@ class OrderIntegrationTest {
         org.mockito.Mockito.doReturn(java.util.List.of(new com.oriah.order.client.CustomerClient.Address(
                         UUID.fromString("11111111-1111-1111-1111-111111111111"))))
                 .when(customer).myAddresses();
-        org.mockito.Mockito.doAnswer(inv -> {
-            com.oriah.order.client.ShippingClient.RateRequest asked = inv.getArgument(0);
-            return new com.oriah.order.client.ShippingClient.RateResponse("ZM", java.util.List.of(
-                    new com.oriah.order.client.ShippingClient.ShippingOption(
-                            "SELF_COLLECT", new java.math.BigDecimal("0.00"), asked.currency())));
-        }).when(shipping).rates(org.mockito.ArgumentMatchers.any());
+        com.oriah.order.SaleStubs.shippingSelfCollect(shipping);
+        com.oriah.order.SaleStubs.inventoryHolds(inventory);
         repository.deleteAll();
         catalogPrices.clear();
         doAnswer(inv -> {
@@ -124,12 +118,6 @@ class OrderIntegrationTest {
                             catalogPrices.getOrDefault(id, new BigDecimal("10.00")), "USD"))
                     .toList());
         }).when(catalog).price(any());
-    }
-
-    /** A SUCCEEDED intent matching what {@link #placeOrderAs} creates: 10.00 USD. */
-    private void stubSettled(String orderId, UUID intentId) {
-        when(payment.findIntent(intentId)).thenReturn(new PaymentClient.IntentResponse(
-                intentId, UUID.fromString(orderId), new BigDecimal("10.00"), "USD", "SUCCEEDED"));
     }
 
     @Test
@@ -183,17 +171,18 @@ class OrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("POST /orders/{id}/pay attaches paymentIntent and transitions to PAID")
-    void payTransitionsToPaid() throws Exception {
+    @DisplayName("there is no way for a SHOPPER to make an order PAID: the old pay endpoint is gone, and only confirmed money pays a sale")
+    void thePayEndpointIsGone() throws Exception {
         String orderId = placeAliceOrder();
-        UUID paymentIntent = UUID.randomUUID();
-        stubSettled(orderId, paymentIntent);
+
         mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(jwtFor("alice"))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"paymentIntentId\":\"" + paymentIntent + "\"}"))
+                        .content("{\"paymentIntentId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isNotFound());
+
+        mvc.perform(get("/api/v1/orders/" + orderId).with(jwtFor("alice")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("PAID"))
-                .andExpect(jsonPath("$.paymentIntentId").value(paymentIntent.toString()));
+                .andExpect(jsonPath("$.status").value("CREATED"));
     }
 
     @Test
@@ -209,13 +198,8 @@ class OrderIntegrationTest {
     @DisplayName("admin transition: PAID -> FULFILLED -> SHIPPED -> DELIVERED")
     void adminFullPath() throws Exception {
         String orderId = placeAliceOrder();
-        // pay first (USER endpoint)
-        UUID paymentIntent = UUID.randomUUID();
-        stubSettled(orderId, paymentIntent);
-        mvc.perform(post("/api/v1/orders/" + orderId + "/pay").with(jwtFor("alice"))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"paymentIntentId\":\"" + paymentIntent + "\"}"))
-                .andExpect(status().isOk());
+        // Paid first -- by money, which this test is not about (SettlementReceiveTest is): the sale is made by hand.
+        jdbc.update("UPDATE orders SET status = 'PAID' WHERE id = ?", UUID.fromString(orderId));
 
         for (String target : new String[]{"FULFILLED", "SHIPPED", "DELIVERED"}) {
             mvc.perform(post("/api/v1/admin/orders/" + orderId + "/transition")
@@ -327,7 +311,7 @@ class OrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("pay / cancel / admin get / admin transition on an unknown id are problem 404s")
+    @DisplayName("payment claim / cancel / admin get / admin transition on an unknown id are problem 404s")
     void otherUnknownOrderPathsAreProblem404s() throws Exception {
         UUID missing = UUID.randomUUID();
         var orderAdmin = jwt().authorities(
@@ -337,9 +321,9 @@ class OrderIntegrationTest {
         // The body must be VALID, or bean validation answers 400 before the
         // handler is reached and the 404 is never exercised -- this assertion
         // failed that way first time round.
-        mvc.perform(post("/api/v1/orders/" + missing + "/pay").with(jwtFor("alice"))
+        mvc.perform(post("/api/v1/orders/" + missing + "/payment-claim").with(jwtFor("alice"))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"paymentIntentId\":\"" + UUID.randomUUID() + "\"}"))
+                        .content("{\"method\":\"MTN\",\"reference\":\"MP261113\"}"))
                 .andExpect(status().isNotFound())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.detail").value(

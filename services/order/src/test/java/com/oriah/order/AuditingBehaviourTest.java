@@ -44,9 +44,9 @@ import static org.assertj.core.api.Assertions.within;
  * <strong>null</strong> after a reload.
  *
  * <p>Nothing is user-visible today, and only because {@code Order} maintains
- * the column by hand in {@code transitionTo()} and
- * {@code attachPaymentIntent()}. The trap is that it looks audited and is not:
- * delete those two assignments trusting the annotation one class up, and a
+ * the column by hand in {@code transitionTo()} and the other methods that
+ * change an order. The trap is that it looks audited and is not:
+ * delete those assignments trusting the annotation one class up, and a
  * {@code NOT NULL} column silently stops advancing.
  *
  * <p><strong>2. The mixed timestamp types are NOT a correctness bug, which took

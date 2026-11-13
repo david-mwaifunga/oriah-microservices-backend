@@ -3,6 +3,15 @@ spring:
     name: order
   config:
     import: "optional:configserver:http://localhost:8888"
+  task:
+    scheduling:
+      # Three scheduled jobs run here, each on a thread of its own: the outbox relay (shared/oriah-events) and, since Phase 7, the hold job that
+      # finishes what a request left half done (a payment claim whose hold was not yet stretched, a placement inventory never answered) and the
+      # settlement job that asks inventory again for confirmed money whose sale could not be applied yet.
+      # Spring Boot's default is ONE thread for all of them, so a relay round waiting on a stopped Kafka (up to about 25 s) would hold the
+      # jobs back, and a job pass waiting on a slow inventory would hold the relay back. Add a thread for any further @Scheduled job.
+      pool:
+        size: 3
   jpa:
     hibernate:
       ddl-auto: validate
@@ -47,14 +56,14 @@ spring:
     # and a permissive loader would resolve it by discarding one of the two.
     openfeign:
       circuitbreaker:
-        # Stays off. PaymentClient and CustomerClient forward the shopper's JWT
-        # from SecurityContextHolder, which is a ThreadLocal, and Spring Cloud's
+        # Stays off. CustomerClient forwards the shopper's JWT from
+        # SecurityContextHolder, which is a ThreadLocal, and Spring Cloud's
         # OpenFeign+Resilience4j integration dispatches the call to a
         # ForkJoinPool worker -- the Authorization header would be dropped and
-        # payment would answer 401 for every verification, customer for every
-        # address check. It also keeps a
+        # customer would answer 401 for every address check. It also keeps a
         # failed call throwing rather than falling back to an invented answer
-        # about whether an order was paid. Checkout documents the same trap.
+        # (a price, a delivery cost, whether the pieces are held). Checkout
+        # documents the same trap.
         enabled: false
       client:
         config:
@@ -135,35 +144,18 @@ spring:
           shipping:
             connect-timeout: 500
             read-timeout: 2000
-          # payment is on the PAY path, not the placement path: before order
-          # marks an order paid it asks payment whether the intent it was given
-          # really is a settled payment for this order (PaymentIntentVerifier).
-          # Checkout makes that call (POST /orders/{id}/pay) only AFTER payment
-          # has taken the money, and waits 15s for it -- its default
-          # readTimeout, since its order client has no entry of its own. With
-          # no entry here, Feign's own 10s to connect and 60s to answer
-          # applied, so order could still be waiting on payment when checkout
-          # gave up; checkout then logs PAYMENT CAPTURED WITHOUT ORDER (money
-          # taken, order left unpaid) while order might yet mark it paid.
-          #
-          # 0.5s to connect, like customer and shipping: payment is on the
-          # same network. 3s to answer: payment reads one intent by id for one
-          # shopper, a single row -- and on the checkout path it has just
-          # confirmed that very intent, so it is warm. 3s rather than 2s for
-          # the cold case, as for shipping: an order paid straight to order
-          # (Postman) can be payment's first request since it started. That is
-          # 3.5s at worst, which leaves 11.5s of checkout's 15s for order's own
-          # work around the call (read the order; one transaction to attach the
-          # payment, mark it PAID and append order.paid; the reply).
-          # PayPathBudgetTest reads checkout's own files and fails unless at
-          # least 2s is left.
-          #
-          # If payment does not answer in time, order answers 503 with no
-          # Retry-After (PaymentIntentVerifier says why), so checkout sends
-          # order.pay again -- three attempts in all, 0.5s apart.
-          payment:
+          # inventory holds the pieces while the shopper pays (Phase 7): the FIFTH call on the placement path, after shipping. 0.5s to
+          # connect, 2s to answer: one transaction that locks the stock rows of one bag (at most a hundred lines) and writes the hold.
+          # Its 2.5s is what raised checkout's wait for order from 15s to 20s: the placement path is now 15.5s at worst (customer 2.5,
+          # catalog 4, token 4, shipping 2.5, inventory 2.5) and the card tail that used to fill checkout's wait is gone.
+          # WritePathBudgetTest adds them up against checkout's own file and pins these numbers.
+          inventory:
             connect-timeout: 500
-            read-timeout: 3000
+            read-timeout: 2000
+    # With more than one function every one must be listed, or it is not bound. The replayer's own listener (outboxReplayRequests) is added by the
+    # event-log module while replay is on.
+    function:
+      definition: paymentEvents;inventoryEvents
     stream:
       # No producer binding: order no longer sends to Kafka itself. Every event
       # is a row in the outbox, and the relay (shared/oriah-events) sends each
@@ -173,6 +165,38 @@ spring:
       # replays' to oriah.replay.<consumer>, which are named only at send time.
       default:
         contentType: application/json
+      bindings:
+        # Payment's events (Phase 7): money staff confirmed, money they voided, a claim they rejected. Read live from oriah.payment in a group of its
+        # own, from the earliest message Kafka still has (each is applied once: the Inbox and the effects see to it).
+        paymentEvents-in-0:
+          destination: oriah.payment
+          group: order
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time (an event type nobody declared, a body that cannot be read, an id that is not an id): straight to
+            # the dead-letter topic on the first delivery. A database that is away is not listed, so it is delivered again.
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              tools.jackson.core.JacksonException: false
+        # Inventory's events (Phase 7): a hold lapsed. Read live from oriah.inventory the same way.
+        inventoryEvents-in-0:
+          destination: oriah.inventory
+          group: order
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              tools.jackson.core.JacksonException: false
       kafka:
         default:
           producer:
@@ -205,6 +229,22 @@ spring:
             max.block.ms: 10000         # waiting for the topic's details from the broker
             request.timeout.ms: 5000    # one request to the broker
             delivery.timeout.ms: 10000  # the whole send, retries included
+        bindings:
+          paymentEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.payment.dlq.order
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms (5 min), even with the database away.
+                max.poll.records: 1
+          inventoryEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.inventory.dlq.order
+              configuration:
+                max.poll.records: 1
         # Nothing here for the replay-request listener (outboxReplayRequests-in-0)
         # on purpose. The event-log module binds it and sets all of its Kafka
         # settings itself: a request that keeps failing is delivered 3 times
@@ -235,9 +275,9 @@ oriah:
   # The event log (shared/oriah-events, MVP_PLAN Phase 1). Every order change
   # is appended to the outbox in the same transaction as the change; the relay
   # publishes the outbox to oriah.order; replay answers a late consumer that
-  # asks for the whole log again. Order consumes no events, so its Inbox is
-  # off (the replay listener records the requests it has answered without it).
-  # Each switch is exactly true or false: the module refuses anything else.
+  # asks for the whole log again. Since Phase 7 order CONSUMES events too -- it owns the sale, so it hears
+  # what became of the money (oriah.payment) and of the hold (oriah.inventory) -- and its Inbox is on:
+  # each event is applied once. Each switch is exactly true or false: the module refuses anything else.
   events:
     outbox:
       enabled: true
@@ -245,12 +285,43 @@ oriah:
       enabled: true
     replay:
       enabled: true
+    # The module refuses to start unless every topic listed here is read by exactly one input binding, with a dead-letter topic named
+    # <topic>.dlq.<group> (paymentEvents-in-0 and inventoryEvents-in-0 above).
     inbox:
-      enabled: false
+      enabled: true
+      topics: oriah.payment,oriah.inventory
     # Sent with every message as the producer header.
     producer: order
     # The only topic order may publish to: an append naming any other is refused.
     topics: oriah.order
+
+  # -------------------------------------------------------------------------
+  # The sale (Phase 7): a placement HOLDS the pieces at inventory while the shopper pays. Every value has a default in code; config-repo may
+  # override. The tests switch the hold job off (src/test/resources/config/application.yaml) and call it themselves.
+  #
+  # max-live-orders / max-held-pieces: what one shopper may hold at once (owner question Q12): a hold is stock nobody else can buy and costs the
+  #     shopper nothing, so it is bounded. Past either, a placement is 409 hold-limit-reached.
+  # payment-submitted-hold: the longest a hold is stretched to once a payment reference is submitted (inventory caps it again from when the hold was
+  #     made). The first hold is inventory's own default (ten minutes).
+  # pending-grace: how long an order written PENDING may wait for inventory's answer before the hold job gives its hold back and deletes it.
+  # hold-job: every pass finishes pending hold extensions and gives back stale placements; delay is milliseconds between the end of one pass and the
+  #     start of the next. On in every profile.
+  # -------------------------------------------------------------------------
+  # settlement-job: asks inventory again, every 15 s, for confirmed money whose sale could not be applied yet (inventory silent, a hold that lapsed
+  #     meanwhile, only a box missing); the wait between tries doubles from 15 s up to five minutes.
+  # settlement-stuck-after: how long confirmed money may wait to pay its sale before it is called STUCK (an ERROR in the log; staff see it in their queue).
+  sales:
+    max-live-orders: 3
+    max-held-pieces: 20
+    payment-submitted-hold: PT24H
+    pending-grace: PT1M
+    settlement-stuck-after: PT5M
+    hold-job:
+      enabled: true
+      delay: 15000
+    settlement-job:
+      enabled: true
+      delay: 15000
 
   # -------------------------------------------------------------------------
   # Local fallback for GET /api/v1/orders/contact-info.
