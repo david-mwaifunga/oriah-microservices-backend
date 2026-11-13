@@ -163,6 +163,22 @@ public class ConsignmentAllocations {
         return latest == null ? 0 : latest;
     }
 
+    /** The newest revision number of each of these consignments that has one, in one query (for a list). */
+    public Map<UUID, Integer> latestRevisions(java.util.Collection<UUID> consignmentIds) {
+        Map<UUID, Integer> latest = new LinkedHashMap<>();
+        if (consignmentIds.isEmpty()) {
+            return latest;
+        }
+        jdbc.query(con -> {
+            var ps = con.prepareStatement("SELECT consignment_id, max(revision) FROM allocation_revision WHERE consignment_id = ANY (?) GROUP BY consignment_id");
+            ps.setArray(1, con.createArrayOf("uuid", consignmentIds.toArray()));
+            return ps;
+        }, rs -> {
+            latest.put((UUID) rs.getObject(1), rs.getInt(2));
+        });
+        return latest;
+    }
+
     /** The recorded allocation of a consignment as the latest revision stands, or empty if none was recorded. */
     public Optional<Recorded> latest(Consignment consignment) {
         int revision = latestRevision(consignment.id());

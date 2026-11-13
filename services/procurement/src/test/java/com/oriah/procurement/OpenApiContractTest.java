@@ -434,6 +434,9 @@ class OpenApiContractTest {
         for (String always : List.of("reference", "status", "opening", "estimated", "currency", "goodsTotal", "version")) {
             assertThat(isNullable("Consignment", always)).as("Consignment.%s", always).isFalse();
         }
+        // A list row says which revision stands too (null while a draft).
+        assertThat(isNullable("ConsignmentSummary", "revision")).as("ConsignmentSummary.revision: %s", describe("ConsignmentSummary", "revision")).isTrue();
+        assertThat(isNullable("ConsignmentSummary", "goodsTotal")).isFalse();
         for (String optional : List.of("supplier", "purchaseOrder", "productTitle", "chargeableWeightGrams",
                 "originCountry", "hsCode")) {
             assertThat(isNullable("ConsignmentLine", optional))

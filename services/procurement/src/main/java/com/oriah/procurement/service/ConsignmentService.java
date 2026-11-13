@@ -70,7 +70,8 @@ import com.oriah.procurement.service.ConsignmentAllocations.RevisionState;
 /**
  * Building a consignment: starting one from whole purchase orders (or typing in the opening
  * stock), keying its costs, attaching and detaching orders, deleting a draft, and previewing
- * what it would cost per unit.
+ * what it would cost per unit; receiving it; and (Phase 5) correcting what a received one
+ * cost, as a new revision of its recorded allocation ({@link #amend}).
  *
  * <h2>Every change names the version it was made from</h2>
  *
@@ -204,7 +205,15 @@ public class ConsignmentService {
         } else {
             found = consignments.findNewestFirst(pageable);
         }
-        return found.map(ConsignmentSummary::of);
+        // A received consignment's own rows are frozen as received, so each row asks which revision of its allocation stands
+        // (one query for the page) and, after a correction, takes its goods total and estimate flag from that revision.
+        Map<UUID, Integer> latest = allocations.latestRevisions(found.getContent().stream()
+                .filter(c -> c.status() == ConsignmentStatus.RECEIVED).map(Consignment::id).toList());
+        return found.map(c -> {
+            Integer revision = latest.get(c.id());
+            RevisionState state = revision != null && revision > 1 ? allocations.stateOf(c, revision) : null;
+            return ConsignmentSummary.of(c, revision, state);
+        });
     }
 
     /**

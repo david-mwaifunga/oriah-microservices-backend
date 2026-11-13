@@ -448,6 +448,26 @@ class ConsignmentAmendHttpTest {
     }
 
     @Test
+    @DisplayName("the list follows the corrections too: the goods total, the estimate flag and the revision that stand, so the two screens agree")
+    void theListFollowsTheCorrections() throws Exception {
+        Shipment shipment = receivedShipment();
+        List<String> lines = lineIds(shipment.consignment());
+        mvc.perform(get(PATH).with(maya())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].goodsTotal").value(20500.00))
+                .andExpect(jsonPath("$.content[0].estimated").value(false))
+                .andExpect(jsonPath("$.content[0].revision").value(1));
+
+        amend(shipment.consignment(), maya(), "{\"fromRevision\":1,\"reason\":\"the ring's total was K10,000, and the figures are provisional\","
+                + "\"estimated\":true,\"goodsLines\":[{\"lineId\":\"" + lines.get(0) + "\",\"goodsTotal\":10000.00}]}").andExpect(status().isCreated());
+
+        mvc.perform(get(PATH).with(maya())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].goodsTotal").value(20000.00))
+                .andExpect(jsonPath("$.content[0].estimated").value(true))
+                .andExpect(jsonPath("$.content[0].revision").value(2));
+        mvc.perform(get(PATH + "/" + shipment.consignment()).with(maya())).andExpect(jsonPath("$.goodsTotal").value(20000.00));
+    }
+
+    @Test
     @DisplayName("every typed split records who typed it: kept from the revision before when unchanged, the amender's when new")
     void typistsAreRecorded() throws Exception {
         Shipment shipment = receivedShipment();
