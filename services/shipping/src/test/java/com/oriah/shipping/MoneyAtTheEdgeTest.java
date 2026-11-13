@@ -23,6 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /** A subtotal is a whole number of ngwee (MVP_PLAN Phase 0, item 7). */
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.oriah.shipping.TestcontainersConfiguration.class)
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",

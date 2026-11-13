@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * removed the error contract from every module without one of its own.
  */
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.oriah.shipping.TestcontainersConfiguration.class)
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
         "eureka.client.enabled=false"

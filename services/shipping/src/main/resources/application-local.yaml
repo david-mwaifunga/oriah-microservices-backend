@@ -7,6 +7,14 @@
 # Keycloak (:7080) and Kafka (:9092). Every value is a development
 # value, used nowhere but this PC. Proved by scripts/local-dev-test.ps1.
 
+spring:
+  datasource:
+    # The container's database, published by Docker on 127.0.0.1:5445:
+    # DataGrip or pgAdmin sees exactly what this service wrote.
+    url: jdbc:postgresql://localhost:5445/shipping
+    username: shipping
+    password: shipping
+
 eureka:
   instance:
     # Register as localhost rather than this PC's network address

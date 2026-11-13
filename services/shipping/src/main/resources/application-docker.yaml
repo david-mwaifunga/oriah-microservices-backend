@@ -1,4 +1,8 @@
 spring:
+  datasource:
+    url: jdbc:postgresql://postgres-shipping:5432/shipping
+    username: ${SPRING_DATASOURCE_USERNAME:shipping}
+    password: ${SPRING_DATASOURCE_PASSWORD:shipping}
   config:
     import: "configserver:http://configserver:8888"
   security:

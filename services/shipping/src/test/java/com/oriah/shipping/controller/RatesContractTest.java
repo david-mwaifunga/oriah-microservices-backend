@@ -29,6 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * passes it on; a generic 500 here would read as "the shop is broken".
  */
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.oriah.shipping.TestcontainersConfiguration.class)
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",

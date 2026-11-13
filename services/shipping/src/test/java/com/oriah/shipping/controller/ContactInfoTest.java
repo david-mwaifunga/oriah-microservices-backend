@@ -52,6 +52,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * so there is no argument for them being reachable anonymously.
  */
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.oriah.shipping.TestcontainersConfiguration.class)
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         // The scenario under test: no Config Server, so nothing supplies

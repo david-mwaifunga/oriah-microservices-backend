@@ -34,6 +34,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * contract, not about shipping.
  */
 @SpringBootTest
+@org.springframework.context.annotation.Import(com.oriah.shipping.TestcontainersConfiguration.class)
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",

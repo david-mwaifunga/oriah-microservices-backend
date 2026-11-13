@@ -3,6 +3,14 @@ spring:
     name: shipping
   config:
     import: "optional:configserver:http://localhost:8888"
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  # A version and a count of days are WHOLE numbers. The platform's JSON reader would turn 1.9 into 1 before validation sees it, so a version
+  # of 0.9 would pass as 0 and defeat the stale-copy check. With this off, a fraction where a whole number belongs is a 400.
+  jackson:
+    deserialization:
+      accept-float-as-int: false
   security:
     oauth2:
       resourceserver:
