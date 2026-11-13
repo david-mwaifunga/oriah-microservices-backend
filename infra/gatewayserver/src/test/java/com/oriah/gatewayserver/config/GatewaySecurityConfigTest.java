@@ -402,6 +402,16 @@ class GatewaySecurityConfigTest {
         as(jobRole).post().uri("/api/v1/admin/inventory/box-swaps").exchange().expectStatus().isForbidden();
     }
 
+    @ParameterizedTest(name = "{0} cannot reach a service's internal reads through the gateway")
+    @DisplayName("/internal/** is service to service only: the gateway refuses it to every person, owner included, so a promotion list that needs no token is never public")
+    @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
+    void internalReadsAreNeverPublic(String jobRole) {
+        // Catalog reads what promotions are in force from promotion directly, with no token (it prices anonymously). That is only safe
+        // because the edge never carries it: no route exists, and this rule keeps it that way if one is ever added by mistake.
+        as(jobRole).get().uri("/internal/promotions/in-force").exchange().expectStatus().isForbidden();
+        as(jobRole).get().uri("/internal/anything/else").exchange().expectStatus().isForbidden();
+    }
+
     @Test
     @DisplayName("the rest of the inventory admin area stays with INVENTORY_ADMIN: only holds, sales and swaps are walled off")
     void restOfInventoryAdminIsUnchanged() {

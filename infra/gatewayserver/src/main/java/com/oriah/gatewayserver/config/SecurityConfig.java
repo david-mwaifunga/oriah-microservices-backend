@@ -248,6 +248,10 @@ public class SecurityConfig {
                         // builds the endpoint says who may.
                         .pathMatchers("/api/v1/admin/**").denyAll()
 
+                        // /internal/** is service to service only (catalog reads promotion's in-force list there, with no token, because it
+                        // prices anonymously). No route carries it; this keeps it from ever being public if one is added by mistake.
+                        .pathMatchers("/internal/**").denyAll()
+
                         // Everything else needs a token; each service checks
                         // its own roles.
                         .anyExchange().authenticated())
