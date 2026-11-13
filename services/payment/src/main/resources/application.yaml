@@ -45,40 +45,22 @@ spring:
         enabled: false
       client:
         config:
-          # Creating an intent asks order whose order it is (OrderOwnership),
-          # while checkout waits for payment's answer. Checkout sends that
-          # create on a Feign client of its own (payment-create, in checkout's
-          # application.yaml) and gives each attempt 1 s to connect to payment
-          # and 6 s for payment's answer. Feign's own defaults here would give
-          # order 10 s to connect and 60 s to answer -- far longer than
-          # checkout waits -- so checkout would give up on payment while
-          # payment was still waiting on order. With these, a hanging order
-          # costs payment at most 1 s + 3 s = 4 s, which leaves 2 s of
-          # checkout's 6 s for payment's own work (one short database write)
-          # and the reply's way back.
+          # Creating an intent (the card path, off unless
+          # oriah.payment.card.enabled) asks order whose order it is
+          # (OrderOwnership). Feign's own defaults here would give order 10 s
+          # to connect and 60 s to answer, which would hold payment, and
+          # whoever waits on payment, for a minute. With these, a hanging
+          # order costs payment at most 1 s + 3 s = 4 s, and payment answers
+          # 503 with Retry-After (OrderUnavailableException) rather than wait.
           #
-          # What checkout then does (its payment-create retry rule,
-          # RetryForIdempotentCall):
-          #   - payment's 503 "we could not check this order" (order hung, was
-          #     down or failed) is NOT asked again. It carries Retry-After
-          #     (OrderUnavailableException), which tells checkout to come back
-          #     later rather than wait on a struggling order all over again.
-          #     The shopper gets checkout's own 503, also with Retry-After, and
-          #     tries again later.
-          #   - no answer within the 6 s, or a reply lost on the way, IS asked
-          #     again: creating an intent is safe to repeat (a repeat gets the
-          #     intent already made). Three attempts in all, 500 ms apart: at
-          #     most 3 x (1 s + 6 s) + 2 x 0.5 s = 22 s, and then a 503. That
-          #     is why payment must answer inside the 6 s -- an attempt cut off
-          #     while payment is still waiting on order is wasted.
-          #   - any other answer (201, 200, a 4xx, a 500) comes back the same
-          #     every time, so it is not repeated either.
+          # Nothing calls payment's create today: Phase 7 removed the call
+          # from checkout, which now places an order and leaves the payment to
+          # staff. When ZynlePay (Phase 13) gives the card path a caller, that
+          # caller's wait must leave room for these 4 s plus payment's own
+          # write (one short database transaction); restate the budget then,
+          # and make CreateIntentBudgetTest read the caller's configuration.
           #
           # The read is one order by id, so 3 s is generous.
-          # CreateIntentBudgetTest reads checkout's payment-create client from
-          # checkout's own files and fails unless order's 1 s + 3 s leaves at
-          # least 2 s of it; a further call on this path must fit in the same
-          # 6 s.
           #
           # Keyed by the client's NAME (@FeignClient(name = "order")): Spring
           # Cloud silently uses the defaults for a name it has no config for,
