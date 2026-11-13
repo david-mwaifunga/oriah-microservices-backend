@@ -57,6 +57,7 @@ import com.oriah.notification.repository.NotificationLogRepository;
  * and carrying on, as this consumer once did, lost such an event for good.
  */
 @Configuration
+@lombok.extern.slf4j.Slf4j
 public class OrderEventConsumer {
 
     /**
@@ -128,6 +129,12 @@ public class OrderEventConsumer {
             OrderEventPayload payload = read(message.getPayload());
             requireAboutTheEnvelopesOrder(message, payload);
 
+            if (Boolean.TRUE.equals(payload.republished())) {
+                // The same sale announced again so payment can hear its answer: the customer was told when it was first announced. The Inbox records
+                // this event as applied all the same, so it is never delivered again.
+                log.info("{} for order {} is a repeat of one already announced: the customer is not told twice", type, payload.orderId());
+                return;
+            }
             var template = renderTemplate(type, payload);
             NotificationLog notification = repository.save(new NotificationLog(
                     payload.orderId(), payload.keycloakId(), type, "email", template.subject(), template.body()));

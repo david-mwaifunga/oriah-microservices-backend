@@ -282,6 +282,24 @@ class OrderEventInboxTest {
     }
 
     @Test
+    @DisplayName("the SAME payment announced again (republished: order does this while payment has no answer) is recorded as applied and tells the customer nothing a second time")
+    void aRepublishedPaymentSendsNothing() {
+        UUID orderId = UUID.randomUUID();
+        UUID first = UUID.randomUUID();
+        UUID again = UUID.randomUUID();
+        byte[] republished = new String(payloadV2(orderId), StandardCharsets.UTF_8)
+                .replace("\"receiptNumber\":\"R-000123\"", "\"receiptNumber\":\"R-000123\",\"republished\":true").getBytes(StandardCharsets.UTF_8);
+
+        orderEvents.accept(Relayed.orderEvent(first, "order.paid", orderId, 2, payloadV2(orderId)).setHeader(EventHeaders.SCHEMA_VERSION, "2").build());
+        orderEvents.accept(Relayed.orderEvent(again, "order.paid", orderId, 2, republished).setHeader(EventHeaders.SCHEMA_VERSION, "2").build());
+
+        assertThat(notifications.findAll()).as("one 'payment received', not two").hasSize(1);
+        assertThat(sender.sent()).hasSize(1);
+        assertThat(markers(first)).isEqualTo(1);
+        assertThat(markers(again)).as("the repeat is applied (recorded) all the same, so it is never delivered again").isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("an order that expired unpaid tells the customer so, in plain words, without reading any figure")
     void expiredNotifies() {
         UUID orderId = UUID.randomUUID();
