@@ -24,7 +24,13 @@ import java.util.UUID;
  * {@code goodsTotal} is the all-in price paid for the line; {@code sharedCost} the capitalized
  * costs put on it; {@code landedTotal} their sum. Every amount is in {@code currency}.
  *
- * <p>The field order is the wire order, pinned by a golden test: change it only with a new schema
+ * <p>{@code linePosition} is where the line sits in its consignment, counted from 1 in the order the
+ * lines were typed. Every line of one receipt shares {@code receivedAt}, so it is what breaks a tie
+ * between two lots of the same receipt: oldest-first selling inside a receipt follows the consignment's
+ * line order, whatever order Kafka delivers the events in. It was added at the END of the field list
+ * (Phase 5); events written before it carry no such field, and a consumer reads that as unknown.
+ *
+ * <p>The field order is the wire order, pinned by a test: change it only with a new schema
  * version. Consumers read an absent field they do not know as unknown, never as zero.
  */
 public record ConsignmentReceived(
@@ -45,7 +51,8 @@ public record ConsignmentReceived(
         BigDecimal goodsTotal,
         BigDecimal sharedCost,
         BigDecimal landedTotal,
-        List<Slice> slices) {
+        List<Slice> slices,
+        int linePosition) {
 
     /** {@code quantity} units, each costing {@code unitCost}. */
     public record Slice(int quantity, BigDecimal unitCost) {

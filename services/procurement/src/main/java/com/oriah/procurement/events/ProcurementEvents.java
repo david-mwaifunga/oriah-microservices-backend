@@ -66,7 +66,8 @@ public class ProcurementEvents {
                     supplier == null ? null : supplier.id(), supplier == null ? null : supplier.name(),
                     consignment.receivedAt(), consignment.isEstimated(), ConsignmentResponse.CURRENCY,
                     line.quantity(), costed.goodsTotal(), costed.sharedCost(), costed.landedTotal(),
-                    costed.slices().stream().map(s -> new ConsignmentReceived.Slice(s.quantity(), s.unitCost())).toList());
+                    costed.slices().stream().map(s -> new ConsignmentReceived.Slice(s.quantity(), s.unitCost())).toList(),
+                    line.position());
             outbox.append(new EventDraft(AGGREGATE, line.id().toString(), CONSIGNMENT_RECEIVED, SCHEMA_VERSION, TOPIC,
                     consignment.receivedAt(), actor, payload));
         }

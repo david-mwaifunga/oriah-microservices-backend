@@ -436,6 +436,10 @@ class ConsignmentReceiveHttpTest {
         assertThat(events.get(1).aggregateId()).isEqualTo(lines.get(1));
 
         String p = ring.payload();
+        // Where the line sits in its consignment (1-based, the order the lines were typed): inventory breaks a tie
+        // between two lots of one receipt with it, so FIFO inside a receipt follows the consignment's line order.
+        assertThat((Integer) JsonPath.read(p, "$.linePosition")).as("the ring is the first line").isEqualTo(1);
+        assertThat((Integer) JsonPath.read(events.get(1).payload(), "$.linePosition")).as("the box is the second").isEqualTo(2);
         assertThat((String) JsonPath.read(p, "$.consignmentId")).isEqualTo(shipment.consignment());
         assertThat((String) JsonPath.read(p, "$.consignmentReference")).isEqualTo(reference);
         assertThat((String) JsonPath.read(p, "$.consignmentLineId")).isEqualTo(lines.get(0));
@@ -493,7 +497,7 @@ class ConsignmentReceiveHttpTest {
         fields.addAll(JSON.readTree(payload).propertyNames());
         assertThat(fields).containsExactly("consignmentId", "consignmentReference", "consignmentLineId", "variantId",
                 "sku", "productTitle", "variantTitle", "kind", "supplierId", "supplierName", "receivedAt", "isEstimated",
-                "currency", "quantity", "goodsTotal", "sharedCost", "landedTotal", "slices");
+                "currency", "quantity", "goodsTotal", "sharedCost", "landedTotal", "slices", "linePosition");
         assertThat(payload).contains("\"landedTotal\":10702.90").contains("\"unitCost\":1528.99");
         List<String> sliceFields = new ArrayList<>();
         sliceFields.addAll(JSON.readTree(payload).get("slices").get(0).propertyNames());
