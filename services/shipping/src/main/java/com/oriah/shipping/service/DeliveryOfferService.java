@@ -14,7 +14,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.oriah.money.Ngwee;
 import com.oriah.shipping.exception.ShippingProblem;
-import com.oriah.shipping.model.ShippingOption;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -40,6 +39,8 @@ public class DeliveryOfferService {
 
     public static final String ORIAH_COLLECTS = "ORIAH_COLLECTS";
     public static final String RECIPIENT_PAYS = "RECIPIENT_PAYS";
+    /** The customer collects the piece from Oriah, at no charge. The code the shopper's choice is carried by, from preview through confirm to the order. */
+    public static final String SELF_COLLECT = "SELF_COLLECT";
     private static final String CURRENCY = "ZMW";
 
     /** Self-collect: always offered, at no charge, outside the town matrix. */
@@ -130,8 +131,8 @@ public class DeliveryOfferService {
             throw new IllegalArgumentException("the goods total cannot be negative");
         }
         String option = optionCode.trim();
-        if (ShippingOption.SELF_COLLECT.equals(option)) {
-            return new Quote(null, null, ShippingOption.SELF_COLLECT, "Self-collect", null, zero(), CURRENCY, zero(), false, null, null, null);
+        if (SELF_COLLECT.equals(option)) {
+            return new Quote(null, null, SELF_COLLECT, "Self-collect", null, zero(), CURRENCY, zero(), false, null, null, null);
         }
         if (townId == null) {
             throw new IllegalArgumentException("a town is required to deliver");
@@ -199,7 +200,7 @@ public class DeliveryOfferService {
     }
 
     private static SelfCollect selfCollect() {
-        return new SelfCollect(ShippingOption.SELF_COLLECT, "Self-collect", zero());
+        return new SelfCollect(SELF_COLLECT, "Self-collect", zero());
     }
 
     private static BigDecimal zero() {

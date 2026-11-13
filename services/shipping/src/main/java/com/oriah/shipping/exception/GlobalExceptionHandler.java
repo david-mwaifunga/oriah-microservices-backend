@@ -11,14 +11,13 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 import com.oriah.observability.OriahExceptionHandlerSupport;
-import com.oriah.observability.ProblemTypes;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Shipping's error contract: the shared one, plus the 422 for a destination
- * outside Zambia. Extending the shared support makes the starter's default
- * advice back off, so there is still exactly one advice
+ * Shipping's error contract: the shared one, plus the delivery-price problems
+ * and the 503 for a database that is away. Extending the shared support makes
+ * the starter's default advice back off, so there is still exactly one advice
  * (ErrorAdviceRegistrationTest).
  */
 @Slf4j
@@ -46,13 +45,5 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
         log.error("503 the delivery database is unavailable: {}", ex.toString());
         return problem(HttpStatus.SERVICE_UNAVAILABLE, URI.create("https://oriah.dev/problems/shipping-unavailable"), "Service Unavailable",
                 "delivery prices cannot be read right now: try again in a moment");
-    }
-
-    /** Logged at INFO: a shopper with an address abroad is an ordinary answer, not a fault. */
-    @ExceptionHandler(OutsideDeliveryAreaException.class)
-    public ProblemDetail outsideDeliveryArea(OutsideDeliveryAreaException ex) {
-        log.info("422 outside the delivery area");
-        return problem(HttpStatus.UNPROCESSABLE_CONTENT, ProblemTypes.OUTSIDE_DELIVERY_AREA,
-                "Outside our delivery area", ex.getMessage());
     }
 }

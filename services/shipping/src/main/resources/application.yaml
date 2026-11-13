@@ -54,16 +54,8 @@ eureka:
 # ---------------------------------------------------------------------------
 oriah:
   shipping:
-    # -----------------------------------------------------------------------
-    # The currency shipping quotes in. The zone rate card that used to sit
-    # here (an old USD card multiplied by 25 that nobody chose, whose
-    # "domestic" zone was Nigeria) is gone: until Phase 7 the only option is
-    # self-collect at no charge, and Phase 7 prices delivery per town as data
-    # admin publishes. Any other key under tariff refuses to start the service
-    # (ignoreUnknownFields=false), so a stale card in config-repo is caught.
-    # -----------------------------------------------------------------------
-    tariff:
-      currency: ZMW
+    # Delivery prices are data admin publishes per town (Phase 7), not
+    # configuration: the zone rate card and its `tariff` key are gone.
     contact-info:
       message: "Shipping service contact details are unavailable - the Config Server could not be reached"
       contact-details:

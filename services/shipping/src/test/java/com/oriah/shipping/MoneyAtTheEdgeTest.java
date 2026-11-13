@@ -46,13 +46,13 @@ class MoneyAtTheEdgeTest {
     }
 
     @Test
-    @DisplayName("a subtotal finer than a ngwee is a 400 on that field")
-    void aSubtotalFinerThanANgweeIsRefused() throws Exception {
-        mvc.perform(post("/api/v1/shipping/rates")
+    @DisplayName("a goods total finer than a ngwee is a 400 on that field")
+    void aGoodsTotalFinerThanANgweeIsRefused() throws Exception {
+        mvc.perform(post("/api/v1/shipping/quote")
                         .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"destinationCountry\":\"ZM\",\"subtotal\":100.005,\"currency\":\"ZMW\"}"))
+                        .content("{\"optionCode\":\"SELF_COLLECT\",\"goodsTotal\":100.005,\"currency\":\"ZMW\"}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("subtotal")));
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("goodsTotal")));
     }
 }

@@ -10,12 +10,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.shipping.dto.QuoteRequest;
-import com.oriah.shipping.dto.RateRequest;
-import com.oriah.shipping.dto.RateResponse;
 import com.oriah.shipping.service.DeliveryOfferService;
 import com.oriah.shipping.service.DeliveryOfferService.Offers;
 import com.oriah.shipping.service.DeliveryOfferService.Quote;
-import com.oriah.shipping.service.ShippingService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -43,11 +40,9 @@ import jakarta.validation.Valid;
 @PreAuthorize("hasRole('USER')")
 public class ShippingController {
 
-    private final ShippingService service;
     private final DeliveryOfferService offers;
 
-    public ShippingController(ShippingService service, DeliveryOfferService offers) {
-        this.service = service;
+    public ShippingController(DeliveryOfferService offers) {
         this.offers = offers;
     }
 
@@ -73,19 +68,5 @@ public class ShippingController {
     @PostMapping("/quote")
     public ResponseEntity<Quote> quote(@Valid @RequestBody QuoteRequest body) {
         return ResponseEntity.ok(offers.quote(body.townId(), body.optionCode(), body.payer(), body.goodsTotal(), body.currency()));
-    }
-
-    @Operation(operationId = "rates", summary = "Quote shipping options for a destination and subtotal")
-    @ApiResponse(responseCode = "200", description = "The available shipping options")
-    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "422", description = "The destination is outside Zambia: we deliver within Zambia only",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @PostMapping("/rates")
-    public ResponseEntity<RateResponse> rates(@Valid @RequestBody RateRequest body) {
-        return ResponseEntity.ok(service.quote(body.destinationCountry(), body.subtotal(), body.currency(),
-                body.deliveryOption()));
     }
 }
