@@ -56,14 +56,6 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
 
     private static final URI TYPE_CART_EMPTY =
             URI.create("https://oriah.dev/problems/cart-empty");
-    private static final URI TYPE_PROMO_NOT_ACCEPTED =
-            URI.create("https://oriah.dev/problems/promotion-codes-not-accepted");
-    private static final URI TYPE_PAYMENT_DECLINED =
-            URI.create("https://oriah.dev/problems/payment-declined");
-    private static final URI TYPE_PAYMENT_UNCONFIRMED =
-            URI.create("https://oriah.dev/problems/payment-confirmation-failed");
-    private static final URI TYPE_CAPTURED_NO_ORDER =
-            URI.create("https://oriah.dev/problems/payment-captured-without-order");
     /** Shared with order, which raises the same refusal and checkout passes on by this type. */
     private static final URI TYPE_PRICING_CHANGED = com.oriah.observability.ProblemTypes.PRICING_CHANGED;
     private static final URI TYPE_BAG_NOT_PURCHASABLE = BagNotPurchasableException.TYPE;
@@ -134,91 +126,15 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
     }
 
     /**
-     * 422, shipping's refusal of an address abroad, passed on rather than
-     * flattened into a 500 (Phase 0, item 1). The same problem type shipping
-     * uses, from the shared {@code ProblemTypes}, so the storefront keys on one
-     * value. Logged at INFO: an ordinary answer, not a fault.
+     * A refusal by order or shipping the shopper can act on, passed on under its OWN name (Phase 7): no stock (naming every short line), too many holds,
+     * a town not yet priced. The status is the downstream's (409); the type is theirs, and extras such as {@code shortages} ride along, so the storefront
+     * can say exactly which piece is gone rather than "something went wrong". INFO: an ordinary answer, not a fault.
      */
-    @ExceptionHandler(OutsideDeliveryAreaException.class)
-    public ProblemDetail outsideDeliveryArea(OutsideDeliveryAreaException ex) {
-        log.info("422 outside the delivery area");
-        return problem(HttpStatus.UNPROCESSABLE_CONTENT, com.oriah.observability.ProblemTypes.OUTSIDE_DELIVERY_AREA,
-                "Outside our delivery area", ex.getMessage());
-    }
-
-    /**
-     * A promotion code was sent: 422, in words the shopper can act on -- remove
-     * the code. Codes are retired until Phase 7's scoped promotions.
-     */
-    @ExceptionHandler(PromotionCodesNotAcceptedException.class)
-    public ProblemDetail promotionCodesNotAccepted(PromotionCodesNotAcceptedException ex) {
-        log.info("422 promotion code refused: codes are not accepted until Phase 7");
-        return problem(HttpStatus.UNPROCESSABLE_CONTENT, TYPE_PROMO_NOT_ACCEPTED,
-                "Promotion codes not accepted", ex.getMessage());
-    }
-
-    /**
-     * 402, the status this whole tier exists for.
-     *
-     * <p>A declined card was reported as {@code 200 OK} with
-     * {@code "message": "payment declined: ..."}, so the storefront's
-     * {@code toast.success("Order placed")} fired and the shopper was left
-     * believing they had bought something.
-     *
-     * <p>The processor's reason is carried in the detail: the shopper needs to
-     * know whether to try another card, and it says nothing about our system.
-     * INFO rather than WARN — a decline is a normal outcome of taking payments,
-     * not an operational event.
-     */
-    @ExceptionHandler(PaymentDeclinedException.class)
-    public ResponseEntity<ProblemDetail> paymentDeclined(PaymentDeclinedException ex) {
-        log.info("402 payment declined reason={}", ex.reason());
-        return ResponseEntity.status(HttpStatus.PAYMENT_REQUIRED).body(problem(
-                HttpStatus.PAYMENT_REQUIRED, TYPE_PAYMENT_DECLINED,
-                HttpStatus.PAYMENT_REQUIRED.getReasonPhrase(), ex.getMessage()));
-    }
-
-    /**
-     * 502: the processor gave no usable answer, so whether the card was charged
-     * is unknown.
-     *
-     * <p>Separate from 402 because the two need opposite things from the
-     * shopper — "use another card" versus "do not re-enter anything yet" — and
-     * from 503 because this one is not safely retryable by a machine. WARN: it
-     * is an upstream fault, and a run of these is worth seeing.
-     */
-    @ExceptionHandler(PaymentConfirmationFailedException.class)
-    public ResponseEntity<ProblemDetail> paymentUnconfirmed(PaymentConfirmationFailedException ex) {
-        log.warn("502 payment could not be confirmed", ex);
-        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(problem(
-                HttpStatus.BAD_GATEWAY, TYPE_PAYMENT_UNCONFIRMED,
-                HttpStatus.BAD_GATEWAY.getReasonPhrase(), ex.getMessage()));
-    }
-
-    /**
-     * 500, carrying the ids a human needs to put it right.
-     *
-     * <p>The one failure where money has already moved, and the only handler
-     * here that adds extension members to the body. That is the point of it:
-     * the shopper has been charged, and the single thing that makes this
-     * recoverable for them is a reference support can act on. The intent is
-     * their own payment — the happy path returns the same id in
-     * {@code paymentIntentId} — so this leaks nothing new.
-     *
-     * <p>Logged at ERROR with the ids, because a 500 alone tells an operator
-     * that something broke and not that a captured payment is sitting
-     * unreconciled.
-     */
-    @ExceptionHandler(PaymentCapturedWithoutOrderException.class)
-    public ResponseEntity<ProblemDetail> capturedWithoutOrder(
-            PaymentCapturedWithoutOrderException ex) {
-        log.error("500 payment captured without order orderId={} intentId={}",
-                ex.orderId(), ex.paymentIntentId(), ex);
-
-        ProblemDetail pd = problem(HttpStatus.INTERNAL_SERVER_ERROR, TYPE_CAPTURED_NO_ORDER,
-                HttpStatus.INTERNAL_SERVER_ERROR.getReasonPhrase(), ex.getMessage());
-        pd.setProperty("paymentIntentId", ex.paymentIntentId());
-        pd.setProperty("orderId", ex.orderId());
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(pd);
+    @ExceptionHandler(RefusalPassedOnException.class)
+    public ResponseEntity<ProblemDetail> refusalPassedOn(RefusalPassedOnException ex) {
+        log.info("{} {} passed on to the shopper", ex.status().value(), ex.code());
+        ProblemDetail body = problem(ex.status(), URI.create("https://oriah.dev/problems/" + ex.code()), ex.status().getReasonPhrase(), ex.getMessage());
+        ex.extras().forEach(body::setProperty);
+        return ResponseEntity.status(ex.status()).body(body);
     }
 }

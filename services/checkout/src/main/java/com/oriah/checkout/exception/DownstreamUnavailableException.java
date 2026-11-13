@@ -23,8 +23,7 @@ import org.springframework.web.server.ResponseStatusException;
  *       Resilience4j instances retry each outbound call up to 3 times, 500ms
  *       apart, when a second attempt cannot do anything twice: a connection
  *       never opened, or a 502, 503 or 504 that did not ask for later -- never
- *       a 4xx, never a 500, and (except for payment's idempotent createIntent)
- *       never a reply that was lost. A 502, 503 or 504 that carries
+ *       a 4xx, never a 500, and never a reply that was lost. A 502, 503 or 504 that carries
  *       {@code Retry-After} is not repeated at all: the service has said it
  *       needs time, and checkout answers with this 503 and its own
  *       {@code Retry-After} (always the 5 seconds below; the downstream's
@@ -36,11 +35,13 @@ import org.springframework.web.server.ResponseStatusException;
  *       seconds and not milliseconds.</li>
  *   <li><strong>The gateway does not retry this.</strong> Its retry filter is
  *       {@code setMethods(HttpMethod.GET)}, so {@code POST /confirm} is never
- *       replayed at the edge. Deliberate: auto-replaying a POST that moves
- *       money is how a shopper gets charged twice.</li>
+ *       replayed at the edge. Deliberate: auto-replaying a POST that places an
+ *       order and holds stock is how a shopper ends up holding it twice.</li>
  *   <li><strong>The client retries.</strong> That is what this status is for.
- *       The storefront offers "Try again" on a 503 and on nothing else, since
- *       this is the only failure raised before any money moves.</li>
+ *       The storefront offers "Try again" on a 503 and on nothing else, and
+ *       sends the SAME {@code Idempotency-Key} with it: a 503 is the one
+ *       failure a retry can cure, and the key is what keeps the retry from
+ *       placing a second order if the first did go through.</li>
  * </ul>
  *
  * <p>Reported as the old {@code 200 OK} with
@@ -48,9 +49,12 @@ import org.springframework.web.server.ResponseStatusException;
  * a 200 is not an error, so neither a filter nor the client could recognise a
  * transient outage as something to retry at all.
  *
- * <p>Raised only <strong>before</strong> any money moves. Once a payment is
- * captured the failure is no longer transient and is no longer this exception —
- * see {@link PaymentCapturedWithoutOrderException}.
+ * <p>Checkout touches no money, so no outage can strand any. What an outage can
+ * hide is an ORDER: if {@code order.place} did its work and the reply was lost,
+ * the shopper has an order they were not told about. The retry is safe only
+ * because it carries the same {@code Idempotency-Key}, which order turns into
+ * the same order rather than a second one, so the 503 says so and never claims
+ * that nothing was ordered.
  */
 public class DownstreamUnavailableException extends ResponseStatusException {
 
@@ -60,8 +64,8 @@ public class DownstreamUnavailableException extends ResponseStatusException {
 
     public DownstreamUnavailableException(String service, Throwable cause) {
         super(HttpStatus.SERVICE_UNAVAILABLE,
-                "The %s service is temporarily unavailable. Nothing has been charged; "
-                        .formatted(service) + "retry shortly.",
+                "The %s service is temporarily unavailable; try again shortly. If you were placing an order, retry with the same Idempotency-Key: "
+                        .formatted(service) + "an order placed before the reply was lost comes back as that same order, never a second one.",
                 cause);
         this.service = service;
     }

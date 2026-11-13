@@ -36,104 +36,39 @@ spring:
         config:
           default:
             connectTimeout: 5000
-            # 15s to answer, for every call but createIntent (its own client,
-            # below). The longest waits behind it: order's placement, which
-            # makes four calls of its own before it saves (customer, catalog,
-            # its machine token, shipping -- at most 13s together, leaving 2s
-            # for the save; order's WritePathBudgetTest), and payment's confirm,
-            # which runs the card gateway while checkout waits. (Order no longer
-            # sends to Kafka while answering -- its events go through an outbox
-            # -- so that old reason for 15s is gone.)
+            # 15s to answer, for every call but order's placement (its own entry below): the cart, catalog, customer and shipping reads, each of which
+            # answers in milliseconds when warm.
             #
-            # Read by order's WritePathBudgetTest, which fails unless order's
-            # calls leave it 2s of this wait: shortening it can turn order's
-            # build red -- on purpose.
+            # How long one call can take, worst case: up to 5s to connect plus 15s to answer = 20s (about 15s when the service accepts the connection at
+            # once and then says nothing). Retries are 0.5s apart, at most three attempts, and only when a second attempt cannot do anything twice. By what
+            # went wrong:
             #
-            # How long one call can take, worst case. One attempt: up to 5s to
-            # connect plus 15s to answer = 20s (about 15s when the service
-            # accepts the connection at once and then says nothing).
-            # createIntent's own client: 1s + 6s = 7s. Retries are 0.5s apart,
-            # at most three attempts. By what went wrong:
+            #   the service hangs, or the reply is lost: not repeated                      up to 20s
+            #   the service answers 502/503/504 WITH Retry-After: not repeated, on any rule up to 20s
+            #     (order's 503 when customer, Keycloak, shipping or inventory let it down, each sent after waiting on those. Repeating them grew
+            #     order.place's slow 503 from about 15s to about 46s; they were never repeated before RetryForAnyCall either, so this is the old
+            #     behaviour, kept on purpose.)
+            #   the service answers 502/503/504 WITHOUT Retry-After: repeated. In theory, an answer that comes just before the wait runs out each time:
+            #     3 x 20s + 2 x 0.5s = 61s (about 46s). Order's own 503s do carry Retry-After, so the real cases are a proxy's or an unexpected 503.
+            #   the request never arrived (refused, no instance): three quick attempts, about a second in all.
             #
-            #   the service hangs, or the reply is lost
-            #     every call but createIntent: not repeated       up to 20s
-            #     createIntent: repeated, 3 x 7s + 2 x 0.5s       up to 22s
-            #   the service answers 502/503/504 WITH Retry-After
-            #     -- order's 503 when customer, Keycloak or shipping let it
-            #     down, and payment's on create when it cannot ask order, each
-            #     sent after waiting on those
-            #     not repeated, on any rule                       up to 20s
-            #       (createIntent: up to 7s)
-            #     Repeating them grew order.place's slow 503 from about 15s to
-            #     about 46s; they were never repeated before RetryForAnyCall
-            #     either, so this is the old behaviour, kept on purpose.
-            #   the service answers 502/503/504 WITHOUT Retry-After
-            #     default rule: repeated. In theory, an answer that comes just
-            #       before the wait runs out each time:
-            #       3 x 20s + 2 x 0.5s                            up to 61s
-            #                                              (about 46s)
-            #     Order's and payment's own 503s do carry Retry-After (order's
-            #       one for catalog since the same phase that wrote this), so
-            #       the real cases are a proxy's or an unexpected 503. For
-            #       order.place each attempt would wait on customer and catalog
-            #       again, up to 2.5s + 4s = 6.5s:
-            #       3 x 6.5s + 2 x 0.5s                           up to 20.5s
-            #     createIntent: 3 x 7s + 2 x 0.5s                 up to 22s
-            #     confirm: never repeated                         up to 20s
-            #   the request never arrived (refused, no instance): three quick
-            #   attempts, about a second in all.
-            #
-            # And confirm makes up to nine calls in a row (cart, catalog,
-            # customer, shipping, order.place, createIntent, confirm, order.pay,
-            # clearing the cart). The storefront's proxy in front of checkout
-            # gives up at 30s (a Next.js default, set nowhere in oriah-web). A
-            # single call can outlast it only in the "in theory" case above, but
-            # two slow calls in one confirm still can: order.place at its worst
-            # (order's four calls, 13s) and then createIntent losing its
-            # replies (22s) is 35s before the card is even charged. Then the
-            # shopper sees "Couldn't complete checkout" while checkout carries
-            # on and may still place and charge the order; a reload mints a new
-            # Idempotency-Key, and a second submit before this checkout clears
-            # the cart is a second order and a second charge. Nothing in this
-            # file can hold that limit: it lives in oriah-web, which must raise
-            # it above checkout's worst, or checkout must be given an overall
-            # deadline -- the owner's call.
-            #
-            # (order.pay, after the charge, is one attempt of up to 20s here,
-            # repeated only if order did not get the request or answered
-            # 502/503/504 without Retry-After. Inside it order asks payment to
-            # check the intent with no timeout of its own -- Feign's 10s to
-            # connect and 60s to answer -- so order can still be working when
-            # checkout stops waiting and reports "captured without order".
-            # That timeout is order's to set.)
+            # A confirm makes up to six calls in a row (cart, catalog, customer when there is an address, shipping, order.place, clearing the cart). The
+            # storefront's proxy in front of checkout gives up at 30s (a Next.js default, set nowhere in oriah-web). One slow call cannot outlast it, but two
+            # can: shipping answering at the last moment and then order.place at its worst. Then the shopper sees "Couldn't complete checkout" while checkout
+            # carries on and may still place the order and hold its pieces; the same Idempotency-Key (or, after a reload, the same bag) finds that live order
+            # again rather than holding twice. Nothing in this file can hold that limit: it lives in oriah-web, which must raise it above checkout's worst,
+            # or checkout must be given an overall deadline -- the owner's call.
             readTimeout: 15000
             loggerLevel: basic
-          # payment.createIntent's own client (PaymentCreateClient, contextId
-          # payment-create -- the same name as its resilience instance).
+          # order's own client (OrderClient, @FeignClient(name = "order")): 20s to answer, not the default's 15s (Phase 7).
           #
-          # Why shorter than the default: createIntent is repeated when its
-          # reply is lost (it is idempotent), up to three attempts. On the
-          # default's 5s + 15s that could take 3 x 20s + 2 x 0.5s = 61s.
-          #
-          # Why these numbers: payment's create is itself bounded. It asks
-          # order whose order it is, giving order at most 1s to connect and 3s
-          # to answer (payment's application.yaml) = 4s, then makes one short
-          # database write (find the order's live intent, or insert one) --
-          # milliseconds. 6s to answer covers that 4s with 2s to spare for
-          # payment's own work, a garbage-collection pause and the reply's way
-          # back. 1s to connect: payment is on the same network, a connection
-          # opens in a millisecond or two, and a connect timeout here is simply
-          # repeated like any other lost attempt. So three attempts take at most
-          # 3 x (1s + 6s) + 2 x 0.5s = 22s -- close to the 20s ONE attempt could
-          # take before.
-          #
-          # Read by payment's CreateIntentBudgetTest, which fails unless
-          # payment's worst create (order's 1s + 3s) leaves at least 2s of this
-          # wait for payment's own work -- so shortening it can turn payment's
-          # build red, on purpose. CreateIntentTimeoutsTest pins the numbers.
-          payment-create:
-            connectTimeout: 1000
-            readTimeout: 6000
+          # Placing an order is now FIVE calls one after another inside order -- customer 2.5s, catalog 4s, order's own token 4s, shipping 2.5s,
+          # and inventory's hold 2.5s = 15.5s at worst -- plus order's own save, which WritePathBudgetTest (in order) requires to have at least
+          # 2s: 17.5s. It used to be four calls and 13s in a 15s wait. The 5s this adds is paid for by the card: nothing here charges a card or
+          # waits for one any more (no createIntent, no charge, no order.pay), so a confirm is the calls before the placement plus the placement.
+          # order's WritePathBudgetTest READS this value from this file and fails if the wait is shortened below what the calls need.
+          order:
+            readTimeout: 20000
 
 server:
   port: 8089
@@ -167,11 +102,10 @@ logging:
 # Why TimeLimiter and Bulkhead are NOT used: both dispatch the call
 # to a separate thread (CompletableFuture / ForkJoinPool) and trigger
 # the same SecurityContext loss. Latency is bounded by Feign's
-# readTimeout (15s, and 6s for createIntent, declared above); concurrency
+# readTimeout (15s, and 20s for order's placement, declared above); concurrency
 # by the Tomcat thread pool (max-threads: 200 default).
 #
-# One instance per Feign client, with two reasoned exceptions (order-pay
-# and payment-create) -- see the resilience4j block below.
+# One instance per Feign client -- see the resilience4j block below.
 resilience4j:
   # configs.default is the course convention, and it is held LOCALLY rather than
   # in config-repo. Not a style choice: ResilienceConfigResolutionTest proves a
@@ -194,29 +128,15 @@ resilience4j:
   # Feign's readTimeout instead, concurrency by the Tomcat thread pool.
   #
   # Instances: one per Feign client, so that when a downstream is unhealthy
-  # every call this orchestrator makes to it trips the SAME circuit -- with two
-  # exceptions, each a method whose failures mean something different from the
-  # rest of its client's:
-  #
-  #   order-pay       order.pay, which turns a CHARGED card into a PAID order.
-  #                   Placement fails for reasons that say nothing about it
-  #                   (Keycloak or shipping briefly down, for other shoppers);
-  #                   sharing "order", those failures could open the breaker in
-  #                   front of the one call whose failure strands money.
-  #   payment-create  payment.createIntent, which differs from confirm twice:
-  #                   - it is idempotent (payment hands a repeated create the
-  #                     intent it already made), so its retry may repeat a call
-  #                     whose reply was lost -- confirm's may not;
-  #                   - payment answers it 503 whenever ORDER is slow, so its
-  #                     failures are often order's, not payment's. On confirm's
-  #                     breaker, other shoppers' failed creates would stop a
-  #                     shopper confirming an intent just made.
+  # every call this orchestrator makes to it trips the SAME circuit. (Since
+  # Phase 7 checkout calls no payment service: it places an order and holds its
+  # pieces, and money is the shopper's and staff's step afterwards.)
   #
   # Each instance is registered in all three blocks below, because
   # ResilientFeignCaller looks it up by name in each. An unregistered name is no
-  # error: it silently gets configs.default and loses any setting of its own --
-  # payment-create would lose its retry rule. ResilienceConfigResolutionTest
-  # reads this file to prove each one is named, and what each resolves to.
+  # error: it silently gets configs.default and loses any setting of its own.
+  # ResilienceConfigResolutionTest reads this file to prove each one is named,
+  # and what each resolves to.
   circuitbreaker:
     configs:
       default:
@@ -233,21 +153,14 @@ resilience4j:
           - feign.FeignException$FeignClientException
     instances:
       cart:      { base-config: default }
-      # catalog is the pricing authority: checkout derives the charged amount
+      # catalog is the pricing authority: checkout derives what the bag costs
       # from it rather than trusting cart's arithmetic.
       catalog:   { base-config: default }
-      # customer answers "which addresses are yours", which decides the
-      # shipping zone and therefore the charge.
+      # customer answers "which addresses are yours": a delivery goes only to
+      # one of the caller's own.
       customer:  { base-config: default }
       shipping:  { base-config: default }
-      # payment.confirm: the call that charges the card.
-      payment:   { base-config: default }
-      # payment.createIntent: see "Instances" above.
-      payment-create: { base-config: default }
       order:     { base-config: default }
-      # Marking a CHARGED order paid has its own instance: placement failures
-      # must never open the breaker in front of it (CheckoutService.confirm).
-      order-pay: { base-config: default }
   retry:
     configs:
       default:
@@ -263,25 +176,19 @@ resilience4j:
         #     service says it is unavailable (the statuses
         #     CheckoutService.isOutage reports as 503) and did not do the work.
         # NEVER a 502, 503 or 504 that carries Retry-After, on any rule. Order
-        # and payment send one only after waiting on their own dependencies
-        # (order when customer, Keycloak or shipping let it down; payment's
-        # create when it could not ask order), and it says "not before 5
-        # seconds": repeating it half a second later waits all of that again
-        # (order.place's slow 503 grew from about 15s to about 46s, past the
-        # storefront's 30s) and leans on a service that has just said it is
-        # struggling. The shopper gets checkout's own 503, with checkout's own
-        # Retry-After, instead. (Order's 503 when catalog lets it down says it
-        # too.) A 503 without it IS repeated (up to about 20.5s for order.place,
-        # worked out above). Payment's confirm 503 carries none, but confirm
-        # repeats no answer at all (its own rule, below).
+        # sends one only after waiting on its own dependencies (when customer,
+        # Keycloak, shipping, catalog or inventory let it down), and it says
+        # "not before 5 seconds": repeating it half a second later waits all of
+        # that again (order.place's slow 503 grew from about 15s to about 46s,
+        # past the storefront's 30s) and leans on a service that has just said
+        # it is struggling. The shopper gets checkout's own 503, with checkout's
+        # own Retry-After, instead. A 503 without it IS repeated (up to about
+        # 20.5s for order.place, worked out above).
         # NEVER a read timeout, a reset, or a connection closed without an
         # answer: the request may have arrived and the order been saved, and
-        # only the reply was lost. Never a 500: the downstream's own failure,
-        # the same on every attempt.
-        #
-        # Two instances have rules of their own (below): payment-create also
-        # repeats a lost reply; payment (confirm) repeats ONLY a request that
-        # never arrived.
+        # only the reply was lost. (The browser's Idempotency-Key, forwarded to
+        # order, is what makes the shopper's OWN repeat safe.) Never a 500: the
+        # downstream's own failure, the same on every attempt.
         #
         # A class, not a list of exception types, because Feign never throws the
         # network's IOException: it wraps it in feign.RetryableException (status
@@ -304,45 +211,14 @@ resilience4j:
           - feign.FeignException$FeignClientException
     instances:
       cart:      { base-config: default }
-      # catalog is the pricing authority: checkout derives the charged amount
+      # catalog is the pricing authority: checkout derives what the bag costs
       # from it rather than trusting cart's arithmetic.
       catalog:   { base-config: default }
-      # customer answers "which addresses are yours", which decides the
-      # shipping zone and therefore the charge.
+      # customer answers "which addresses are yours": a delivery goes only to
+      # one of the caller's own.
       customer:  { base-config: default }
       shipping:  { base-config: default }
-      # payment.confirm charges the card, so ANY answer from it -- its 503
-      # included, which means "the outcome of the charge is not known yet" --
-      # can follow a charge. Its rule repeats only a request that never
-      # arrived (refused, unknown host, no instance). A reply that never came,
-      # or an answered 502/503/504, ends the checkout as the 502 "may or may
-      # not have gone through", sent once.
-      payment:
-        base-config: default
-        retry-exception-predicate: com.oriah.checkout.resilience.RetryForChargingCall
-      # payment.createIntent is idempotent, so it may also repeat a call whose
-      # reply was lost -- a read timeout, a reset, a connection closed without
-      # an answer: payment answers the repeat with the intent it already made.
-      # Without it, a lost reply left the order with an intent checkout never
-      # heard about, and the shopper's retry placed a NEW order. Like every
-      # rule, it does not repeat a 503 with Retry-After (payment could not ask
-      # order). Each attempt waits at most 1s + 6s (its own Feign client,
-      # above), so three take at most 22s.
-      payment-create:
-        base-config: default
-        retry-exception-predicate: com.oriah.checkout.resilience.RetryForIdempotentCall
       order:     { base-config: default }
-      # Marking a CHARGED order paid has its own instance: placement failures
-      # must never open the breaker in front of it (CheckoutService.confirm).
-      #
-      # Its retry is the default rule, so -- like every rule -- it does not
-      # repeat a 502, 503 or 504 that carries Retry-After. Today that costs
-      # nothing: order.pay's only 503 (payment could not be asked about the
-      # intent) carries no Retry-After, so it IS repeated. But this is the one
-      # call where giving up strands money already taken ("captured without
-      # order"), so if order ever adds Retry-After to that 503, order-pay
-      # should get a rule of its own that repeats it.
-      order-pay: { base-config: default }
   ratelimiter:
     configs:
       default:
@@ -355,21 +231,14 @@ resilience4j:
         timeout-duration: 100ms
     instances:
       cart:      { base-config: default }
-      # catalog is the pricing authority: checkout derives the charged amount
+      # catalog is the pricing authority: checkout derives what the bag costs
       # from it rather than trusting cart's arithmetic.
       catalog:   { base-config: default }
-      # customer answers "which addresses are yours", which decides the
-      # shipping zone and therefore the charge.
+      # customer answers "which addresses are yours": a delivery goes only to
+      # one of the caller's own.
       customer:  { base-config: default }
       shipping:  { base-config: default }
-      # payment.confirm: the call that charges the card.
-      payment:   { base-config: default }
-      # payment.createIntent: see "Instances" above.
-      payment-create: { base-config: default }
       order:     { base-config: default }
-      # Marking a CHARGED order paid has its own instance: placement failures
-      # must never open the breaker in front of it (CheckoutService.confirm).
-      order-pay: { base-config: default }
 
 # ---------------------------------------------------------------------------
 # Local fallback for GET /api/v1/checkout/contact-info.

@@ -52,10 +52,7 @@ public class CheckoutController {
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409", description = "A line cannot be sold (bag-not-purchasable), or the bag mixes currencies (mixed-currency)",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "422", description = "The address is outside Zambia (outside-delivery-area): we deliver within Zambia only; or a promotion code was sent (promotion-codes-not-accepted)",
+    @ApiResponse(responseCode = "409", description = "A line cannot be sold (bag-not-purchasable), the bag mixes currencies (mixed-currency), or shipping does not offer the chosen delivery: town-not-offered (the shop has not priced that town yet), payer-not-offered, town-not-found",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "503", description = "catalog, customer or shipping is temporarily unavailable, so no quote can be given. Carries Retry-After",
@@ -67,40 +64,27 @@ public class CheckoutController {
     }
 
     /**
-     * A 200 from this endpoint means the order is placed and paid, and nothing
-     * else.
+     * A 200 from this endpoint means the order is PLACED and its pieces are HELD for the shopper, and nothing else: it is not paid. The shopper pays by
+     * mobile money or bank transfer and gives order the reference ({@code POST /api/v1/orders/{id}/payment-claim}); staff then confirm the money.
      *
-     * <p>Send {@code Idempotency-Key}: it is forwarded to payment-service,
-     * which replays a stored response for a key it has seen rather than
-     * charging again. Reuse the same value for every retry of one submission
-     * and mint a new one only for a new submission. Without it, a retry after
-     * a 502 is a second charge. Every failure carries a status, chosen so that the retryable ones
-     * are retryable: 503 is (nothing was charged); 502 only after the shopper
-     * has checked their orders, because the order is already recorded and the
-     * charge may have gone through; 402, 409 and 422 deliberately are not,
-     * because re-sending a declined card or an empty cart cannot succeed.
+     * <p>Send {@code Idempotency-Key}: it is forwarded to order, which places the same order for a key it has seen rather than a second one. Reuse the
+     * same value for every retry of one submission and mint a new one only for a new submission. Every failure carries a status, chosen so that the
+     * retryable ones are retryable: 503 is (with the SAME key; the order may already exist if a reply was lost); 409 and 400 deliberately are not, because re-sending an empty cart or a stale quote cannot
+     * succeed. A retry after a lost reply that finds the cart already empty is 409 {@code cart-empty}: the cart is cleared the moment the order is
+     * placed, so the shopper should look at their orders before concluding that nothing happened.
      */
-    @Operation(operationId = "confirm", summary = "Run the checkout saga: reserve, pay, place the order")
-    @ApiResponse(responseCode = "200", description = "The order was placed and paid")
+    @Operation(operationId = "confirm", summary = "Place the order and hold its pieces for the shopper")
+    @ApiResponse(responseCode = "200", description = "The order was placed and its pieces are held until holdExpiresAt; it is not paid")
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "402", description = "The card was declined. Final: the detail carries the processor's reason, and retrying the same card will fail again",
+    @ApiResponse(responseCode = "409", description = "The cart is empty (cart-empty); the bag, a price, a promotion, the delivery or its price changed since preview (pricing-changed) -- preview again, show the shopper the new quote, and confirm with its quoteDigest; a piece or its box is gone (insufficient-stock, naming every short line); the shopper already holds too many orders (hold-limit-reached); or shipping does not offer the delivery (town-not-offered, payer-not-offered). Nothing was ordered",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409", description = "The cart is empty (cart-empty); or the bag, a price, the delivery option or its price changed since preview (pricing-changed) -- preview again, show the shopper the new quote, and confirm with its quoteDigest. Nothing was ordered or charged",
+    @ApiResponse(responseCode = "503", description = "A dependency is temporarily unavailable. Carries Retry-After. The order may or may not have been placed (a reply can be lost): retry with the SAME Idempotency-Key and you get that order back, never a second",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "422", description = "A promotion code was sent (promotion-codes-not-accepted), or the address is outside Zambia (outside-delivery-area)",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "502", description = "The payment could not be confirmed, so whether the card was charged is unknown. The order IS recorded (status CREATED, unpaid) and the cart is left intact. Do not offer to pay again: trying again places a new order and can charge the shopper twice, and the order stays CREATED until the payment has been checked, so the order list cannot say whether the charge went through. Tell the shopper to contact the shop if they were charged",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "503", description = "A dependency is temporarily unavailable and nothing has been charged. Carries Retry-After",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "500", description = "Unexpected server error. One case matters to the client: type payment-captured-without-order means the card WAS charged and the order was not completed. Do not retry — the body carries paymentIntentId and orderId for support to reconcile",
+    @ApiResponse(responseCode = "500", description = "Unexpected server error. Do not retry blindly: if it persists, the shopper should look at their orders",
             content = @Content(mediaType = "application/problem+json",
                     schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/confirm")

@@ -4,17 +4,16 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.oriah.checkout.client.CartClient;
 import com.oriah.checkout.client.CatalogPricingClient;
 import com.oriah.checkout.client.CustomerClient;
 import com.oriah.checkout.client.OrderClient;
-import com.oriah.checkout.client.PaymentClient;
-import com.oriah.checkout.client.PaymentCreateClient;
 import com.oriah.checkout.client.ShippingClient;
 import com.oriah.checkout.dto.ConfirmRequest;
 import com.oriah.checkout.dto.ConfirmResponse;
@@ -25,13 +24,9 @@ import com.oriah.checkout.exception.CartEmptyException;
 import com.oriah.checkout.exception.DownstreamRejectedException;
 import com.oriah.checkout.exception.DownstreamUnavailableException;
 import com.oriah.checkout.exception.MixedCurrencyException;
-import com.oriah.checkout.exception.OutsideDeliveryAreaException;
-import com.oriah.checkout.exception.PaymentCapturedWithoutOrderException;
-import com.oriah.checkout.exception.PaymentConfirmationFailedException;
-import com.oriah.checkout.exception.PaymentDeclinedException;
 import com.oriah.checkout.exception.PricingChangedException;
-import com.oriah.checkout.exception.PromotionCodesNotAcceptedException;
-import com.oriah.checkout.resilience.NothingSentException;
+import com.oriah.checkout.exception.RefusalPassedOnException;
+import com.oriah.checkout.resilience.DownstreamProblems;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
 import com.oriah.money.Ngwee;
 import com.oriah.observability.ProblemTypes;
@@ -42,143 +37,138 @@ import com.oriah.quote.QuoteLine;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Saga-style orchestrator for checkout: quote, then commit.
+ * Orchestrator for checkout: quote, then place (Phase 7).
  *
- * <p>Preview is a priced QUOTE. It prices the bag from catalog, lists the
- * delivery options for the destination and -- once the shopper has chosen
- * one -- shows that option's charge, the total, and the digest of the whole
- * quote. Confirm is the place-order sequence:
+ * <p>Preview is a priced QUOTE. It prices the bag from catalog -- the LIST price of each piece and what a promotion takes off it, worked out per piece --
+ * and, once the shopper has chosen how the pieces reach them (an option, a town, who pays the courier), asks SHIPPING what that costs and shows the total
+ * and the digest of the whole quote. Confirm is the place-order sequence:
  * <ol>
  *   <li>Load the customer's cart and price it from catalog.</li>
- *   <li>Quote delivery, and take the option the shopper NAMED.</li>
- *   <li>Refuse with 409 unless the digest of that quote is the one preview
- *       showed (Q24: "before we commit, we all know the price").</li>
- *   <li>Place the order. order prices everything again and checks the same
- *       digest before it saves anything.</li>
- *   <li>Create + confirm a PaymentIntent for the total ORDER recorded.</li>
- *   <li>On payment success: attach the intent to the order (PAID), clear the
- *       cart.</li>
+ *   <li>Quote delivery with shipping, for the choice the shopper NAMED, on the goods after discount.</li>
+ *   <li>Refuse with 409 unless the digest of that quote is the one preview showed (Q24: "before we commit, we all know the price").</li>
+ *   <li>Place the order. Order prices everything again, checks the same digest, and takes a HOLD on the pieces at inventory.</li>
+ *   <li>Clear the cart: the hold is the commitment.</li>
  * </ol>
+ * Paying is the step after: the shopper pays by mobile money or bank transfer and gives order the reference, and staff confirm the money. Checkout never
+ * touches money, so it has no card, no payment intent, and nothing to reconcile.
  *
  * <h2>Preview degrades, confirm does not</h2>
  *
- * <p>The two entry points treat a failed downstream call in opposite ways, and
- * the asymmetry is deliberate. Preview reads the cart with
- * {@link ResilientFeignCaller#call} and treats a missing cart as an empty one.
- * Confirm moves money, so it uses {@link ResilientFeignCaller#callOrThrow} and
- * converts every failure into a status. Pricing is never degraded on either
- * path: a quote nobody stands behind is worse than no quote.
+ * Preview reads the cart with {@link ResilientFeignCaller#call} and treats a missing cart as an empty one. Confirm places an order that holds stock, so it
+ * uses {@link ResilientFeignCaller#callOrThrow} and converts every failure into a status. Pricing is never degraded on either path: a quote nobody stands
+ * behind is worse than no quote.
  *
- * <p>Confirm did not always do that. Every one of its failure branches
- * returned <strong>{@code 200 OK}</strong> with the reason in an untyped
- * {@code message} string, and the storefront fires
- * {@code toast.success("Order placed")} on any 200 -- so a <em>declined
- * card</em> and <em>money captured with no order</em> showed the shopper a
- * green success toast. Every failure now carries a status a client can branch
- * on, chosen so the retryable ones are retryable and the final ones are not:
- * 409 empty cart or a quote that changed, 422 a promotion code or an address
- * abroad, 503 downstream unreachable (with {@code Retry-After}), 402 declined
- * card, 502 payment unconfirmable, 500 our bug or money stranded.
- * {@code ConfirmFailurePathsTest} pins one per branch.
+ * <h2>What a shopper can be told, and what stays a 500</h2>
  *
- * <p>Nothing auto-retries this endpoint, and that is correct: the gateway's
- * retry filter is GET-only, so a POST that moves money is never replayed for
- * the shopper. Resilience4j retries each <em>outbound</em> call -- but only
- * when a second attempt cannot do anything twice: a connection that was never
- * opened, or a 502, 503 or 504 that did not ask to be tried later (no
- * {@code Retry-After}). payment's createIntent, being idempotent, also repeats
- * a reply that was lost; payment's confirm, which may have charged, repeats
- * only a connection never opened. A 503 that asked for later is not repeated
- * at all: checkout answers its own 503 instead, with its own
- * {@code Retry-After}. So a 503 out of here means a dependency is down or
- * asked for time.
- *
- * <p>This is still not a "real" saga with compensating actions across
- * services. A captured payment that cannot be attached to an order answers 500
- * and names the intent to reconcile; closing that properly needs a
- * refund-or-retry compensation and is tracked separately.
+ * Every failure carries a status a client can branch on: 409 an empty cart, a quote that changed, a piece gone or a limit reached (order's and shipping's own
+ * refusals are passed on under THEIR names, {@code shortages} included), 503 a dependency unreachable (with {@code Retry-After}), 500 our bug. Nothing
+ * auto-retries the placement unless a second attempt cannot do anything twice: the gateway's retry filter is GET-only, and Resilience4j repeats an outbound call
+ * only when its request never arrived or the downstream said it is unavailable without asking for time. The browser's {@code Idempotency-Key} is forwarded to
+ * order, which makes the placement itself safe to repeat.
  */
 @Service
 @Slf4j
 public class CheckoutService {
 
-    /** Oriah delivers within Zambia only, so a quote with no address is for here. */
-    static final String HOME_COUNTRY = "ZM";
-
     private static final BigDecimal NO_DISCOUNT = new BigDecimal("0.00");
+
+    /**
+     * The refusals of ORDER (inventory's, passed through it) that the shopper can act on, and that keep their own name when checkout passes them on: no
+     * stock for a piece or its box, too many holds, a repeated key for another bag, a product with no box or no longer for sale. Any other 409 from order is
+     * not something checkout knows how to explain.
+     */
+    private static final Set<String> ORDER_REFUSALS_FOR_THE_SHOPPER = Set.of(
+            "insufficient-stock", "hold-limit-reached", "idempotency-key-reused", "no-default-box", "not-a-sellable-product", "product-state-not-received");
+
+    /** The refusals of SHIPPING the shopper can act on: choose another town, option or payer. */
+    private static final Set<String> SHIPPING_REFUSALS_FOR_THE_SHOPPER = Set.of("town-not-offered", "payer-not-offered", "town-not-found");
 
     private final CartClient cart;
     private final CatalogPricingClient catalog;
     private final CustomerClient customer;
     private final ShippingClient shipping;
-    private final PaymentCreateClient paymentCreate;
-    private final PaymentClient payment;
     private final OrderClient order;
     private final ResilientFeignCaller resilient;
 
-    public CheckoutService(CartClient cart, CatalogPricingClient catalog,
-                           ShippingClient shipping,
-                           PaymentCreateClient paymentCreate,
-                           PaymentClient payment, OrderClient order,
-                           CustomerClient customer,
+    public CheckoutService(CartClient cart, CatalogPricingClient catalog, ShippingClient shipping, OrderClient order, CustomerClient customer,
                            ResilientFeignCaller resilient) {
         this.cart = cart;
         this.catalog = catalog;
         this.customer = customer;
         this.shipping = shipping;
-        this.paymentCreate = paymentCreate;
-        this.payment = payment;
         this.order = order;
         this.resilient = resilient;
+    }
+
+    /** One piece as catalog prices it: the LIST price, and what a promotion takes off (zero, with no promotion id, when none applies). */
+    private record PricedLine(UUID variantId, String title, int quantity, BigDecimal unitPrice, BigDecimal discountPerPiece, UUID promotionId) {
+
+        BigDecimal netUnitPrice() {
+            return unitPrice.subtract(discountPerPiece);
+        }
+    }
+
+    /** What shipping priced: the amount that goes on the order, and the town and payer it resolved (null for self-collect). */
+    private record Delivery(BigDecimal amount, UUID townId, String payer) {
+    }
+
+    /** The bag as catalog prices it: its lines, their sums, one currency. */
+    private record RepricedBag(List<PricedLine> lines, BigDecimal subtotal, BigDecimal discount, String currency) {
+
+        /** The goods AFTER discount: what a free-delivery threshold is judged on. */
+        BigDecimal goodsAfterDiscount() {
+            return subtotal.subtract(discount);
+        }
+
+        /**
+         * The whole payable quote for this bag and one delivery -- the shared {@link Quote}, so preview, confirm and order all hash the same thing the same
+         * way. A promotion is named on the line it discounts, and the town and payer are part of what the shopper agreed to.
+         */
+        Quote quoteFor(String deliveryOption, Delivery delivery) {
+            boolean collect = Quote.SELF_COLLECT.equals(deliveryOption);
+            return new Quote(lines.stream()
+                    .map(l -> new QuoteLine(l.variantId(), l.quantity(), l.unitPrice(), l.discountPerPiece(), l.promotionId()))
+                    .toList(), currency, deliveryOption, delivery.amount(), collect ? null : delivery.townId(), collect ? null : delivery.payer());
+        }
+
+        List<UUID> variantIds() {
+            return lines.stream().map(PricedLine::variantId).toList();
+        }
+
+        List<PreviewResponse.LineDto> views() {
+            return lines.stream().map(l -> new PreviewResponse.LineDto(l.variantId(), l.title(), l.quantity(), l.unitPrice(), l.discountPerPiece(),
+                    l.promotionId(), l.netUnitPrice())).toList();
+        }
     }
 
     /**
      * What the bag really costs, priced by catalog rather than taken on trust.
      *
-     * <h2>This replaced the single most important line in the service</h2>
-     *
-     * {@code confirm} read {@code BigDecimal subtotal = myCart.subtotal();} and
-     * that one field was the sole input to the charged total. Cart stored the
-     * price the shopper sent, so a request naming one cent produced a one-cent
-     * charge. A service that charges a card must not depend on another
-     * service's arithmetic being right, so the amount is derived here,
-     * first-hand, from the same authority cart uses.
-     *
-     * <h2>Every line, or none</h2>
-     *
-     * A line catalog will not price refuses the whole bag rather than being
-     * dropped from it: dropping it would place an order the shopper did not
-     * agree to, and charging around it would ship it free. Mixed currencies
-     * refuse too -- summing two units is meaningless.
+     * <p>The amount is derived here, first-hand, from the same authority cart uses: a service that places an order must not depend on another service's
+     * arithmetic being right. Every line, or none: a line catalog will not price refuses the whole bag rather than being dropped from it (dropping it
+     * would place an order the shopper did not agree to), and mixed currencies refuse too -- summing two units is meaningless.
      */
     private RepricedBag reprice(CartClient.CartView myCart) {
-        List<UUID> variantIds = myCart.items().stream()
-                .map(CartClient.CartItem::variantId)
-                .distinct()
-                .toList();
+        List<UUID> variantIds = myCart.items().stream().map(CartClient.CartItem::variantId).distinct().toList();
 
-        // mustCall, not safeCall: a preview or a confirm that cannot price the
-        // bag must fail rather than show or charge a number nobody stands
-        // behind. Nothing has been ordered or charged at this point, so the
-        // failure is classified as transient and is safe to retry.
-        var response = mustCall(() -> catalog.price(
-                new CatalogPricingClient.PricingRequest(variantIds)), "catalog");
+        // mustCall, not safeCall: a preview or a confirm that cannot price the bag must fail rather than show a number nobody stands behind. Nothing has
+        // been ordered at this point, so the failure is classified as transient and is safe to retry.
+        var response = mustCall(() -> catalog.price(new CatalogPricingClient.PricingRequest(variantIds)), "catalog");
 
         Map<UUID, CatalogPricingClient.Entry> byVariant = response.results() == null
                 ? Map.of()
                 : response.results().stream()
                         .filter(e -> e.variantId() != null)
-                        .collect(java.util.stream.Collectors.toMap(
-                                CatalogPricingClient.Entry::variantId, e -> e, (a, b) -> a));
+                        .collect(java.util.stream.Collectors.toMap(CatalogPricingClient.Entry::variantId, e -> e, (a, b) -> a));
 
-        List<OrderClient.LineItem> lines = new ArrayList<>();
+        List<PricedLine> lines = new ArrayList<>();
         BigDecimal subtotal = BigDecimal.ZERO;
+        BigDecimal discount = BigDecimal.ZERO;
         String currency = null;
         for (CartClient.CartItem item : myCart.items()) {
             CatalogPricingClient.Entry entry = byVariant.get(item.variantId());
             if (entry == null || !entry.isPriced()) {
-                log.warn("Refusing checkout: variantId={} prices as {}", item.variantId(),
-                        entry == null ? "(absent from the pricing response)" : entry.status());
+                log.warn("Refusing checkout: variantId={} prices as {}", item.variantId(), entry == null ? "(absent from the pricing response)" : entry.status());
                 throw new BagNotPurchasableException(List.of(item.variantId()));
             }
             if (currency == null) {
@@ -188,262 +178,142 @@ public class CheckoutService {
                 throw new MixedCurrencyException(currency, entry.currency());
             }
             int quantity = item.quantity() == null ? 0 : item.quantity();
+            BigDecimal discountPerPiece = entry.discountOrZero().setScale(2, java.math.RoundingMode.UNNECESSARY);
             subtotal = subtotal.add(entry.unitPrice().multiply(BigDecimal.valueOf(quantity)));
-            // Catalog's label, not the stored one: the order is the record of
-            // what was sold, and it should say what the shop calls it now.
-            lines.add(new OrderClient.LineItem(
-                    item.variantId(), entry.variantTitle(), quantity, entry.unitPrice()));
+            discount = discount.add(discountPerPiece.multiply(BigDecimal.valueOf(quantity)));
+            // Catalog's label, not the stored one: the order is the record of what was sold, and it should say what the shop calls it now.
+            lines.add(new PricedLine(item.variantId(), entry.variantTitle(), quantity, entry.unitPrice(), discountPerPiece,
+                    discountPerPiece.signum() > 0 ? entry.promotionId() : null));
         }
-        return new RepricedBag(List.copyOf(lines), subtotal, currency);
-    }
-
-    /** The bag as catalog prices it: order lines, their sum, one currency. */
-    private record RepricedBag(List<OrderClient.LineItem> lines, BigDecimal subtotal, String currency) {
-
-        /**
-         * The whole payable quote for this bag and one delivery option -- the
-         * shared {@link Quote}, so preview, confirm and order all hash the same
-         * thing the same way. No per-piece discount until Phase 7.
-         */
-        Quote quoteFor(String deliveryOption, BigDecimal deliveryAmount) {
-            return new Quote(lines.stream()
-                    .map(l -> new QuoteLine(l.variantId(), l.quantity(), l.unitPrice(), BigDecimal.ZERO))
-                    .toList(), currency, deliveryOption, deliveryAmount);
-        }
-
-        List<UUID> variantIds() {
-            return lines.stream().map(OrderClient.LineItem::variantId).toList();
-        }
+        return new RepricedBag(List.copyOf(lines), subtotal.setScale(2, java.math.RoundingMode.UNNECESSARY), discount.setScale(2, java.math.RoundingMode.UNNECESSARY),
+                currency);
     }
 
     /**
-     * Price the caller's bag, list the delivery options, and -- for the option
-     * the shopper chose -- the total and the digest of that whole quote.
+     * Price the caller's bag and -- for the delivery the shopper chose -- the whole quote: its total and the digest of exactly it.
      *
-     * <p>No option chosen, or one that is not offered for this destination,
-     * gives the options and NO total and NO digest: there is nothing to agree
-     * to until the shopper has chosen how the piece reaches them. Showing the
-     * cheapest as "the" total is how a K0 option used to make every delivery
-     * free.
+     * <p>No delivery chosen gives the priced bag and NO total and NO digest: there is nothing to agree to until the shopper has chosen how the piece
+     * reaches them. A choice shipping does not offer (a town not yet priced, a courier nobody may pay) is its own refusal, passed on, not a silent "no quote".
      */
     public PreviewResponse preview(PreviewRequest req) {
-        refusePromotionCode(req.promotionCode());
-
-        // One R4J instance per Feign client, so when cart-service is
-        // unhealthy, ALL cart.* calls trip the same circuit. (Two calls have
-        // their own: order-pay and payment-create -- see application.yaml.)
+        // One R4J instance per Feign client, so when cart-service is unhealthy, ALL cart.* calls trip the same circuit.
         var myCart = safeCall(cart::getMyCart, "cart");
         if (myCart == null || myCart.items() == null || myCart.items().isEmpty()) {
-            // Nothing to quote: confirm refuses an empty bag on its own terms
-            // (CartEmptyException), so no digest is needed to strand anyone.
-            return new PreviewResponse(
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
-                    null, List.of(), null, null);
+            // Nothing to quote: confirm refuses an empty bag on its own terms (CartEmptyException), so no digest is needed to strand anyone.
+            return new PreviewResponse(BigDecimal.ZERO, BigDecimal.ZERO, null, null, null, null, null, null, null, List.of());
         }
-        // Repriced here too, not just in confirm, through the same code: a bag
-        // previewing one number and being charged another is the bug this
-        // service exists to prevent.
+        // Repriced here too, not just in confirm, through the same code: a bag previewing one number and being placed at another is the bug this service
+        // exists to prevent.
         RepricedBag priced = reprice(myCart);
-
-        // The ADDRESS's country, never the body's, whenever there is an
-        // address -- so preview and confirm quote the same place, and an
-        // address abroad is refused here, before the shopper has typed a card.
-        String destination = resolveDestination(req.shippingAddressId(),
-                req.destinationCountry() == null ? HOME_COUNTRY : req.destinationCountry());
-        var rates = quoteShipping(destination, priced.subtotal(), priced.currency());
-        requireQuotedInBagCurrency(rates, priced.currency());
-
-        List<PreviewResponse.ShippingOptionDto> options = rates.options() == null
-                ? List.of()
-                : rates.options().stream()
-                        .map(o -> new PreviewResponse.ShippingOptionDto(
-                                o.code(), o.carrier(), o.service(), o.cost(), o.etaDaysMin(), o.etaDaysMax()))
-                        .toList();
-
-        Optional<ShippingClient.ShippingOption> chosen = offered(rates, req.deliveryOption());
-        if (chosen.isEmpty()) {
-            if (req.deliveryOption() != null) {
-                log.info("Preview: option {} is not offered for {}, so no quote", req.deliveryOption(), destination);
-            }
-            return new PreviewResponse(priced.subtotal(), NO_DISCOUNT, null, null,
-                    priced.currency(), options, null, null);
+        if (req.shippingAddressId() != null) {
+            requireOwnAddress(req.shippingAddressId());
         }
-
-        Quote quote = priced.quoteFor(chosen.get().code(), deliveryCost(chosen.get()));
-        return new PreviewResponse(quote.subtotal(), quote.discount(), quote.deliveryAmount(), quote.total(),
-                priced.currency(), options, quote.deliveryOption(), QuoteDigest.of(quote));
+        if (req.deliveryOption() == null) {
+            return new PreviewResponse(priced.subtotal(), priced.discount(), null, null, priced.currency(), null, null, null, null, priced.views());
+        }
+        Delivery delivery = quoteDelivery(req.deliveryOption(), req.deliveryTownId(), req.payer(), priced);
+        Quote quote = priced.quoteFor(req.deliveryOption(), delivery);
+        return new PreviewResponse(quote.subtotal(), quote.discount(), quote.deliveryAmount(), quote.total(), priced.currency(), quote.deliveryOption(),
+                quote.deliveryTownId(), quote.payer(), QuoteDigest.of(quote), priced.views());
     }
 
     /**
-     * Promotion codes are retired until Phase 7's scoped promotions (MVP_PLAN
-     * Phase 0, item 4.2) -- refused out loud, before anything is read, priced,
-     * ordered or charged. Silently ignoring one would leave a shopper believing
-     * a discount was applied. A blank code is no code.
-     */
-    private static void refusePromotionCode(String code) {
-        if (code != null && !code.isBlank()) {
-            log.info("422 a promotion code was sent; codes are not accepted until Phase 7");
-            throw new PromotionCodesNotAcceptedException();
-        }
-    }
-
-    /** The option with exactly this code, if shipping offered it. */
-    private static Optional<ShippingClient.ShippingOption> offered(ShippingClient.RateResponse rates,
-                                                                   String code) {
-        if (code == null || rates.options() == null) {
-            return Optional.empty();
-        }
-        return rates.options().stream().filter(o -> code.equals(o.code())).findFirst();
-    }
-
-    /**
-     * An option's charge, as money we can stand behind: present, not negative,
-     * and in whole ngwee. Anything else is shipping answering with something
-     * unusable -- our fault, 500 -- and never rounded into a quote.
-     */
-    private static BigDecimal deliveryCost(ShippingClient.ShippingOption option) {
-        BigDecimal cost = option.cost();
-        if (cost == null || cost.signum() < 0 || !Ngwee.isWholeNgwee(cost)) {
-            log.error("shipping quoted an unusable cost {} for option {}", cost, option.code());
-            throw new DownstreamRejectedException("shipping");
-        }
-        return cost;
-    }
-
-    /**
-     * The country to quote shipping for: the one on the address being shipped
-     * to, never the request body's.
+     * The caller's own address, or a 400. Customer lists only the caller's own, so "not yours" and "does not exist" are indistinguishable here. Order checks
+     * it again with the caller's token before it prices anything.
      *
-     * <p>The body's country decided the zone once, and nothing reconciled it
-     * with {@code shippingAddressId} -- a caller could pay one zone's rate to
-     * ship to another. So the body's value is used only when there is no
-     * address at all: a preview, or a self-collect confirm, where the answer is
-     * Zambia.
-     *
-     * @throws IllegalArgumentException the id is not one of the caller's
-     *         addresses -- 400. customer-service lists only the caller's own,
-     *         so "not yours" and "does not exist" are indistinguishable here.
+     * @throws IllegalArgumentException the id is not one of the caller's addresses -- 400
      */
-    private String resolveDestination(UUID shippingAddressId, String fallbackCountry) {
-        if (shippingAddressId == null) {
-            return fallbackCountry;
-        }
-        // mustCall: the destination decides money, so a checkout that cannot
-        // establish it must not guess. Nothing is charged at this point.
+    private void requireOwnAddress(UUID shippingAddressId) {
+        // mustCall: a checkout that cannot establish whose address it is must not guess. Nothing has been ordered at this point.
         List<CustomerClient.Address> addresses = mustCall(customer::myAddresses, "customer");
-        return addresses.stream()
-                .filter(a -> shippingAddressId.equals(a.id()))
-                .map(CustomerClient.Address::country)
-                .findFirst()
-                .orElseThrow(() -> {
-                    log.warn("Refusing checkout: addressId={} is not one of the caller's", shippingAddressId);
-                    return new IllegalArgumentException("That shipping address is not one of yours.");
-                });
+        if (addresses.stream().noneMatch(a -> shippingAddressId.equals(a.id()))) {
+            log.warn("Refusing checkout: addressId={} is not one of the caller's", shippingAddressId);
+            throw new IllegalArgumentException("That shipping address is not one of yours.");
+        }
     }
 
     /**
-     * The delivery options for a destination. Never null, and never a quiet
-     * zero (Phase 0, item 1):
+     * What delivery to this town by this option costs, asked of SHIPPING (the single place that works the amount out). Never a quiet zero:
      *
      * <ul>
-     *   <li>shipping refuses with {@code outside-delivery-area} -- an address
-     *       abroad -> {@link OutsideDeliveryAreaException}, 422, in checkout's
-     *       own words; the shopper can act on it;</li>
-     *   <li>shipping refuses with any other 4xx -> we sent something wrong:
-     *       {@link DownstreamRejectedException}, 500;</li>
-     *   <li>shipping does not answer, or answers 5xx -> 503, nothing charged.
-     *       This used to degrade to free delivery; a price the shopper never
-     *       agreed is not a safe direction to be wrong in.</li>
+     *   <li>shipping does not answer, or answers 5xx -> 503, nothing ordered. (It used to degrade to free delivery; a price the shopper never agreed is not
+     *       a safe direction to be wrong in.)</li>
+     *   <li>shipping refuses the choice (409 {@code town-not-offered} / {@code payer-not-offered}, 404 {@code town-not-found}) -> passed on under its
+     *       own name: the shopper can choose another;</li>
+     *   <li>shipping refuses any other way, or answers something unusable (not whole ngwee, another currency, a courier the recipient pays that still costs
+     *       something) -> 500, our fault, never rounded into a quote.</li>
      * </ul>
      */
-    private ShippingClient.RateResponse quoteShipping(String country, BigDecimal subtotal, String currency) {
-        ShippingClient.RateResponse rates;
+    private Delivery quoteDelivery(String option, UUID townId, String payer, RepricedBag priced) {
+        ShippingClient.QuoteReply reply;
         try {
-            rates = resilient.callOrThrow("shipping", () -> shipping.rates(
-                    new ShippingClient.RateRequest(country, subtotal, currency)));
+            reply = resilient.callOrThrow("shipping", () -> shipping.quote(
+                    new ShippingClient.QuoteAsk(townId, option, payer, priced.goodsAfterDiscount(), priced.currency())));
         } catch (RuntimeException e) {
             int answered = ResilientFeignCaller.answeredStatus(e);
             if (isOutage(answered)) {
                 throw new DownstreamUnavailableException("shipping", e);
             }
-            if (ResilientFeignCaller.answeredProblemType(e)
-                    .filter(ProblemTypes.OUTSIDE_DELIVERY_AREA::equals).isPresent()) {
-                log.info("422 no delivery to {}: outside Zambia", country);
-                throw new OutsideDeliveryAreaException();
+            var problem = DownstreamProblems.of(e);
+            if ((answered == 409 || answered == 404) && problem.filter(p -> SHIPPING_REFUSALS_FOR_THE_SHOPPER.contains(p.code())).isPresent()) {
+                log.info("409 shipping does not offer {} to {}: {}", option, townId, problem.get().code());
+                throw new RefusalPassedOnException(HttpStatus.CONFLICT, problem.get().code(), problem.get().detail(), problem.get().extras());
             }
-            log.error("shipping REFUSED a {} quote for {} with {} -- configuration "
-                            + "mismatch or shipping's own failure, not an outage", currency, country, answered, e);
+            log.error("shipping REFUSED a {} quote for {} to {} with {} -- configuration mismatch or shipping's own failure, not an outage",
+                    priced.currency(), option, townId, answered, e);
             throw new DownstreamRejectedException("shipping", answered, e);
         }
-        if (rates == null) {
+        if (reply == null || reply.amount() == null) {
             throw new DownstreamRejectedException("shipping");
         }
-        return rates;
+        if (reply.currency() == null || !reply.currency().equalsIgnoreCase(priced.currency())) {
+            // Adding a dollar cost to a Kwacha total as though the two were one unit is a configuration mismatch between two of our own services. 500, not a
+            // 409 and not a silent zero -- nothing the shopper did caused it.
+            log.error("shipping quoted {} for a {} bag -- refusing rather than adding one currency to another", reply.currency(), priced.currency());
+            throw new DownstreamRejectedException("shipping");
+        }
+        BigDecimal amount = reply.amount();
+        if (amount.signum() < 0 || !Ngwee.isWholeNgwee(amount)) {
+            log.error("shipping quoted an unusable cost {} for option {}", amount, option);
+            throw new DownstreamRejectedException("shipping");
+        }
+        String resolvedPayer = reply.payer();
+        boolean knownPayer = resolvedPayer == null || Quote.ORIAH_COLLECTS.equals(resolvedPayer) || Quote.RECIPIENT_PAYS.equals(resolvedPayer);
+        if (!knownPayer || (Quote.RECIPIENT_PAYS.equals(resolvedPayer) && amount.signum() != 0)) {
+            log.error("shipping quoted payer {} with cost {} for {}: unusable", resolvedPayer, amount, option);
+            throw new DownstreamRejectedException("shipping");
+        }
+        return new Delivery(amount, reply.townId() != null ? reply.townId() : townId, resolvedPayer);
     }
 
     /**
-     * Refuses a shipping quote that is not denominated in the bag's currency:
-     * adding a dollar cost to a Kwacha total as though the two were one unit
-     * is a configuration mismatch between two of our own services. 500, not a
-     * 409 and not a silent zero -- nothing the shopper did caused it.
-     */
-    private void requireQuotedInBagCurrency(ShippingClient.RateResponse rates, String bagCurrency) {
-        if (rates == null || rates.options() == null) {
-            return;
-        }
-        for (ShippingClient.ShippingOption option : rates.options()) {
-            if (option.currency() != null && !option.currency().equalsIgnoreCase(bagCurrency)) {
-                log.error("shipping quoted {} for a {} bag -- refusing rather than adding "
-                        + "one currency to another", option.currency(), bagCurrency);
-                throw new DownstreamRejectedException("shipping");
-            }
-        }
-    }
-
-    /**
-     * Run a Feign call with the full Resilience4j decoration and return null on
-     * failure. For {@link #preview}'s cart read only: a null here means "no
-     * data, carry on", which is right for a read and wrong for anything that
-     * moves money.
+     * Run a Feign call with the full Resilience4j decoration and return null on failure. For {@link #preview}'s cart read only: a null here means "no data,
+     * carry on", which is right for a read and wrong for anything that places an order.
      */
     private <T> T safeCall(java.util.function.Supplier<T> call, String name) {
         return resilient.call(name, call, null);
     }
 
     /**
-     * The confirm-path counterpart of {@link #safeCall}: same decoration, but
-     * a failure becomes a typed exception instead of a null.
+     * The confirm-path counterpart of {@link #safeCall}: same decoration, but a failure becomes a typed exception instead of a null.
      *
      * <ul>
-     *   <li><strong>It answered 4xx</strong> -> it rejected what we sent, which
-     *       is a checkout bug: {@link DownstreamRejectedException}, 500. Not a
-     *       503, because the same payload will be rejected on every retry.</li>
-     *   <li><strong>It never answered</strong>, or answered 5xx, or the circuit
-     *       is open -> {@link DownstreamUnavailableException}, 503 with
+     *   <li><strong>It answered 4xx</strong> -> it rejected what we sent, which is a checkout bug: {@link DownstreamRejectedException}, 500. Not a 503,
+     *       because the same payload will be rejected on every retry.</li>
+     *   <li><strong>It never answered</strong>, or answered 5xx, or the circuit is open -> {@link DownstreamUnavailableException}, 503 with
      *       {@code Retry-After}.</li>
-     *   <li><strong>It answered 2xx with no body</strong> -> also
-     *       {@link DownstreamRejectedException}, rather than an NPE and an
-     *       unnamed 500.</li>
+     *   <li><strong>It answered 2xx with no body</strong> -> also {@link DownstreamRejectedException}, rather than an NPE and an unnamed 500.</li>
      * </ul>
      */
     private <T> T mustCall(java.util.function.Supplier<T> call, String name) {
-        return mustCall(call, name, name);
-    }
-
-    /**
-     * {@link #mustCall(java.util.function.Supplier, String)} for a call with a
-     * resilience instance of its own: {@code instance} picks the breaker, retry
-     * and limiter; {@code service} is the name the shopper is told.
-     */
-    private <T> T mustCall(java.util.function.Supplier<T> call, String service, String instance) {
         T result;
         try {
-            result = resilient.callOrThrow(instance, call);
+            result = resilient.callOrThrow(name, call);
         } catch (RuntimeException e) {
-            throw classify(service, e);
+            throw classify(name, e);
         }
         if (result == null) {
-            throw new DownstreamRejectedException(service);
+            throw new DownstreamRejectedException(name);
         }
         return result;
     }
@@ -457,45 +327,32 @@ public class CheckoutService {
     }
 
     /**
-     * Whether a failed call is an OUTAGE -- worth a 503 and a retry -- rather
-     * than an answer that will be the same next time.
+     * Whether a failed call is an OUTAGE -- worth a 503 and a retry -- rather than an answer that will be the same next time.
      *
-     * <p>No answer at all, or 502, 503 or 504: the downstream could not be
-     * reached or said it is unavailable. Everything else it ANSWERED is final:
-     * a 4xx rejects what we sent, and a 500 is the downstream's own failure --
-     * order raises one on purpose for its own misconfiguration (a wrong client
-     * secret, shipping refusing it). Telling a shopper to "try again shortly"
-     * about that would invite them to, for ever; and order.place is a POST, so
-     * a 500 that came after the order was saved must not be retried into a
-     * second one. The retry rule ({@code RetryForAnyCall}) repeats the same
-     * three statuses unless they carry {@code Retry-After}, and of "no answer"
-     * only a connection never opened.
+     * <p>No answer at all, or 502, 503 or 504: the downstream could not be reached or said it is unavailable. Everything else it ANSWERED is final: a 4xx
+     * rejects what we sent, and a 500 is the downstream's own failure -- order raises one on purpose for its own misconfiguration (a wrong client secret).
+     * Telling a shopper to "try again shortly" about that would invite them to, for ever; and order.place is a POST, so a 500 that came after the order was
+     * saved must not be retried into a second one. The retry rule ({@code RetryForAnyCall}) repeats the same three statuses unless they carry
+     * {@code Retry-After}, and of "no answer" only a connection never opened.
      */
     private static boolean isOutage(int answered) {
         return answered < 0 || answered == 502 || answered == 503 || answered == 504;
     }
 
     /**
-     * Place and pay for the cart's contents -- exactly the quote the shopper
-     * saw, or nothing.
+     * Place the cart's contents -- exactly the quote the shopper saw, or nothing -- and hold its pieces.
      *
-     * @throws PromotionCodesNotAcceptedException    422, a promotion code was sent
-     * @throws CartEmptyException                    409, nothing to buy
-     * @throws PricingChangedException               409, the quote changed since preview
-     * @throws DownstreamUnavailableException        503, a dependency is down
-     * @throws DownstreamRejectedException           500, a dependency refused our request
-     * @throws PaymentDeclinedException              402, the card was refused
-     * @throws PaymentConfirmationFailedException    502, the processor gave no usable answer
-     * @throws PaymentCapturedWithoutOrderException  500, money moved and the order did not
+     * @throws CartEmptyException              409, nothing to buy
+     * @throws PricingChangedException         409, the quote changed since preview
+     * @throws RefusalPassedOnException        409, a refusal of order's or shipping's the shopper can act on, under its own name
+     * @throws DownstreamUnavailableException  503, a dependency is down
+     * @throws DownstreamRejectedException     500, a dependency refused our request
      *
-     * @param idempotencyKey the browser's {@code Idempotency-Key}, forwarded
-     *     verbatim to payment-service so that a retry replays the stored
-     *     response instead of charging again. May be null -- deliberately not
-     *     generated here, because a key minted per attempt guards nothing.
+     * @param idempotencyKey the browser's {@code Idempotency-Key}, forwarded verbatim to order so that a retry of the same submission places the same order.
+     *     May be null -- deliberately not generated here, because a key minted per attempt guards nothing (a reload of the same bag still finds the live
+     *     order, by the quote's digest).
      */
     public ConfirmResponse confirm(ConfirmRequest req, String idempotencyKey) {
-        refusePromotionCode(req.promotionCode());
-
         var myCart = mustCall(cart::getMyCart, "cart");
         if (myCart.items() == null || myCart.items().isEmpty()) {
             throw new CartEmptyException();
@@ -504,123 +361,37 @@ public class CheckoutService {
         // 1) Price the bag from catalog -- never cart's subtotal.
         RepricedBag priced = reprice(myCart);
 
-        // 2) Delivery: the option the shopper NAMED. It used to be the cheapest
-        //    offered, so a K0 option made every delivery free. An option not
-        //    offered -- withdrawn since preview, or never offered -- has no
-        //    price to charge: 409, the same answer order gives, so the
-        //    storefront re-previews and shows what IS offered. With no address
-        //    (self-collect, enforced by validation) the quote is for Zambia.
-        String destination = resolveDestination(req.shippingAddressId(), HOME_COUNTRY);
-        var rates = quoteShipping(destination, priced.subtotal(), priced.currency());
-        requireQuotedInBagCurrency(rates, priced.currency());
-        ShippingClient.ShippingOption chosen = offered(rates, req.deliveryOption()).orElseThrow(() -> {
-            log.info("409 option {} is not offered for {}", req.deliveryOption(), destination);
-            return new PricingChangedException(priced.variantIds());
-        });
+        // 2) Whose address it is, when there is one. (Order asks again, with the caller's own token, before it prices anything.)
+        if (req.shippingAddressId() != null) {
+            requireOwnAddress(req.shippingAddressId());
+        }
 
-        // 3) Quote, then commit: only the quote the shopper saw can be charged.
-        Quote quote = priced.quoteFor(chosen.code(), deliveryCost(chosen));
+        // 3) Delivery: the choice the shopper NAMED, priced by shipping on the goods after discount. A choice not offered any more -- withdrawn since preview,
+        //    or never offered -- has no price to place at: the refusal is passed on so the storefront shows what IS offered.
+        Delivery delivery = quoteDelivery(req.deliveryOption(), req.deliveryTownId(), req.payer(), priced);
+
+        // 4) Quote, then commit: only the quote the shopper saw can be placed.
+        Quote quote = priced.quoteFor(req.deliveryOption(), delivery);
         requireTheQuoteTheShopperSaw(req.quoteDigest(), quote, priced);
 
-        // 4) Place the order from the REPRICED lines. order prices everything
-        //    again and checks the same digest before it saves anything.
-        OrderClient.OrderResponse placed = place(req, priced);
-        log.info("Order placed orderId={} status={} total={}", placed.id(), placed.status(), placed.total());
+        // 5) Place the order from the REPRICED lines. Order prices everything again, checks the same digest before it saves anything, and holds the pieces.
+        OrderClient.OrderResponse placed = place(req, priced, idempotencyKey);
+        log.info("Order placed orderId={} status={} total={} held until {}", placed.id(), placed.status(), placed.total(), placed.holdExpiresAt());
         requireOrderAgrees(placed, quote);
 
-        // 5) Payment, for the total ORDER recorded. Nothing has been charged
-        //    yet, so a failure up to and including createIntent is transient.
-        //
-        //    Its OWN resilience instance, "payment-create", for two reasons.
-        //    Creating an intent is idempotent -- payment hands a repeated create
-        //    the intent it already made -- so its retry may repeat a timed-out
-        //    call, which no other call here may. And payment answers it 503
-        //    whenever order is slow; on confirm's breaker those failures, from
-        //    other shoppers, would stop a shopper confirming an intent just made.
-        //    And its own Feign client (PaymentCreateClient), with shorter
-        //    timeouts than confirm's, so that three attempts take about as long
-        //    as one used to (application.yaml, payment-create).
-        BigDecimal total = placed.total();
-        var intent = mustCall(() -> paymentCreate.createIntent(
-                new PaymentClient.CreateIntentRequest(placed.id(), total, priced.currency())),
-                "payment", "payment-create");
-
-        PaymentClient.IntentResponse confirmed;
-        try {
-            confirmed = resilient.callOrThrow("payment", () -> payment.confirm(intent.id(),
-                    idempotencyKey, new PaymentClient.ConfirmRequest(req.cardNumber())));
-        } catch (NothingSentException e) {
-            // 503, not 502: the request to charge never left checkout -- the
-            // breaker was open, the rate limiter refused, the connection could
-            // not be opened, or the load balancer had no address for payment,
-            // on every attempt. Payment did nothing, so "nothing has been
-            // charged, try again" is the truth.
-            throw new DownstreamUnavailableException("payment", e);
-        } catch (RuntimeException e) {
-            // 502, not 503 and not 402. The request reached payment at least
-            // once -- its reply was lost, or it answered with something that is
-            // not a result, such as its 503 "the outcome is not known yet" --
-            // and the charge may or may not have gone through. The one
-            // ambiguous outcome: the order is already recorded (CREATED) and
-            // the cart stays intact, which keeps it recoverable. Not repeated
-            // (confirm's retry repeats only a request that never arrived); the
-            // shopper is told not to pay again, since trying again places a
-            // new order and the order list shows "Pending" either way.
-            throw new PaymentConfirmationFailedException("the payment service gave no usable answer", e);
-        }
-        if (confirmed == null) {
-            throw new PaymentConfirmationFailedException("the payment service answered with no body", null);
-        }
-        if (!"SUCCEEDED".equals(confirmed.status())) {
-            // Terminal: 402 and NOT retryable -- the same card will be refused again.
-            log.info("Payment declined intentId={} status={} reason={}",
-                    intent.id(), confirmed.status(), confirmed.failureReason());
-            throw new PaymentDeclinedException(confirmed.failureReason());
-        }
-        log.info("Payment SUCCEEDED intentId={}", intent.id());
-
-        // 6) Attach the intent and transition the order to PAID. Past this line
-        //    the money is gone, so a failure must not be reported as transient:
-        //    a 503 invites a retry that would charge the card a second time.
-        OrderClient.OrderResponse paid;
-        try {
-            // Its OWN resilience instance, "order-pay". Placement shares "order",
-            // and a burst of placement failures -- Keycloak or shipping briefly
-            // down for other shoppers -- must never open the breaker in front of
-            // the one call that turns a charged card into a paid order.
-            //
-            // callOrThrow, not mustCall: mustCall turns an outage into checkout's
-            // 503, whose words are "Nothing has been charged; retry shortly" --
-            // and that became the cause logged below, for a card that HAS been
-            // charged. The failure is kept as it happened instead.
-            paid = resilient.callOrThrow("order-pay", () -> order.pay(placed.id(),
-                    new OrderClient.AttachPaymentRequest(intent.id())));
-            if (paid == null) {
-                throw new DownstreamRejectedException("order");
-            }
-        } catch (RuntimeException e) {
-            log.error("PAYMENT CAPTURED WITHOUT ORDER orderId={} intentId={} amount={} -- "
-                            + "needs manual reconciliation (refund the intent or replay the transition)",
-                    placed.id(), intent.id(), total, e);
-            throw new PaymentCapturedWithoutOrderException(placed.id(), intent.id(), e);
-        }
-
-        // 7) Clear the cart -- best-effort: the order is PAID and the shopper
-        //    owns it, so a stale cart is drift to reconcile, not a failure.
+        // 6) Clear the cart -- best-effort: the order is placed and its pieces held, and the shopper owns it, so a stale cart is drift to reconcile, not a failure.
         safeCall(() -> { cart.clearMyCart(); return null; }, "cart");
 
-        return new ConfirmResponse(paid.id(), paid.status(), intent.id(),
-                confirmed.status(), paid.total(), priced.currency(), "order placed and paid");
+        return new ConfirmResponse(placed.id(), placed.status(), placed.total(), priced.currency(), placed.holdExpiresAt(),
+                "Your order is placed and its pieces are held for you until the time shown. Pay by mobile money or bank transfer, then give us the reference.");
     }
 
     /**
-     * Refuses a confirm whose quote is not the one the shopper was shown: a
-     * quantity edited in another tab, a price or a delivery price changed
-     * since preview. 409 before anything is ordered or charged.
+     * Refuses a confirm whose quote is not the one the shopper was shown: a quantity edited in another tab, a price, a promotion or a delivery price changed
+     * since preview. 409 before anything is ordered.
      *
-     * <p>The digest is only ever COMPARED, never used as an input to a price,
-     * so a forged value buys nothing: the worst a client can do with a wrong
-     * one is refuse its own checkout.
+     * <p>The digest is only ever COMPARED, never used as an input to a price, so a forged value buys nothing: the worst a client can do with a wrong one is
+     * refuse its own checkout.
      */
     private static void requireTheQuoteTheShopperSaw(String echoed, Quote quote, RepricedBag priced) {
         if (!QuoteDigest.of(quote).equals(echoed)) {
@@ -630,34 +401,36 @@ public class CheckoutService {
     }
 
     /**
-     * Places the order, passing order's own "the quote changed" on as
-     * checkout's pricing-changed -- recognised by its problem TYPE, so another
-     * 409 from order is not mistaken for it. It used to become a generic 500
-     * for an answer the shopper can act on by reviewing their bag.
+     * Places the order, passing order's refusals on: "the quote changed" as checkout's own pricing-changed, a piece gone or a limit reached under order's own
+     * name (recognised by its problem TYPE, so another 409 from order is not mistaken for either). Each used to become a generic 500 for an answer the shopper
+     * can act on.
      */
-    private OrderClient.OrderResponse place(ConfirmRequest req, RepricedBag priced) {
+    private OrderClient.OrderResponse place(ConfirmRequest req, RepricedBag priced, String idempotencyKey) {
         OrderClient.OrderResponse placed;
+        List<OrderClient.LineItem> items = priced.lines().stream()
+                .map(l -> new OrderClient.LineItem(l.variantId(), l.title(), l.quantity(), l.unitPrice())).toList();
         try {
-            placed = resilient.callOrThrow("order", () -> order.place(new OrderClient.PlaceOrderRequest(
-                    req.shippingAddressId(), priced.currency(), priced.lines(),
-                    req.deliveryOption(), req.quoteDigest())));
+            placed = resilient.callOrThrow("order", () -> order.place(idempotencyKey, new OrderClient.PlaceOrderRequest(
+                    req.shippingAddressId(), priced.currency(), items, req.deliveryOption(), req.deliveryTownId(), req.payer(), req.quoteDigest())));
         } catch (RuntimeException e) {
-            // The three refusals the shopper can act on keep their type. Every
-            // other answer is classified as usual.
             java.util.Optional<java.net.URI> type = ResilientFeignCaller.answeredProblemType(e);
             if (type.filter(ProblemTypes.PRICING_CHANGED::equals).isPresent()) {
                 log.info("409 order found the quote changed since the shopper saw it");
                 throw new PricingChangedException(priced.variantIds());
             }
             if (type.filter(BagNotPurchasableException.TYPE::equals).isPresent()) {
-                // order does not say which line; the bag itself shows the
-                // shopper which piece is no longer for sale.
+                // order does not say which line; the bag itself shows the shopper which piece is no longer for sale.
                 log.info("409 order found a line no longer sellable");
                 throw new BagNotPurchasableException(List.of());
             }
             if (type.filter(MixedCurrencyException.TYPE::equals).isPresent()) {
                 log.info("409 order found the bag mixes currencies");
                 throw new MixedCurrencyException();
+            }
+            var problem = DownstreamProblems.of(e);
+            if (ResilientFeignCaller.answeredStatus(e) == 409 && problem.filter(p -> ORDER_REFUSALS_FOR_THE_SHOPPER.contains(p.code())).isPresent()) {
+                log.info("409 order refused the placement: {}", problem.get().code());
+                throw new RefusalPassedOnException(HttpStatus.CONFLICT, problem.get().code(), problem.get().detail(), problem.get().extras());
             }
             throw classify("order", e);
         }
@@ -668,15 +441,12 @@ public class CheckoutService {
     }
 
     /**
-     * The intent is for the total ORDER recorded, and only when it is the
-     * total the shopper agreed to. The digests matched, so a difference here
-     * should be impossible -- which is exactly when charging anyway would be a
-     * mistake nobody notices. 500, and nothing is charged.
+     * The order is for the total the shopper agreed to. The digests matched, so a difference here should be impossible -- which is exactly when carrying on
+     * anyway would be a mistake nobody notices. 500, and the order is left for staff: it is HELD and will lapse.
      */
     private static void requireOrderAgrees(OrderClient.OrderResponse placed, Quote quote) {
         if (placed.total() == null || placed.total().compareTo(quote.total()) != 0) {
-            log.error("order {} recorded total {} but the agreed quote totals {} -- refusing to charge",
-                    placed.id(), placed.total(), quote.total());
+            log.error("order {} recorded total {} but the agreed quote totals {} -- refusing to go on", placed.id(), placed.total(), quote.total());
             throw new DownstreamRejectedException("order");
         }
     }

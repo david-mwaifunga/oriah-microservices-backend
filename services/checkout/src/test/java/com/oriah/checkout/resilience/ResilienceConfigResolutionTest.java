@@ -14,7 +14,11 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.cloud.openfeign.FeignClientProperties;
 import org.springframework.test.context.TestPropertySource;
+
+import com.oriah.checkout.client.OrderClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -50,6 +54,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>So the behaviour is pinned here rather than reasoned about. The test runs
  * with {@code spring.cloud.config.enabled=false}, which is exactly the
  * Config-Server-is-down case.
+ *
+ * <p>The same file also pins what each of the five instances (cart, catalog,
+ * customer, shipping, order) resolves to, what the one retry rule
+ * ({@link RetryForAnyCall}) repeats and refuses to repeat -- judged on
+ * failures a real Feign client raised ({@link RealFeignFailures}) -- that a 4xx
+ * is neither retried nor counted against a breaker, and how long a call may
+ * take: 5s to connect and 15s to answer, and 20s for order's placement.
  */
 @SpringBootTest
 @TestPropertySource(properties = {
@@ -61,9 +72,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class ResilienceConfigResolutionTest {
 
-    /** Every resilience instance checkout uses. */
-    private static final String[] CLIENTS =
-            {"cart", "catalog", "customer", "shipping", "payment", "payment-create", "order", "order-pay"};
+    /**
+     * Every resilience instance checkout uses: one per Feign client. (Since
+     * Phase 7 checkout calls no payment service, so there is no payment
+     * instance, nor one for charging a card.)
+     */
+    private static final String[] CLIENTS = {"cart", "catalog", "customer", "shipping", "order"};
 
     @Autowired
     private CircuitBreakerRegistry circuitBreakerRegistry;
@@ -89,6 +103,10 @@ class ResilienceConfigResolutionTest {
     private io.github.resilience4j.springboot3.ratelimiter.autoconfigure.RateLimiterProperties
             rateLimiterProperties;
 
+    /** The Feign clients' waits as Spring Cloud binds them from application.yaml. */
+    @Autowired
+    private FeignClientProperties feignClientProperties;
+
     @Test
     @DisplayName("the context starts at all without the Config Server")
     void contextStartsWithoutConfigServer() {
@@ -101,12 +119,11 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0} has a circuit breaker")
     @DisplayName("every Feign client still gets its own breaker instance")
-    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "payment", "payment-create", "order", "order-pay"})
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "order"})
     void everyClientHasItsOwnBreaker(String client) {
         // One instance per client, so that when a downstream is unhealthy every
-        // call from this orchestrator to it trips the SAME circuit -- with two
-        // reasoned exceptions, order-pay and payment-create (application.yaml,
-        // "Instances").
+        // call from this orchestrator to it trips the SAME circuit
+        // (application.yaml, "Instances").
         assertThat(circuitBreakerRegistry.circuitBreaker(client)).isNotNull();
         assertThat(retryRegistry.retry(client)).isNotNull();
         assertThat(rateLimiterRegistry.rateLimiter(client)).isNotNull();
@@ -114,13 +131,14 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0} is registered in all three blocks")
     @DisplayName("every instance checkout calls is REGISTERED at startup, not created on first use")
-    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "payment", "payment-create", "order", "order-pay"})
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "order"})
     void everyInstanceIsRegistered(String instance) {
         // Read from the CONFIGURATION, not the registries: a registry hands out
         // an instance for any name it is asked for, so "the registry has it"
-        // is satisfied by the other tests in this class asking first -- this
-        // assertion passed with order-pay deleted from the yaml. What matters
-        // is that application.yaml names the instance in all three blocks.
+        // is satisfied by the other tests in this class asking first -- an
+        // assertion on the registry alone passed with an instance deleted from
+        // the yaml. What matters is that application.yaml names the instance
+        // in all three blocks.
         for (String block : new String[] {"circuitbreaker", "retry", "ratelimiter"}) {
             assertThat(environment.getProperty("resilience4j." + block + ".instances." + instance + ".base-config"))
                     .as("resilience4j.%s.instances.%s is not configured", block, instance)
@@ -149,28 +167,12 @@ class ResilienceConfigResolutionTest {
 
     // ----------------------------------------------- real failures, as Feign throws them
 
-    /** Every resilience instance on the default retry ({@link RetryForAnyCall}). */
-    static Stream<String> defaultRetryInstances() {
-        return Stream.of("cart", "catalog", "customer", "shipping", "order", "order-pay");
-    }
-
     /**
-     * Every instance that must never repeat a request that may have arrived:
-     * all but payment-create, whose call is idempotent.
+     * Every resilience instance checkout uses -- all on the one retry rule
+     * ({@link RetryForAnyCall}): none repeats a request that may have
+     * arrived, all repeat one that never did, and all repeat an answered 502,
+     * 503 or 504 that does not ask for later.
      */
-    static Stream<String> neverRepeatALostReply() {
-        return Stream.concat(defaultRetryInstances(), Stream.of("payment"));
-    }
-
-    /**
-     * Every instance that repeats an answered 502, 503 or 504 without
-     * Retry-After: all but payment (confirm), whose 503 may follow a charge.
-     */
-    static Stream<String> repeatAnAnsweredOutage() {
-        return Stream.concat(defaultRetryInstances(), Stream.of("payment-create"));
-    }
-
-    /** Every resilience instance checkout uses. */
     static Stream<String> everyInstance() {
         return Stream.of(CLIENTS);
     }
@@ -236,11 +238,11 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0}")
     @DisplayName("a request that may have arrived is NOT retried: a read timeout, a reset, a silent close")
-    @MethodSource("neverRepeatALostReply")
+    @MethodSource("everyInstance")
     void aRequestThatMayHaveArrivedIsNotRetried(String instance) {
         // order.place is a POST that is not idempotent: if the request arrived
         // and only the reply was lost, a second attempt can save a second
-        // order. Only payment-create, whose call IS idempotent, retries these.
+        // order. No instance retries these.
         assertThat(retries(instance).test(readTimeout))
                 .as("%s: a read timeout (%s) must not be retried", instance, readTimeout)
                 .isFalse();
@@ -256,7 +258,7 @@ class ResilienceConfigResolutionTest {
     @ParameterizedTest(name = "{0}")
     @DisplayName("a connect timeout is NOT retried: through Feign it cannot be told apart from a read timeout "
             + "(skipped where this network cannot make one)")
-    @MethodSource("neverRepeatALostReply")
+    @MethodSource("everyInstance")
     void aConnectTimeoutIsNotRetried(String instance) {
         // Feign's HttpURLConnection client reports both timeouts as the same
         // class, SocketTimeoutException, wrapped in the same RetryableException;
@@ -280,8 +282,8 @@ class ResilienceConfigResolutionTest {
     }
 
     @ParameterizedTest(name = "{0}: HTTP {1}")
-    @DisplayName("an outage answered by a real server without Retry-After is retried (every rule but confirm's)")
-    @MethodSource("repeatingInstancesAndOutages")
+    @DisplayName("an outage answered by a real server without Retry-After is retried: 502, 503 and 504, on every instance")
+    @MethodSource("instancesAndOutages")
     void anAnsweredOutageIsRetried(String instance, int status) {
         RuntimeException plain = failures.answered(status, null);
 
@@ -290,46 +292,20 @@ class ResilienceConfigResolutionTest {
                 .isTrue();
     }
 
-    static Stream<org.junit.jupiter.params.provider.Arguments> repeatingInstancesAndOutages() {
-        return repeatAnAnsweredOutage().flatMap(instance -> Stream.of(502, 503, 504)
-                .map(status -> org.junit.jupiter.params.provider.Arguments.of(instance, status)));
-    }
-
-    // ------------------------------------------------- payment: the call that charges the card
-
-    @ParameterizedTest(name = "HTTP {0}")
-    @DisplayName("payment (confirm) repeats ONLY a request that never arrived -- never an answered 502, 503 or 504")
-    @ValueSource(ints = {502, 503, 504})
-    void paymentConfirmDoesNotRepeatAnAnswer(int status) {
-        // Payment answers confirm 503 when its card gateway gave no answer:
-        // the charge MAY have gone through. Any answer from confirm can follow
-        // a charge, so none is repeated; the shopper gets the 502 "may or may
-        // not have gone through". (Repeating it was safe only because payment
-        // refuses the repeat with a 409 -- a repeat that can never succeed.)
-        var confirm = retries("payment");
-        RuntimeException plain = failures.answered(status, null);
-
-        assertThat(confirm.test(plain)).as("payment: %s must not be repeated", plain).isFalse();
-        assertThat(confirm.test(refused))
-                .as("payment: a refused connection (%s) never reached payment, so it is repeated", refused)
-                .isTrue();
-    }
-
     @ParameterizedTest(name = "{0}: HTTP {1}")
     @DisplayName("an outage that asks to be tried LATER (Retry-After) is not repeated, on any rule")
     @MethodSource("instancesAndOutages")
     void anOutageThatAsksForLaterIsNotRepeated(String instance, int status) {
-        // Order and payment send Retry-After with a 503 only AFTER waiting on
-        // their own dependencies (order: when customer, its token or shipping
-        // let it down; payment's create: when it could not ask order).
-        // Repeating that answer half a second later waits the whole time
-        // again, up to three times -- order.place's slow 503 grew from about
-        // 15 s to about 46 s, past the storefront's 30 s -- and leans on a
-        // service that has just said it is struggling. So it is not repeated:
-        // the shopper gets checkout's own 503, with its own Retry-After. (Feign throws
-        // these as feign.RetryableException carrying the status; the retry
-        // list before RetryForAnyCall never matched that, so they were not
-        // repeated then either.)
+        // Order sends Retry-After with a 503 only AFTER waiting on its own
+        // dependencies (when customer, its token, shipping, catalog or
+        // inventory let it down). Repeating that answer half a second later
+        // waits the whole time again, up to three times -- order.place's slow
+        // 503 grew from about 15 s to about 46 s, past the storefront's 30 s --
+        // and leans on a service that has just said it is struggling. So it is
+        // not repeated: the shopper gets checkout's own 503, with its own
+        // Retry-After. (Feign throws these as feign.RetryableException
+        // carrying the status; the retry list before RetryForAnyCall never
+        // matched that, so they were not repeated then either.)
         RuntimeException withRetryAfter = failures.answered(status, "5");
 
         assertThat(retries(instance).test(withRetryAfter))
@@ -363,59 +339,93 @@ class ResilienceConfigResolutionTest {
                 .map(status -> org.junit.jupiter.params.provider.Arguments.of(instance, status)));
     }
 
-    // ------------------------------------------------- payment-create: an idempotent call
-
-    @Test
-    @DisplayName("payment-create retries ANY network failure: creating an intent is idempotent")
-    void paymentCreateRetriesAnyNetworkFailure() {
-        // Payment hands the caller's own PENDING intent back for a repeated
-        // create (commit ffa3187), so when a reply is lost the retry gets the
-        // intent the first attempt made -- instead of the shopper getting a
-        // 503 for an order that has an intent checkout never heard about.
-        var paymentCreate = retries("payment-create");
-
-        assertThat(paymentCreate.test(readTimeout)).as("a read timeout (%s)", readTimeout).isTrue();
-        assertThat(paymentCreate.test(reset)).as("a reset after sending (%s)", reset).isTrue();
-        assertThat(paymentCreate.test(closedWithoutAnAnswer))
-                .as("a connection closed with no answer (%s)", closedWithoutAnAnswer).isTrue();
-    }
-
-    @Test
-    @DisplayName("payment-create retries a connect timeout too (skipped where this network cannot make one)")
-    void paymentCreateRetriesAConnectTimeout() {
-        // Its own test, so that a network that cannot make a connect timeout
-        // skips only this, not the three failures above.
-        RuntimeException connectTimeout = RealFeignFailures.connectTimeout();
-
-        assertThat(retries("payment-create").test(connectTimeout))
-                .as("a connect timeout (%s)", connectTimeout).isTrue();
-    }
-
-    @Test
-    @DisplayName("payment-create still never retries an answer: a 500, or a 4xx refusal")
-    void paymentCreateDoesNotRetryAnAnswer() {
-        // Idempotent does not mean "retry everything": a refusal or the
-        // service's own failure comes back the same every time.
-        var paymentCreate = retries("payment-create");
+    @ParameterizedTest(name = "{0}")
+    @DisplayName("an answered 500 or 4xx refusal is never retried, on any instance: it comes back the same every time")
+    @MethodSource("everyInstance")
+    void anAnswerThatIsNotAnOutageIsNeverRetried(String instance) {
+        // A refusal or the service's own failure comes back the same on every
+        // attempt -- and order.place is a POST, so a 500 that follows a saved
+        // order must not become a second one.
         RuntimeException internal = failures.answered(500, null);
-        RuntimeException notYours = failures.answered(404, null);
-        RuntimeException alreadyHasOne = failures.answered(409, null);
+        RuntimeException notFound = failures.answered(404, null);
+        RuntimeException conflict = failures.answered(409, null);
 
-        assertThat(paymentCreate.test(internal)).as("%s", internal).isFalse();
-        assertThat(paymentCreate.test(notYours)).as("%s", notYours).isFalse();
-        assertThat(paymentCreate.test(alreadyHasOne)).as("%s", alreadyHasOne).isFalse();
+        assertThat(retries(instance).test(internal)).as("%s: %s", instance, internal).isFalse();
+        assertThat(retries(instance).test(notFound)).as("%s: %s", instance, notFound).isFalse();
+        assertThat(retries(instance).test(conflict)).as("%s: %s", instance, conflict).isFalse();
     }
 
     @Test
-    @DisplayName("an unregistered name is no error: it silently gets the default retry, without payment-create's rule")
+    @DisplayName("an unregistered name is no error: it silently gets configs.default, so the yaml is what must name each instance")
     void anUnregisteredNameSilentlyGetsTheDefaultRetry() {
-        // Why payment-create must be NAMED in application.yaml: a misspelt
-        // name starts without a word and quietly stops retrying a lost reply.
-        // everyInstanceIsRegistered reads the yaml for exactly this reason.
-        var misspelt = retries("payment-creat");
+        // Why every instance must be NAMED in application.yaml: a misspelt name
+        // starts without a word and quietly gets configs.default instead of
+        // any setting of its own. everyInstanceIsRegistered reads the yaml for
+        // exactly this reason.
+        var misspelt = retries("ordr");
 
         assertThat(misspelt.test(readTimeout)).as("the default rule: a read timeout is not retried").isFalse();
         assertThat(misspelt.test(refused)).as("the default rule: a refused connection is").isTrue();
+    }
+
+    @Test
+    @DisplayName("the instances configured are exactly these five, in all three blocks: nothing retired is left, nothing new is unpinned")
+    void theConfiguredInstancesAreExactlyTheFive() {
+        // Phase 7 retired payment, payment-create and order-pay: checkout no
+        // longer calls payment. An instance left in the yaml is dead settings
+        // nobody notices; one added without being named here has no test for
+        // what it resolves to. (The registries cannot say: they hand out an
+        // instance for any name.)
+        assertThat(circuitBreakerProperties.getInstances().keySet())
+                .as("resilience4j.circuitbreaker.instances")
+                .containsExactlyInAnyOrder(CLIENTS);
+        assertThat(retryProperties.getInstances().keySet())
+                .as("resilience4j.retry.instances")
+                .containsExactlyInAnyOrder(CLIENTS);
+        assertThat(rateLimiterProperties.getInstances().keySet())
+                .as("resilience4j.ratelimiter.instances")
+                .containsExactlyInAnyOrder(CLIENTS);
+    }
+
+    // ------------------------------------------------- how long a call may take
+
+    @Test
+    @DisplayName("every Feign client waits 5s to connect and 15s to answer, as the default")
+    void theDefaultWaitsAreFiveAndFifteenSeconds() {
+        // The cart, catalog, customer and shipping reads, each of which
+        // answers in milliseconds when warm. A misspelt key leaves feign-core's
+        // own 10s/60s in place, which application.yaml's worst-case table
+        // (and the storefront's 30s) are not worked out for.
+        var config = feignClientProperties.getConfig().get(feignClientProperties.getDefaultConfig());
+
+        assertThat(config).as("the default Feign client config").isNotNull();
+        assertThat(config.getConnectTimeout()).as("default connect timeout, ms").isEqualTo(5_000);
+        assertThat(config.getReadTimeout()).as("default read timeout, ms").isEqualTo(15_000);
+    }
+
+    @Test
+    @DisplayName("order's client waits 20s to answer a placement, longer than the default's 15s")
+    void ordersClientWaitsTwentySecondsToAnswer() {
+        // Placing an order is five calls one after another inside order
+        // (customer, catalog, its own token, shipping, inventory's hold) and
+        // then its own save: 17.5s at worst, which does not fit in 15s. Keyed
+        // by the @FeignClient name; only the read timeout is its own, the
+        // connect timeout is the default's.
+        assertThat(OrderClient.class.getAnnotation(FeignClient.class).name())
+                .as("the name application.yaml's entry must carry")
+                .isEqualTo("order");
+        var order = feignClientProperties.getConfig().get("order");
+
+        assertThat(order).as("an 'order' entry in spring.cloud.openfeign.client.config").isNotNull();
+        assertThat(order.getReadTimeout()).as("order read timeout, ms").isEqualTo(20_000);
+    }
+
+    @Test
+    @DisplayName("no other Feign client has a wait of its own: payment's retired entry is gone")
+    void noClientButOrderHasAWaitOfItsOwn() {
+        assertThat(feignClientProperties.getConfig().keySet())
+                .as("spring.cloud.openfeign.client.config entries")
+                .containsExactlyInAnyOrder(feignClientProperties.getDefaultConfig(), "order");
     }
 
     @ParameterizedTest(name = "{0}")
@@ -427,7 +437,7 @@ class ResilienceConfigResolutionTest {
         // a missing one: a name application.yaml does not declare is handed
         // configs.default, which has exactly these values (see
         // anUnregisteredNameSilentlyGetsTheDefaultRetry) -- this test once
-        // stayed green with payment-create deleted from two of the blocks.
+        // stayed green with an instance deleted from two of the blocks.
         // So first: Resilience4j itself must have bound the instance's own
         // settings from application.yaml, in each block. Only then are the
         // values worth reading. (What the values do rule out is Resilience4j's
@@ -481,12 +491,13 @@ class ResilienceConfigResolutionTest {
     }
 
     private static feign.FeignException serverError(int status) {
-        return feign.FeignException.errorStatus("OrderClient#place(PlaceOrderRequest)",
+        return feign.FeignException.errorStatus("OrderClient#place(String,PlaceOrderRequest)",
                 feign.Response.builder().status(status).reason("x")
                         .request(feign.Request.create(feign.Request.HttpMethod.POST, "http://order/api/v1/orders",
                                 java.util.Map.of(), null, null, null))
                         .headers(java.util.Map.of()).build());
     }
+
     @Test
     @DisplayName("breakers are not silently left on Resilience4j's built-in defaults")
     void breakersDoNotSilentlyFallBackToLibraryDefaults() {
@@ -540,15 +551,16 @@ class ResilienceConfigResolutionTest {
 
     @ParameterizedTest(name = "{0}: a run of client errors leaves the breaker closed")
     @DisplayName("a 4xx is an answer, not an outage: it never opens a breaker")
-    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "payment", "payment-create", "order", "order-pay"})
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "order"})
     void aRunOfClientErrorsLeavesTheBreakerClosed(String client) {
-        // After Phase 0 item 1, shipping answers 422 for an address abroad --
-        // an ordinary answer. Counted as failures, ten of them in a window
-        // would open the breaker for 30s and give EVERY shopper a 503.
+        // Shipping answers 409 for a town the shop has not priced, and order
+        // 409 for a piece it cannot hold -- ordinary answers, the downstream
+        // working. Counted as failures, ten of them in a window would open
+        // the breaker for 30s and give EVERY shopper a 503.
         var breaker = circuitBreakerRegistry.circuitBreaker(client);
         breaker.reset();
         var clientError = new feign.FeignException.FeignClientException(
-                422, "outside the delivery area", feign.Request.create(
+                409, "town not offered", feign.Request.create(
                         feign.Request.HttpMethod.POST, "http://" + client + "/x",
                         java.util.Map.of(), null, null, null),
                 null, java.util.Map.of());

@@ -47,14 +47,18 @@ import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.delete;
+import static com.github.tomakehurst.wiremock.client.WireMock.deleteRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.equalTo;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.matchingJsonPath;
 import static com.github.tomakehurst.wiremock.client.WireMock.okJson;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
 import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
-import static com.github.tomakehurst.wiremock.client.WireMock.urlPathMatching;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -75,10 +79,18 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * and every failure is a real one -- a reply that never comes, a connection
  * dropped after the request went out, a port with nothing listening.
  *
+ * <h2>What confirm does (Phase 7)</h2>
+ *
+ * Cart, catalog (the prices), customer (whose address it is, when there is
+ * one), shipping's quote, then order's placement -- the one call that holds the
+ * pieces and is NOT idempotent: sent twice, it can place two orders. Then the
+ * cart is cleared. Checkout never calls payment: paying is the shopper's step
+ * after the order is placed. So nearly everything below is about the
+ * placement, and which of its failures may be repeated.
+ *
  * <p>Only the waits are shortened, so a timeout costs a test three seconds
- * rather than fifteen (createIntent's own client: 1 s rather than 6 s, still
- * the shorter of the two, as in application.yaml); what is retried and what is
- * not is unchanged.
+ * rather than the fifteen (twenty for order) of application.yaml; what is
+ * retried and what is not is unchanged.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -91,27 +103,34 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.cloud.loadbalancer.cache.enabled=false",
         // Shortened, but not too short: on a busy machine (a full build, other
         // builds beside it) WireMock's first answers can take most of a second.
-        // At 1 s for every call and 300 ms for createIntent, that alone turned
-        // ordinary answers into timeouts -- the first test's cart call, every
-        // create -- and tests went red for a reason that is not checkout's. So
-        // 3 s here, and a test that needs a timeout makes the server wait 4 s.
+        // At 1 s for every call, that alone turned ordinary answers into
+        // timeouts -- the first test's cart call -- and tests went red for a
+        // reason that is not checkout's. So 3 s here, and a test that needs a
+        // timeout makes the server wait 4 s.
         "spring.cloud.openfeign.client.config.default.connectTimeout=1000",
         "spring.cloud.openfeign.client.config.default.readTimeout=3000",
-        // createIntent's own client waits less than every other call, as in
-        // application.yaml, so a test can tell the two apart: 1 s against 3 s.
-        "spring.cloud.openfeign.client.config.payment-create.connectTimeout=1000",
-        "spring.cloud.openfeign.client.config.payment-create.readTimeout=1000",
+        // Order has its OWN entry in application.yaml (20 s to answer a
+        // placement), which wins over default for order's client -- so the 3 s
+        // above would not reach it, and a placement made to wait 4 s would be
+        // waited for and answered. Shortened to the same 3 s; its connect
+        // timeout is the default's, as in application.yaml.
+        "spring.cloud.openfeign.client.config.order.readTimeout=3000",
         "resilience4j.retry.configs.default.wait-duration=10ms"
 })
 class ConfirmOverRealFeignTest {
 
     private static final UUID VARIANT = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final UUID BOX = UUID.fromString("55555555-5555-5555-5555-555555555555");
     private static final UUID ORDER_ID = UUID.fromString("33333333-3333-3333-3333-333333333333");
-    private static final UUID INTENT_ID = UUID.fromString("44444444-4444-4444-4444-444444444444");
+    private static final UUID ADDRESS = UUID.fromString("66666666-6666-6666-6666-666666666666");
+    private static final UUID TOWN = UUID.fromString("77777777-7777-7777-7777-777777777777");
     private static final String PRICE = "4500.00";
+    /** What delivery to {@link #TOWN} by OWN_DELIVERY costs in the delivered tests; Oriah collects it, so it is in the total. */
+    private static final String DELIVERY = "50.00";
+    private static final String PROBLEMS = "application/problem+json";
 
     /** Every service checkout calls, all answered by this one server. */
-    private static final List<String> SERVICES = List.of("cart", "catalog", "customer", "shipping", "order", "payment");
+    private static final List<String> SERVICES = List.of("cart", "catalog", "customer", "shipping", "order");
 
     private static final WireMockServer DOWNSTREAM = new WireMockServer(options().dynamicPort());
 
@@ -144,22 +163,10 @@ class ConfirmOverRealFeignTest {
     static class Attempts {
         static final Map<String, AtomicInteger> BY_CLIENT = new ConcurrentHashMap<>();
 
-        /**
-         * Run as each confirm request is built, before the load balancer picks
-         * an address for it: lets a test change the world between createIntent
-         * and confirm, as a redeploy of payment would.
-         */
-        static volatile Runnable beforeEachConfirm = () -> { };
-
         @Bean
         RequestInterceptor countAttempts() {
-            return template -> {
-                BY_CLIENT.computeIfAbsent(template.feignTarget().name(), k -> new AtomicInteger())
-                        .incrementAndGet();
-                if (template.path().endsWith("/confirm")) {
-                    beforeEachConfirm.run();
-                }
-            };
+            return template -> BY_CLIENT.computeIfAbsent(template.feignTarget().name(), k -> new AtomicInteger())
+                    .incrementAndGet();
         }
 
         static int of(String client) {
@@ -191,7 +198,6 @@ class ConfirmOverRealFeignTest {
         instancesAsConfigured = Map.copyOf(discovery.getInstances());
         breakers.getAllCircuitBreakers().forEach(b -> b.reset());
         Attempts.BY_CLIENT.clear();
-        Attempts.beforeEachConfirm = () -> { };
         DOWNSTREAM.resetAll();
 
         DOWNSTREAM.stubFor(get(urlEqualTo("/api/v1/carts/me")).willReturn(okJson("""
@@ -203,18 +209,12 @@ class ConfirmOverRealFeignTest {
                 {"results":[{"variantId":"%s","status":"PRICED","productId":"%s","productTitle":"Aurelia",
                  "variantTitle":"Aurelia 18k","unitPrice":%s,"currency":"ZMW"}]}
                 """.formatted(VARIANT, UUID.randomUUID(), PRICE))));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/shipping/rates")).willReturn(okJson("""
-                {"destinationCountry":"ZM","options":[{"code":"SELF_COLLECT","carrier":"Oriah Jewelry",
-                 "service":"Self-collect","cost":0.00,"currency":"ZMW","etaDaysMin":null,"etaDaysMax":null}]}
-                """)));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(okJson(order("CREATED", null))));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents"))
-                .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
-                        .withBody(intent("PENDING"))));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .willReturn(okJson(intent("SUCCEEDED"))));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders/" + ORDER_ID + "/pay"))
-                .willReturn(okJson(order("PAID", INTENT_ID))));
+        DOWNSTREAM.stubFor(get(urlEqualTo("/api/v1/customers/me/addresses")).willReturn(okJson("""
+                [{"id":"%s","country":"ZM","label":"Home"}]
+                """.formatted(ADDRESS))));
+        // Shipping and order as they answer a self-collect bag: nothing to pay for delivery, nothing in a town.
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/shipping/quote")).willReturn(okJson(selfCollectQuote())));
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(placed(selfCollectOrder())));
     }
 
     @AfterEach
@@ -223,34 +223,89 @@ class ConfirmOverRealFeignTest {
         discovery.getInstances().putAll(instancesAsConfigured);
     }
 
-    private static String order(String status, UUID intentId) {
+    // ------------------------------------------------------------ what the stubs say
+
+    /** Shipping's answer for self-collect: {@code ShippingClient.QuoteReply}, with no town and no payer. */
+    private static String selfCollectQuote() {
         return """
-                {"id":"%s","keycloakId":"kc-alice","status":"%s","subtotal":%s,"total":%s,"currency":"ZMW",
-                 "paymentIntentId":%s}
-                """.formatted(ORDER_ID, status, PRICE, PRICE, intentId == null ? "null" : "\"" + intentId + "\"");
+                {"townId":null,"townName":null,"optionCode":"SELF_COLLECT","optionName":"Self-collect","payer":null,
+                 "amount":0.00,"currency":"ZMW","listAmount":0.00,"freeByThreshold":false,"etaDaysMin":null,"etaDaysMax":null}
+                """;
     }
 
-    private static String intent(String status) {
+    /** Shipping's answer for OWN_DELIVERY to {@link #TOWN}, paid by Oriah (so it is in the total). */
+    private static String deliveredQuote() {
         return """
-                {"id":"%s","orderId":"%s","amount":%s,"currency":"ZMW","status":"%s","failureReason":null}
-                """.formatted(INTENT_ID, ORDER_ID, PRICE, status);
+                {"townId":"%s","townName":"Lusaka","optionCode":"OWN_DELIVERY","optionName":"Our own delivery",
+                 "payer":"ORIAH_COLLECTS","amount":%s,"currency":"ZMW","listAmount":%s,"freeByThreshold":false,
+                 "etaDaysMin":1,"etaDaysMax":2}
+                """.formatted(TOWN, DELIVERY, DELIVERY);
+    }
+
+    /** What order answers once it has placed and held the self-collect bag: {@code OrderClient.OrderResponse}. */
+    private static String selfCollectOrder() {
+        return """
+                {"id":"%s","keycloakId":"kc-alice","status":"CREATED","subtotal":%s,"shippingAmount":0.00,"discountAmount":0.00,
+                 "total":%s,"currency":"ZMW","deliveryTownId":null,"deliveryPayer":null,"holdExpiresAt":"2026-11-13T10:10:00Z"}
+                """.formatted(ORDER_ID, PRICE, PRICE);
+    }
+
+    /** What order answers once it has placed and held the delivered bag: the total carries the delivery. */
+    private static String deliveredOrder() {
+        return """
+                {"id":"%s","keycloakId":"kc-alice","status":"CREATED","subtotal":%s,"shippingAmount":%s,"discountAmount":0.00,
+                 "total":4550.00,"currency":"ZMW","deliveryTownId":"%s","deliveryPayer":"ORIAH_COLLECTS","holdExpiresAt":"2026-11-13T10:10:00Z"}
+                """.formatted(ORDER_ID, PRICE, DELIVERY, TOWN);
+    }
+
+    /** A 201 with this order, as order answers a placement. */
+    private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder placed(String order) {
+        return aResponse().withStatus(201).withHeader("Content-Type", "application/json").withBody(order);
+    }
+
+    /** A refusal as a service sends it: the problem+json body, with its status. */
+    private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder refusal(int status, String problemJson) {
+        return aResponse().withStatus(status).withHeader("Content-Type", PROBLEMS).withBody(problemJson);
     }
 
     /** The digest preview shows for this bag, self-collected. */
-    private static String quoteDigest() {
+    private static String selfCollectDigest() {
         return QuoteDigest.of(new Quote(List.of(new QuoteLine(VARIANT, 1, new BigDecimal(PRICE), BigDecimal.ZERO)),
                 "ZMW", "SELF_COLLECT", BigDecimal.ZERO));
     }
 
+    /** The digest preview shows for this bag delivered to {@link #TOWN} by OWN_DELIVERY, Oriah paying the courier. */
+    private static String deliveredDigest() {
+        return QuoteDigest.of(new Quote(List.of(new QuoteLine(VARIANT, 1, new BigDecimal(PRICE), BigDecimal.ZERO)),
+                "ZMW", "OWN_DELIVERY", new BigDecimal(DELIVERY), TOWN, Quote.ORIAH_COLLECTS));
+    }
+
     private ResultActions confirm() throws Exception {
+        return confirm("idem-" + UUID.randomUUID());
+    }
+
+    private ResultActions confirm(String idempotencyKey) throws Exception {
         return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                 .post("/api/v1/checkout/confirm")
                 .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")).jwt(j -> j.subject("kc-alice")))
-                .header("Idempotency-Key", "idem-" + UUID.randomUUID())
+                .header("Idempotency-Key", idempotencyKey)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"deliveryOption":"SELF_COLLECT","cardNumber":"4242424242424242","quoteDigest":"%s"}
-                        """.formatted(quoteDigest())));
+                        {"deliveryOption":"SELF_COLLECT","quoteDigest":"%s"}
+                        """.formatted(selfCollectDigest())));
+    }
+
+    /** A confirm for OWN_DELIVERY to the shopper's own address in {@link #TOWN}, with the digest the preview showed. */
+    private ResultActions confirmDelivered(String idempotencyKey) throws Exception {
+        return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .post("/api/v1/checkout/confirm")
+                .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")).jwt(j -> j.subject("kc-alice")))
+                .header("Idempotency-Key", idempotencyKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"shippingAddressId":"%s","deliveryOption":"OWN_DELIVERY","deliveryTownId":"%s",
+                         "payer":"ORIAH_COLLECTS","quoteDigest":"%s"}
+                        """.formatted(ADDRESS, TOWN, deliveredDigest())));
     }
 
     /** Points {@code service} at a port with nothing listening on it. */
@@ -259,6 +314,11 @@ class ConfirmOverRealFeignTest {
         closed.setServiceId(service);
         closed.setUri(java.net.URI.create("http://localhost:" + RealFeignFailures.closedPort()));
         discovery.getInstances().put(service, List.of(closed));
+    }
+
+    /** The cart is cleared only once the order is placed: a failed placement leaves the shopper's bag as it was. */
+    private void theCartWasNotCleared() {
+        DOWNSTREAM.verify(0, deleteRequestedFor(urlEqualTo("/api/v1/carts/me")));
     }
 
     // ------------------------------------------------------------ what the client is
@@ -275,13 +335,50 @@ class ConfirmOverRealFeignTest {
                 .isEqualTo(Client.Default.class);
     }
 
-    @Test
-    @DisplayName("the happy path: placed, paid, and the cart cleared")
-    void theHappyPath() throws Exception {
-        confirm().andExpect(status().isOk());
+    // ------------------------------------------------------------ the happy paths
 
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders/" + ORDER_ID + "/pay")));
+    @Test
+    @DisplayName("the happy path: shipping quoted, the order placed with the shopper's key and digest, and the cart cleared")
+    void theHappyPath() throws Exception {
+        confirm("idem-the-happy-path").andExpect(status().isOk())
+                .andExpect(jsonPath("$.orderId").value(ORDER_ID.toString()))
+                .andExpect(jsonPath("$.orderStatus").value("CREATED"))
+                .andExpect(jsonPath("$.total").value(4500.0))
+                .andExpect(jsonPath("$.currency").value("ZMW"))
+                .andExpect(jsonPath("$.holdExpiresAt").isNotEmpty());
+
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/shipping/quote"))
+                .withRequestBody(matchingJsonPath("$.optionCode", equalTo("SELF_COLLECT")))
+                .withRequestBody(matchingJsonPath("$.currency", equalTo("ZMW"))));
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders"))
+                // The browser's key goes to order verbatim: it is what makes the shopper's own repeat safe.
+                .withHeader("Idempotency-Key", equalTo("idem-the-happy-path"))
+                .withRequestBody(matchingJsonPath("$.quoteDigest", equalTo(selfCollectDigest()))));
+        DOWNSTREAM.verify(1, deleteRequestedFor(urlEqualTo("/api/v1/carts/me")));
+    }
+
+    @Test
+    @DisplayName("a delivered bag: the address is checked, and the town, the payer and the digest reach order")
+    void aDeliveredBagIsPlacedWithItsTownItsPayerAndItsDigest() throws Exception {
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/shipping/quote")).willReturn(okJson(deliveredQuote())));
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(placed(deliveredOrder())));
+
+        confirmDelivered("idem-delivered").andExpect(status().isOk())
+                .andExpect(jsonPath("$.orderId").value(ORDER_ID.toString()))
+                .andExpect(jsonPath("$.total").value(4550.0));
+
+        DOWNSTREAM.verify(1, getRequestedFor(urlEqualTo("/api/v1/customers/me/addresses")));
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/shipping/quote"))
+                .withRequestBody(matchingJsonPath("$.optionCode", equalTo("OWN_DELIVERY")))
+                .withRequestBody(matchingJsonPath("$.townId", equalTo(TOWN.toString()))));
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders"))
+                .withHeader("Idempotency-Key", equalTo("idem-delivered"))
+                .withRequestBody(matchingJsonPath("$.deliveryOption", equalTo("OWN_DELIVERY")))
+                .withRequestBody(matchingJsonPath("$.deliveryTownId", equalTo(TOWN.toString())))
+                .withRequestBody(matchingJsonPath("$.payer", equalTo("ORIAH_COLLECTS")))
+                .withRequestBody(matchingJsonPath("$.shippingAddressId", equalTo(ADDRESS.toString())))
+                .withRequestBody(matchingJsonPath("$.quoteDigest", equalTo(deliveredDigest()))));
+        DOWNSTREAM.verify(1, deleteRequestedFor(urlEqualTo("/api/v1/carts/me")));
     }
 
     // -------------------------------------------- order.place: a POST that is not idempotent
@@ -292,23 +389,27 @@ class ConfirmOverRealFeignTest {
         // The request reached order; only the reply is late. Order may have
         // saved the order, so a second attempt could save a second one.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders"))
-                .willReturn(okJson(order("CREATED", null)).withFixedDelay(4_000)));
+                .willReturn(placed(selfCollectOrder()).withFixedDelay(4_000)));
 
         confirm().andExpect(status().isServiceUnavailable());
 
         DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
+        theCartWasNotCleared();
     }
 
-    @Test
+    @ParameterizedTest(name = "{0}")
     @DisplayName("order.place dropped after the request went out is NOT retried: order saw exactly one request")
-    void anOrderPlacementResetAfterSendingIsNotRetried() throws Exception {
+    @EnumSource(value = Fault.class, names = {"CONNECTION_RESET_BY_PEER", "EMPTY_RESPONSE"})
+    void anOrderPlacementDroppedAfterSendingIsNotRetried(Fault fault) throws Exception {
+        // Order had the request, so the order may have been saved: a reset and
+        // a connection closed without a word are both "may have arrived".
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders"))
-                .willReturn(aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)));
+                .willReturn(aResponse().withFault(fault)));
 
         confirm().andExpect(status().isServiceUnavailable());
 
         DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
+        theCartWasNotCleared();
     }
 
     @Test
@@ -323,77 +424,7 @@ class ConfirmOverRealFeignTest {
                         + "checkout, so trying again cannot make a second order")
                 .isEqualTo(3);
         DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/orders")));
-    }
-
-    // ------------------------------------------- payment.createIntent: idempotent, so retried
-
-    @Test
-    @DisplayName("createIntent's reply lost: the retry gets the same intent back, and the checkout completes with it")
-    void aLostCreateIntentReplyIsRetriedAndTheSameIntentIsUsed() throws Exception {
-        // Payment makes the intent, but its reply never reaches checkout. A
-        // repeated create for the caller's own order is answered with the
-        // intent already made (200, commit ffa3187), so retrying is safe --
-        // and without it the shopper got a 503 while the order kept a PENDING
-        // intent checkout never heard about, and their retry placed a NEW order.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents")).inScenario("reply lost")
-                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
-                .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
-                        .withBody(intent("PENDING")).withFixedDelay(2_000))
-                .willSetStateTo("intent made"));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents")).inScenario("reply lost")
-                .whenScenarioStateIs("intent made")
-                .willReturn(okJson(intent("PENDING"))));
-
-        confirm().andExpect(status().isOk())
-                .andExpect(jsonPath("$.paymentIntentId").value(INTENT_ID.toString()))
-                .andExpect(jsonPath("$.orderStatus").value("PAID"));
-
-        DOWNSTREAM.verify(2, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm")));
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
-    }
-
-    @Test
-    @DisplayName("createIntent waits only as long as its OWN client allows, not as long as confirm's")
-    void createIntentWaitsOnlyAsLongAsItsOwnClientAllows() throws Exception {
-        // Here createIntent's client gives payment 1 s to answer and every
-        // other client 3 s. Payment answers every create in 2 s: inside the
-        // shared wait, outside createIntent's own. So createIntent gives up on
-        // each attempt, and -- the reply being lost, and the call idempotent --
-        // tries three times, then answers 503; nothing is ever confirmed. Had
-        // createIntent shared confirm's client, the first answer would have
-        // been taken and the checkout completed.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents"))
-                .willReturn(aResponse().withStatus(201).withHeader("Content-Type", "application/json")
-                        .withBody(intent("PENDING")).withFixedDelay(2_000)));
-
-        confirm().andExpect(status().isServiceUnavailable());
-
-        DOWNSTREAM.verify(3, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/payments/intents/.*/confirm")));
-    }
-
-    @Test
-    @DisplayName("payment unable to make an intent (503, Retry-After) is NOT repeated: checkout's own 503 naming payment")
-    void anUnavailableCreateIntentThatAsksForLaterIsNotRepeated() throws Exception {
-        // Payment answers 503 with Retry-After when it cannot ask order whose
-        // order this is: nothing was made. It answers that only after waiting
-        // on order, and Retry-After says "not before 5 seconds" -- so checkout
-        // does not ask again half a second later. It used to, three times,
-        // which made this answer take up to three times as long. The shopper
-        // is told which service -- by its name, not by the name of checkout's
-        // retry settings -- and when to try again.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents")).willReturn(aResponse()
-                .withStatus(503).withHeader("Retry-After", "5")
-                .withHeader("Content-Type", "application/problem+json").withBody("{\"status\":503}")));
-
-        confirm().andExpect(status().isServiceUnavailable())
-                .andExpect(header().string("Retry-After", "5"))
-                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith(
-                        "The payment service is temporarily unavailable. Nothing has been charged")));
-
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/payments/intents/.*/confirm")));
+        theCartWasNotCleared();
     }
 
     // ------------------------------------- an answer that asks for later is not repeated
@@ -401,19 +432,19 @@ class ConfirmOverRealFeignTest {
     @Test
     @DisplayName("order.place answered 503 with Retry-After is NOT repeated: one request, checkout's own 503")
     void anOrderPlacementThatAsksForLaterIsNotRepeated() throws Exception {
-        // Order answers 503 with Retry-After when customer, Keycloak or
-        // shipping let it down -- after waiting on them, up to 13 s. Asking
-        // again 0.5 s later would wait all of that again, twice more, and lean
-        // on order while it says it is struggling.
+        // Order answers 503 with Retry-After when customer, Keycloak, shipping
+        // or inventory let it down -- after waiting on them, up to 17.5 s.
+        // Asking again 0.5 s later would wait all of that again, twice more,
+        // and lean on order while it says it is struggling.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(aResponse()
                 .withStatus(503).withHeader("Retry-After", "5")
-                .withHeader("Content-Type", "application/problem+json").withBody("{\"status\":503}")));
+                .withHeader("Content-Type", PROBLEMS).withBody("{\"status\":503}")));
 
         confirm().andExpect(status().isServiceUnavailable())
                 .andExpect(header().string("Retry-After", "5"));
 
         DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
+        theCartWasNotCleared();
     }
 
     @Test
@@ -422,155 +453,18 @@ class ConfirmOverRealFeignTest {
         // A 503 that does not say when to come back is still worth another
         // try: it means order did not do the work, and nothing asked to be
         // left alone (NetworkFailures.askedToComeBackLater). Order's own 503s
-        // all carry Retry-After now, catalog's included, so this is the
-        // answer of something else in front of order -- a proxy, say. Each
-        // attempt would ask customer and catalog again, up to about 20.5 s in
-        // all.
+        // all carry Retry-After, so this is the answer of something else in
+        // front of order -- a proxy, say. Each attempt would ask customer,
+        // catalog, shipping and inventory again, up to about 61 s in all.
         DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(aResponse()
-                .withStatus(503).withHeader("Content-Type", "application/problem+json")
+                .withStatus(503).withHeader("Content-Type", PROBLEMS)
                 .withBody("{\"status\":503}")));
 
         confirm().andExpect(status().isServiceUnavailable())
                 .andExpect(header().string("Retry-After", "5"));
 
         DOWNSTREAM.verify(3, postRequestedFor(urlEqualTo("/api/v1/orders")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
-    }
-
-    // ------------------------------------------- payment.confirm: the call that moves money
-
-    @Test
-    @DisplayName("confirm's reply never came: 502 'may have gone through', sent exactly once, order not marked paid")
-    void aConfirmWhoseReplyNeverCameIsBadGatewayAndSentOnce() throws Exception {
-        // The request to charge REACHED payment; only the answer is late. The
-        // card may have been charged, so the shopper must hear "it may or may
-        // not have gone through" (502) -- never the 503 "nothing has been
-        // charged; retry", which would invite a second purchase. And it is not
-        // sent again: confirm's retry repeats only a request that never left.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .willReturn(okJson(intent("SUCCEEDED")).withFixedDelay(4_000)));
-
-        confirm().andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"));
-
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @DisplayName("confirm's connection dropped after the request went out: 502, sent exactly once, order not marked paid")
-    @EnumSource(value = Fault.class, names = {"CONNECTION_RESET_BY_PEER", "EMPTY_RESPONSE"})
-    void aConfirmDroppedAfterSendingIsBadGatewayAndSentOnce(Fault fault) throws Exception {
-        // As above: payment had the request, so the charge may have happened.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .willReturn(aResponse().withFault(fault)));
-
-        confirm().andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"));
-
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
-    }
-
-    @Test
-    @DisplayName("confirm answered 503 'outcome unknown': NOT sent again, shopper gets 502, order not marked paid")
-    void anOutcomeUnknownConfirmIsNotSentAgain() throws Exception {
-        // Payment answers confirm 503 when its card gateway gave no answer: the
-        // money MAY have been taken. Unlike every other 503 checkout sees, the
-        // work may have been done -- so confirm's retry repeats only a request
-        // that never arrived, and this answer is sent exactly once.
-        //
-        // This test used to expect TWO requests: confirm was on the default
-        // retry, which repeats any 503, and the repeat was safe only because
-        // payment refuses it (409, nothing charged -- the second stub below is
-        // kept for that reason: should checkout ever repeat it again, the
-        // repeat is refused and only the count goes red). A repeat that can
-        // never succeed is load and noise; one request is the behaviour now.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .inScenario("outcome unknown")
-                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
-                .willReturn(aResponse().withStatus(503).withHeader("Content-Type", "application/problem+json")
-                        .withBody("{\"status\":503,\"detail\":\"The outcome of the charge is not known yet\"}"))
-                .willSetStateTo("charging"));
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .inScenario("outcome unknown")
-                .whenScenarioStateIs("charging")
-                .willReturn(aResponse().withStatus(409).withHeader("Content-Type", "application/problem+json")
-                        .withBody("{\"status\":409,\"detail\":\"still in progress\"}")));
-
-        confirm().andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"))
-                // Payment DID answer here -- with "not known yet" -- so the
-                // shopper is not told it "did not answer".
-                .andExpect(jsonPath("$.detail").value(
-                        "Your order is recorded, but its payment could not be confirmed (the payment "
-                                + "service gave no usable answer), so the charge may or may not have gone "
-                                + "through. Please do not pay again: the order shows as pending until the "
-                                + "payment has been checked. Contact us if you were charged."));
-
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
-    }
-
-    @Test
-    @DisplayName("confirm's breaker open: 503 with Retry-After, and payment never asked to charge")
-    void anOpenConfirmBreakerIsServiceUnavailableAndNothingWasSent() throws Exception {
-        // The intent is made (on payment-create's breaker); confirm's own
-        // breaker is open, so the charge request never leaves checkout. That
-        // is the 503 "nothing has been charged", which the storefront may
-        // offer to retry -- not the 502 "it may have gone through".
-        breakers.circuitBreaker("payment").transitionToOpenState();
-
-        confirm().andExpect(status().isServiceUnavailable())
-                .andExpect(header().string("Retry-After", "5"));
-
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/payments/intents/.*/confirm")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
-    }
-
-    @Test
-    @DisplayName("payment gone from the load balancer by confirm time: 503 'nothing charged', and payment never asked")
-    void noInstanceOfPaymentAtConfirmIsServiceUnavailable() throws Exception {
-        // The intent is made; then payment drops out of service discovery (a
-        // redeploy, say) before confirm is sent. The load balancer has no
-        // address to send the charge to, so it answers a 503 of its own making
-        // and nothing leaves checkout. That is the 503 "nothing has been
-        // charged" -- not the 502 "it may have gone through", which sends the
-        // shopper off to check their card for a charge that cannot exist.
-        Attempts.beforeEachConfirm = () -> discovery.getInstances().put("payment", List.of());
-
-        confirm().andExpect(status().isServiceUnavailable())
-                .andExpect(header().string("Retry-After", "5"))
-                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.startsWith(
-                        "The payment service is temporarily unavailable. Nothing has been charged")));
-
-        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/payments/intents")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/payments/intents/.*/confirm")));
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
-        assertThat(Attempts.of("payment"))
-                .as("one create, then three confirm attempts that the load balancer answered itself -- "
-                        + "retried because none was sent, the one thing confirm's rule repeats")
-                .isEqualTo(4);
-    }
-
-    @Test
-    @DisplayName("payment ITSELF answering 503 in the load balancer's words is still 'may have gone through': 502")
-    void aRealAnswerInTheLoadBalancersWordsIsNotTakenForIt() throws Exception {
-        // The test above relies on recognising the load balancer's own 503.
-        // The dangerous mistake is the other way round: taking an answer that
-        // came back over the network -- so the request reached payment, which
-        // may have charged -- for "nothing was sent". Only a response the load
-        // balancer made up inside checkout counts, and that one has no HTTP
-        // headers at all, which nothing that crossed the network lacks.
-        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/payments/intents/" + INTENT_ID + "/confirm"))
-                .willReturn(aResponse().withStatus(503)
-                        .withBody("Load balancer does not contain an instance for the service payment")));
-
-        confirm().andExpect(status().isBadGateway())
-                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/payment-confirmation-failed"));
-
-        DOWNSTREAM.verify(0, postRequestedFor(urlPathMatching("/api/v1/orders/.*/pay")));
+        theCartWasNotCleared();
     }
 
     @Test
@@ -584,5 +478,60 @@ class ConfirmOverRealFeignTest {
 
         assertThat(Attempts.of("order")).isEqualTo(3);
         DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/orders")));
+        theCartWasNotCleared();
+    }
+
+    // ------------------------------- a refusal the shopper can act on keeps its own name
+
+    @Test
+    @DisplayName("shipping answering 409 town-not-offered: checkout's 409 with THAT type, and order is never asked")
+    void aTownShippingDoesNotOfferIsPassedOnAndOrderIsNeverAsked() throws Exception {
+        // The shop has not priced delivery to this town. That is the shopper's
+        // to act on (choose another town), so it keeps shipping's name and
+        // words instead of becoming "something went wrong"; and a quote that
+        // was refused has no price to place an order at.
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/shipping/quote")).willReturn(refusal(409, """
+                {"type":"https://oriah.dev/problems/town-not-offered","title":"Conflict","status":409,
+                 "detail":"Delivery to Lusaka by OWN_DELIVERY is not priced yet."}
+                """)));
+
+        confirmDelivered("idem-town-not-offered").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/town-not-offered"))
+                .andExpect(jsonPath("$.detail").value("Delivery to Lusaka by OWN_DELIVERY is not priced yet."));
+
+        // A 4xx is an answer: asked once, not repeated.
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/shipping/quote")));
+        DOWNSTREAM.verify(0, postRequestedFor(urlEqualTo("/api/v1/orders")));
+        theCartWasNotCleared();
+    }
+
+    @Test
+    @DisplayName("order answering 409 insufficient-stock: checkout's 409 with THAT type and every short line, cart kept")
+    void aPieceOrderCannotHoldIsPassedOnWithItsShortages() throws Exception {
+        // Inventory has no stock left for the ring, nor for its box; order
+        // passes inventory's refusal on, naming both lines, and checkout
+        // passes order's on again -- so the storefront can say WHICH piece
+        // is gone, not just that something failed.
+        DOWNSTREAM.stubFor(post(urlEqualTo("/api/v1/orders")).willReturn(refusal(409, """
+                {"type":"https://oriah.dev/problems/insufficient-stock","title":"Conflict","status":409,
+                 "detail":"not everything on the order can be held: 2 line(s) short",
+                 "shortages":[{"variantId":"%s","kind":"PIECE","requested":1,"available":0},
+                              {"variantId":"%s","kind":"BOX","requested":1,"available":0}]}
+                """.formatted(VARIANT, BOX))));
+
+        confirm().andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/insufficient-stock"))
+                .andExpect(jsonPath("$.detail").value("not everything on the order can be held: 2 line(s) short"))
+                .andExpect(jsonPath("$.shortages", hasSize(2)))
+                .andExpect(jsonPath("$.shortages[0].variantId").value(VARIANT.toString()))
+                .andExpect(jsonPath("$.shortages[0].kind").value("PIECE"))
+                .andExpect(jsonPath("$.shortages[0].requested").value(1))
+                .andExpect(jsonPath("$.shortages[0].available").value(0))
+                .andExpect(jsonPath("$.shortages[1].variantId").value(BOX.toString()))
+                .andExpect(jsonPath("$.shortages[1].kind").value("BOX"));
+
+        // Nothing was held, so the shopper's bag is left as it was, and the 409 is not asked again.
+        DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders")));
+        theCartWasNotCleared();
     }
 }

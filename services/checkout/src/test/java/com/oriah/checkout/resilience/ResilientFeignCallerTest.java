@@ -158,22 +158,22 @@ class ResilientFeignCallerTest {
 
     private static feign.FeignException refusal(int status, byte[] body) {
         feign.Request request = feign.Request.create(feign.Request.HttpMethod.POST,
-                "http://shipping/api/v1/shipping/rates", java.util.Map.of(), new byte[0],
+                "http://shipping/api/v1/shipping/quote", java.util.Map.of(), new byte[0],
                 java.nio.charset.StandardCharsets.UTF_8, new feign.RequestTemplate());
-        return feign.FeignException.errorStatus("ShippingClient#rates(RateRequest)",
+        return feign.FeignException.errorStatus("ShippingClient#quote(QuoteAsk)",
                 feign.Response.builder().status(status).reason("refused").request(request)
                         .headers(java.util.Map.of()).body(body).build());
     }
 
     @Test
     void answeredProblemTypeReadsTheProblemBody() {
-        byte[] body = "{\"type\":\"https://oriah.dev/problems/outside-delivery-area\",\"status\":422}"
+        byte[] body = "{\"type\":\"https://oriah.dev/problems/town-not-offered\",\"status\":409}"
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8);
         // Wrapped, as a decorator would: the type is read off the cause chain.
-        RuntimeException wrapped = new RuntimeException("decorated", refusal(422, body));
+        RuntimeException wrapped = new RuntimeException("decorated", refusal(409, body));
 
         assertThat(ResilientFeignCaller.answeredProblemType(wrapped))
-                .contains(java.net.URI.create("https://oriah.dev/problems/outside-delivery-area"));
+                .contains(java.net.URI.create("https://oriah.dev/problems/town-not-offered"));
     }
 
     @Test

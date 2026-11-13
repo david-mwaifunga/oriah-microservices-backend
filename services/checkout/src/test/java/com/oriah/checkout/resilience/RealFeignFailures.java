@@ -52,7 +52,7 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
  */
 public final class RealFeignFailures implements AutoCloseable {
 
-    /** A POST with a body, like order.place and payment's two calls. */
+    /** A POST with a body, like order.place -- the call whose repeating is the question. */
     interface Downstream {
         @RequestLine("POST /api/v1/orders")
         @Headers("Content-Type: application/json")
