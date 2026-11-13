@@ -89,10 +89,13 @@ class GatewaySecurityConfigTest {
             "/api/v1/notifications/me",
             "/api/v1/reviews/me",
             "/api/v1/checkout/preview",
-            "/api/v1/shipping/rates",
+            "/api/v1/shipping/quote",
             // Storefront-LOOKING but not public: the sweep flagged this and
-            // POST /shipping/rates as the two most likely to be wrongly
-            // permitAll'd here. promotion guards it with hasRole('USER').
+            // POST /shipping/quote (it was /shipping/rates before Phase 7) as the
+            // two most likely to be wrongly permitAll'd here. A promotion is now
+            // applied by itself and priced per piece, so there is no code a
+            // shopper types; the path stays here because it must never become
+            // public by accident.
             "/api/v1/promotions/WELCOME15",
             "/api/v1/admin/products",
             "/api/v1/admin/inventory",
@@ -265,6 +268,11 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/orders/recorded,                                              ROLE_SALES_AGENT",
             "/api/v1/admin/orders/late-recorded,                                         ROLE_BACKDATE_SALE",
             "/api/v1/admin/payments/confirmations,                                       ROLE_SALES_AGENT",
+            // Phase 7: the two lists the people who confirm money work from are served by ORDER (it owns the data) and are SALES_AGENT's; a box
+            // changed after payment is ORDER_ADMIN's (held by a manager and the owner, not by sales).
+            "/api/v1/admin/orders/awaiting-payment,                                      ROLE_SALES_AGENT",
+            "/api/v1/admin/orders/settlements,                                           ROLE_SALES_AGENT",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/box-swaps,        ROLE_ORDER_ADMIN",
             // Phase 7: rejecting a false payment claim is the staff's, like confirming (a claim is rejected by its id, which the awaiting-payment list shows).
             "/api/v1/admin/payments/claims,                                              ROLE_SALES_AGENT",
             "/api/v1/admin/payments/claims/00000000-0000-0000-0000-000000000001/reject,  ROLE_SALES_AGENT",
@@ -302,6 +310,9 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/orders/recorded",
             "/api/v1/admin/orders/late-recorded",
             "/api/v1/admin/payments/confirmations",
+            "/api/v1/admin/orders/awaiting-payment",
+            "/api/v1/admin/orders/settlements",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/box-swaps",
             "/api/v1/admin/payments/claims",
             "/api/v1/admin/payments/claims/00000000-0000-0000-0000-000000000001/reject",
             "/api/v1/admin/payments/held-money"
@@ -348,6 +359,11 @@ class GatewaySecurityConfigTest {
             // sales assistant's.
             "/api/v1/admin/orders/late-recorded,                                         ROLE_SALES_AGENT",
             "/api/v1/admin/payments/confirmations,                                       ROLE_PAYMENT_ADMIN",
+            // Phase 7: the sales queues are SALES_AGENT's alone (ORDER_ADMIN guards the rest of the prefix), and the box swap is ORDER_ADMIN's alone
+            // (a sales person is not given it).
+            "/api/v1/admin/orders/awaiting-payment,                                      ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/settlements,                                           ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/box-swaps,        ROLE_SALES_AGENT",
             "/api/v1/admin/payments/claims,                                              ROLE_PAYMENT_ADMIN",
             "/api/v1/admin/payments/claims/00000000-0000-0000-0000-000000000001/reject,  ROLE_PAYMENT_ADMIN",
             // And the other way: the staff who confirm money never see the money held for customers.

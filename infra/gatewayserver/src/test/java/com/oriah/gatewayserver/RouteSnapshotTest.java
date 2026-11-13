@@ -207,7 +207,7 @@ class RouteSnapshotTest {
             "/api/v1/admin/procurement/suppliers,                procurement-admin-route",
             "/api/v1/admin/procurement/suppliers/11111111-1111-1111-1111-111111111111, procurement-admin-route",
             "/api/v1/admin/procurement/contact-info,             procurement-admin-route",
-            "/api/v1/shipping/rates,                             shipping-route",
+            "/api/v1/shipping/quote,                             shipping-route",
             "/api/v1/shipping/towns,                             shipping-route",
             "/api/v1/admin/shipping/towns,                       shipping-admin-route",
             "/api/v1/admin/shipping/prices/11111111-1111-1111-1111-111111111111/publish, shipping-admin-route",

@@ -197,6 +197,10 @@ public class SecurityConfig {
                         // path, before the sales assistants' one.
                         .pathMatchers("/api/v1/admin/orders/late-recorded/**").hasRole("BACKDATE_SALE")
                         .pathMatchers("/api/v1/admin/orders/recorded/**").hasRole("SALES_AGENT")
+                        // Phase 7: the two lists the people who confirm money work from -- who says they have paid, and money that has not paid its
+                        // sale -- are served by order (it owns the data) from a controller of its own, and are SALES_AGENT's. Before the ORDER_ADMIN
+                        // prefix below, which would otherwise shut sales staff out of them (and let order administrators in).
+                        .pathMatchers("/api/v1/admin/orders/awaiting-payment/**", "/api/v1/admin/orders/settlements/**").hasRole("SALES_AGENT")
                         .pathMatchers("/api/v1/admin/payments/confirmations/**").hasRole("SALES_AGENT")
                         // Phase 7: rejecting a false payment claim is the staff's, like confirming one. Before the PAYMENT_ADMIN prefix below,
                         // which guards what is left of /payments (money held for customers).
