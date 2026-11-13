@@ -11,9 +11,15 @@ import com.oriah.money.Ngwee;
  * @param discountPerPiece the promotion's discount on ONE piece, stored per
  *                         line (CLIENT_DECISIONS.md section 1.1: a discount is
  *                         worked out per piece, never split across an order).
- *                         Zero until Phase 7 brings scoped promotions.
+ *                         Zero when no promotion applies.
+ * @param promotionId      the promotion that took that discount off, or null
+ *                         when none did. It is part of what the shopper agreed
+ *                         to (oriah-quote/2): the same K10 off from another
+ *                         promotion is another quote. A promotion is named only
+ *                         where it discounts, so a promotion beside a zero
+ *                         discount is refused.
  */
-public record QuoteLine(UUID variantId, int quantity, BigDecimal unitPrice, BigDecimal discountPerPiece) {
+public record QuoteLine(UUID variantId, int quantity, BigDecimal unitPrice, BigDecimal discountPerPiece, UUID promotionId) {
 
     public QuoteLine {
         if (variantId == null) {
@@ -30,5 +36,13 @@ public record QuoteLine(UUID variantId, int quantity, BigDecimal unitPrice, BigD
         if (discountPerPiece.signum() < 0 || discountPerPiece.compareTo(unitPrice) > 0) {
             throw new IllegalArgumentException("discountPerPiece must be between 0 and the unit price");
         }
+        if (promotionId != null && discountPerPiece.signum() == 0) {
+            throw new IllegalArgumentException("a promotion is named only on a line it takes something off");
+        }
+    }
+
+    /** A line no promotion touched, or one built before promotions named themselves. */
+    public QuoteLine(UUID variantId, int quantity, BigDecimal unitPrice, BigDecimal discountPerPiece) {
+        this(variantId, quantity, unitPrice, discountPerPiece, null);
     }
 }
