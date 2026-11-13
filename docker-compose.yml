@@ -11,7 +11,7 @@
 #   docker compose build oriah-web
 #   powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 #
-# Careful with `down -v`: it wipes all twelve databases, Keycloak's included.
+# Careful with `down -v`: it wipes all thirteen databases, Keycloak's included.
 # To apply a realm edit, remove only Keycloak's volume instead -- the steps
 # are under "Applying a realm edit in dev" in CLAUDE.md.
 #

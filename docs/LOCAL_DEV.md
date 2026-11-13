@@ -7,7 +7,7 @@ Docker port is bound to `127.0.0.1`, never to your Wi-Fi.
 
 | Runs in **Docker** (`.\scripts\dev-stack.ps1`) | Runs in **IntelliJ** (profile `local`) |
 |---|---|
-| 12 Postgres databases (one per service that has one, plus Keycloak's) | `configserver` :8888 — hands every service its settings |
+| 13 Postgres databases (one per service that has one, plus Keycloak's) | `configserver` :8888 — hands every service its settings |
 | Keycloak :7080 — logins and roles | `eurekaserver` :8761 — the phone book: where each service is |
 | Kafka :9092 — events between services | `gatewayserver` :8080 — the single front door |
 | Redis :6379 — the gateway's rate limiter | the 13 services, :8081–:8093 |
@@ -192,9 +192,10 @@ database and user are `orders`.
 | search | 5442 | search | search | `jdbc:postgresql://localhost:5442/search` |
 | Keycloak | 5443 | keycloak | keycloak | `jdbc:postgresql://localhost:5443/keycloak` |
 | procurement | 5444 | procurement | procurement | `jdbc:postgresql://localhost:5444/procurement` |
+| shipping | 5445 | shipping | shipping | `jdbc:postgresql://localhost:5445/shipping` |
 
 - **pgAdmin:** Tools → Import/Export Servers → `local-dev/pgadmin-servers.json`
-  adds all twelve under **Oriah local**; it asks each password once.
+  adds all thirteen under **Oriah local**; it asks each password once.
 - **DataGrip:** add each as a PostgreSQL data source from the table above.
   Tables live in schema `public`; `flyway_schema_history` lists the migrations
   applied.
@@ -298,7 +299,7 @@ own port (`http://localhost:8086/...`) only to rule the gateway out.
   login token that was signed by the old Keycloak's keys. The people's ids are
   fixed, so their customers, carts and orders survive the reset.
 
-  Never `docker compose down -v` for this — it wipes all twelve databases, not
+  Never `docker compose down -v` for this — it wipes all thirteen databases, not
   just Keycloak's. And never change roles or users in the Keycloak console:
   the change is not in the committed files and is lost at the next reset.
 

@@ -4,7 +4,7 @@
     app started from source with Spring profile `local` -- what you do in the IDE.
 
 .DESCRIPTION
-    Docker holds only what you never debug: the 12 Postgres databases, Keycloak,
+    Docker holds only what you never debug: the 13 Postgres databases, Keycloak,
     Kafka, Redis and the image store (.\scripts\dev-stack.ps1 starts them).
     Every Java app runs on this PC, so they all find each other on localhost.
 
@@ -56,7 +56,7 @@ $Platform = [ordered]@{ configserver = 8888; eurekaserver = 8761; gatewayserver 
 $Ports = @{ catalog = 8081; inventory = 8082; customer = 8083; cart = 8084; payment = 8085; order = 8086
             promotion = 8087; shipping = 8088; checkout = 8089; notification = 8090; review = 8091; search = 8092
             procurement = 8093 }
-$NoDatabase = @('shipping', 'checkout')
+$NoDatabase = @('checkout')
 
 $failures = New-Object System.Collections.Generic.List[string]
 function Fail([string] $msg) { Write-Host "  FAIL: $msg" -ForegroundColor Red; $script:failures.Add($msg) }
@@ -138,7 +138,7 @@ try {
     # --- [0] backing services ---------------------------------------------------
     Write-Host "[0] Backing services in Docker are healthy" -ForegroundColor Cyan
     $backing = @('oriah-keycloak', 'oriah-kafka', 'oriah-redis', 'oriah-s3', 'oriah-postgres-keycloak') +
-               @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search', 'procurement' |
+               @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search', 'procurement', 'shipping' |
                  ForEach-Object { "oriah-postgres-$_" })
     $bad = @($backing | Where-Object { ((Invoke-Native { docker inspect -f '{{.State.Health.Status}}' $_ }) -join '') -ne 'healthy' })
     if ($bad.Count) {

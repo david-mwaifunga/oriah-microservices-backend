@@ -26,7 +26,7 @@ service's OWN files:
                         password) and application-docker.yaml (host name)
   * its main class   <- the class annotated @SpringBootApplication
 
-A service that owns no database (shipping and checkout today) is therefore
+A service that owns no database (checkout today) is therefore
 expected to have NO postgres-<name> container, NO pgAdmin entry and so on,
 without any hand-kept "these are stateless" list in this file.
 

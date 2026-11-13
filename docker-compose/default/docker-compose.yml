@@ -25,7 +25,7 @@
 # service names are DNS hostnames):
 #
 #   ┌─────────── data tier (no deps) ───────────┐
-#   │  postgres-* ×12   keycloak   kafka         │
+#   │  postgres-* ×13   keycloak   kafka         │
 #   │  redis   loki   prometheus   tempo   alloy  │
 #   └─────────────────────────────────────────────┘
 #                  │                │
@@ -72,6 +72,7 @@
 #   5442 → postgres-search:5432
 #   5443 → postgres-keycloak:5432     # Keycloak's own store (logins, roles)
 #   5444 → postgres-procurement:5432  # suppliers (the 13th service, Phase 2)
+#   5445 → postgres-shipping:5432     # delivery prices by town (Phase 7)
 #   6379 → redis:6379
 #   8333 → oriah-s3:8333               # S3 API for product images
 #   7080 → keycloak:8080
@@ -102,7 +103,7 @@ services:
 
   # ─────────────────────────── data tier ───────────────────────────
   #
-  # Schema per service: eleven Postgres instances, each owned by exactly one
+  # Schema per service: twelve Postgres instances, each owned by exactly one
   # service. No service reads another's tables; cross-service reads go
   # through HTTP or Kafka. Shared settings come from postgres-base-config.
 
@@ -285,6 +286,26 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U procurement -d procurement"]
 
+  # shipping's database: the delivery prices by town and option (Phase 7), which
+  # admin publishes and the storefront reads. Host port 5445 is the next free
+  # one after procurement's 5444 -- services/shipping's application-local.yaml
+  # connects to it when the app runs from the IDE.
+  postgres-shipping:
+    extends:
+      file: ../common-config.yml
+      service: postgres-base-config
+    container_name: oriah-postgres-shipping
+    environment:
+      POSTGRES_DB: shipping
+      POSTGRES_USER: shipping
+      POSTGRES_PASSWORD: shipping
+    ports:
+      - "127.0.0.1:5445:5432"
+    volumes:
+      - postgres-shipping-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shipping -d shipping"]
+
   # Keycloak's own database. Not a domain service's: it holds every login --
   # the owner, each hire's job role, every customer who registered -- so it
   # must outlive the keycloak container. Before this, Keycloak kept its data
@@ -463,8 +484,8 @@ services:
     #   docker compose up -d keycloak
     # then restart order (docker compose restart order) -- its cached machine
     # token was signed by the old keys. Removing that one volume wipes dev
-    # logins, never the eleven domain databases. Never `docker compose down -v`
-    # (it wipes all twelve databases); never a console edit (it drifts from the
+    # logins, never the twelve domain databases. Never `docker compose down -v`
+    # (it wipes all thirteen databases); never a console edit (it drifts from the
     # committed files).
     # After go-live a realm change is applied by an idempotent admin-API step
     # instead.
@@ -1129,19 +1150,27 @@ services:
       start_period: 90s
 
   shipping:
-    # No Postgres: shipping stores nothing. Until Phase 7 it offers Zambia one
-    # option, SELF_COLLECT at K0, and refuses any other country (422
+    # Owns a database since Phase 7: the delivery prices by town and option, so it waits
+    # for its own Postgres (and, like promotion and review, for nothing else: it
+    # has no Kafka in its pom yet). Until prices are published it offers Zambia
+    # one option, SELF_COLLECT at K0, and refuses any other country (422
     # outside-delivery-area); there is no rate card or zone list.
     extends:
       file: ../common-config.yml
       service: microservice-keycloak-config
     image: oriah/shipping:dev
     container_name: oriah-shipping
+    environment:
+      SPRING_DATASOURCE_USERNAME: shipping
+      SPRING_DATASOURCE_PASSWORD: shipping
     ports:
       - "127.0.0.1:8088:8088"
+    depends_on:
+      postgres-shipping:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8088"]
-      start_period: 60s
+      start_period: 90s
 
   checkout:
     # The saga orchestrator: stateless (no Postgres of its own) but it must
@@ -1369,6 +1398,7 @@ volumes:
   postgres-review-data:
   postgres-search-data:
   postgres-procurement-data:
+  postgres-shipping-data:
   postgres-keycloak-data:
   prometheus-data:
   grafana-data:

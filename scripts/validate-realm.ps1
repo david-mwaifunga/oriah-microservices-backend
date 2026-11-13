@@ -6,7 +6,7 @@
     Catches realm-import errors without needing a fresh Keycloak, which is the
     whole point: these errors only surface on a FRESH import (which comes from
     removing only Keycloak's volume, default_postgres-keycloak-data -- never
-    `docker compose down -v`, which wipes all twelve databases), so a stack
+    `docker compose down -v`, which wipes all thirteen databases), so a stack
     running against an existing volume will look perfectly healthy while the
     realm file is broken and nobody can stand the stack up from scratch.
 

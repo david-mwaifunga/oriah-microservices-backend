@@ -6,7 +6,7 @@
 
 .DESCRIPTION
     In Docker (things you use but never debug):
-      12 Postgres databases (ports 5433-5444), Keycloak (7080), Kafka (9092),
+      13 Postgres databases (ports 5433-5445), Keycloak (7080), Kafka (9092),
       Redis (6379) and the image store SeaweedFS (8333), all on 127.0.0.1 only.
 
     Not in Docker: anything you write. Their containers are stopped here,
@@ -41,7 +41,7 @@ Set-Location $root
 
 $Backing = @('postgres-catalog', 'postgres-inventory', 'postgres-customer', 'postgres-cart', 'postgres-payment',
              'postgres-order', 'postgres-promotion', 'postgres-notification', 'postgres-review', 'postgres-search',
-             'postgres-procurement', 'postgres-keycloak', 'keycloak', 'kafka', 'redis', 'oriah-s3')
+             'postgres-procurement', 'postgres-shipping', 'postgres-keycloak', 'keycloak', 'kafka', 'redis', 'oriah-s3')
 $TraceTools = @('tempo', 'prometheus', 'grafana')
 $JavaApps = @('configserver', 'eurekaserver', 'gatewayserver',
               'catalog', 'inventory', 'customer', 'cart', 'payment', 'order',
