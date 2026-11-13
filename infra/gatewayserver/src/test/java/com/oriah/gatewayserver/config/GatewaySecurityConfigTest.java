@@ -386,13 +386,28 @@ class GatewaySecurityConfigTest {
         as(jobRole).post().uri(confirm).exchange().expectStatus().isForbidden();
     }
 
-    @Test
-    @DisplayName("reserving and releasing stay with INVENTORY_ADMIN: only the sale is walled off")
-    void reserveAndReleaseAreUnchanged() {
-        String variant = "/api/v1/admin/inventory/00000000-0000-0000-0000-000000000001";
+    @ParameterizedTest(name = "{0} cannot hold, sell, release or swap a box through the gateway")
+    @DisplayName("an order's hold, its sale, its release and a box swap are the order system's acts: the gateway refuses them to every person, owner included")
+    @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
+    void nobodyCanHoldOrSwapByHand(String jobRole) {
+        // MANAGER and OWNER hold INVENTORY_ADMIN, which opens the rest of /api/v1/admin/inventory/**. A hold with no owner cannot be let go
+        // exactly once, and a sale books cost of goods: both are the order system's, which calls inventory directly (service to service).
+        String id = "00000000-0000-0000-0000-000000000001";
 
-        assertAdmitted(as("MANAGER").post().uri(variant + "/reserve"));
-        assertAdmitted(as("MANAGER").post().uri(variant + "/release"));
+        as(jobRole).post().uri("/api/v1/admin/inventory/reservations").exchange().expectStatus().isForbidden();
+        as(jobRole).get().uri("/api/v1/admin/inventory/reservations/" + id).exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/inventory/reservations/" + id + "/consume").exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/inventory/reservations/" + id + "/release").exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/inventory/reservations/" + id + "/extend").exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/inventory/box-swaps").exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("the rest of the inventory admin area stays with INVENTORY_ADMIN: only holds, sales and swaps are walled off")
+    void restOfInventoryAdminIsUnchanged() {
+        assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/inventory"));
+        assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/inventory/reconciliation"));
+        assertAdmitted(as("MANAGER").get().uri("/api/v1/admin/inventory/box-commitments"));
     }
 
     @ParameterizedTest(name = "{0} cannot reach the suppliers")

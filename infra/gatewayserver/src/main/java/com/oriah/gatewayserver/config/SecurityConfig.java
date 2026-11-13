@@ -185,6 +185,11 @@ public class SecurityConfig {
                         // rule (Q8). The service endpoint stays; the order system calls inventory directly
                         // (service to service), as the Feign clients do, and never through this gateway.
                         .pathMatchers("/api/v1/admin/inventory/*/confirm").denyAll()
+                        // Phase 7: an order's hold on its pieces and boxes, its sale, its release and the swap of a box after payment are
+                        // the order system's acts too, for the same reason (a hold with no owner cannot be let go exactly once, and a sale
+                        // books cost of goods). Inventory also wants the service account behind them, so a port left open does not
+                        // admit a person; here they are not routed to anyone at all. Before the broad inventory rule below.
+                        .pathMatchers("/api/v1/admin/inventory/reservations/**", "/api/v1/admin/inventory/box-swaps/**").denyAll()
                         .pathMatchers("/api/v1/admin/orders/*/dispatch/**").hasRole("FULFILMENT_AGENT")
                         .pathMatchers("/api/v1/admin/orders/*/delivery-waiver/**").hasRole("DELIVERY_WAIVER")
                         // A sale recorded more than 72 hours after it was paid
