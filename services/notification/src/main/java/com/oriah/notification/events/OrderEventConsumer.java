@@ -69,18 +69,29 @@ public class OrderEventConsumer {
     static final String ORDER = "order";
 
     /**
-     * Every type order publishes on oriah.order -- {@code order.<status>} for
-     * each OrderStatus -- and each has a message to send, so all are handled
-     * and none is ignored. Each is about an order. Payload version 1 is the
-     * full order snapshot ({@link OrderEventPayload}).
+     * Every type order publishes on oriah.order. Each status change is {@code order.<status>} with the full order snapshot ({@link OrderEventPayload})
+     * as its payload and has a message to send; the two facts order announces about a sale in progress are not for the customer and are ignored.
+     *
+     * <ul>
+     *   <li>{@code order.paid} has two versions (Phase 7): the second keeps every field of the first, in the same order, and adds what the sale was
+     *       paid with. Both are read as the snapshot they start with and say the same thing to the customer.
+     *   <li>{@code order.expired}: an unpaid order lapsed; its hold was let go. A plain message that reads no figure.
+     *   <li>{@code order.payment_submitted} and {@code order.payment_unsettled} are FACTS for staff (a shopper's claim to have paid; money that could
+     *       not settle a sale): declared and ignored, so they are marked applied and nothing is sent.
+     * </ul>
+     *
+     * A type nobody declared (a refund, say) is refused on its first delivery so that a new one is noticed. Declare a new type HERE before order
+     * publishes it.
      */
     static final InboxConsumer NOTIFICATION = InboxConsumer.named("notification")
             .handles(ORDER, "order.created", 1)
-            .handles(ORDER, "order.paid", 1)
+            .handles(ORDER, "order.paid", 1, 2)
             .handles(ORDER, "order.fulfilled", 1)
             .handles(ORDER, "order.shipped", 1)
             .handles(ORDER, "order.delivered", 1)
-            .handles(ORDER, "order.cancelled", 1);
+            .handles(ORDER, "order.cancelled", 1)
+            .handles(ORDER, "order.expired", 1)
+            .ignores("order.payment_submitted", "order.payment_unsettled");
 
     @Bean
     public Consumer<Message<byte[]>> orderEvents(
@@ -217,6 +228,10 @@ public class OrderEventConsumer {
                         "Order " + payload.orderId() + " was delivered. We hope you love it.");
                 case "order.cancelled" -> new Template("Your order was cancelled",
                         "Order " + payload.orderId() + " has been cancelled. Any payment will be refunded.");
+                // Reads no figure on purpose: an expiry's snapshot is not guaranteed to carry totals.
+                case "order.expired"   -> new Template("Your order has expired",
+                        "Order " + payload.orderId() + " was not paid in time, so the pieces we were holding for you have been let go. "
+                                + "If you have already paid, please contact us.");
                 // Unreachable while NOTIFICATION and this switch list the same
                 // types: the Inbox refuses any other before this runs. If one
                 // is ever declared without a template, fail (retry, then the

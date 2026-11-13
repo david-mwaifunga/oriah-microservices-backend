@@ -244,15 +244,80 @@ class OrderEventInboxTest {
     @Test
     @DisplayName("a payload version notification cannot read is refused, and nothing is recorded")
     void unknownSchemaVersionIsRefused() {
+        // Phase 7 made version 2 of order.paid readable (it adds fields after the first version's; see the tests below), so the version
+        // this test refuses is now 3. The rule it pins is unchanged: a version nobody declared is refused before anything is recorded.
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
-        Message<byte[]> paidV2 = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId))
-                .setHeader(EventHeaders.SCHEMA_VERSION, "2").build();
+        Message<byte[]> paidV3 = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId))
+                .setHeader(EventHeaders.SCHEMA_VERSION, "3").build();
 
-        assertThatThrownBy(() -> orderEvents.accept(paidV2)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> orderEvents.accept(paidV3)).isInstanceOf(IllegalArgumentException.class);
 
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId)).isZero();
+    }
+
+    // ---- Phase 7: what order now says about a sale ---------------------------
+    //
+    // order.paid grows a second version (the money's own figures and the receipt number, after every field of the first), order can now say that
+    // an unpaid order EXPIRED, and it announces two facts that are not for the customer: that a shopper submitted a payment claim, and that money
+    // could not settle a sale. Declared here BEFORE order sends them, or they would park on the dead-letter topic on their first delivery.
+
+    @Test
+    @DisplayName("order.paid in its second version is read like the first: one 'payment received', recorded once")
+    void paidVersionTwoNotifies() {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        Message<byte[]> paidV2 = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payloadV2(orderId))
+                .setHeader(EventHeaders.SCHEMA_VERSION, "2").build();
+
+        orderEvents.accept(paidV2);
+        orderEvents.accept(paidV2);
+
+        assertThat(notifications.findAll()).singleElement().satisfies(log -> {
+            assertThat(log.eventType()).isEqualTo("order.paid");
+            assertThat(log.subject()).contains("Payment");
+        });
+        assertThat(markers(eventId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("an order that expired unpaid tells the customer so, in plain words, without reading any figure")
+    void expiredNotifies() {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        byte[] snapshotWithNoTotals = ("{\"orderId\":\"" + orderId + "\",\"keycloakId\":\"kc-alice\",\"previousStatus\":\"CREATED\",\"newStatus\":\"EXPIRED\","
+                + "\"reservationId\":\"" + UUID.randomUUID() + "\"}").getBytes(StandardCharsets.UTF_8);
+
+        orderEvents.accept(Relayed.orderEvent(eventId, "order.expired", orderId, 3, snapshotWithNoTotals).build());
+
+        assertThat(sender.sent()).singleElement().satisfies(sent -> {
+            assertThat(sent.notification().orderId()).isEqualTo(orderId);
+            assertThat(sent.notification().keycloakId()).isEqualTo("kc-alice");
+            assertThat(sent.notification().subject()).containsIgnoringCase("expired");
+            assertThat(sent.notification().body()).contains(orderId.toString());
+        });
+        assertThat(markers(eventId)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a shopper submitting a payment claim and money that could not settle a sale are facts for staff, not for the customer: recorded as applied, and nothing is sent")
+    void factsForStaffSendNothing() {
+        UUID orderId = UUID.randomUUID();
+        UUID submitted = UUID.randomUUID();
+        UUID unsettled = UUID.randomUUID();
+
+        orderEvents.accept(Relayed.orderEvent(submitted, "order.payment_submitted", orderId, 3,
+                ("{\"claimId\":\"" + UUID.randomUUID() + "\",\"orderId\":\"" + orderId + "\",\"method\":\"MTN\",\"referenceNormalised\":\"MP2411ABC\"}")
+                        .getBytes(StandardCharsets.UTF_8)).build());
+        orderEvents.accept(Relayed.orderEvent(unsettled, "order.payment_unsettled", orderId, 4,
+                ("{\"confirmationId\":\"" + UUID.randomUUID() + "\",\"orderId\":\"" + orderId + "\",\"reason\":\"WRONG_AMOUNT\",\"currency\":\"ZMW\"}")
+                        .getBytes(StandardCharsets.UTF_8)).build());
+
+        assertThat(markers(submitted)).isEqualTo(1);
+        assertThat(markers(unsettled)).isEqualTo(1);
+        assertThat(notifications.count()).isZero();
+        assertThat(sender.sent()).isEmpty();
     }
 
     /**
@@ -495,6 +560,19 @@ class OrderEventInboxTest {
         return jdbc.queryForObject(
                 "SELECT count(*) FROM processed_event WHERE consumer = 'notification' AND event_id = ?",
                 Long.class, eventId);
+    }
+
+    /** The second version of order.paid: the first version's fields in the same order, then what the sale was paid with. */
+    private static byte[] payloadV2(UUID orderId) {
+        return ("""
+                {"orderId":"%s","keycloakId":"kc-alice","previousStatus":"CREATED","newStatus":"PAID",
+                 "total":4625.00,"currency":"ZMW","subtotal":4500.00,"shippingAmount":125.00,
+                 "discountAmount":0.00,"deliveryOption":"SELF_COLLECT",
+                 "paymentIntentId":null,
+                 "lines":[{"variantId":"22222222-2222-4222-8222-222222222222",
+                           "title":"Aurelia Solitaire Ring - Ring Size M","quantity":1,"unitPrice":4500.00}],
+                 "confirmationId":"7b1d0c9e-0b0e-4a52-9d7e-5b7a3c3d9f10","paymentMethod":"MTN","receiptNumber":"R-000123"}"""
+                .formatted(orderId)).getBytes(StandardCharsets.UTF_8);
     }
 
     private static byte[] payload(UUID orderId) {
