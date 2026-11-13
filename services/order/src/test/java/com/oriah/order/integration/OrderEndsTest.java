@@ -152,6 +152,48 @@ class OrderEndsTest extends SaleTestBase {
         assertThat(expiredEvents(id)).hasSize(1);
     }
 
+    // ------------------------------------------------------------------ the clock ends an order whose expiry event was lost
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.oriah.order.service.OrderEnds ends;
+
+    /** The hold job's own query already leaves these out; the order is looked at AGAIN under its lock, because a claim or money can land in between. */
+    @Test
+    @DisplayName("ending an order from the clock re-checks it under the lock: one with a hold extension pending, or being settled, or not yet past the cutoff, is left alone")
+    void theClockReChecksTheOrderBeforeEndingIt() throws Exception {
+        java.time.Instant cutoff = java.time.Instant.now();
+        UUID extending = heldOrder();
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes', hold_extension_pending = true WHERE id = ?", extending);
+        UUID settling = heldOrder(2);
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes', settling_confirmation_id = gen_random_uuid() WHERE id = ?", settling);
+        UUID running = heldOrder(3);
+        jdbc.update("UPDATE orders SET hold_expires_at = now() + interval '5 minutes' WHERE id = ?", running);
+
+        ends.lapsedByClock(extending, cutoff);
+        ends.lapsedByClock(settling, cutoff);
+        ends.lapsedByClock(running, cutoff);
+
+        assertThat(row(extending).get("status")).as("a claim's extension decides this one").isEqualTo("CREATED");
+        assertThat(row(settling).get("status")).as("the money decides this one").isEqualTo("CREATED");
+        assertThat(row(running).get("status")).as("its hold has not run out").isEqualTo("CREATED");
+        assertThat(expiredEvents(extending)).isEmpty();
+        assertThat(expiredEvents(settling)).isEmpty();
+        assertThat(expiredEvents(running)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an order that is no longer waiting for money (paid) is never ended from the clock, whatever its hold says")
+    void aPaidOrderIsNotEndedByTheClock() throws Exception {
+        UUID id = heldOrder();
+        confirmed(id, "4500.00");
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes' WHERE id = ?", id);
+
+        ends.lapsedByClock(id, java.time.Instant.now());
+
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+        assertThat(expiredEvents(id)).isEmpty();
+    }
+
     // ------------------------------------------------------------------ the shopper cancels
 
     @Test

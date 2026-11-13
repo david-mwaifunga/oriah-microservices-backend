@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import org.springframework.stereotype.Service;
 
+import com.oriah.order.client.InventoryClient;
 import com.oriah.order.exception.UpstreamUnavailableException;
 import com.oriah.order.model.HoldState;
 import com.oriah.order.model.Order;
@@ -100,15 +101,24 @@ public class SettlementDriver {
                 return;
             } catch (HoldGoneException gone) {
                 // It lapsed before the sweep ended it, or was released: a new hold is chosen and KEPT, then taken.
-                reservation = settlements.chooseNewReservation(s.confirmationId());
+                reservation = settlements.chooseNewReservation(s.confirmationId(), reservation);
             }
         }
         holds.release(order.reservationId());
-        holds.holdAgain(order, reservation);
+        InventoryClient.Reservation taken = holds.holdAgain(order, reservation);
+        if (!"HELD".equals(taken.status()) && !"CONSUMED".equals(taken.status())) {
+            // Inventory knows this id, and it is already dead (it ran out while the sale could not be applied): never ask for it again.
+            log.warn("Order {}: the replacement hold {} is already {} at inventory: a fresh one is chosen", order.id(), reservation, taken.status());
+            settlements.chooseNewReservation(s.confirmationId(), reservation);
+            throw new UpstreamUnavailableException("inventory");
+        }
         try {
             holds.sell(reservation, s.arrivedAt());
         } catch (HoldGoneException gone) {
-            // A hold taken a moment ago and already gone: not for this attempt to decide; ask again.
+            // A replacement taken some time ago has lapsed before the sale got through: asking for the same id again would answer the same dead hold for
+            // ever, so a fresh one is chosen and kept, and the next attempt takes it.
+            log.warn("Order {}: the replacement hold {} is gone before it was sold: a fresh one is chosen", order.id(), reservation);
+            settlements.chooseNewReservation(s.confirmationId(), reservation);
             throw new UpstreamUnavailableException("inventory");
         }
     }

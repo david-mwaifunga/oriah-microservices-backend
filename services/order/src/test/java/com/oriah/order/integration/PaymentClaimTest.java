@@ -43,11 +43,13 @@ import com.oriah.order.client.CustomerClient;
 import com.oriah.order.client.InventoryClient;
 import com.oriah.order.client.ShippingClient;
 import com.oriah.order.repository.OrderRepository;
+import com.oriah.order.service.OrderWriter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -84,6 +86,8 @@ class PaymentClaimTest {
     private JdbcTemplate jdbc;
     @Autowired
     private ObjectMapper json;
+    @Autowired
+    private OrderWriter writer;
 
     @MockitoBean
     private CatalogPricingClient catalog;
@@ -120,10 +124,18 @@ class PaymentClaimTest {
 
     /** One ring, self-collected: a HELD order for K4,500.00. */
     private UUID heldOrder() throws Exception {
+        return heldOrderAs(alice());
+    }
+
+    private Map<String, Object> orderRow(UUID id) {
+        return jdbc.queryForMap("SELECT * FROM orders WHERE id = ?", id);
+    }
+
+    private UUID heldOrderAs(RequestPostProcessor who) throws Exception {
         String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"SELF_COLLECT\","
                 + "\"quoteDigest\":\"" + QuoteFixtures.selfCollect("ZMW", QuoteFixtures.line(RING, 1, "4500.00")) + "\","
                 + "\"items\":[{\"variantId\":\"" + RING + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
-        MvcResult placed = mvc.perform(post("/api/v1/orders").with(alice()).contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
+        MvcResult placed = mvc.perform(post("/api/v1/orders").with(who).contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
         assertThat(placed.getResponse().getStatus()).as(placed.getResponse().getContentAsString()).isEqualTo(201);
         return UUID.fromString(json.readTree(placed.getResponse().getContentAsString()).get("id").asText());
     }
@@ -358,20 +370,122 @@ class PaymentClaimTest {
         assertThat(events((UUID) pending.get("id"), "order.created")).isEmpty();
     }
 
-    @Test
-    @DisplayName("a stale PENDING order whose hold cannot be given back stays for the next pass: nothing is deleted while a hold may still exist")
-    void aStalePendingOrderStaysWhileInventoryIsSilent() throws Exception {
+    /** A placement nobody finished: written PENDING, inventory silent, older than the grace. */
+    private Map<String, Object> stalePendingOrder() throws Exception {
         SaleStubs.inventoryRefuses(inventory, 503, null);
         String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"SELF_COLLECT\","
                 + "\"quoteDigest\":\"" + QuoteFixtures.selfCollect("ZMW", QuoteFixtures.line(RING, 1, "4500.00")) + "\","
                 + "\"items\":[{\"variantId\":\"" + RING + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
         mvc.perform(post("/api/v1/orders").with(alice()).contentType(MediaType.APPLICATION_JSON).content(body));
         jdbc.update("UPDATE orders SET placed_at = now() - interval '2 minutes'");
+        return jdbc.queryForMap("SELECT id, reservation_id FROM orders WHERE hold_state = 'PENDING'");
+    }
+
+    @Test
+    @DisplayName("a stale placement is removed even while inventory is silent: the hold, if one exists, lapses by itself in its ten minutes, which is far less harm than releasing a live one")
+    void aStalePendingOrderIsRemovedEvenWhileInventoryIsSilent() throws Exception {
+        stalePendingOrder();
         doThrow(SaleStubs.feign(503, null)).when(inventory).release(any());
 
         holdJob.run();
 
+        assertThat(repository.count()).as("claimed first, so a repeat finishing it can never be handed a released hold").isZero();
+        verify(inventory).release(any());
+    }
+
+    @Test
+    @DisplayName("the hold job removes a stale placement BEFORE it gives the hold back, so the repeat that is finishing it can never be handed a hold that was just released")
+    void theJobClaimsTheRowBeforeItReleasesTheHold() throws Exception {
+        stalePendingOrder();
+        long[] rowsWhenReleased = {-1};
+        doAnswer(call -> {
+            rowsWhenReleased[0] = jdbc.queryForObject("SELECT count(*) FROM orders", Long.class);
+            return new InventoryClient.Reservation(call.getArgument(0), UUID.randomUUID(), "RELEASED", null, null, Instant.now(), List.of());
+        }).when(inventory).release(any());
+
+        holdJob.run();
+
+        assertThat(rowsWhenReleased[0]).as("orders still in the table at the moment of the release").isZero();
+    }
+
+    @Test
+    @DisplayName("an order the shopper's repeat has finished is never taken by the job, however old it is: it is HELD, so nothing is deleted and nothing released")
+    void aFinishedOrderIsNotClaimed() throws Exception {
+        UUID held = heldOrder();
+        jdbc.update("UPDATE orders SET placed_at = now() - interval '5 minutes' WHERE id = ?", held);
+
+        boolean claimed = writer.claimStalePending(held, Instant.now().minusSeconds(60));
+
+        assertThat(claimed).isFalse();
         assertThat(repository.count()).isEqualTo(1);
+        holdJob.run();
+        verify(inventory, never()).release(any());
+    }
+
+    @Test
+    @DisplayName("a placement that is not yet stale is not claimed: the shopper's repeat may still finish it")
+    void aFreshPlacementIsNotClaimed() throws Exception {
+        Map<String, Object> pending = stalePendingOrder();
+        jdbc.update("UPDATE orders SET placed_at = now() WHERE id = ?", pending.get("id"));
+
+        assertThat(writer.claimStalePending((UUID) pending.get("id"), Instant.now().minusSeconds(60))).isFalse();
+        assertThat(repository.count()).isEqualTo(1);
+    }
+
+    // ------------------------------------------------------------------ a lapse whose event never arrived
+
+    @Test
+    @DisplayName("an order whose hold ran out long ago and whose expiry event never arrived is ended by the hold job: it must not stay live for ever")
+    void aLostLapseIsEndedByTheJob() throws Exception {
+        UUID id = heldOrder();
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes' WHERE id = ?", id);
+
+        holdJob.run();
+
+        assertThat(orderRow(id).get("status")).isEqualTo("EXPIRED");
+        assertThat(orderRow(id).get("hold_state")).isEqualTo("RELEASED");
+        assertThat(events(id, "order.expired")).as("announced once, carrying the reservation so inventory lets go of it").hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a hold that has only just run out is left to inventory's own event: the job waits a grace before it steps in")
+    void aHoldThatJustRanOutIsLeftToInventoryEvent() throws Exception {
+        UUID id = heldOrder();
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '20 seconds' WHERE id = ?", id);
+
+        holdJob.run();
+
+        assertThat(orderRow(id).get("status")).isEqualTo("CREATED");
+        assertThat(events(id, "order.expired")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("an order with a hold extension still pending, or one being settled, is never ended by the clock: the claim and the money decide those")
+    void anOrderWithAClaimOrMoneyInFlightIsNotEndedByTheClock() throws Exception {
+        UUID extending = heldOrder();
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes', hold_extension_pending = true WHERE id = ?", extending);
+        UUID settling = heldOrderAs(bob());
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes', settling_confirmation_id = gen_random_uuid() WHERE id = ?", settling);
+
+        holdJob.run();
+
+        assertThat(orderRow(extending).get("status")).isEqualTo("CREATED");
+        assertThat(orderRow(settling).get("status")).isEqualTo("CREATED");
+    }
+
+    @Test
+    @DisplayName("the expiry event that arrives after the job has ended the order changes nothing: no second order.expired")
+    void theLateEventAfterTheJobIsANoOp() throws Exception {
+        UUID id = heldOrder();
+        UUID reservation = (UUID) orderRow(id).get("reservation_id");
+        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '10 minutes' WHERE id = ?", id);
+        holdJob.run();
+
+        holdJob.run();
+
+        assertThat(orderRow(id).get("status")).isEqualTo("EXPIRED");
+        assertThat(events(id, "order.expired")).hasSize(1);
+        assertThat(reservation).isNotNull();
     }
 
     // ------------------------------------------------------------------ racing

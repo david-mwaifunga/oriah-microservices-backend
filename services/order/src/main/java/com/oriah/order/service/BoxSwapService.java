@@ -49,16 +49,16 @@ public class BoxSwapService {
     }
 
     /**
-     * @param amendmentId the caller's id for this swap, to retry safely; null mints one
+     * @param amendmentId the caller's id for this swap, to retry safely; null derives one from the line as it stands, so a retry with no id is just as safe
      * @param actor       {@code user:<keycloak subject>} of the member of staff
      */
     public Swap swap(UUID orderId, UUID lineId, UUID newBoxVariantId, String reason, UUID amendmentId, String actor) {
-        UUID amendment = amendmentId != null ? amendmentId : UUID.randomUUID();
-        Planned planned = swaps.plan(orderId, lineId, newBoxVariantId, reason, amendment);
+        Planned planned = swaps.plan(orderId, lineId, newBoxVariantId, reason, amendmentId);
         if (planned.recorded() != null) {
             return planned.recorded();
         }
         Plan plan = planned.plan();
+        UUID amendment = plan.amendmentId();
         UUID replacementLine = replacementSaleLine(amendment);
         InventoryClient.BoxSwap done;
         try {

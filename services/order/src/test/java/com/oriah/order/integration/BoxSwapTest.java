@@ -184,7 +184,58 @@ class BoxSwapTest extends SaleTestBase {
                 .isEqualTo(asked.getAllValues().get(0).replacementSaleLineId());
     }
 
+    @Test
+    @DisplayName("a swap sent WITHOUT an amendment id is still safe to repeat blind: the id comes from the line as it stands, so a retry after a lost reply asks inventory for the very same swap")
+    void aBlindRetryAfterALostReplyIsTheSameSwap() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        // inventory did the swap, but its reply never came back, and the caller never learned the id order minted
+        doThrow(SaleStubs.feign(503, null)).when(inventory).swapBox(any());
+        MvcResult silent = swap(manager(), id, line, REPLACEMENT, REASON, null);
+        assertThat(silent.getResponse().getStatus()).isEqualTo(503);
+
+        SaleStubs.inventorySwaps(inventory);
+        MvcResult retry = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(retry.getResponse().getStatus()).as(retry.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(amendments(id)).isEqualTo(1);
+        ArgumentCaptor<InventoryClient.SwapAsk> asked = ArgumentCaptor.forClass(InventoryClient.SwapAsk.class);
+        verify(inventory, times(2)).swapBox(asked.capture());
+        assertThat(asked.getAllValues().get(1).amendmentId()).as("the same swap both times").isEqualTo(asked.getAllValues().get(0).amendmentId());
+        assertThat(item(line).get("box_variant_id")).isEqualTo(REPLACEMENT);
+    }
+
+    @Test
+    @DisplayName("the same change asked again on a line whose box has changed since is ANOTHER swap, even with no ids: A to B, B to A, A to B each get their own amendment")
+    void theSameChangeOnAChangedLineIsAnotherSwap() throws Exception {
+        SaleStubs.inventorySwaps(inventory);
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+
+        assertThat(swap(manager(), id, line, REPLACEMENT, REASON, null).getResponse().getStatus()).isEqualTo(200);
+        assertThat(swap(manager(), id, line, SaleStubs.BOX_VARIANT, "back to the first box, the velvet one was marked", null).getResponse().getStatus()).isEqualTo(200);
+        MvcResult third = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(third.getResponse().getStatus()).as(third.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(amendments(id)).isEqualTo(3);
+        assertThat(item(line).get("box_variant_id")).isEqualTo(REPLACEMENT);
+    }
+
     // ------------------------------------------------------------------ who, when, and why
+
+    @Test
+    @DisplayName("a reason is judged after trimming: spaces cannot make a short one long enough (400, not a server error), and padding beyond 200 does not spoil a good one")
+    void aPaddedReasonIsJudgedTrimmed() throws Exception {
+        SaleStubs.inventorySwaps(inventory);
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+
+        MvcResult padded = swap(manager(), id, line, REPLACEMENT, "short" + " ".repeat(8), null);
+
+        assertThat(padded.getResponse().getStatus()).as(padded.getResponse().getContentAsString()).isEqualTo(400);
+        verify(inventory, never()).swapBox(any());
+        assertThat(swap(manager(), id, line, REPLACEMENT, REASON + " ".repeat(300), null).getResponse().getStatus()).isEqualTo(200);
+    }
 
     @Test
     @DisplayName("only ORDER_ADMIN may swap: a shopper and a sales person are refused (403) and inventory is not asked")

@@ -55,6 +55,11 @@ public class BoxSwapController {
             @NotNull(message = "replacementBoxVariantId is required") UUID replacementBoxVariantId,
             @NotNull(message = "a reason is required") @Size(min = 10, max = 200, message = "the reason must be 10 to 200 characters") String reason,
             UUID amendmentId) {
+
+        /** The reason is judged as it will be kept, trimmed: padding cannot make a short one long enough, nor spoil a good one. */
+        public BoxSwapRequest {
+            reason = reason == null ? null : reason.trim();
+        }
     }
 
     private final BoxSwapService swaps;
@@ -66,7 +71,8 @@ public class BoxSwapController {
     @Operation(operationId = "swapBox", summary = "Change the box of a paid order's line",
             description = "Inventory reverses the original box's sale and sells the replacement, both dated to the day of the SALE (a swap never moves it); "
                     + "the line then carries the new box. Only a PAID order that has not been fulfilled. Send the same amendmentId to retry after a lost "
-                    + "reply: a repeat answers the same swap (replay: true).")
+                    + "reply: a repeat answers the same swap (replay: true). Without one, the id is worked out from the line as it stands and the box asked "
+                    + "for, so a plain retry of the same request is just as safe. The reason is judged trimmed.")
     @ApiResponse(responseCode = "200", description = "The swap")
     @ApiResponse(responseCode = "400", description = "Validation failure (a reason of 10 to 200 characters is required); see fieldErrors",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))

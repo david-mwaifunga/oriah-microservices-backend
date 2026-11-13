@@ -391,6 +391,113 @@ class PlaceOrderSaleTest {
         assertThat(createdEvents((UUID) pending.get("id"))).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("a repeat whose placement the hold job removed while it was being finished is told to try again (503), and the hold it just took is given back")
+    void aPlacementTheJobRemovedMidFlightIsRefusedAndItsHoldReleased() throws Exception {
+        UUID[] reserved = new UUID[1];
+        doAnswer(call -> {
+            InventoryClient.ReserveAsk ask = call.getArgument(0);
+            reserved[0] = ask.reservationId();
+            // the hold job claims (removes) the stale row while inventory is still answering
+            jdbc.update("DELETE FROM order_items");
+            jdbc.update("DELETE FROM orders");
+            return SaleStubs.held(ask, Instant.now().plusSeconds(600));
+        }).when(inventory).reserve(any());
+
+        MvcResult result = place(alice(), selfCollectBody(1), null);
+
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(503);
+        assertThat(result.getResponse().getHeader("Retry-After")).isNotNull();
+        verify(inventory).release(reserved[0]);
+        assertThat(repository.count()).as("the shopper is told nothing was placed, and nothing was").isZero();
+    }
+
+    @Test
+    @DisplayName("an order whose placement is still being finished cannot be cancelled: 409 placement-in-progress, and nothing is announced for an order nobody was told about")
+    void aPendingOrderCannotBeCancelled() throws Exception {
+        SaleStubs.inventoryRefuses(inventory, 503, null);
+        place(alice(), selfCollectBody(1), null);
+        UUID id = (UUID) jdbc.queryForMap("SELECT id FROM orders").get("id");
+
+        MvcResult cancelled = mvc.perform(post("/api/v1/orders/" + id + "/cancel").with(alice())).andReturn();
+
+        assertThat(cancelled.getResponse().getStatus()).as(cancelled.getResponse().getContentAsString()).isEqualTo(409);
+        assertThat(json.readTree(cancelled.getResponse().getContentAsString()).get("type").asText()).endsWith("/placement-in-progress");
+        Map<String, Object> row = orderRow(id);
+        assertThat(row.get("status")).isEqualTo("CREATED");
+        assertThat(row.get("hold_state")).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE aggregate_id = ?", Long.class, id.toString())).isZero();
+    }
+
+    // ------------------------------------------------------------------ the delivery address is part of what is placed
+
+    private static final String OTHER_ADDRESS = "aaaaaaaa-2222-3333-4444-555555555555";
+
+    private void theShopperHasTwoAddresses() {
+        doReturn(List.of(new CustomerClient.Address(UUID.fromString(ADDRESS)), new CustomerClient.Address(UUID.fromString(OTHER_ADDRESS))))
+                .when(customer).myAddresses();
+        SaleStubs.shippingDelivers(shipping, "OWN_DELIVERY", TOWN, "ORIAH_COLLECTS", "125.00", "ZMW");
+    }
+
+    /** One ring delivered to TOWN, to this address. The quote's fingerprint does not carry the address: two addresses in one town price alike. */
+    private static String deliveredTo(String address) {
+        return body(1, "OWN_DELIVERY", TOWN, "ORIAH_COLLECTS", digest(1, "0.00", null, "OWN_DELIVERY", "125.00", TOWN, "ORIAH_COLLECTS")).replace(ADDRESS, address);
+    }
+
+    @Test
+    @DisplayName("the same Idempotency-Key and quote for ANOTHER delivery address is refused (409 idempotency-key-reused): a key is not a way to change where an order goes")
+    void aKeyReusedForAnotherAddressIsRefused() throws Exception {
+        theShopperHasTwoAddresses();
+        place(alice(), deliveredTo(ADDRESS), "key-addr");
+
+        MvcResult second = place(alice(), deliveredTo(OTHER_ADDRESS), "key-addr");
+
+        assertThat(second.getResponse().getStatus()).isEqualTo(409);
+        assertThat(json.readTree(second.getResponse().getContentAsString()).get("type").asText()).endsWith("/idempotency-key-reused");
+        assertThat(repository.count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("the same bag for ANOTHER address while the first is still live is refused, naming the live order: the shopper is not told it succeeded when the parcel would go elsewhere")
+    void theSameBagToAnotherAddressIsRefusedNamingTheLiveOrder() throws Exception {
+        theShopperHasTwoAddresses();
+        UUID first = placed(deliveredTo(ADDRESS));
+
+        MvcResult second = place(alice(), deliveredTo(OTHER_ADDRESS), null);
+
+        assertThat(second.getResponse().getStatus()).as(second.getResponse().getContentAsString()).isEqualTo(409);
+        JsonNode problem = json.readTree(second.getResponse().getContentAsString());
+        assertThat(problem.get("type").asText()).endsWith("/live-order-has-another-address");
+        assertThat(problem.get("orderId").asText()).isEqualTo(first.toString());
+        assertThat(repository.count()).isEqualTo(1);
+        verify(inventory, times(1)).reserve(any());
+    }
+
+    @Test
+    @DisplayName("the same bag to the SAME address is still the same order (200): only a different address is refused")
+    void theSameBagToTheSameAddressIsTheSameOrder() throws Exception {
+        theShopperHasTwoAddresses();
+        UUID first = placed(deliveredTo(OTHER_ADDRESS));
+
+        MvcResult second = place(alice(), deliveredTo(OTHER_ADDRESS), null);
+
+        assertThat(second.getResponse().getStatus()).isEqualTo(200);
+        assertThat(json.readTree(second.getResponse().getContentAsString()).get("id").asText()).isEqualTo(first.toString());
+    }
+
+    @Test
+    @DisplayName("a self-collect repeat with another address is still the same order: where the parcel goes is no part of a pickup")
+    void aSelfCollectRepeatIgnoresTheAddress() throws Exception {
+        theShopperHasTwoAddresses();
+        SaleStubs.shippingSelfCollect(shipping);
+        UUID first = placed(selfCollectBody(1));
+
+        MvcResult second = place(alice(), selfCollectBody(1).replace(ADDRESS, OTHER_ADDRESS), null);
+
+        assertThat(second.getResponse().getStatus()).isEqualTo(200);
+        assertThat(json.readTree(second.getResponse().getContentAsString()).get("id").asText()).isEqualTo(first.toString());
+    }
+
     // ------------------------------------------------------------------ once, however often it is asked
 
     @Test
@@ -457,6 +564,53 @@ class PlaceOrderSaleTest {
         JsonNode problem = json.readTree(fourth.getResponse().getContentAsString());
         assertThat(problem.get("type").asText()).endsWith("/hold-limit-reached");
         assertThat(problem.get("detail").asText()).as("says what they hold").contains("3");
+        assertThat(repository.count()).isEqualTo(3);
+        verify(inventory, times(3)).reserve(any());
+    }
+
+    @Test
+    @DisplayName("an old order from before holds existed (no hold at all, so it can never be settled) holds nothing, and does not count against the limit")
+    void anOrderThatHoldsNothingDoesNotCount() throws Exception {
+        place(alice(), selfCollectBody(1), null);
+        place(alice(), selfCollectBody(2), null);
+        place(alice(), selfCollectBody(3), null);
+        jdbc.update("UPDATE orders SET hold_state = NULL, reservation_id = NULL");
+
+        MvcResult fourth = place(alice(), selfCollectBody(4), null);
+
+        assertThat(fourth.getResponse().getStatus()).as(fourth.getResponse().getContentAsString()).isEqualTo(201);
+    }
+
+    @Test
+    @DisplayName("five placements at the same instant by one shopper: the per-shopper lock lets exactly three through, the others are told the limit, and only three holds are taken")
+    void theLimitHoldsWhenPlacementsRace() throws Exception {
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(5);
+        java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+        try {
+            List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>();
+            for (int quantity = 1; quantity <= 5; quantity++) {
+                String body = selfCollectBody(quantity);
+                results.add(pool.submit(() -> {
+                    go.await();
+                    return place(alice(), body, null).getResponse().getStatus();
+                }));
+            }
+            go.countDown();
+            int created = 0;
+            int refused = 0;
+            for (java.util.concurrent.Future<Integer> result : results) {
+                int status = result.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                if (status == 201) {
+                    created++;
+                } else if (status == 409) {
+                    refused++;
+                }
+            }
+            assertThat(created).as("orders placed").isEqualTo(3);
+            assertThat(refused).as("told the limit").isEqualTo(2);
+        } finally {
+            pool.shutdownNow();
+        }
         assertThat(repository.count()).isEqualTo(3);
         verify(inventory, times(3)).reserve(any());
     }

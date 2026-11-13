@@ -268,6 +268,16 @@ class SettlementReceiveTest extends SaleTestBase {
 
         assertThat(events(id, "order.paid")).as("the answer, again: payment may not have heard the first").hasSize(2);
         assertThat(payloadOf(events(id, "order.paid").get(1)).get("confirmationId").asText()).isEqualTo(confirmation.toString());
+        com.fasterxml.jackson.databind.JsonNode first = payloadOf(events(id, "order.paid").get(0));
+        com.fasterxml.jackson.databind.JsonNode again = payloadOf(events(id, "order.paid").get(1));
+        assertThat(first.has("republished") && first.get("republished").asBoolean()).as("the first announcement is not a republish").isFalse();
+        assertThat(again.get("republished").asBoolean()).as("the second says it is one, so notification sends no second email").isTrue();
+        assertThat(again.has("previousStatus") && !again.get("previousStatus").isNull()).as("a republish has no transition to report").isFalse();
+        first.fieldNames().forEachRemaining(field -> {
+            if (!List.of("republished", "previousStatus", "recordedAt").contains(field)) {
+                assertThat(again.get(field)).as("the answer is the same fact: " + field).isEqualTo(first.get(field));
+            }
+        });
         verify(inventory, times(1)).consume(any(), any());
         assertThat(settlements(confirmation)).isEqualTo(1);
         assertThat(row(id).get("status")).isEqualTo("PAID");

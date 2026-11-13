@@ -116,11 +116,18 @@ public class OrderHolds {
      * Takes a NEW hold on the paid order's lines (its first one is gone, or it expired before the money came), under {@code reservationId}: asking again
      * with the same id answers the same hold.
      *
+     * @return what inventory says that hold is now. Asking again with an id inventory already knows answers THAT hold, whatever became of it, so the caller
+     *         must look at the status: a hold that is already EXPIRED or RELEASED holds nothing
      * @throws PieceGoneException a piece is no longer there; {@link BoxGoneException} only a box
      */
-    public void holdAgain(Order order, java.util.UUID reservationId) {
+    public InventoryClient.Reservation holdAgain(Order order, java.util.UUID reservationId) {
         try {
-            inventory.reserve(askFor(order, reservationId, true));
+            InventoryClient.Reservation taken = inventory.reserve(askFor(order, reservationId, true));
+            if (taken == null) {
+                log.error("inventory answered a new hold for order {} with nothing", order.id());
+                throw new UpstreamUnavailableException("inventory");
+            }
+            return taken;
         } catch (FeignException e) {
             if (e.status() == 409) {
                 Map<String, Object> problem = problem(e);

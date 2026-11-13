@@ -1,5 +1,6 @@
 package com.oriah.order.integration;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -12,10 +13,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import com.oriah.order.SaleStubs;
 import com.oriah.order.client.InventoryClient;
 import com.oriah.order.service.SettlementJob;
+import com.oriah.order.service.SettlementService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -39,6 +42,9 @@ class SettlementSagaTest extends SaleTestBase {
 
     @Autowired
     private SettlementJob job;
+
+    @Autowired
+    private SettlementService settlements;
 
     private static final String NOT_HELD = "{\"type\":\"https://oriah.dev/problems/reservation-not-held\",\"status\":409,\"detail\":\"released\"}";
     private static final String LAPSED = "{\"type\":\"https://oriah.dev/problems/reservation-expired\",\"status\":409,\"detail\":\"lapsed\"}";
@@ -229,6 +235,103 @@ class SettlementSagaTest extends SaleTestBase {
         assertThat(row(id).get("status")).isEqualTo("PAID");
     }
 
+    @Test
+    @DisplayName("a replacement hold that inventory already shows EXPIRED is replaced by a fresh id, not asked for again for ever")
+    void aDeadReplacementHoldIsReplacedByAFreshId() throws Exception {
+        UUID id = heldOrder();
+        UUID oldReservation = (UUID) row(id).get("reservation_id");
+        doThrow(SaleStubs.feign(409, LAPSED)).when(inventory).consume(eq(oldReservation), any());
+        // inventory answers a reserve of an id it already knows with whatever that hold is: here it ran out while the sale could not be applied
+        doAnswer(call -> {
+            InventoryClient.ReserveAsk ask = call.getArgument(0);
+            return new InventoryClient.Reservation(ask.reservationId(), ask.orderId(), "EXPIRED", Instant.now().minusSeconds(900),
+                    Instant.now().minusSeconds(300), Instant.now().minusSeconds(300), List.of());
+        }).when(inventory).reserve(any());
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        ArgumentCaptor<InventoryClient.ReserveAsk> first = ArgumentCaptor.forClass(InventoryClient.ReserveAsk.class);
+        verify(inventory, times(2)).reserve(first.capture());
+        UUID deadReplacement = first.getAllValues().get(1).reservationId();
+        Map<String, Object> waiting = settlement(confirmation);
+        assertThat(waiting.get("state")).as("not paid, not stuck: waiting to try again").isEqualTo("CONSUMING");
+        assertThat(waiting.get("reservation_id")).as("the dead id is not asked for again").isNotIn(oldReservation, deadReplacement);
+        UUID fresh = (UUID) waiting.get("reservation_id");
+        assertThat(row(id).get("status")).isEqualTo("CREATED");
+
+        SaleStubs.inventoryHolds(inventory);
+        SaleStubs.inventorySells(inventory);
+        dueNow(confirmation);
+        job.run();
+
+        ArgumentCaptor<InventoryClient.ReserveAsk> all = ArgumentCaptor.forClass(InventoryClient.ReserveAsk.class);
+        verify(inventory, times(3)).reserve(all.capture());
+        assertThat(all.getAllValues().get(2).reservationId()).isEqualTo(fresh);
+        verify(inventory).consume(eq(fresh), any());
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+    }
+
+    @Test
+    @DisplayName("a replacement hold that lapses before its sale gets through is replaced by a fresh id, and the next attempt pays the order")
+    void aReplacementHoldThatLapsesBeforeItsSaleIsReplaced() throws Exception {
+        UUID id = heldOrder();
+        // every sale is refused as "no longer held": the old hold's, and then the replacement's
+        doThrow(SaleStubs.feign(409, NOT_HELD)).when(inventory).consume(any(), any());
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        ArgumentCaptor<InventoryClient.ReserveAsk> reserved = ArgumentCaptor.forClass(InventoryClient.ReserveAsk.class);
+        verify(inventory, times(2)).reserve(reserved.capture());
+        UUID replacement = reserved.getAllValues().get(1).reservationId();
+        Map<String, Object> waiting = settlement(confirmation);
+        assertThat(waiting.get("state")).isEqualTo("CONSUMING");
+        assertThat(waiting.get("reservation_id")).as("a hold that was taken and is already gone is not tried again").isNotEqualTo(replacement);
+        UUID fresh = (UUID) waiting.get("reservation_id");
+
+        SaleStubs.inventorySells(inventory);
+        dueNow(confirmation);
+        job.run();
+
+        verify(inventory).consume(eq(fresh), any());
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+    }
+
+    @Test
+    @DisplayName("two drivers that find the same hold dead agree on ONE replacement: the second is told the first's, and never overwrites it")
+    void twoDriversAgreeOnOneReplacement() throws Exception {
+        UUID id = heldOrder();
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        UUID dead = (UUID) settlement(confirmation).get("reservation_id");
+
+        UUID first = settlements.chooseNewReservation(confirmation, dead);
+        UUID second = settlements.chooseNewReservation(confirmation, dead);
+
+        assertThat(first).isNotEqualTo(dead);
+        assertThat(second).as("the loser uses the winner's id").isEqualTo(first);
+        assertThat(settlement(confirmation).get("reservation_id")).isEqualTo(first);
+    }
+
+    @Test
+    @DisplayName("money voided after the old hold was given back ends the order: it must not stay live with a hold that no longer exists")
+    void aVoidAfterTheOldHoldWasGivenBackEndsTheOrder() throws Exception {
+        UUID id = heldOrder();
+        UUID oldReservation = (UUID) row(id).get("reservation_id");
+        doThrow(SaleStubs.feign(409, LAPSED)).when(inventory).consume(eq(oldReservation), any());
+        doThrow(SaleStubs.feign(503, null)).when(inventory).reserve(any());
+        UUID confirmation = confirmed(id, "4500.00");
+        verify(inventory).release(oldReservation);
+        assertThat(row(id).get("status")).as("still waiting for its replacement hold").isEqualTo("CREATED");
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        assertThat(settlement(confirmation).get("reason")).isEqualTo("VOIDED");
+        assertThat(row(id).get("status")).as("its hold is gone, so the order is over").isEqualTo("EXPIRED");
+        assertThat(events(id, "order.expired")).hasSize(1);
+    }
+
     // ------------------------------------------------------------------ the piece, or only its box, is gone
 
     @Test
@@ -280,7 +383,70 @@ class SettlementSagaTest extends SaleTestBase {
         assertThat(row(id).get("status")).isEqualTo("PAID");
     }
 
+    // ------------------------------------------------------------------ the job as the safety net
+
+    @Test
+    @DisplayName("a settlement recorded but never driven (this service stopped right after the money was recorded) is picked up by the job once it has waited a few seconds, and not before")
+    void aSettlementNeverDrivenIsPickedUpByTheJob() throws Exception {
+        UUID id = heldOrder();
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        // the state a crash between "recorded" and "asked inventory" leaves: no attempt made, nothing scheduled, only just received
+        jdbc.update("UPDATE order_settlement SET next_attempt_at = NULL, attempts = 0, received_at = now() WHERE confirmation_id = ?", confirmation);
+        SaleStubs.inventorySells(inventory);
+
+        job.run();
+
+        assertThat(settlement(confirmation).get("state")).as("just received: the consumer may still be about to drive it").isEqualTo("CONSUMING");
+        verify(inventory, times(1)).consume(any(), any());
+
+        jdbc.update("UPDATE order_settlement SET received_at = now() - interval '1 minute' WHERE confirmation_id = ?", confirmation);
+        job.run();
+
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+        assertThat(settlement(confirmation).get("state")).isEqualTo("DONE");
+        assertThat(events(id, "order.paid")).hasSize(1);
+    }
+
     // ------------------------------------------------------------------ a lapse or a rejection that arrives while the money is being applied
+
+    @Test
+    @DisplayName("a lapse deferred while settling is APPLIED when the settlement ends for a reason of its own (here: the money was voided): the order expires, once")
+    void aDeferredLapseIsAppliedWhenTheMoneyIsVoided() throws Exception {
+        UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        reservationExpired(reservation, id);
+        assertThat(settlement(confirmation).get("deferred_end")).isEqualTo("EXPIRED");
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        assertThat(settlement(confirmation).get("reason")).isEqualTo("VOIDED");
+        assertThat(row(id).get("status")).as("the lapse that was remembered is applied now").isEqualTo("EXPIRED");
+        assertThat(events(id, "order.expired")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a rejection deferred while settling is APPLIED when the settlement ends unsettled: the order, waiting on that very claim, expires")
+    void aDeferredRejectionIsAppliedWhenTheMoneyIsVoided() throws Exception {
+        UUID id = claimedOrder();
+        UUID claim = (UUID) row(id).get("claim_id");
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        rejected(claim, id);
+        assertThat(settlement(confirmation).get("deferred_end")).isEqualTo("REJECTED");
+        assertThat(row(id).get("status")).as("not expired while money is being applied").isEqualTo("PAYMENT_SUBMITTED");
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        assertThat(row(id).get("status")).isEqualTo("EXPIRED");
+        assertThat(events(id, "order.expired")).hasSize(1);
+    }
 
     @Test
     @DisplayName("the hold lapsing while a settlement is in flight is NOT acted on: it is remembered, and ignored when the sale is paid")

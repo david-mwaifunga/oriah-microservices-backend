@@ -56,9 +56,10 @@ public class BoxSwaps {
      *                      or has been fulfilled), {@code payment-being-applied}, {@code no-box-on-line}, {@code same-box}
      */
     @Transactional(readOnly = true)
-    public Planned plan(UUID orderId, UUID lineId, UUID newBoxVariantId, String reason, UUID amendmentId) {
+    public Planned plan(UUID orderId, UUID lineId, UUID newBoxVariantId, String reason, UUID requestedAmendmentId) {
         Order order = repository.findById(orderId).orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId.toString()));
         String why = reason.trim();
+        UUID amendmentId = requestedAmendmentId != null ? requestedAmendmentId : derivedAmendmentId(order, lineId, newBoxVariantId);
         Swap recorded = find(amendmentId);
         if (recorded != null) {
             if (!recorded.orderId().equals(orderId) || !recorded.lineId().equals(lineId) || !recorded.newBoxVariantId().equals(newBoxVariantId)
@@ -85,6 +86,18 @@ public class BoxSwaps {
         }
         return new Planned(new Plan(amendmentId, orderId, lineId, line.productId(), line.boxVariantId(), line.boxLineId(), newBoxVariantId, line.quantity(), why,
                 order.paidAt()), null);
+    }
+
+    /**
+     * The id of a swap whose caller sent none: worked out from the line AS IT STANDS (the sale line its box is sold under now) and the box asked for, so a
+     * blind retry after a lost reply -- inventory swapped, order never heard, the caller never learned a minted id -- asks inventory for exactly the same
+     * swap and records it. A swap that has been recorded changes the line's box-sale line, so the same change asked later is another swap with its own id.
+     */
+    private static UUID derivedAmendmentId(Order order, UUID lineId, UUID newBoxVariantId) {
+        return order.items().stream().filter(i -> i.id().equals(lineId)).findFirst()
+                .map(line -> UUID.nameUUIDFromBytes(("order-box-swap-request:" + order.id() + ":" + lineId + ":" + line.boxLineId() + ":" + newBoxVariantId)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .orElseGet(UUID::randomUUID);
     }
 
     /**

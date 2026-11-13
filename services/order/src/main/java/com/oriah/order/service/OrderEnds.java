@@ -84,6 +84,28 @@ public class OrderEnds {
         end(order);
     }
 
+    /**
+     * The hold job's safety net for an expiry event that never arrived (it was dead-lettered after three failed deliveries, say): an order that is still
+     * waiting for money, holds its pieces by its own record, is not being settled and has no extension pending, and whose hold ran out before
+     * {@code cutoff}, EXPIRES. The same ending as {@link #lapsed}, reached from the clock instead of from inventory's event, and idempotent with it: the
+     * event arriving later finds the order no longer waiting.
+     */
+    @Transactional
+    public void lapsedByClock(java.util.UUID orderId, java.time.Instant cutoff) {
+        settlements.lockOrder(orderId);
+        Order order = repository.findById(orderId).orElse(null);
+        if (order == null) {
+            return;
+        }
+        boolean waiting = order.status() == OrderStatus.CREATED || order.status() == OrderStatus.PAYMENT_SUBMITTED;
+        if (!waiting || order.holdState() != com.oriah.order.model.HoldState.HELD || order.settlingConfirmationId() != null || order.holdExtensionPending()
+                || order.holdExpiresAt() == null || !order.holdExpiresAt().isBefore(cutoff)) {
+            return;
+        }
+        log.warn("Order id={}'s hold ran out at {} and no expiry event came: ending it from the clock", order.id(), order.holdExpiresAt());
+        end(order);
+    }
+
     private void end(Order order) {
         OrderStatus previous = order.status();
         order.expire();

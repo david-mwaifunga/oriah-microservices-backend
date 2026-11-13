@@ -93,7 +93,7 @@ public class OrderWriter {
         if (idempotencyKey != null) {
             Order keyed = repository.findByKeycloakIdAndIdempotencyKey(keycloakId, idempotencyKey).orElse(null);
             if (keyed != null) {
-                if (!digest.equals(keyed.quoteDigest())) {
+                if (!digest.equals(keyed.quoteDigest()) || !sameAddress(priced, shippingAddressId, keyed)) {
                     throw new SalesProblem(HttpStatus.CONFLICT, "idempotency-key-reused",
                             "this Idempotency-Key was used for a different order: use a new key for a new order");
                 }
@@ -102,6 +102,13 @@ public class OrderWriter {
         }
         Order live = repository.findFirstByKeycloakIdAndQuoteDigestAndStatusIn(keycloakId, digest, LIVE).orElse(null);
         if (live != null) {
+            if (!sameAddress(priced, shippingAddressId, live)) {
+                // The fingerprint prices the goods and the delivery, not WHERE it goes: two addresses in one town price alike. Answering the earlier order as
+                // though it were this one would tell the shopper it succeeded and send the parcel to the first address.
+                throw new SalesProblem(HttpStatus.CONFLICT, "live-order-has-another-address",
+                        "you already hold an order for this same bag, to another delivery address: cancel it first, or place it again to that address")
+                        .with("orderId", live.id());
+            }
             return standing(live);
         }
 
@@ -118,6 +125,11 @@ public class OrderWriter {
         return new Begun(saved, true);
     }
 
+    /** Where the order goes matters only when something is sent: a pickup is the same pickup whatever address the shopper had chosen. */
+    private static boolean sameAddress(OrderPricingService.PricedOrder priced, UUID shippingAddressId, Order existing) {
+        return com.oriah.quote.Quote.SELF_COLLECT.equals(priced.deliveryOption()) || java.util.Objects.equals(shippingAddressId, existing.shippingAddressId());
+    }
+
     /** An order that already stands: held (just answer it), or still PENDING (a placement that was never finished: finish it). */
     private static Begun standing(Order existing) {
         return new Begun(existing, existing.holdState() == HoldState.PENDING);
@@ -128,7 +140,8 @@ public class OrderWriter {
                 SELECT count(*) AS orders, coalesce(sum(q.pieces), 0) AS pieces
                   FROM orders o
                   LEFT JOIN (SELECT order_id, sum(quantity) AS pieces FROM order_items GROUP BY order_id) q ON q.order_id = o.id
-                 WHERE o.keycloak_id = ? AND (o.status IN ('CREATED', 'PAYMENT_SUBMITTED') OR o.settling_confirmation_id IS NOT NULL)""", keycloakId);
+                 WHERE o.keycloak_id = ? AND ((o.status IN ('CREATED', 'PAYMENT_SUBMITTED') AND o.hold_state IS NOT NULL) OR o.settling_confirmation_id IS NOT NULL)""",
+                keycloakId);
         long orders = ((Number) held.get("orders")).longValue();
         long pieces = ((Number) held.get("pieces")).longValue();
         if (orders >= maxLiveOrders) {
@@ -153,7 +166,7 @@ public class OrderWriter {
      */
     @Transactional
     public Order markHeld(UUID orderId, InventoryClient.Reservation reservation, String actor) {
-        Order order = repository.findById(orderId).orElseThrow(() -> new IllegalStateException("order " + orderId + " vanished before its hold was recorded"));
+        Order order = repository.findById(orderId).orElseThrow(() -> new PlacementAbandonedException(orderId));
         if (order.holdState() != HoldState.PENDING) {
             // A repeat of the same placement finished it first. Nothing more to announce.
             return order;
@@ -167,6 +180,34 @@ public class OrderWriter {
         events.placed(order, actor);
         log.info("Order id={} is HELD until {} (reservation {})", order.id(), order.holdExpiresAt(), order.reservationId());
         return order;
+    }
+
+    /** The hold job removed this placement while it was being finished: nothing is placed, and whatever hold was just taken is the caller's to give back. */
+    public static class PlacementAbandonedException extends RuntimeException {
+        public PlacementAbandonedException(UUID orderId) {
+            super("order " + orderId + " was given up by the hold job before its hold was recorded");
+        }
+    }
+
+    /**
+     * The hold job's claim on a placement nobody finished: removes it, and only while it is STILL pending and STILL older than {@code cutoff}. The removal
+     * is checked against the row's version when it is flushed, so a repeat that finished the placement (HELD, announced) a moment earlier wins and this
+     * changes nothing: the job must then give nothing back. The hold is released AFTER the claim, never before it: the other way round, a repeat
+     * could be handed a hold that was released a moment before it was recorded.
+     *
+     * @return true when this call removed it (the caller now gives its hold back); false when it is finished, fresh, or already gone
+     * @throws org.springframework.orm.ObjectOptimisticLockingFailureException a repeat finished it in between: leave it alone
+     */
+    @Transactional
+    public boolean claimStalePending(UUID orderId, Instant cutoff) {
+        Order order = repository.findById(orderId).orElse(null);
+        if (order == null || order.holdState() != HoldState.PENDING || !order.placedAt().isBefore(cutoff)) {
+            return false;
+        }
+        repository.delete(order);
+        repository.flush();
+        log.info("Order id={} was an unfinished placement and was removed (never announced)", orderId);
+        return true;
     }
 
     /** Inventory refused the hold: the PENDING order was never announced, so it simply never existed. Deleted, and only while still PENDING. */

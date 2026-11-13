@@ -5,6 +5,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -218,13 +219,26 @@ public class SettlementService {
 
     // ------------------------------------------------------------------ steps 2 and 3: after inventory has been asked
 
-    /** A new hold's id, chosen and KEPT before inventory is asked for it, so every retry names the same one. */
+    /**
+     * A new hold's id, chosen and KEPT before inventory is asked for it, so every retry names the same one.
+     *
+     * <p>Replaces {@code dead}, the id the caller found gone (lapsed, released, or EXPIRED the moment it was asked for), and only that one: two drivers
+     * can find the same hold dead at the same time (the consumer straight after the money arrives, and the retry job), and the second must use the
+     * first's replacement, never overwrite it with another, or each would sell the same lines under a different hold.
+     *
+     * @return the replacement now kept: this call's, or the one a pass that got there first chose
+     */
     @Transactional
-    public UUID chooseNewReservation(UUID confirmationId) {
+    public UUID chooseNewReservation(UUID confirmationId, UUID dead) {
         UUID chosen = UUID.randomUUID();
-        jdbc.update("UPDATE order_settlement SET reservation_id = ? WHERE confirmation_id = ? AND state IN ('CONSUMING', 'BLOCKED_BOX')", chosen,
+        int changed = jdbc.update("UPDATE order_settlement SET reservation_id = ? WHERE confirmation_id = ? AND reservation_id = ? "
+                + "AND state IN ('CONSUMING', 'BLOCKED_BOX')", chosen, confirmationId, dead);
+        if (changed == 1) {
+            return chosen;
+        }
+        List<UUID> kept = jdbc.queryForList("SELECT reservation_id FROM order_settlement WHERE confirmation_id = ? AND reservation_id IS NOT NULL", UUID.class,
                 confirmationId);
-        return chosen;
+        return kept.isEmpty() ? chosen : kept.get(0);
     }
 
     /** Re-reads the settlement under the order's lock, and returns it only while it is still in flight (another pass may have ended it). */
@@ -292,7 +306,11 @@ public class SettlementService {
         if (order != null && confirmationId.equals(order.settlingConfirmationId())) {
             order.endSettlement();
             boolean waiting = order.status() == OrderStatus.CREATED || order.status() == OrderStatus.PAYMENT_SUBMITTED;
+            // The settlement works with another hold than the order's own once the order's was found gone and given back: ending without paying then
+            // leaves a live order whose pieces nobody holds, which is no order at all.
+            boolean holdGone = s.reservationId() != null && !s.reservationId().equals(order.reservationId());
             boolean ends = waiting && ("PIECE_SOLD".equals(reason)
+                    || holdGone
                     || "EXPIRED".equals(s.deferredEnd())
                     || ("REJECTED".equals(s.deferredEnd()) && order.status() == OrderStatus.PAYMENT_SUBMITTED));
             if (ends) {

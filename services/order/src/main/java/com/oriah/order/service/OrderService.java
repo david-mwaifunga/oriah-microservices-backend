@@ -13,6 +13,8 @@ import com.oriah.order.client.InventoryClient;
 import com.oriah.order.dto.PlaceOrderRequest;
 import com.oriah.order.events.OrderEventLog;
 import com.oriah.order.exception.SalesProblem;
+import com.oriah.order.exception.UpstreamUnavailableException;
+import com.oriah.order.model.HoldState;
 import com.oriah.order.model.Order;
 import com.oriah.order.model.OrderStatus;
 import com.oriah.order.repository.OrderRepository;
@@ -113,7 +115,19 @@ public class OrderService {
             throw refused;
         }
         // Any other failure (inventory silent, an error of ours) leaves the PENDING order for the shopper's repeat, or the hold job, to finish.
-        return new Placement(writer.markHeld(begun.order().id(), reservation, actor), true);
+        try {
+            return new Placement(writer.markHeld(begun.order().id(), reservation, actor), true);
+        } catch (OrderWriter.PlacementAbandonedException abandoned) {
+            // The hold job gave this placement up while inventory was answering. Nothing is placed; the hold just taken is given back (the job's own
+            // release may have come before it was taken), and the shopper asks again.
+            log.info("Placement of order {} was given up by the hold job while it was being finished: {}", begun.order().id(), abandoned.getMessage());
+            try {
+                holds.release(reservation.reservationId());
+            } catch (RuntimeException ignored) {
+                log.warn("The hold {} of a given-up placement could not be given back; it lapses by itself", reservation.reservationId());
+            }
+            throw new UpstreamUnavailableException("the order service");
+        }
     }
 
     /**
@@ -140,6 +154,12 @@ public class OrderService {
      * recorded and the sale settles or fails in moments; look again then.
      */
     private static Order requireNotBeingSettled(Order order) {
+        if (order.holdState() == HoldState.PENDING) {
+            // Written but not yet announced: its hold is still being taken, or given up by the hold job. Cancelling now would announce an order nobody was
+            // told about and let the placement in flight take a hold no order owns.
+            throw new SalesProblem(HttpStatus.CONFLICT, "placement-in-progress",
+                    "this order is still being placed: look at it again in a moment");
+        }
         if (order.settlingConfirmationId() != null) {
             throw new SalesProblem(HttpStatus.CONFLICT, "payment-being-applied",
                     "a confirmed payment is being applied to this order right now: look at it again in a moment");
