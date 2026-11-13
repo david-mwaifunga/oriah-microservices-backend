@@ -15,6 +15,10 @@ import java.util.UUID;
  * parts, the lots by id and revision, the default box, the currencies, when it was read): the figures stay reproducible from
  * inventory's lots, so the units held and each lot's cost are not copied here.
  *
+ * <p>Phase 7: {@code unitPrice} is the LIST price saved; {@code discountPerPiece}, {@code promotionId} and {@code netPrice} say what the promotion
+ * in force when it was saved made of it, and {@code assessment} is about the NET price (what a customer pays per piece). {@code discountPerPiece}
+ * is 0.00 and {@code promotionId} null when nothing applied. These three come last, so a reader of the first eleven fields reads on unchanged.
+ *
  * <p>Nothing consumes this topic yet.
  */
 public record PriceSetEvent(
@@ -28,7 +32,10 @@ public record PriceSetEvent(
         String assessment,
         String reason,
         String setByName,
-        Map<String, Object> cost) {
+        Map<String, Object> cost,
+        BigDecimal discountPerPiece,
+        UUID promotionId,
+        BigDecimal netPrice) {
 
     public static final String TYPE = "price.set";
 }

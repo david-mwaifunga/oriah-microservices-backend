@@ -25,6 +25,7 @@ import com.oriah.catalog.exception.PricingProblem;
 import com.oriah.catalog.pricing.GuardResult;
 import com.oriah.catalog.pricing.PriceAssessment;
 import com.oriah.catalog.pricing.PriceHistory;
+import com.oriah.catalog.pricing.Promoted;
 import com.oriah.catalog.repository.PriceHistoryRepository;
 import com.oriah.events.EventJson;
 import com.oriah.observability.ResourceNotFoundException;
@@ -183,7 +184,15 @@ public class ProductService {
      * price the person saw in force and the default box the cost was read for, what the rule found and the reading behind it.
      */
     public record PriceWrite(UUID variantId, BigDecimal unitPrice, String currency, Instant requestedEffectiveFrom, UUID expectedPriceId,
-                             UUID evaluatedBoxVariantId, GuardResult result, PriceCheck.Reading reading, String reason, String setByName) {
+                             UUID evaluatedBoxVariantId, GuardResult result, PriceCheck.Reading reading, String reason, String setByName,
+                             Promoted promoted) {
+
+        /** A save with no promotion in play: the net price is the price. */
+        public PriceWrite(UUID variantId, BigDecimal unitPrice, String currency, Instant requestedEffectiveFrom, UUID expectedPriceId,
+                          UUID evaluatedBoxVariantId, GuardResult result, PriceCheck.Reading reading, String reason, String setByName) {
+            this(variantId, unitPrice, currency, requestedEffectiveFrom, expectedPriceId, evaluatedBoxVariantId, result, reading, reason, setByName,
+                    Promoted.none(unitPrice));
+        }
     }
 
     /** What was written: the history row, and where the product stands now. */
@@ -238,12 +247,13 @@ public class ProductService {
         String reason = PriceCheck.needsReason(observed) ? write.reason() : null;
         PriceHistoryRepository.Entry row = priceHistory.append(new PriceHistoryRepository.NewEntry(UUID.randomUUID(), write.variantId(),
                 write.unitPrice(), write.currency(), effectiveFrom, now, actor, write.setByName(), observed.name(), reason,
-                EventJson.write(PriceCheck.basis(write.result(), write.reading()))));
+                EventJson.write(PriceCheck.basis(write.result(), write.reading(), write.promoted()))));
 
         record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
         outbox.append(new EventDraft(PRICE_AGGREGATE, row.id().toString(), PriceSetEvent.TYPE, SCHEMA_VERSION, PRICE_TOPIC, effectiveFrom, actor,
                 new PriceSetEvent(write.variantId(), product.id(), write.unitPrice(), was.signum() == 0 ? null : was, write.currency(), effectiveFrom,
-                        now, observed.name(), reason, write.setByName(), PriceCheck.summary(write.result(), write.reading()))));
+                        now, observed.name(), reason, write.setByName(), PriceCheck.summary(write.result(), write.reading(), write.promoted()),
+                        write.promoted().discountPerPiece(), write.promoted().promotionId(), write.promoted().netPrice())));
         log.info("Priced variant id={} sku=\"{}\" on product id={} from {} to {} {} ({})", write.variantId(), variant.sku(), productId, was,
                 write.unitPrice(), write.currency(), observed);
         return new PriceApplied(row, product.status(), product.isPublishable());

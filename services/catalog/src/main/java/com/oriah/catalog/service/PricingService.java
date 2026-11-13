@@ -38,6 +38,8 @@ import com.oriah.catalog.pricing.PriceAssessment;
 import com.oriah.catalog.pricing.PriceGuard;
 import com.oriah.catalog.pricing.PriceHistory;
 import com.oriah.catalog.pricing.PriceSuggestion;
+import com.oriah.catalog.pricing.Promoted;
+import com.oriah.catalog.promotion.Discount;
 import com.oriah.catalog.repository.PriceHistoryRepository;
 import com.oriah.catalog.repository.ProductVariantRepository;
 import com.oriah.events.EventJson;
@@ -81,17 +83,29 @@ public class PricingService {
     private final PriceCheck check;
     private final ProductService products;
     private final PricingProperties pricing;
+    private final PromotionPricing promotions;
     private final TransactionTemplate readOnly;
 
     public PricingService(ProductVariantRepository variants, PriceHistoryRepository priceHistory, PriceCheck check, ProductService products,
-                          PricingProperties pricing, PlatformTransactionManager transactions) {
+                          PricingProperties pricing, PromotionPricing promotions, PlatformTransactionManager transactions) {
         this.variants = variants;
         this.priceHistory = priceHistory;
         this.check = check;
         this.products = products;
         this.pricing = pricing;
+        this.promotions = promotions;
         this.readOnly = new TransactionTemplate(transactions);
         this.readOnly.setReadOnly(true);
+    }
+
+    /**
+     * What a promotion makes of a list price NOW: the discount per piece, the promotion and the net price, which is what the below-cost rule
+     * judges (what a customer pays per piece). Promotion being unable to answer is a 503 ({@link com.oriah.catalog.exception.PromotionsUnavailableException}),
+     * never "no promotion": a price is not saved, or read as fine, without knowing what a customer would pay.
+     */
+    private Promoted promotedNow(UUID variantId, UUID productId, BigDecimal listPrice) {
+        Map<UUID, Discount> discounts = promotions.discountsAt(List.of(new PromotionPricing.Piece(variantId, productId, listPrice)), null);
+        return Promoted.of(listPrice, discounts.get(variantId));
     }
 
     // ---------------------------------------------------------------- saving a price
@@ -110,21 +124,24 @@ public class PricingService {
                 pricing.getBackdateWindow());
 
         PriceCheck.Reading reading = check.read(variantId, target.boxVariantId(), bearer);
-        GuardResult result = PriceGuard.evaluate(request.unitPrice(), currency, reading.goods(), target.boxVariantId(), reading.box());
+        // The price is judged on what a customer pays per piece: the list price less the promotion in force now.
+        Promoted promoted = promotedNow(variantId, target.productId(), request.unitPrice());
+        GuardResult result = PriceGuard.evaluate(promoted.netPrice(), currency, reading.goods(), target.boxVariantId(), reading.box());
         String reason = request.belowCostReason() == null ? null : request.belowCostReason().strip();
         if (reason != null && !reason.isEmpty() && (reason.length() < 5 || reason.length() > 200)) {
             // Bean validation judged the raw text; the reason is kept trimmed, and the database refuses a short one. Said here, as a 400.
             throw new IllegalArgumentException("belowCostReason must be 5 to 200 characters once the spaces around it are removed");
         }
         if (PriceCheck.needsReason(result.assessment()) && !accepted(result, reason, request.acknowledgedFloor())) {
-            throw warning(result, reading);
+            throw warning(result, reading, promoted);
         }
 
         ProductService.PriceApplied applied = products.setVariantPrice(target.productId(),
                 new ProductService.PriceWrite(variantId, request.unitPrice(), currency, request.effectiveFrom(), request.expectedPriceId(),
-                        target.boxVariantId(), result, reading, reason, staff.name()),
+                        target.boxVariantId(), result, reading, reason, staff.name(), promoted),
                 staff.actor());
-        return new PriceChangeResponse(entry(applied.row()), result.assessment(), PriceCheck.costView(reading), applied.productStatus(), applied.publishable());
+        return new PriceChangeResponse(entry(applied.row()), result.assessment(), PriceCheck.costView(reading), applied.productStatus(), applied.publishable(),
+                promoted.discountPerPiece(), promoted.promotionId(), promoted.netPrice());
     }
 
     /** A price below the cost is accepted only with a typed reason AND for the floor the person was shown (or a higher one). */
@@ -135,14 +152,21 @@ public class PricingService {
         return result.floor() == null || (acknowledgedFloor != null && acknowledgedFloor.compareTo(result.floor()) >= 0);
     }
 
-    private static PricingProblem warning(GuardResult result, PriceCheck.Reading reading) {
+    private static PricingProblem warning(GuardResult result, PriceCheck.Reading reading, Promoted promoted) {
+        boolean discounted = promoted.discountPerPiece().signum() > 0;
         String detail = result.assessment() == PriceAssessment.BELOW
-                ? "the price " + result.price().toPlainString() + " is below the cost " + result.floor().toPlainString()
+                ? "the price " + promoted.listPrice().toPlainString()
+                    + (discounted ? ", which comes to " + promoted.netPrice().toPlainString() + " a piece after the promotion's "
+                        + promoted.discountPerPiece().toPlainString() + " off," : "")
+                    + " is below the cost " + result.floor().toPlainString()
                     + " (by " + result.shortfall().toPlainString() + "): type a reason and confirm the floor to save it anyway"
                 : "the price is in " + result.priceCurrency() + " but the stock is costed in another currency: type a reason to save it anyway";
         return new PricingProblem(HttpStatus.CONFLICT, "below-landed-cost", detail)
                 .with("assessment", result.assessment())
-                .with("price", result.price())
+                .with("price", promoted.listPrice())
+                .with("discountPerPiece", promoted.discountPerPiece())
+                .with("promotionId", promoted.promotionId())
+                .with("netPrice", promoted.netPrice())
                 .with("currency", result.priceCurrency())
                 .with("floor", result.floor())
                 .with("shortfall", result.shortfall())
@@ -175,8 +199,11 @@ public class PricingService {
 
         PriceAssessment assessment = null;
         BigDecimal shortfall = null;
+        Promoted promoted = null;
         if (target.latest() != null) {
-            GuardResult result = PriceGuard.evaluate(target.currentPrice(), target.currentCurrency(), reading.goods(), target.boxVariantId(), reading.box());
+            // The standing is that of the NET price: what a customer pays per piece under the promotion in force now.
+            promoted = promotedNow(variantId, target.productId(), target.currentPrice());
+            GuardResult result = PriceGuard.evaluate(promoted.netPrice(), target.currentCurrency(), reading.goods(), target.boxVariantId(), reading.box());
             assessment = result.assessment();
             shortfall = result.shortfall();
         }
@@ -185,7 +212,9 @@ public class PricingService {
                 .map(suggested -> new SuggestionView(percent, figures.floor(), suggested)).orElse(null);
 
         return new VariantPricingView(variantId, target.productId(), target.productTitle(), target.variantTitle(), target.sku(), target.productStatus(),
-                target.boxVariantId(), target.latest() == null ? null : entry(target.latest()), assessment, shortfall, PriceCheck.costView(reading),
+                target.boxVariantId(), target.latest() == null ? null : entry(target.latest()), assessment, shortfall,
+                promoted == null ? null : promoted.discountPerPiece(), promoted == null ? null : promoted.promotionId(),
+                promoted == null ? null : promoted.netPrice(), PriceCheck.costView(reading),
                 suggestion, target.history().stream().map(PricingService::entry).toList());
     }
 
@@ -225,7 +254,12 @@ public class PricingService {
      * 100 variants (goods and their default boxes together). Held in memory and paged afterwards: the shop has tens of pieces, and the
      * figures must all come from one reading anyway.
      */
-    public BelowCostPage belowCost(PriceAssessment filter, int page, int size, String bearer) {
+    public BelowCostPage belowCost(PriceAssessment filter, int page, int size, String bearer, Instant at, UUID promotionId) {
+        Instant now = check.now();
+        if (at != null && at.isBefore(now.minus(AsOfPricingService.CLOCK_SKEW))) {
+            throw new IllegalArgumentException("at must be now or later: the cost is read now, so a moment that has passed would be judged against "
+                    + "today's stock and mean nothing (" + at + " is before " + now + ")");
+        }
         List<ProductVariant> priced = readOnly.execute(status -> {
             List<ProductVariant> found = variants.findPricedForSale();
             // Read inside the transaction, so the lazy parts used below are loaded while the session is open.
@@ -241,6 +275,10 @@ public class PricingService {
             }
         }
         Map<UUID, HeldCost> held = check.readMany(ids, bearer);
+        // Promotion is asked ONCE for the whole list, after stock and outside any transaction. If it cannot answer the list is a 503: it is never
+        // shown judged on list prices while a promotion may be running.
+        Map<UUID, Discount> discounts = promotions.discountsAt(priced.stream()
+                .map(v -> new PromotionPricing.Piece(v.id(), v.product().id(), v.unitPrice())).toList(), at);
 
         Map<PriceAssessment, Long> counts = new EnumMap<>(PriceAssessment.class);
         for (PriceAssessment each : PriceAssessment.values()) {
@@ -249,12 +287,18 @@ public class PricingService {
         List<BelowCostItem> items = new ArrayList<>();
         for (ProductVariant variant : priced) {
             Product product = variant.product();
+            Promoted promoted = Promoted.of(variant.unitPrice(), discounts.get(variant.id()));
+            if (promotionId != null && !promotionId.equals(promoted.promotionId())) {
+                continue;   // narrowed to the pieces THIS promotion discounts: the counts are about those pieces too
+            }
             UUID box = product.defaultPackagingVariantId();
-            GuardResult result = PriceGuard.evaluate(variant.unitPrice(), variant.currency(), held.get(variant.id()), box, box == null ? null : held.get(box));
+            // Judged on the NET price: what a customer pays per piece once the promotion has taken its discount off.
+            GuardResult result = PriceGuard.evaluate(promoted.netPrice(), variant.currency(), held.get(variant.id()), box, box == null ? null : held.get(box));
             counts.merge(result.assessment(), 1L, Long::sum);
             if (filter == null || filter == result.assessment()) {
                 items.add(new BelowCostItem(variant.id(), product.id(), product.title(), DefaultVariantPricingService.variantTitle(product, variant),
-                        variant.sku(), product.status(), variant.unitPrice(), variant.currency(), result.assessment(), result.floor(), result.shortfall(),
+                        variant.sku(), product.status(), variant.unitPrice(), variant.currency(), promoted.discountPerPiece(), promoted.promotionId(),
+                        promoted.netPrice(), result.assessment(), result.floor(), result.shortfall(),
                         result.goodsHighest(), result.boxHighest(), result.boxBasis(), result.estimated()));
             }
         }
@@ -262,6 +306,6 @@ public class PricingService {
                 .thenComparing(BelowCostItem::productTitle).thenComparing(BelowCostItem::sku));
         int from = (int) Math.min((long) page * size, items.size());
         int to = Math.min(from + size, items.size());
-        return new BelowCostPage(List.copyOf(items.subList(from, to)), counts, page, size, items.size());
+        return new BelowCostPage(at == null ? now : at, List.copyOf(items.subList(from, to)), counts, page, size, items.size());
     }
 }

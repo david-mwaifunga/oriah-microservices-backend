@@ -19,6 +19,7 @@ import com.oriah.catalog.pricing.GuardResult;
 import com.oriah.catalog.pricing.HeldCost;
 import com.oriah.catalog.pricing.HeldLot;
 import com.oriah.catalog.pricing.PriceAssessment;
+import com.oriah.catalog.pricing.Promoted;
 
 /**
  * Reads what the stock a price is compared with cost, and says how that reading is shown and kept.
@@ -74,28 +75,37 @@ public class PriceCheck {
 
     /**
      * What the person was shown, kept on the price row: the observed status, the floor and its parts, the lots and their revisions, the
-     * default box, the currencies, and when it was read. Schema 1.
+     * default box, the currencies, and when it was read.
+     *
+     * <p>Schema 2 (Phase 7): {@code price} is the LIST price that was saved, and {@code listPrice}, {@code discountPerPiece},
+     * {@code promotionId} and {@code netPrice} say what the promotion in force then made of it. {@code status} is the standing of the NET price
+     * (what a customer pays per piece), which is what the rule judges. Schema 1 rows (Phase 6, no promotion) have {@code price} as the compared
+     * price, which was the list price too; a reader treats an absent {@code netPrice} as "equal to the price".
      */
-    public static Map<String, Object> basis(GuardResult result, Reading reading) {
-        Map<String, Object> basis = base(result, reading);
+    public static Map<String, Object> basis(GuardResult result, Reading reading, Promoted promoted) {
+        Map<String, Object> basis = base(result, reading, promoted);
         basis.put("lots", lots(reading.goods()));
         basis.put("boxLots", lots(reading.box()));
         return basis;
     }
 
     /** The same, shortened for the event: which lots (by id and revision) but not how many units or at what cost each. */
-    public static Map<String, Object> summary(GuardResult result, Reading reading) {
-        Map<String, Object> summary = base(result, reading);
+    public static Map<String, Object> summary(GuardResult result, Reading reading, Promoted promoted) {
+        Map<String, Object> summary = base(result, reading, promoted);
         summary.put("lots", identities(reading.goods()));
         summary.put("boxLots", identities(reading.box()));
         return summary;
     }
 
-    private static Map<String, Object> base(GuardResult result, Reading reading) {
+    private static Map<String, Object> base(GuardResult result, Reading reading, Promoted promoted) {
         Map<String, Object> basis = new LinkedHashMap<>();
-        basis.put("schema", 1);
+        basis.put("schema", 2);
         basis.put("status", result.assessment().name());
-        basis.put("price", result.price());
+        basis.put("price", promoted.listPrice());
+        basis.put("listPrice", promoted.listPrice());
+        basis.put("discountPerPiece", promoted.discountPerPiece());
+        basis.put("promotionId", promoted.promotionId());
+        basis.put("netPrice", promoted.netPrice());
         basis.put("currency", result.priceCurrency());
         basis.put("floor", result.floor());
         basis.put("goodsHighest", result.goodsHighest());

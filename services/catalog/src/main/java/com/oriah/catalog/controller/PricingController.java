@@ -1,8 +1,10 @@
 package com.oriah.catalog.controller;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ProblemDetail;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -103,20 +105,26 @@ public class PricingController {
     }
 
     @Operation(operationId = "listPricesAgainstCost",
-            summary = "The priced pieces that stand below cost (or with no cost known, or in the wrong currency), evaluated now",
+            summary = "The priced pieces that stand below cost (or with no cost known, or in the wrong currency), judged on what a customer pays",
             description = "Every priced, active variant of a sellable product that has not been deleted, compared with the stock held NOW, so a "
                     + "dearer lot received, a corrected cost, a dear lot sold out of or a changed default box shows here the next time "
-                    + "anyone looks. `status` filters (BELOW by default; NO_COST_KNOWN, CURRENCY_MISMATCH, OK, or ALL); `counts` gives "
-                    + "every status whatever the filter. Biggest shortfall first.")
+                    + "anyone looks. The comparison is made on the NET price: the list price (`price`) less the promotion in force "
+                    + "(`discountPerPiece`, `promotionId`, `netPrice`). `at` (now or later) applies the promotions that will be in force "
+                    + "then, which is how an admin sees what a promotion that has not started yet will do; `promotionId` lists only the "
+                    + "pieces that promotion discounts (and the counts are about those pieces). `status` filters (BELOW by default; "
+                    + "NO_COST_KNOWN, CURRENCY_MISMATCH, OK, or ALL); `counts` gives every status whatever the status filter. Biggest "
+                    + "shortfall first. A promotion never needs a reason and is never refused: it is warned about here.")
     @ApiResponse(responseCode = "200", description = "A page of priced variants, possibly empty")
-    @ApiResponse(responseCode = "400", description = "A status that does not exist, or an invalid page or size",
+    @ApiResponse(responseCode = "400", description = "A status that does not exist, an invalid page or size, or an `at` that has passed",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "503", description = "Stock could not be asked what it cost; Retry-After says when to try again",
+    @ApiResponse(responseCode = "503", description = "Stock could not be asked what it cost, or promotion could not be asked what applies; Retry-After says when to try again",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/below-cost")
     public BelowCostPage belowCost(@RequestParam(name = "status", defaultValue = "BELOW") String status,
                                    @RequestParam(name = "page", defaultValue = "0") int page,
                                    @RequestParam(name = "size", defaultValue = "" + CatalogConstants.DEFAULT_PAGE_SIZE) int size,
+                                   @RequestParam(name = "at", required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant at,
+                                   @RequestParam(name = "promotionId", required = false) UUID promotionId,
                                    @AuthenticationPrincipal Jwt jwt) {
         if (page < 0) {
             throw new IllegalArgumentException("page must be 0 or greater, was " + page);
@@ -134,7 +142,7 @@ public class PricingController {
                 throw new IllegalArgumentException("status must be BELOW, NO_COST_KNOWN, CURRENCY_MISMATCH, OK or ALL, was '" + status + "'");
             }
         }
-        return pricing.belowCost(filter, page, size, bearer(jwt));
+        return pricing.belowCost(filter, page, size, bearer(jwt), at, promotionId);
     }
 
     /** The caller's own token, read here on the request thread and handed on: inventory decides whether this person may read cost. */
