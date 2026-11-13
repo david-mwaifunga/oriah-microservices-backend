@@ -12,7 +12,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 
 import com.oriah.observability.OriahExceptionHandlerSupport;
-import com.oriah.observability.ProblemDetailExceptionHandler;
+import com.oriah.payment.exception.GlobalExceptionHandler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -43,10 +43,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 class ErrorAdviceRegistrationTest {
 
-    /** This service throws only the shared {@code ResourceNotFoundException}, whose
-     * 404 mapping lives in {@link OriahExceptionHandlerSupport}, so it has nothing
-     * of its own to add and keeps the shared default advice. */
-    private static final Class<?> EXPECTED_ADVICE = ProblemDetailExceptionHandler.class;
+    /** The service's own advice since Phase 7: staff confirming money get problems with a stable name a screen can switch on
+     * ({@code reference-already-used}, {@code already-voided}, {@code money-recorded-for-claim}...) and the figures that explain them,
+     * which the shared default does not carry. The shared starter backs off when a service declares its own. */
+    private static final Class<?> EXPECTED_ADVICE = GlobalExceptionHandler.class;
 
     @Autowired
     private ApplicationContext context;

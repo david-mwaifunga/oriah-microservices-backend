@@ -14,7 +14,10 @@ import com.oriah.payment.model.PaymentIntent;
  *
  * <p>Only charge outcomes are facts here: a new intent is a proposal and has
  * no event (MVP_PLAN Phase 1, adoption scope); the charge events carry the
- * intent's full snapshot.
+ * intent's full snapshot. They belong to the card path, which is off unless
+ * {@code oriah.payment.card.enabled} (Phase 7). The facts of staff-confirmed
+ * money (confirmed, rejected, voided, held) are written by
+ * {@link ConfirmationEvents}, to the same topic.
  */
 @Component
 public class PaymentEvents {

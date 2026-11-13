@@ -32,10 +32,23 @@ class ConfirmationRulesTest {
     }
 
     @Test
-    @DisplayName("full-width letters and digits read as the ordinary ones, and the Turkish dotless i is upper-cased the same everywhere")
+    @DisplayName("full-width letters and digits read as the ordinary ones")
     void lookalikes() {
         assertThat(ReferenceNumber.normalise("ＭＰ１２３")).isEqualTo("MP123");
-        assertThat(ReferenceNumber.normalise("ref-iii")).isEqualTo("REF-III");
+    }
+
+    @Test
+    @DisplayName("a reference is upper-cased the same wherever the server runs: on a machine whose language is Turkish an 'i' is still an 'I' (not a dotted capital that would make two spellings of one payment differ)")
+    void theLocaleOfTheServerDoesNotMatter() {
+        java.util.Locale before = java.util.Locale.getDefault();
+        java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+        try {
+            assertThat("ref-iii".toUpperCase()).as("the trap is real here: this JVM's own upper-casing is Turkish now").isEqualTo("REF-İİİ");
+            assertThat(ReferenceNumber.normalise("ref-iii")).isEqualTo("REF-III");
+            assertThat(ReferenceNumber.normalise("refı")).as("a dotless i is an ordinary I").isEqualTo("REFI");
+        } finally {
+            java.util.Locale.setDefault(before);
+        }
     }
 
     @Test

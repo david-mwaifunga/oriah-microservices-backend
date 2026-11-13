@@ -17,9 +17,14 @@
 # confirming it), but the card path's own tests, and the code that stays until Phase 13 turns it on, still run against it. Set here and not in
 # each test's @TestPropertySource so that every test keeps the same properties and therefore the same cached Spring context.
 # CardPathSwitchTest switches it off for itself to prove the off state.
+#
+# The settlement watcher's schedule is off in tests too, for the same reason: a pass landing mid-test would announce again the very confirmations
+# a test is counting. Tests call SettlementWatcher.reemitDue(now) themselves; WatcherScheduleTest switches the schedule back on to prove it.
 oriah:
   payment:
     card:
       enabled: true
     reconciler:
+      enabled: false
+    watcher:
       enabled: false

@@ -1,0 +1,261 @@
+package com.oriah.payment.confirmation;
+
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.HexFormat;
+import java.util.Optional;
+import java.util.UUID;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.oriah.money.Ngwee;
+import com.oriah.payment.dto.ConfirmPaymentRequest;
+import com.oriah.payment.events.ConfirmationEvents;
+import com.oriah.payment.exception.PaymentProblem;
+
+import lombok.extern.slf4j.Slf4j;
+
+/**
+ * Records the money staff confirm (Phase 7): the only road by which an order becomes paid.
+ *
+ * <h2>A record, and exactly once</h2>
+ *
+ * A confirmation says what reached Oriah (method, reference, gross, fee) and WHEN (the day the money arrived, not the day it was keyed), and
+ * who recorded it. It is announced as {@code payment.confirmed} in the transaction that records it. It is never edited: what changes later is
+ * only what became of the money (the outcome), set once when order answers.
+ *
+ * <p>Two things make a repeat harmless. The {@code Idempotency-Key}: the same key and the same request is the same confirmation (the first
+ * answer is returned again), the same key with another request is refused. And the reference: one (method, reference) pair confirms money once,
+ * whoever keys it and for whichever order, because the same transfer would otherwise be counted twice; cash has no such key. Payment never reads
+ * an order: money for an unknown, cancelled or already paid order is recorded all the same and becomes held money, so nothing a customer paid is
+ * ever lost to a keying mistake.
+ */
+@Service
+@Slf4j
+public class ConfirmationService {
+
+    /** The confirmation, and whether this call made it (false: it was a repeat of an earlier call with the same Idempotency-Key). */
+    public record Confirmed(ConfirmationView view, boolean created) {
+    }
+
+    static final String SELECT = """
+            SELECT c.id, c.order_id, c.method, c.reference, c.gross, c.fee, c.net, c.currency, c.arrived_at, c.backdate_reason, c.confirmed_by,
+                   c.confirmed_by_name, c.confirmed_at, c.outcome, c.outcome_reason, c.outcome_at, c.emit_attempts,
+                   v.voided_at, v.reason AS void_reason, v.voided_by
+              FROM payment_confirmation c
+              LEFT JOIN payment_confirmation_void v ON v.confirmation_id = c.id""";
+
+    private final JdbcTemplate jdbc;
+    private final ConfirmationSettings settings;
+    private final Clock clock;
+    private final ConfirmationEvents events;
+    private final SalesSettings sales;
+
+    public ConfirmationService(JdbcTemplate jdbc, ConfirmationSettings settings, Clock clock, ConfirmationEvents events, SalesSettings sales) {
+        this.jdbc = jdbc;
+        this.settings = settings;
+        this.clock = clock;
+        this.events = events;
+        this.sales = sales;
+    }
+
+    /**
+     * @throws IllegalArgumentException (400) for anything that makes no sense: a method, a reference, an amount, a fee over the amount, an arrival
+     *                                  in the future, money older than 72 hours with no reason
+     * @throws org.springframework.security.access.AccessDeniedException (403) for money older than 72 hours by someone who may not back-date
+     * @throws PaymentProblem 409 {@code reference-already-used}, 409 {@code idempotency-key-reused}, 400 {@code unsupported-currency}
+     */
+    @Transactional
+    public Confirmed confirm(ConfirmPaymentRequest request, String idempotencyKey, Staff staff) {
+        String key = idempotencyKey == null ? "" : idempotencyKey.strip();
+        if (key.isEmpty() || key.length() > 128) {
+            throw new IllegalArgumentException("Idempotency-Key must be 1 to 128 characters");
+        }
+        PaymentMethod method = PaymentMethod.parse(request.method());
+        String reference = method.requiresReference() || (request.reference() != null && !request.reference().isBlank())
+                ? ReferenceNumber.normalise(request.reference()) : null;
+        BigDecimal gross = Ngwee.require(request.gross(), "gross");
+        BigDecimal fee = request.fee() == null ? BigDecimal.ZERO.setScale(2) : Ngwee.require(request.fee(), "fee");
+        if (fee.compareTo(gross) > 0) {
+            throw new IllegalArgumentException("the fee " + fee.toPlainString() + " cannot be more than the amount " + gross.toPlainString());
+        }
+        String currency = request.currency() == null ? settings.currency() : request.currency();
+        if (!currency.equals(settings.currency())) {
+            throw new PaymentProblem(HttpStatus.BAD_REQUEST, "unsupported-currency",
+                    "payments are in " + settings.currency() + ": " + currency + " cannot be confirmed");
+        }
+        String fingerprint = fingerprint(request.orderId(), method, reference, gross, fee, currency, request.arrivedAt(), request.backdateReason());
+
+        // A repeat is answered first, before anything that depends on the time: a request sent again a day later is still the same request.
+        Optional<UUID> prior = repeat(key, fingerprint);
+        if (prior.isPresent()) {
+            return new Confirmed(get(prior.get()), false);
+        }
+
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        Instant arrivedAt = (request.arrivedAt() == null ? now : request.arrivedAt()).truncatedTo(ChronoUnit.MICROS);
+        String backdateReason = ArrivalWindow.check(arrivedAt, now, settings.backdateWindow(), staff.mayBackdate(), request.backdateReason());
+
+        String referenceKey = method.requiresReference() ? method.name() + ":" + reference : null;
+        if (referenceKey != null) {
+            // Taken one after the other with a rejection of a claim for the same reference (see ClaimService): never half of each.
+            com.oriah.payment.claim.ClaimService.lockReference(jdbc, method.name(), reference);
+            // Waiting for that lock can mean waiting for this very request sent a moment ago (a double click, a retry): it has committed by now, and
+            // the reference it used is THIS request's, not someone else's. Under READ COMMITTED this statement sees it.
+            Optional<UUID> sentTwice = repeat(key, fingerprint);
+            if (sentTwice.isPresent()) {
+                return new Confirmed(get(sentTwice.get()), false);
+            }
+            refuseIfUsed(referenceKey);
+        }
+
+        UUID id = UUID.randomUUID();
+        // ON CONFLICT DO NOTHING: a unique violation would abort this transaction, and a race with the same key or the same reference is answered below.
+        boolean inserted = !jdbc.query("""
+                INSERT INTO payment_confirmation (id, order_id, method, reference, reference_key, gross, fee, currency, arrived_at, backdate_reason,
+                                                  confirmed_by, confirmed_by_name, confirmed_at, idempotency_key, request_fingerprint)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                RETURNING id""", (rs, row) -> rs.getObject("id", UUID.class),
+                id, request.orderId(), method.name(), reference, referenceKey, gross, fee, currency, Timestamp.from(arrivedAt), backdateReason,
+                staff.actor(), staff.name(), Timestamp.from(now), key, fingerprint).isEmpty();
+        if (!inserted) {
+            Optional<UUID> raced = repeat(key, fingerprint);
+            if (raced.isPresent()) {
+                return new Confirmed(get(raced.get()), false);
+            }
+            if (referenceKey != null) {
+                refuseIfUsed(referenceKey);
+            }
+            throw new IllegalStateException("the confirmation could not be recorded and nothing else claims its key or reference");
+        }
+
+        ConfirmationView view = get(id);
+        events.confirmed(view.id(), view.orderId(), view.method(), view.reference(), view.gross(), view.fee(), view.net(), view.currency(), view.arrivedAt(),
+                view.backdateReason(), view.confirmedBy(), view.confirmedAt(), 1, staff.actor());
+        log.info("Confirmation {} recorded: {} {} {} for order {} by {}", id, method, gross.toPlainString(), currency, request.orderId(), staff.actor());
+        return new Confirmed(view, true);
+    }
+
+    /**
+     * Takes back a confirmation keyed wrongly. Only one whose money has not paid a sale.
+     *
+     * @throws IllegalArgumentException (400) for a reason under ten characters
+     * @throws PaymentProblem 404 {@code confirmation-not-found}; 409 {@code already-voided}; 409 {@code confirmation-settled}
+     */
+    @Transactional
+    public ConfirmationView voidConfirmation(UUID id, String reason, Staff staff) {
+        String why = reason == null ? "" : reason.strip();
+        if (why.length() < 10 || why.length() > 200) {
+            throw new IllegalArgumentException("a void needs a reason of 10 to 200 characters, written for the person who reads the books");
+        }
+        // The row is locked first: two people voiding at once are taken one after the other, and the second finds it voided.
+        record Locked(UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net, String currency, String outcome) {
+        }
+        Locked row = jdbc.query("SELECT order_id, method, reference, gross, fee, net, currency, outcome FROM payment_confirmation WHERE id = ? FOR UPDATE",
+                        (rs, n) -> new Locked(rs.getObject("order_id", UUID.class), rs.getString("method"), rs.getString("reference"), rs.getBigDecimal("gross"),
+                                rs.getBigDecimal("fee"), rs.getBigDecimal("net"), rs.getString("currency"), rs.getString("outcome")), id)
+                .stream().findFirst().orElseThrow(() -> new PaymentProblem(HttpStatus.NOT_FOUND, "confirmation-not-found", "there is no confirmation " + id));
+        if (jdbc.queryForObject("SELECT count(*) FROM payment_confirmation_void WHERE confirmation_id = ?", Long.class, id) > 0) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "already-voided", "confirmation " + id + " was already voided");
+        }
+        if ("SETTLED".equals(row.outcome())) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "confirmation-settled",
+                    "confirmation " + id + " paid a sale and is the record that sale stands on: it is never voided (correcting it is Phase 12's)");
+        }
+        Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        jdbc.update("INSERT INTO payment_confirmation_void (id, confirmation_id, voided_by, voided_by_name, reason, voided_at) VALUES (?, ?, ?, ?, ?, ?)",
+                UUID.randomUUID(), id, staff.actor(), staff.name(), why, Timestamp.from(now));
+        // The reference is freed, so the corrected confirmation can use it. The money held for this confirmation, if any, is closed with it.
+        jdbc.update("UPDATE payment_confirmation SET reference_key = NULL WHERE id = ?", id);
+        jdbc.update("UPDATE held_money SET status = 'VOIDED', voided_at = ? WHERE confirmation_id = ? AND status = 'OWED'", Timestamp.from(now), id);
+        events.voided(id, row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.outcome(), why, staff.actor(), now);
+        log.info("Confirmation {} voided by {} ({}): {}", id, staff.actor(), row.outcome(), why);
+        return get(id);
+    }
+
+    /** Confirmations order has not answered yet, oldest first, as of {@code now}. */
+    @Transactional(readOnly = true)
+    public java.util.List<PendingView> pending(Instant now) {
+        return jdbc.query("""
+                SELECT c.id, c.order_id, c.method, c.reference, c.gross, c.currency, c.arrived_at, c.confirmed_at, c.emit_attempts
+                  FROM payment_confirmation c
+                  LEFT JOIN payment_confirmation_void v ON v.confirmation_id = c.id
+                 WHERE c.outcome = 'PENDING' AND v.id IS NULL
+                 ORDER BY c.confirmed_at, c.id""", (rs, n) -> {
+            Instant confirmedAt = rs.getTimestamp("confirmed_at").toInstant();
+            Duration age = Duration.between(confirmedAt, now);
+            return new PendingView(rs.getObject("id", UUID.class), rs.getObject("order_id", UUID.class), rs.getString("method"), rs.getString("reference"),
+                    rs.getBigDecimal("gross"), rs.getString("currency"), rs.getTimestamp("arrived_at").toInstant(), confirmedAt, Math.max(0, age.toSeconds()),
+                    rs.getInt("emit_attempts"), age.compareTo(sales.settlementStuckAfter()) > 0);
+        });
+    }
+
+    @Transactional(readOnly = true)
+    public ConfirmationView get(UUID id) {
+        return jdbc.query(SELECT + " WHERE c.id = ?", this::view, id).stream().findFirst()
+                .orElseThrow(() -> new PaymentProblem(HttpStatus.NOT_FOUND, "confirmation-not-found", "there is no confirmation " + id));
+    }
+
+    // ---------------------------------------------------------------- plumbing
+
+    /** The confirmation this key already made, if the request is the same; a request that is not is refused. */
+    private Optional<UUID> repeat(String key, String fingerprint) {
+        record Prior(UUID id, String fingerprint) {
+        }
+        Optional<Prior> prior = jdbc.query("SELECT id, request_fingerprint FROM payment_confirmation WHERE idempotency_key = ?",
+                (rs, row) -> new Prior(rs.getObject("id", UUID.class), rs.getString("request_fingerprint")), key).stream().findFirst();
+        if (prior.isEmpty()) {
+            return Optional.empty();
+        }
+        if (!prior.get().fingerprint().equals(fingerprint)) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "idempotency-key-reused",
+                    "this Idempotency-Key was used for a different request: send a new key for a new confirmation").with("confirmationId", prior.get().id());
+        }
+        return Optional.of(prior.get().id());
+    }
+
+    private void refuseIfUsed(String referenceKey) {
+        jdbc.query("SELECT id, order_id FROM payment_confirmation WHERE reference_key = ?", (rs, row) -> {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "reference-already-used",
+                    "that reference has already confirmed money (confirmation " + rs.getObject("id", UUID.class) + "): the same payment is not counted twice. "
+                            + "If it was keyed wrongly, void that confirmation first")
+                    .with("confirmationId", rs.getObject("id", UUID.class)).with("orderId", rs.getObject("order_id", UUID.class));
+        }, referenceKey);
+    }
+
+    ConfirmationView view(ResultSet rs, int row) throws SQLException {
+        Timestamp voidedAt = rs.getTimestamp("voided_at");
+        Timestamp outcomeAt = rs.getTimestamp("outcome_at");
+        return new ConfirmationView(rs.getObject("id", UUID.class), rs.getObject("order_id", UUID.class), rs.getString("method"), rs.getString("reference"),
+                rs.getBigDecimal("gross"), rs.getBigDecimal("fee"), rs.getBigDecimal("net"), rs.getString("currency"),
+                rs.getTimestamp("arrived_at").toInstant(), rs.getString("backdate_reason"), rs.getString("confirmed_by"), rs.getString("confirmed_by_name"),
+                rs.getTimestamp("confirmed_at").toInstant(), rs.getString("outcome"), rs.getString("outcome_reason"),
+                outcomeAt == null ? null : outcomeAt.toInstant(), voidedAt != null, voidedAt == null ? null : voidedAt.toInstant(),
+                rs.getString("void_reason"), rs.getString("voided_by"));
+    }
+
+    /** What makes a request "the same": everything the person sent, in the form it was understood. */
+    private static String fingerprint(UUID orderId, PaymentMethod method, String reference, BigDecimal gross, BigDecimal fee, String currency, Instant arrivedAt,
+                                      String backdateReason) {
+        String canonical = String.join("|", String.valueOf(orderId), method.name(), String.valueOf(reference), gross.toPlainString(), fee.toPlainString(), currency,
+                String.valueOf(arrivedAt), backdateReason == null ? "" : backdateReason.strip());
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+}

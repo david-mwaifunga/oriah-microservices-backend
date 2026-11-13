@@ -16,15 +16,17 @@ spring:
     locations: classpath:db/migration
   task:
     scheduling:
-      # Two scheduled jobs run here, each on a thread of its own: the outbox
-      # relay (shared/oriah-events) and the payment reconciler. Spring Boot's
-      # default is ONE thread for all of them, so a reconciler pass waiting on
-      # a slow gateway would hold back every payment announcement, and a relay
-      # round waiting on a stopped Kafka (up to about 25 s) would hold back
-      # reconciliation. ReconcilerScheduleTest proves the first. Add a thread
-      # for any further @Scheduled job.
+      # Three scheduled jobs run here, each on a thread of its own: the outbox
+      # relay (shared/oriah-events), the payment reconciler (card path) and, since
+      # Phase 7, the settlement watcher that announces confirmed money again while
+      # order has not answered. Spring Boot's default is ONE thread for all of
+      # them, so a reconciler or watcher pass waiting on a slow database or gateway
+      # would hold back every payment announcement, and a relay round waiting on a
+      # stopped Kafka (up to about 25 s) would hold back both.
+      # ReconcilerScheduleTest and WatcherScheduleTest prove it. Add a thread for
+      # any further @Scheduled job.
       pool:
-        size: 2
+        size: 3
   security:
     oauth2:
       resourceserver:
@@ -85,16 +87,38 @@ spring:
           order:
             connect-timeout: 1000
             read-timeout: 3000
+    # With more than one function every one must be listed, or it is not bound. The replayer's own listener (outboxReplayRequests) is added by
+    # the event-log module while replay is on.
+    function:
+      definition: orderEvents
     stream:
       # Only the event log uses Kafka here (shared/oriah-events/README.md):
-      # the outbox relay publishes payment.succeeded / payment.failed to
-      # oriah.payment, and the replayer reads replay requests from
-      # oriah.outbox.replay-requests and answers them. These are set here, not
+      # the outbox relay publishes payment.succeeded / payment.failed and, since Phase 7, the staff-money events (payment.confirmed, .rejected,
+      # .voided, .held) to oriah.payment, the replayer reads replay requests from
+      # oriah.outbox.replay-requests and answers them, and the Inbox reads order's events from oriah.order. These are set here, not
       # per profile, so every profile and every test runs with them -- the
       # relay refuses to start without sync=true, and the replayer without
       # the send timeouts below.
       default:
         contentType: application/json
+      bindings:
+        # Order's events (Phase 7): a shopper's claim, the sale being paid by a confirmation, and money that could not pay the sale. Read live from
+        # oriah.order in a group of its own, from the earliest message Kafka still has (each is applied once: the Inbox and the effects see to it).
+        orderEvents-in-0:
+          destination: oriah.order
+          group: payment
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time (an event type nobody declared, a method that is cash, an id that is not an id, a body Jackson
+            # cannot read): straight to the dead-letter topic on the first delivery. A database that is away is not listed, so it is delivered again.
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
       kafka:
         default:
           producer:
@@ -126,6 +150,15 @@ spring:
             "[max.block.ms]": 10000
             "[request.timeout.ms]": 5000
             "[delivery.timeout.ms]": 10000
+        bindings:
+          orderEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.order.dlq.payment
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms (5 min), even with the database away.
+                max.poll.records: 1
         # Nothing here for the replay-request listener (outboxReplayRequests-in-0)
         # on purpose. The event-log module binds it and sets all of its Kafka
         # settings itself: a request that keeps failing is delivered 3 times
@@ -174,8 +207,11 @@ oriah:
       enabled: true
     replay:
       enabled: true
+    # Phase 7: payment reads order's events through the Inbox (a claim, the sale paid, money that could not pay it). The module dead-letters the
+    # binding itself and refuses to start if a topic listed here is read by no input binding or by more than one.
     inbox:
-      enabled: false
+      enabled: true
+      topics: oriah.order
 
   payment:
     # -------------------------------------------------------------------------
@@ -186,6 +222,31 @@ oriah:
     # -------------------------------------------------------------------------
     card:
       enabled: false
+
+    # -------------------------------------------------------------------------
+    # Staff-confirmed money (Phase 7).
+    #
+    # currency: the one currency the shop takes. A confirmation names it or takes it; any other is refused.
+    # backdate-window: how far back anyone who may confirm may date money (the day it arrived). Older needs BACKDATE_SALE and a reason.
+    # -------------------------------------------------------------------------
+    currency: ZMW
+    backdate-window: PT72H
+
+    # -------------------------------------------------------------------------
+    # The settlement watcher (SettlementWatcher): announces a confirmation AGAIN while order has not said what became of its money (it paid the
+    # sale, or could not), so a lost message is recovered and nothing recorded is left unacted on. Order treats a repeat as a repeat.
+    #
+    # delay: milliseconds between the end of one pass and the start of the next.
+    # max-emit-attempts: announcements in all (the first, when it is recorded, counts). Past it the confirmation stays in the pending list for a
+    #   person, and is logged as an error when it reaches the limit. How long a confirmation waits before it is announced again is
+    #   oriah.sales.settlement-stuck-after below, then twice as long each time, up to an hour.
+    #
+    # On in every profile. (The tests switch it off and call it themselves; see src/test/resources/config/application.yaml.)
+    # -------------------------------------------------------------------------
+    watcher:
+      enabled: true
+      delay: 30000
+      max-emit-attempts: 10
 
     # -------------------------------------------------------------------------
     # The reconciler (PaymentReconciler): settles intents whose charge outcome
@@ -234,3 +295,9 @@ oriah:
         email: unavailable
       on-call-support:
         - unavailable
+
+  # The sale as a whole (Phase 7): shared with order, read here for the one thing payment watches.
+  sales:
+    # How long confirmed money may wait for order's answer (it paid the sale, or could not) before it is called STUCK: flagged in the pending list,
+    # announced again by the watcher, and counted by the payment.confirmations.stuck gauge.
+    settlement-stuck-after: PT5M
