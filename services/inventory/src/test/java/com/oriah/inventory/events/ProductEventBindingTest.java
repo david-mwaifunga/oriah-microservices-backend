@@ -136,8 +136,8 @@ class ProductEventBindingTest {
         BindingProperties binding = bindings.getBindingProperties(BINDING);
 
         assertThat(context.getBean(EventsProperties.class).inbox().topics())
-                .as("oriah.events.inbox.topics: the two this service reads through the Inbox")
-                .containsExactlyInAnyOrder("catalog.product", "oriah.procurement")
+                .as("oriah.events.inbox.topics: the three this service reads through the Inbox (order's events arrived in Phase 7)")
+                .containsExactlyInAnyOrder("catalog.product", "oriah.procurement", "oriah.order")
                 .contains(binding.getDestination());
         assertThat(context.getBean(ListenerContainerWithDlqAndRetryCustomizer.class)
                 .retryAndDlqInBinding(binding.getDestination(), binding.getGroup()))

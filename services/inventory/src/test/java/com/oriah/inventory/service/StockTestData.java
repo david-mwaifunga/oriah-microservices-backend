@@ -23,7 +23,9 @@ public final class StockTestData {
     }
 
     public static void wipe(JdbcTemplate jdbc) {
-        jdbc.execute("TRUNCATE stock_movement, stock_action, cost_lot, inventory");
+        // reservation and reservation_line carry no foreign key to the stock tables (a hold outlives nothing here), but a stale hold from
+        // another test would block a new one for the same variant, so they go too. box_swap and outbox are append-only and stay.
+        jdbc.execute("TRUNCATE stock_movement, stock_action, cost_lot, inventory, reservation_line, reservation");
     }
 
     private static BigDecimal k(String amount) {

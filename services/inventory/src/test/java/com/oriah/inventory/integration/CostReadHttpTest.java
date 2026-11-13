@@ -22,6 +22,7 @@ import com.oriah.inventory.TestcontainersConfiguration;
 import com.oriah.inventory.ledger.StockReason;
 import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.repository.InventoryRepository;
+import com.oriah.inventory.service.BoxCommitmentService;
 import com.oriah.inventory.service.StockService;
 import com.oriah.inventory.service.StockTestData;
 
@@ -61,6 +62,9 @@ class CostReadHttpTest {
 
     @Autowired
     private InventoryRepository inventories;
+
+    @Autowired
+    private BoxCommitmentService commitments;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -183,24 +187,34 @@ class CostReadHttpTest {
     }
 
     @Test
-    @DisplayName("cost is in the cost reads and in no other reply: not the stock list, not the public read, not a sale, not a write-off")
+    @DisplayName("cost is in the cost reads and in no other reply: not the stock list, not the public read, not a hold or a sale, not a write-off")
     void costIsInNoOtherReply() throws Exception {
         UUID variant = rings();
+        UUID box = UUID.randomUUID();
+        stock.applyReceipt(StockTestData.box(box, "2026-11-09T08:00:00.123456Z"), context(5002));
+        UUID product = UUID.randomUUID();
+        commitments.applyProduct(new BoxCommitmentService.ProductSnapshot(product, "SELLABLE", "ACTIVE", box, 0, false), UUID.randomUUID(), "system:test");
         RequestPostProcessor admin = jwt().authorities(new SimpleGrantedAuthority("ROLE_INVENTORY_ADMIN"));
+        RequestPostProcessor orderSystem = jwt().jwt(j -> j.subject("sa-1").claim("preferred_username", "service-account-oriah-admin"))
+                .authorities(new SimpleGrantedAuthority("ROLE_INVENTORY_ADMIN"));
         RequestPostProcessor owner = jwt().authorities(new SimpleGrantedAuthority("ROLE_STOCK_WRITE_OFF"));
+        UUID reservation = UUID.randomUUID();
 
         String list = mvc.perform(get("/api/v1/admin/inventory").with(admin)).andReturn().getResponse().getContentAsString();
         String publicRead = mvc.perform(get("/api/v1/inventory/" + variant)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        mvc.perform(post("/api/v1/admin/inventory/" + variant + "/reserve").with(admin).contentType(MediaType.APPLICATION_JSON).content("{\"qty\":2}"))
-                .andExpect(status().isOk());
-        String sale = mvc.perform(post("/api/v1/admin/inventory/" + variant + "/confirm").with(admin).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"qty\":1,\"saleLineId\":\"" + UUID.randomUUID() + "\"}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String hold = mvc.perform(post("/api/v1/admin/inventory/reservations").with(orderSystem).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reservationId\":\"" + reservation + "\",\"orderId\":\"" + UUID.randomUUID() + "\",\"lines\":[{\"saleLineId\":\""
+                        + UUID.randomUUID() + "\",\"variantId\":\"" + variant + "\",\"productId\":\"" + product + "\",\"quantity\":2,\"boxLineId\":\""
+                        + UUID.randomUUID() + "\"}]}"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String sale = mvc.perform(post("/api/v1/admin/inventory/reservations/" + reservation + "/consume").with(orderSystem).contentType(MediaType.APPLICATION_JSON)
+                .content("{}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         String writeOff = mvc.perform(post("/api/v1/admin/inventory/write-offs").with(owner).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"requestId\":\"" + UUID.randomUUID() + "\",\"variantId\":\"" + variant + "\",\"qty\":1,\"reason\":\"WRITE_OFF_BROKEN\"}"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String writeOffList = mvc.perform(get("/api/v1/admin/inventory/write-offs").with(owner)).andReturn().getResponse().getContentAsString();
 
-        for (String reply : new String[] {list, publicRead, sale, writeOff, writeOffList}) {
+        for (String reply : new String[] {list, publicRead, hold, sale, writeOff, writeOffList}) {
             assertThat(reply.toLowerCase()).doesNotContain("cost").doesNotContain("1528");
         }
     }

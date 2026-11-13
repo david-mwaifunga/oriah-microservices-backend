@@ -44,7 +44,9 @@ class V10CommitmentsTest {
             s.executeUpdate("INSERT INTO inventory (variant_id, on_hand, reserved, kind) VALUES ('%s', 7, 2, 'SELLABLE'), ('%s', 200, 5, 'PACKAGING')"
                     .formatted(RING, BOX));
         }
-        migrateTo(MigrationVersion.LATEST);
+        // Pinned to V10: this test is about what V10 did to the rows that existed before it. Later migrations (V11 clears the ownerless
+        // reserved counters) have tests of their own.
+        migrateTo(MigrationVersion.fromVersion("10"));
     }
 
     @Test

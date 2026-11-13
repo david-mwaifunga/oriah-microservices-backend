@@ -92,7 +92,13 @@ public class ProductEventConsumer {
             // Procurement's receipts (Phase 5): one per consignment line. CatchUp serves ONE consumer name per
             // service, and replays arrive under it, so inventory has one declaration and this is it.
             .handles(ConsignmentEventConsumer.CONSIGNMENT_LINE, ConsignmentEventConsumer.RECEIVED, 1)
-            .handles(ConsignmentEventConsumer.CONSIGNMENT_LINE, ConsignmentEventConsumer.AMENDED, 1);
+            .handles(ConsignmentEventConsumer.CONSIGNMENT_LINE, ConsignmentEventConsumer.AMENDED, 1)
+            // Order's events (Phase 7): a cancelled or expired order lets go of the hold it names; the rest are declared and ignored, so
+            // a replay of the order log never stalls on a type inventory does not care about. Order may add types: declare them here first.
+            .handles(OrderEventConsumer.ORDER, OrderEventConsumer.CANCELLED, 1)
+            .handles(OrderEventConsumer.ORDER, OrderEventConsumer.EXPIRED, 1)
+            .ignores("order.created", "order.payment_submitted", "order.payment_unsettled", "order.paid", "order.fulfilled", "order.shipped",
+                    "order.delivered");
 
     @Bean
     public Consumer<Message<byte[]>> productEvents(

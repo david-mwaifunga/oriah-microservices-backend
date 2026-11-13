@@ -169,6 +169,20 @@ public class Inventory extends BaseEntity {
     }
 
     /**
+     * A sale of units that were neither reserved nor set aside (the replacement box swapped in after payment is one): free boxes leave with
+     * the sale, so the count falls and nothing else moves.
+     *
+     * @throws InsufficientStockException if fewer than {@code qty} are free
+     */
+    public void sellFromFree(int qty) {
+        requirePositive(qty);
+        if (qty > free()) {
+            throw InsufficientStockException.cannot("sell", qty, free(), "free");
+        }
+        this.onHand -= qty;
+    }
+
+    /**
      * Reserves {@code qty} units against this variant. Used when a customer
      * adds the variant to their cart.
      *
@@ -182,6 +196,31 @@ public class Inventory extends BaseEntity {
             throw InsufficientStockException.cannot("reserve", qty, available(), "available");
         }
         this.reserved += qty;
+    }
+
+    /**
+     * An order takes {@code qty} boxes from what was set aside for its product: they stop being set aside and become reserved. They do not
+     * leave the building and nobody else can take them, so the count and what is free do not move.
+     *
+     * @throws InsufficientStockException if fewer than {@code qty} are set aside (always the case for goods)
+     */
+    public void reserveFromCommitted(int qty) {
+        requirePositive(qty);
+        if (qty > committed) {
+            throw InsufficientStockException.cannot("reserve from what is set aside", qty, committed, "set aside");
+        }
+        this.committed -= qty;
+        this.reserved += qty;
+    }
+
+    /** The reverse of {@link #reserveFromCommitted}: boxes an order held go back to the set-aside they came from. */
+    public void releaseToCommitted(int qty) {
+        requirePositive(qty);
+        if (qty > reserved) {
+            throw InsufficientStockException.cannot("give back to what is set aside", qty, reserved, "reserved");
+        }
+        this.reserved -= qty;
+        this.committed += qty;
     }
 
     /**

@@ -2,7 +2,6 @@ package com.oriah.inventory.service;
 
 import java.util.Optional;
 import java.util.UUID;
-import java.util.function.Consumer;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,10 +20,7 @@ import lombok.extern.slf4j.Slf4j;
  * <p>There is no way to create stock, add to it, or sell it here: stock comes only from a received consignment, which
  * brings its cost lots ({@link StockService#applyReceipt}), and a sale drains those lots ({@link StockService#consume}).
  *
- * <p>The reserve / release methods share the same
- * pattern: load by id, apply the domain method (which enforces the
- * invariants), let JPA dirty-checking persist on transaction commit.
- * The shared bit is factored into {@link #applyMutation}.
+ * <p>Holds are not here: an order's hold is a reservation ({@link ReservationService}) with an owner and a clock.
  *
  * <p>Logging follows the convention from catalog: INFO on state
  * transitions, DEBUG on reads and skipped-because-not-found cases.
@@ -43,39 +39,6 @@ public class InventoryService {
     public Optional<Inventory> findByVariantId(UUID variantId) {
         log.debug("findByVariantId variantId={}", variantId);
         return repository.findById(variantId);
-    }
-
-    @Transactional
-    public Optional<Inventory> reserve(UUID variantId, int qty) {
-        return applyMutation(variantId, inv -> inv.reserve(qty), "Reserved", qty);
-    }
-
-    @Transactional
-    public Optional<Inventory> release(UUID variantId, int qty) {
-        return applyMutation(variantId, inv -> inv.release(qty), "Released", qty);
-    }
-
-    /**
-     * Common shape of every state-changing operation: find -> apply ->
-     * dirty-check persists -> log. Returning {@code Optional.empty()}
-     * for unknown variantId lets the controller return 404 cleanly.
-     */
-    private Optional<Inventory> applyMutation(
-            UUID variantId,
-            Consumer<Inventory> mutation,
-            String pastTense,
-            int qty) {
-        Optional<Inventory> result = repository.findById(variantId).map(inventory -> {
-            mutation.accept(inventory);
-            log.info("{} qty={} variantId={} onHand={} reserved={}",
-                    pastTense, qty, inventory.variantId(), inventory.onHand(), inventory.reserved());
-            return inventory;
-        });
-
-        if (result.isEmpty()) {
-            log.debug("{} skipped, variantId not found: {}", pastTense, variantId);
-        }
-        return result;
     }
 
     /**

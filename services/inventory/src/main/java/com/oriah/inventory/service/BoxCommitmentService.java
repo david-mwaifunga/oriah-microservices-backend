@@ -59,7 +59,7 @@ public class BoxCommitmentService {
     }
 
     /** One product's boxes. */
-    public record Commitment(UUID id, UUID productId, UUID boxVariantId, int quantity, int unpublishCount, Instant committedAt, String committedBy) {
+    public record Commitment(UUID id, UUID productId, UUID boxVariantId, int quantity, int held, int unpublishCount, Instant committedAt, String committedBy) {
     }
 
     /** One thing done to a product's boxes. */
@@ -125,9 +125,19 @@ public class BoxCommitmentService {
         Optional<Commitment> existing = commitmentOf(productId);
         if (existing.isPresent() && !existing.get().boxVariantId().equals(boxVariantId)) {
             // Set aside on a box that is no longer the product's default: dead by the rule above, normally let go when the snapshot
-            // arrived. Let go now (this product's own state row is already locked), so one record never straddles two boxes.
-            releaseLocked(existing.get(), inventories.findByIdForUpdate(existing.get().boxVariantId()).orElse(null), null, actor);
+            // arrived. Let go now (this product's own state row is already locked), so one record never straddles two boxes. The record is
+            // read again under the old box's lock: an order may have held some of it since it was first read.
+            Inventory oldBox = inventories.findByIdForUpdate(existing.get().boxVariantId()).orElse(null);
+            Optional<Commitment> fresh = commitmentOf(productId);
+            if (fresh.isPresent()) {
+                releaseLocked(fresh.get(), oldBox, null, actor);
+            }
             existing = Optional.empty();
+        }
+        if (existing.isPresent() && quantity < existing.get().held()) {
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "held-by-reservations",
+                    "orders are holding " + existing.get().held() + " of this product's boxes right now: set aside at least that many, or wait until they are paid or let go")
+                    .with("held", existing.get().held());
         }
         int current = existing.map(Commitment::quantity).orElse(0);
         int needed = quantity - current;
@@ -139,7 +149,7 @@ public class BoxCommitmentService {
         if (existing.isEmpty()) {
             box.commit(quantity);
             inventories.saveAndFlush(box);
-            saved = new Commitment(UUID.randomUUID(), productId, boxVariantId, quantity, state.unpublishCount(), now, actor);
+            saved = new Commitment(UUID.randomUUID(), productId, boxVariantId, quantity, 0, state.unpublishCount(), now, actor);
             jdbc.update("INSERT INTO box_commitment (id, product_id, box_variant_id, quantity, unpublish_count, committed_at, committed_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     saved.id(), productId, boxVariantId, quantity, saved.unpublishCount(), java.sql.Timestamp.from(now), actor);
             change(saved, "ALLOCATE", quantity, quantity, null, null, now, actor);
@@ -153,7 +163,7 @@ public class BoxCommitmentService {
             }
             inventories.saveAndFlush(box);
             Commitment was = existing.get();
-            saved = new Commitment(was.id(), productId, boxVariantId, quantity, was.unpublishCount(), was.committedAt(), was.committedBy());
+            saved = new Commitment(was.id(), productId, boxVariantId, quantity, was.held(), was.unpublishCount(), was.committedAt(), was.committedBy());
             jdbc.update("UPDATE box_commitment SET quantity = ? WHERE id = ?", quantity, was.id());
             change(saved, "REPLACE", needed, quantity, null, null, now, actor);
         }
@@ -194,8 +204,11 @@ public class BoxCommitmentService {
 
     /** Lets a record's boxes go. The box's row is already locked by the caller (null if the box has no stock row, which a record never outlives). */
     private void releaseLocked(Commitment commitment, Inventory box, UUID eventId, String actor) {
-        if (box != null) {
-            box.uncommit(commitment.quantity());
+        // Only what no order holds goes back to free; what orders hold stays in the box's reserved count, and each hold's line, when it is
+        // let go or sold, finds no promise to return to (its boxes then go to free, or leave with the sale).
+        int unheld = commitment.quantity() - commitment.held();
+        if (box != null && unheld > 0) {
+            box.uncommit(unheld);
             inventories.saveAndFlush(box);
         }
         jdbc.update("DELETE FROM box_commitment WHERE id = ?", commitment.id());
@@ -251,7 +264,7 @@ public class BoxCommitmentService {
     @Transactional
     public List<CutCommitment> cutForWriteOff(UUID boxVariantId, int cut, UUID actionId, String actor, Instant when) {
         List<Commitment> records = jdbc.query("""
-                SELECT id, product_id, box_variant_id, quantity, unpublish_count, committed_at, committed_by
+                SELECT id, product_id, box_variant_id, quantity, held, unpublish_count, committed_at, committed_by
                   FROM box_commitment WHERE box_variant_id = ? ORDER BY committed_at DESC, id DESC FOR UPDATE""", this::commitment, boxVariantId);
         List<CutCommitment> cuts = new ArrayList<>();
         int remaining = cut;
@@ -259,7 +272,10 @@ public class BoxCommitmentService {
             if (remaining == 0) {
                 break;
             }
-            int take = Math.min(remaining, record.quantity());
+            int take = Math.min(remaining, record.quantity() - record.held());
+            if (take <= 0) {
+                continue;
+            }
             int after = record.quantity() - take;
             if (after == 0) {
                 jdbc.update("DELETE FROM box_commitment WHERE id = ?", record.id());
@@ -293,13 +309,14 @@ public class BoxCommitmentService {
     @Transactional
     public void consumeFromCommitment(UUID productId, UUID boxVariantId, int qty, UUID actionId, String actor, Instant when) {
         Commitment record = jdbc.query("""
-                SELECT id, product_id, box_variant_id, quantity, unpublish_count, committed_at, committed_by
+                SELECT id, product_id, box_variant_id, quantity, held, unpublish_count, committed_at, committed_by
                   FROM box_commitment WHERE product_id = ? FOR UPDATE""", this::commitment, productId).stream().findFirst().orElse(null);
         if (record == null || !record.boxVariantId().equals(boxVariantId)) {
             throw InsufficientStockException.cannot("sell", qty, 0, "set aside for product " + productId);
         }
-        if (qty > record.quantity()) {
-            throw InsufficientStockException.cannot("sell", qty, record.quantity(), "set aside for product " + productId);
+        if (qty > record.quantity() - record.held()) {
+            throw InsufficientStockException.cannot("sell", qty, record.quantity() - record.held(), "set aside for product " + productId
+                    + " and not held by an order");
         }
         int after = record.quantity() - qty;
         if (after == 0) {
@@ -310,11 +327,81 @@ public class BoxCommitmentService {
         change(record, "CONSUME", -qty, after, actionId, null, when, actor);
     }
 
+    // ---------------------------------------------------------------- orders holding set-aside boxes (Phase 7)
+
+    /** What a hold drew from a product's promise: the promise it came from (null if none) and how many boxes. */
+    public record Draw(UUID commitmentId, int fromCommitted) {
+    }
+
+    /**
+     * An order's box line takes boxes from the product's promise first: up to what is promised and not yet held by another order. The
+     * promise stays whole ({@code quantity}); {@code held} says how much of it orders hold right now. The caller moves the same number
+     * from {@code committed} to {@code reserved} on the box's row, which it has locked.
+     *
+     * @return the promise the boxes came from and how many (none if the product has no promise on this box)
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Draw drawForReservation(UUID productId, UUID boxVariantId, int qty) {
+        Commitment record = lockedCommitmentOf(productId).orElse(null);
+        if (record == null || !record.boxVariantId().equals(boxVariantId)) {
+            return new Draw(null, 0);
+        }
+        int taken = Math.min(qty, record.quantity() - record.held());
+        if (taken <= 0) {
+            return new Draw(null, 0);
+        }
+        jdbc.update("UPDATE box_commitment SET held = held + ? WHERE id = ?", taken, record.id());
+        return new Draw(record.id(), taken);
+    }
+
+    /**
+     * A hold that came from a promise lets go: the boxes return to the promise if it is still there.
+     *
+     * @return how many went back into the promise; 0 if the promise has been let go since (the caller then frees the boxes)
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public int restoreHeld(UUID commitmentId, int qty) {
+        Commitment record = lockedCommitmentById(commitmentId).orElse(null);
+        if (record == null) {
+            return 0;
+        }
+        int back = Math.min(qty, record.held());
+        if (back > 0) {
+            jdbc.update("UPDATE box_commitment SET held = held - ? WHERE id = ?", back, record.id());
+        }
+        return back;
+    }
+
+    /**
+     * A hold that came from a promise is sold: the promise and the hold both fall by what was sold; a promise used up is closed.
+     *
+     * @return how many came off the promise; 0 if it has been let go since (the boxes still leave: the caller handles the count)
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public int consumeHeld(UUID commitmentId, int qty, UUID actionId, String actor, Instant when) {
+        Commitment record = lockedCommitmentById(commitmentId).orElse(null);
+        if (record == null) {
+            return 0;
+        }
+        int off = Math.min(qty, record.held());
+        if (off <= 0) {
+            return 0;
+        }
+        int after = record.quantity() - off;
+        if (after == 0) {
+            jdbc.update("DELETE FROM box_commitment WHERE id = ?", record.id());
+        } else {
+            jdbc.update("UPDATE box_commitment SET quantity = ?, held = held - ? WHERE id = ?", after, off, record.id());
+        }
+        change(record, "CONSUME", -off, after, actionId, null, when, actor);
+        return off;
+    }
+
     // ---------------------------------------------------------------- reads and checks
 
     @Transactional(readOnly = true)
     public List<Commitment> commitments(UUID productId, UUID boxVariantId) {
-        StringBuilder sql = new StringBuilder("SELECT id, product_id, box_variant_id, quantity, unpublish_count, committed_at, committed_by FROM box_commitment WHERE true");
+        StringBuilder sql = new StringBuilder("SELECT id, product_id, box_variant_id, quantity, held, unpublish_count, committed_at, committed_by FROM box_commitment WHERE true");
         List<Object> args = new ArrayList<>();
         if (productId != null) {
             sql.append(" AND product_id = ?");
@@ -348,13 +435,29 @@ public class BoxCommitmentService {
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
     public void verifyBox(UUID boxVariantId) {
         Integer committed = jdbc.query("SELECT committed FROM inventory WHERE variant_id = ?", rs -> rs.next() ? rs.getInt(1) : null, boxVariantId);
-        int sum = jdbc.queryForObject("SELECT coalesce(sum(quantity), 0) FROM box_commitment WHERE box_variant_id = ?", Integer.class, boxVariantId);
+        int sum = jdbc.queryForObject("SELECT coalesce(sum(quantity - held), 0) FROM box_commitment WHERE box_variant_id = ?", Integer.class, boxVariantId);
         if (committed != null && committed != sum) {
-            throw new IllegalStateException("the boxes set aside on " + boxVariantId + " are " + committed + " but the records add up to " + sum);
+            throw new IllegalStateException("the boxes set aside on " + boxVariantId + " are " + committed + " but the records add up to " + sum
+                    + " (promised, less what orders hold)");
         }
     }
 
     // ---------------------------------------------------------------- plumbing
+
+    /** What inventory knows of a product (read, not locked), or empty if no snapshot of it has arrived. */
+    @Transactional(readOnly = true)
+    public Optional<ProductSnapshot> stateOf(UUID productId) {
+        return jdbc.query("SELECT product_id, kind, status, default_packaging_variant_id, unpublish_count, deleted FROM product_state WHERE product_id = ?",
+                (rs, n) -> new ProductSnapshot(rs.getObject("product_id", UUID.class), rs.getString("kind"), rs.getString("status"),
+                        rs.getObject("default_packaging_variant_id", UUID.class), rs.getInt("unpublish_count"), rs.getBoolean("deleted")), productId)
+                .stream().findFirst();
+    }
+
+    /** A product's promise, taken WITH its row lock (the box's row is already locked by the caller: box first, then the record). */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Optional<Commitment> lockPromise(UUID productId) {
+        return lockedCommitmentOf(productId);
+    }
 
     private Optional<ProductSnapshot> lockState(UUID productId) {
         return jdbc.query("SELECT product_id, kind, status, default_packaging_variant_id, unpublish_count, deleted FROM product_state WHERE product_id = ? FOR UPDATE",
@@ -363,14 +466,24 @@ public class BoxCommitmentService {
                 .stream().findFirst();
     }
 
+    private Optional<Commitment> lockedCommitmentOf(UUID productId) {
+        return jdbc.query("SELECT id, product_id, box_variant_id, quantity, held, unpublish_count, committed_at, committed_by FROM box_commitment WHERE product_id = ? FOR UPDATE",
+                this::commitment, productId).stream().findFirst();
+    }
+
+    private Optional<Commitment> lockedCommitmentById(UUID commitmentId) {
+        return jdbc.query("SELECT id, product_id, box_variant_id, quantity, held, unpublish_count, committed_at, committed_by FROM box_commitment WHERE id = ? FOR UPDATE",
+                this::commitment, commitmentId).stream().findFirst();
+    }
+
     private Optional<Commitment> commitmentOf(UUID productId) {
-        return jdbc.query("SELECT id, product_id, box_variant_id, quantity, unpublish_count, committed_at, committed_by FROM box_commitment WHERE product_id = ?",
+        return jdbc.query("SELECT id, product_id, box_variant_id, quantity, held, unpublish_count, committed_at, committed_by FROM box_commitment WHERE product_id = ?",
                 this::commitment, productId).stream().findFirst();
     }
 
     private Commitment commitment(ResultSet rs, int row) throws SQLException {
         return new Commitment(rs.getObject("id", UUID.class), rs.getObject("product_id", UUID.class), rs.getObject("box_variant_id", UUID.class),
-                rs.getInt("quantity"), rs.getInt("unpublish_count"), rs.getTimestamp("committed_at").toInstant(), rs.getString("committed_by"));
+                rs.getInt("quantity"), rs.getInt("held"), rs.getInt("unpublish_count"), rs.getTimestamp("committed_at").toInstant(), rs.getString("committed_by"));
     }
 
     private void change(Commitment commitment, String kind, int qtyDelta, int quantityAfter, UUID actionId, UUID eventId, Instant occurredAt, String actor) {

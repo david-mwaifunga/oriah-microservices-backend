@@ -81,12 +81,17 @@ public class StockService {
     public record CommitmentMismatch(UUID variantId, int committed, int sumOfCommitments) {
     }
 
+    /** A stock row whose reserved count is not what the held reservation lines add up to. */
+    public record ReservedMismatch(UUID variantId, int reserved, int sumOfHeldLines) {
+    }
+
     /**
-     * The one-count-not-three check: every stock count against its lots, every lot against its ledger, and every box's set-aside count
-     * against the products' records. Counts only, no cost.
+     * The one-count-not-three check: every stock count against its lots, every lot against its ledger, every box's set-aside count
+     * against the products' records (promised, less what orders hold), and every reserved count against the held reservation lines.
+     * Counts only, no cost.
      */
     public record ReconciliationReport(int checkedVariants, List<CountMismatch> countMismatches, List<LedgerMismatch> ledgerMismatches,
-                                       List<CommitmentMismatch> commitmentMismatches) {
+                                       List<CommitmentMismatch> commitmentMismatches, List<ReservedMismatch> reservedMismatches) {
     }
 
     private final InventoryRepository inventories;
@@ -336,6 +341,40 @@ public class StockService {
     }
 
     /**
+     * A sale of boxes that were neither reserved nor set aside (the replacement box swapped in after payment, when it is not the product's
+     * promised box): free boxes leave, the OLDEST lots are drained, and the ledger gets one row per lot, all in this transaction.
+     * Idempotent per {@code saleLineId} like {@link #consume}.
+     *
+     * @return the stock row after the change, or empty if the box has no stock row
+     * @throws InsufficientStockException when fewer than {@code qty} are free
+     * @throws IllegalStateException      when the sale line was already used for something else
+     */
+    @Transactional
+    public Optional<Inventory> consumeFromFree(UUID variantId, int qty, UUID saleLineId, Instant occurredAt, String actor) {
+        String digest = digest(variantId + "|" + qty + "|" + occurredAt + "|from free");
+        Optional<StockLedger.ActionRow> existing = ledger.findAction(saleLineId);
+        Inventory inventory = inventories.findById(variantId).orElse(null);
+        if (inventory == null) {
+            return Optional.empty();
+        }
+        if (existing.isPresent()) {
+            StockLedger.ActionRow was = existing.get();
+            if (was.variantId().equals(variantId) && "SALE".equals(was.kind()) && was.qty() == qty && digest.equals(was.digest())) {
+                return Optional.of(inventory);
+            }
+            throw new IllegalStateException("sale line " + saleLineId + " was already used for a different request");
+        }
+        Instant when = MovementTimes.resolve(occurredAt, clock.instant(), null);
+        inventory.sellFromFree(qty);
+        inventories.saveAndFlush(inventory);
+        ledger.insertAction(saleLineId, variantId, "SALE", StockReason.SALE, qty, when, actor, null, null, digest);
+        ledger.conform(variantId, actor);
+        ledger.verify(variantId, inventory.onHand());
+        log.info("Sold {} free boxes {} (sale line {}, {} left)", qty, variantId, saleLineId, inventory.onHand());
+        return Optional.of(inventory);
+    }
+
+    /**
      * Stock leaves with no sale: written off (lost, stolen, broken) or given away (to a model, an influencer, as a gift
      * or a prize). It takes the OLDEST lots at their cost and releases that cost into the month it happened, as a ledger
      * row with a reason of its own. Only stock nobody has reserved can go.
@@ -534,10 +573,18 @@ public class StockService {
         List<CommitmentMismatch> setAside = jdbc.query("""
                 SELECT i.variant_id, i.committed, coalesce(c.total, 0) AS total
                   FROM inventory i
-                  LEFT JOIN (SELECT box_variant_id, sum(quantity) AS total FROM box_commitment GROUP BY box_variant_id) c ON c.box_variant_id = i.variant_id
+                  LEFT JOIN (SELECT box_variant_id, sum(quantity - held) AS total FROM box_commitment GROUP BY box_variant_id) c ON c.box_variant_id = i.variant_id
                  WHERE i.committed <> coalesce(c.total, 0)""" + forVariant + " ORDER BY i.variant_id",
                 (rs, n) -> new CommitmentMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("committed"), rs.getInt("total")), filter);
-        return new ReconciliationReport(checked, counts, ledgers, setAside);
+        List<ReservedMismatch> reserved = jdbc.query("""
+                SELECT i.variant_id, i.reserved, coalesce(h.total, 0) AS total
+                  FROM inventory i
+                  LEFT JOIN (SELECT l.variant_id, sum(l.quantity) AS total
+                               FROM reservation_line l JOIN reservation r ON r.id = l.reservation_id
+                              WHERE r.status = 'HELD' GROUP BY l.variant_id) h ON h.variant_id = i.variant_id
+                 WHERE i.reserved <> coalesce(h.total, 0)""" + forVariant + " ORDER BY i.variant_id",
+                (rs, n) -> new ReservedMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("reserved"), rs.getInt("total")), filter);
+        return new ReconciliationReport(checked, counts, ledgers, setAside, reserved);
     }
 
     /** The variant's current lots, oldest first (the order FIFO draws in). */

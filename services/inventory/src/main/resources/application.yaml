@@ -57,7 +57,7 @@ spring.cloud:
     # than one function every one must be listed, or it is not bound:
     # consignmentEvents reads procurement's live topic and consignmentReplay
     # the topic procurement answers inventory's catch-up on (Phase 5).
-    definition: productEvents;consignmentEvents;consignmentReplay
+    definition: productEvents;consignmentEvents;consignmentReplay;orderEvents
   stream:
     bindings:
       productEvents-in-0:
@@ -134,10 +134,29 @@ spring.cloud:
             java.lang.IllegalArgumentException: false
             java.lang.IllegalStateException: false
             com.fasterxml.jackson.core.JsonProcessingException: false
+      # Order's events (Phase 7): a cancelled or expired order lets go of the hold it names. Read live from oriah.order in a group of
+      # its own, from the earliest message Kafka still has (a hold released twice is released once: the Inbox and the release itself
+      # both see to it).
+      orderEvents-in-0:
+        destination: oriah.order
+        group: inventory
+        consumer:
+          use-native-decoding: false
+          max-attempts: 3
+          back-off-initial-interval: 1000
+          back-off-multiplier: 2.0
+          back-off-max-interval: 10000
+          # A refusal fails the same way every time (an event type nobody declared, a reservation id that is not an id, a body Jackson
+          # cannot read): straight to the dead-letter topic on the first delivery. A lost race on a stock row is not listed, so it is
+          # delivered again and applies.
+          retryable-exceptions:
+            java.lang.IllegalArgumentException: false
+            java.lang.IllegalStateException: false
+            com.fasterxml.jackson.core.JsonProcessingException: false
     kafka:
       default:
         producer:
-          # Inventory SENDS once, at start: the replay request to procurement.
+          # Inventory SENDS: the replay request to procurement at start, and the relay's events (reservation.expired and the rest).
           # A send must return only once Kafka has the record, or the request
           # would look sent when it never was and nothing would ever answer it:
           # the catch-up refuses to start without it.
@@ -206,6 +225,13 @@ spring.cloud:
             dlq-name: oriah.replay.inventory.dlq.inventory
             configuration:
               max.poll.records: 1
+        orderEvents-in-0:
+          consumer:
+            startOffset: earliest
+            enable-dlq: true
+            dlq-name: oriah.order.dlq.inventory
+            configuration:
+              max.poll.records: 1
 
 # The event log convention (shared/oriah-events). The Inbox records each event
 # inventory applies (processed_event) and the newest seq per aggregate
@@ -213,10 +239,25 @@ spring.cloud:
 # event never applies twice: not a product snapshot, and not a receipt (which
 # would double both the stock and its cost).
 #
-# Inventory PUBLISHES nothing (Phase 5): the stock ledger is append-only and
-# complete, so a later phase (6, 7 or 10) that needs inventory's events can
-# publish them from it, losslessly, once the consumer and its contract exist.
-# So outbox, relay and replay stay off here. It does ASK for a replay, below.
+# Inventory PUBLISHES since Phase 7: what happened to a hold (reservation.consumed
+# with what each line cost, reservation.expired, box.swapped) goes to its outbox in
+# the same transaction as the change and a relay sends it to oriah.inventory, so
+# order can move a lapsed order to EXPIRED and finance (Phase 10) can read the cost
+# of every sale. The outbox is the permanent record: a late consumer asks for the
+# whole log again (replay). The old per-variant reserve/release/confirm are gone.
+oriah.events.outbox.enabled: true
+oriah.events.relay.enabled: true
+oriah.events.replay.enabled: true
+# Sent with every message as the producer header.
+oriah.events.producer: inventory
+# The only topic inventory may publish to: an append naming any other is refused.
+oriah.events.topics: oriah.inventory
+
+# Two jobs share the scheduler: the outbox relay and the reservation sweeper (below).
+# Spring's default is ONE thread, and a relay round blocked on a stopped Kafka holds it
+# for up to about 25 s, which would delay a hold's expiry: so two.
+spring.task.scheduling.pool.size: 2
+
 oriah.events.inbox.enabled: true
 # The topics inventory reads through the Inbox. The module dead-letters their
 # bindings itself (productEvents-in-0 and consignmentEvents-in-0) and never
@@ -224,7 +265,7 @@ oriah.events.inbox.enabled: true
 # topic would keep the Kafka binder's own handling, which drops an event whose
 # dead-letter publish fails. So the service refuses to start if a topic listed
 # here is read by no input binding (a typo) or by more than one.
-oriah.events.inbox.topics: catalog.product,oriah.procurement
+oriah.events.inbox.topics: catalog.product,oriah.procurement,oriah.order
 # Inventory started after procurement had been receiving consignments, and
 # Kafka keeps messages only for a while, so on its first start it asks
 # procurement to send its whole history again, to oriah.replay.inventory
