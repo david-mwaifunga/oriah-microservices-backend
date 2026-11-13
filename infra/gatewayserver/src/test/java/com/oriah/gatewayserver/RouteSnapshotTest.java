@@ -93,6 +93,9 @@ class RouteSnapshotTest {
             // /api/v1/admin/costs/, which the security chain has guarded with COST_VIEWER since Phase 0 and which
             // nothing was routed to until inventory built them.
             "inventory-costs-admin-route",
+            // Phase 6: pricing (CATALOG_ADMIN and COST_VIEWER) has a prefix of its own, because /api/v1/admin/products/** is
+            // CATALOG_ADMIN alone and the pricing screen shows landed cost.
+            "catalog-pricing-admin-route",
             "shipping-route",
             "checkout-route",
             "notification-route",
@@ -145,6 +148,7 @@ class RouteSnapshotTest {
                 .containsEntry("catalog-docs", "lb://catalog")
                 .containsEntry("inventory-admin-route", "lb://inventory")
                 .containsEntry("inventory-costs-admin-route", "lb://inventory")
+                .containsEntry("catalog-pricing-admin-route", "lb://catalog")
                 .containsEntry("customer-route", "lb://customer")
                 .containsEntry("customer-admin-route", "lb://customer")
                 .containsEntry("cart-route", "lb://cart")
@@ -181,6 +185,9 @@ class RouteSnapshotTest {
             "/api/v1/admin/inventory,                            inventory-admin-route",
             "/api/v1/admin/costs/lots,                           inventory-costs-admin-route",
             "/api/v1/admin/costs/movements,                      inventory-costs-admin-route",
+            "/api/v1/admin/pricing/below-cost,                   catalog-pricing-admin-route",
+            "/api/v1/admin/pricing/variants/11111111-1111-1111-1111-111111111111/price, catalog-pricing-admin-route",
+            "/api/v1/admin/inventory/box-commitments,            inventory-admin-route",
             "/api/v1/customers/me,                               customer-route",
             "/api/v1/admin/customers,                            customer-admin-route",
             "/api/v1/carts/me,                                   cart-route",

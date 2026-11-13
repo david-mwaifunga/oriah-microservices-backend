@@ -257,6 +257,9 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/finance/expenses,                                             ROLE_FINANCE_ADMIN",
             "/api/v1/admin/costs/lots,                                                   ROLE_COST_VIEWER",
             "/api/v1/admin/inventory/write-offs,                                         ROLE_STOCK_WRITE_OFF",
+            // Phase 6: boxes set aside for a product are INVENTORY_ADMIN's ("box commitments"), under the inventory prefix.
+            "/api/v1/admin/inventory/box-commitments,                                    ROLE_INVENTORY_ADMIN",
+            "/api/v1/admin/inventory/box-commitments/00000000-0000-0000-0000-000000000001, ROLE_INVENTORY_ADMIN",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch,         ROLE_FULFILMENT_AGENT",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver,  ROLE_DELIVERY_WAIVER",
             "/api/v1/admin/orders/recorded,                                              ROLE_SALES_AGENT",
@@ -286,6 +289,9 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/finance/expenses",
             "/api/v1/admin/costs/lots",
             "/api/v1/admin/inventory/write-offs",
+            "/api/v1/admin/inventory/box-commitments",
+            "/api/v1/admin/pricing/below-cost",
+            "/api/v1/admin/pricing/variants/00000000-0000-0000-0000-000000000001",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver",
             "/api/v1/admin/orders/recorded",
@@ -433,6 +439,47 @@ class GatewaySecurityConfigTest {
         as("SALES").get().uri("/api/v1/admin/payments").exchange().expectStatus().isForbidden();
     }
 
+    // ------------------------------------------------------------------
+    // Phase 6: pricing needs BOTH CATALOG_ADMIN and COST_VIEWER
+    // ------------------------------------------------------------------
+
+    private static final String PRICING_LIST = "/api/v1/admin/pricing/below-cost";
+    private static final String PRICING_READ = "/api/v1/admin/pricing/variants/00000000-0000-0000-0000-000000000001";
+    private static final String PRICING_WRITE = PRICING_READ + "/price";
+
+    private WebTestClient holding(String... authorities) {
+        return client.mutateWith(mockJwt().authorities(java.util.Arrays.stream(authorities).map(GatewaySecurityConfigTest::authority)
+                .toArray(SimpleGrantedAuthority[]::new)));
+    }
+
+    @Test
+    @DisplayName("the pricing screen shows landed cost, so it needs CATALOG_ADMIN AND COST_VIEWER: a person holding both is admitted")
+    void pricingAdmitsWhoHoldsBoth() {
+        for (WebTestClient who : new WebTestClient[] {holding("ROLE_CATALOG_ADMIN", "ROLE_COST_VIEWER"), as("OWNER"), as("MANAGER")}) {
+            assertAdmitted(who.get().uri(PRICING_LIST));
+            assertAdmitted(who.get().uri(PRICING_READ));
+            assertAdmitted(who.put().uri(PRICING_WRITE));
+        }
+    }
+
+    @Test
+    @DisplayName("either role alone is refused at the edge: CATALOG_ADMIN without COST_VIEWER would price blind and reach a cost it may not see, COST_VIEWER alone may not price")
+    void pricingRefusesEitherAlone() {
+        for (WebTestClient who : new WebTestClient[] {holding("ROLE_CATALOG_ADMIN"), holding("ROLE_COST_VIEWER"), as("BOOKKEEPER"), as("SALES"),
+                as("DISPATCH"), holding("ROLE_INVENTORY_ADMIN"), holding("ROLE_USER")}) {
+            who.get().uri(PRICING_LIST).exchange().expectStatus().isForbidden();
+            who.get().uri(PRICING_READ).exchange().expectStatus().isForbidden();
+            who.put().uri(PRICING_WRITE).exchange().expectStatus().isForbidden();
+        }
+    }
+
+    @Test
+    @DisplayName("nobody signed out reaches pricing: 401")
+    void pricingNeedsASignIn() {
+        client.get().uri(PRICING_LIST).exchange().expectStatus().isUnauthorized();
+        client.put().uri(PRICING_WRITE).exchange().expectStatus().isUnauthorized();
+    }
+
     @ParameterizedTest(name = "OWNER reaches {0}")
     @DisplayName("OWNER reaches every capability's work")
     @ValueSource(strings = {
@@ -440,7 +487,8 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/customers", "/api/v1/admin/orders/recorded", "/api/v1/admin/orders/late-recorded",
             "/api/v1/admin/payments", "/api/v1/admin/payments/confirmations", "/api/v1/admin/procurement/consignments",
             "/api/v1/admin/procurement/suppliers",
-            "/api/v1/admin/shipping/towns", "/api/v1/admin/finance/expenses", "/api/v1/admin/costs/lots"
+            "/api/v1/admin/shipping/towns", "/api/v1/admin/finance/expenses", "/api/v1/admin/costs/lots",
+            "/api/v1/admin/inventory/box-commitments", "/api/v1/admin/pricing/below-cost"
     })
     void theOwnerReachesEverything(String path) {
         assertAdmitted(as("OWNER").get().uri(path));

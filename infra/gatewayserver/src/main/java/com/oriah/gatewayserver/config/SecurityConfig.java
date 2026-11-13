@@ -4,7 +4,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.authorization.AuthorizationResult;
+import org.springframework.security.authorization.ReactiveAuthorizationManager;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.web.server.authorization.AuthorizationContext;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.ReactiveJwtAuthenticationConverterAdapter;
 import org.springframework.security.web.server.SecurityWebFilterChain;
@@ -196,6 +200,10 @@ public class SecurityConfig {
                         // BOOKKEEPER holds COST_VIEWER but not INVENTORY_ADMIN,
                         // and SALES must see neither (Q29).
                         .pathMatchers("/api/v1/admin/costs/**").hasRole("COST_VIEWER")
+                        // Pricing shows landed cost, so it needs CATALOG_ADMIN (it sets prices) AND COST_VIEWER (it shows what stock
+                        // cost): one without the other is refused here, and again by catalog. OWNER and MANAGER hold both;
+                        // BOOKKEEPER sees cost but may not price, and SALES neither.
+                        .pathMatchers("/api/v1/admin/pricing/**").access(hasAllRoles("CATALOG_ADMIN", "COST_VIEWER"))
 
                         .pathMatchers("/api/v1/admin/products/**").hasRole("CATALOG_ADMIN")
                         .pathMatchers("/api/v1/admin/inventory/**").hasRole("INVENTORY_ADMIN")
@@ -279,5 +287,16 @@ public class SecurityConfig {
         JwtAuthenticationConverter delegate = new JwtAuthenticationConverter();
         delegate.setJwtGrantedAuthoritiesConverter(new KeycloakRoleConverter());
         return new ReactiveJwtAuthenticationConverterAdapter(delegate);
+    }
+
+    /**
+     * Admits only a signed-in caller who holds EVERY one of these capability roles. {@code hasRole} takes one; a path that needs two
+     * (pricing: CATALOG_ADMIN and COST_VIEWER) needs this, and an {@code hasAnyRole} here would silently admit either alone.
+     */
+    private static ReactiveAuthorizationManager<AuthorizationContext> hasAllRoles(String... roles) {
+        return (authentication, context) -> authentication
+                .<AuthorizationResult>map(caller -> new AuthorizationDecision(caller.isAuthenticated() && java.util.Arrays.stream(roles)
+                        .allMatch(role -> caller.getAuthorities().stream().anyMatch(granted -> ("ROLE_" + role).equals(granted.getAuthority())))))
+                .defaultIfEmpty(new AuthorizationDecision(false));
     }
 }

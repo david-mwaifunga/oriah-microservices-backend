@@ -222,6 +222,10 @@ public class GatewayRoutesConfig {
         // BOOKKEEPER (COST_VIEWER, but not INVENTORY_ADMIN) can read cost and SALES cannot; the matcher in
         // SecurityConfig has guarded it since Phase 0, and inventory's controller checks COST_VIEWER again.
         routes = simple(routes, "inventory-costs-admin-route", "/api/v1/admin/costs/**", "inventory");
+        // Pricing (Phase 6): setting a price against what the stock cost, and seeing where every price stands. A prefix of
+        // its own because /api/v1/admin/products/** is CATALOG_ADMIN alone and the pricing screen shows landed cost: the
+        // matcher in SecurityConfig needs CATALOG_ADMIN and COST_VIEWER both, and catalog's controller checks both again.
+        routes = simple(routes, "catalog-pricing-admin-route", "/api/v1/admin/pricing/**", "catalog");
         routes = simple(routes, "customer-admin-route", "/api/v1/admin/customers/**", "customer");
         routes = simple(routes, "order-admin-route", "/api/v1/admin/orders/**", "order");
         routes = simple(routes, "promotion-admin-route", "/api/v1/admin/promotions/**", "promotion");
