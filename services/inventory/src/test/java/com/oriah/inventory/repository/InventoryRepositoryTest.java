@@ -28,10 +28,11 @@ class InventoryRepositoryTest {
     private InventoryRepository repository;
 
     @Test
-    @DisplayName("an inventory row is persisted and retrieved with all fields preserved")
+    @DisplayName("an inventory row is persisted and retrieved with all fields preserved, kind included")
     void savesAndRetrievesInventory() {
         var variantId = UUID.fromString("22222222-2222-2222-2222-222222222222");
-        var inv = new Inventory(variantId, 10);
+        var inv = Inventory.open(variantId, "PACKAGING");
+        inv.receive(10);
         inv.reserve(3);
 
         repository.save(inv);
@@ -42,5 +43,6 @@ class InventoryRepositoryTest {
         assertThat(loaded.onHand()).isEqualTo(10);
         assertThat(loaded.reserved()).isEqualTo(3);
         assertThat(loaded.available()).isEqualTo(7);
+        assertThat(loaded.kind()).isEqualTo("PACKAGING");
     }
 }

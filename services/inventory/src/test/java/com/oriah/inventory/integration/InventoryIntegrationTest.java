@@ -10,6 +10,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -18,8 +19,10 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.oriah.inventory.TestcontainersConfiguration;
-import com.oriah.inventory.repository.InventoryRepository;
+import com.oriah.inventory.service.StockService;
+import com.oriah.inventory.service.StockTestData;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -32,10 +35,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>Boots the entire context, drives HTTP through MockMvc, and runs
  * against a real PostgreSQL 16 container. Exercises one full lifecycle:
- * create -> reserve -> release -> reserve -> confirm -> restock.
+ * stock received into a lot -> reserve -> release -> reserve -> confirm
+ * (a sale that drains the oldest lot) -> public read.
  *
- * <p>State is cleaned via {@link InventoryRepository#deleteAll()} so
- * each test starts from an empty inventory table.
+ * <p>Stock only comes from a received consignment (there is no endpoint that
+ * creates it or adds to it), so tests put it on the shelf through the same
+ * call the event consumer uses. State is cleaned with a TRUNCATE, which the
+ * append-only ledger allows, so each test starts from empty tables.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -52,7 +58,10 @@ class InventoryIntegrationTest {
     private MockMvc mvc;
 
     @Autowired
-    private InventoryRepository repository;
+    private StockService stockService;
+
+    @Autowired
+    private JdbcTemplate jdbc;
 
     /**
      * Replace the OAuth2 resource-server JwtDecoder so context starts
@@ -64,27 +73,23 @@ class InventoryIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
-        repository.deleteAll();
+        StockTestData.wipe(jdbc);
+    }
+
+    /** {@code onHand} units on the shelf, received into a lot. */
+    private void seed(UUID variantId, int onHand) {
+        StockTestData.stock(stockService, variantId, onHand);
     }
 
     @Test
-    @DisplayName("full lifecycle: create -> reserve -> release -> reserve -> confirm -> restock")
+    @DisplayName("full lifecycle: received -> reserve -> release -> reserve -> confirm (a sale) -> public read")
     void fullLifecycle() throws Exception {
         UUID variantId = UUID.fromString("33333333-3333-3333-3333-333333333333");
         String variantPath = "/api/v1/inventory/" + variantId;
         String adminPath = "/api/v1/admin/inventory/" + variantId;
 
-        // 1) Create with onHand=10
-        mvc.perform(post("/api/v1/admin/inventory")
-                        .with(jwt().authorities(INVENTORY_ADMIN))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"variantId":"%s","onHand":10}
-                                """.formatted(variantId)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.onHand").value(10))
-                .andExpect(jsonPath("$.reserved").value(0))
-                .andExpect(jsonPath("$.available").value(10));
+        // 1) Ten units received into a lot
+        seed(variantId, 10);
 
         // 2) Reserve 3
         mvc.perform(post(adminPath + "/reserve")
@@ -104,32 +109,26 @@ class InventoryIntegrationTest {
                 .andExpect(jsonPath("$.reserved").value(2))
                 .andExpect(jsonPath("$.available").value(8));
 
-        // 4) Confirm 2 (shipment goes out)
+        // 4) Confirm 2: a sale. It drains the oldest lot and records what it cost.
         mvc.perform(post(adminPath + "/confirm")
                         .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"qty\":2}"))
+                        .content("{\"qty\":2,\"saleLineId\":\"" + UUID.randomUUID() + "\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.onHand").value(8))
                 .andExpect(jsonPath("$.reserved").value(0))
                 .andExpect(jsonPath("$.available").value(8));
 
-        // 5) Restock 5 (warehouse delivery)
-        mvc.perform(post(adminPath + "/restock")
-                        .with(jwt().authorities(INVENTORY_ADMIN))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"qty\":5}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.onHand").value(13))
-                .andExpect(jsonPath("$.available").value(13));
-
-        // 6) Public GET reflects the final state
+        // 5) Public GET reflects the final state
         mvc.perform(get(variantPath))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.variantId").value(variantId.toString()))
-                .andExpect(jsonPath("$.onHand").value(13))
+                .andExpect(jsonPath("$.onHand").value(8))
                 .andExpect(jsonPath("$.reserved").value(0))
-                .andExpect(jsonPath("$.available").value(13));
+                .andExpect(jsonPath("$.available").value(8));
+
+        // ... and the sale left its mark in the ledger: 2 units, at the lot's cost.
+        assertThat(jdbc.queryForObject("SELECT sum(-qty_delta) FROM stock_movement WHERE reason = 'SALE'", Integer.class)).isEqualTo(2);
     }
 
     @Test
@@ -154,13 +153,19 @@ class InventoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("POST create rejects null variantId with 400")
-    void createRejectsNullVariantId() throws Exception {
+    @DisplayName("there is no way to create stock with a count, or to add to it: stock with no cost makes profit wrong")
+    void stockCannotBeCreatedOrAddedTo() throws Exception {
         mvc.perform(post("/api/v1/admin/inventory")
                         .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"variantId\":null,\"onHand\":10}"))
-                .andExpect(status().isBadRequest());
+                        .content("{\"variantId\":\"" + UUID.randomUUID() + "\",\"onHand\":10}"))
+                .andExpect(status().isMethodNotAllowed());
+        mvc.perform(post("/api/v1/admin/inventory/" + UUID.randomUUID() + "/restock")
+                        .with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"qty\":5}"))
+                .andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inventory", Integer.class)).isZero();
     }
 
     @Test
@@ -177,13 +182,7 @@ class InventoryIntegrationTest {
     @DisplayName("reserve rejects qty < 1 with 400")
     void reserveRejectsZeroQty() throws Exception {
         UUID variantId = UUID.fromString("66666666-6666-6666-6666-666666666666");
-        mvc.perform(post("/api/v1/admin/inventory")
-                        .with(jwt().authorities(INVENTORY_ADMIN))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"variantId":"%s","onHand":5}
-                                """.formatted(variantId)))
-                .andExpect(status().isCreated());
+        seed(variantId, 5);
 
         mvc.perform(post("/api/v1/admin/inventory/{id}/reserve", variantId)
                         .with(jwt().authorities(INVENTORY_ADMIN))
@@ -211,20 +210,6 @@ class InventoryIntegrationTest {
     }
 
     @Test
-    @DisplayName("restocking an unknown variant is 404 with a problem body")
-    void restockUnknownVariantIsAProblem404() throws Exception {
-        UUID missing = UUID.randomUUID();
-        mvc.perform(post("/api/v1/admin/inventory/" + missing + "/restock")
-                        .with(jwt().authorities(INVENTORY_ADMIN))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"qty\":5}"))
-                .andExpect(status().isNotFound())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.detail").value(
-                        "Inventory not found with the given input data variantId : '" + missing + "'"));
-    }
-
-    @Test
     @DisplayName("reserving more than is available is 409, not 400")
     void overReserveIsAConflict() throws Exception {
         // The approved contract change. 400 said "your input is malformed, fix
@@ -234,7 +219,7 @@ class InventoryIntegrationTest {
         // Admin-only endpoint with no oriah-web call site, so this is safe to
         // take now rather than coordinating a frontend release.
         UUID variantId = UUID.randomUUID();
-        createInventory(variantId, 5);
+        seed(variantId, 5);
 
         mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/reserve")
                         .with(jwt().authorities(INVENTORY_ADMIN))
@@ -257,7 +242,7 @@ class InventoryIntegrationTest {
     @DisplayName("releasing or confirming more than is reserved is 409, not 400")
     void overReleaseAndOverConfirmAreConflicts() throws Exception {
         UUID variantId = UUID.randomUUID();
-        createInventory(variantId, 10);
+        seed(variantId, 10);
 
         mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/release")
                         .with(jwt().authorities(INVENTORY_ADMIN))
@@ -271,7 +256,7 @@ class InventoryIntegrationTest {
         mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm")
                         .with(jwt().authorities(INVENTORY_ADMIN))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"qty\":1}"))
+                        .content("{\"qty\":1,\"saleLineId\":\"" + UUID.randomUUID() + "\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.detail").value("cannot confirm 1 units; only 0 reserved"));
     }
@@ -295,7 +280,7 @@ class InventoryIntegrationTest {
         // for direct callers (the Kafka consumer, future internal callers), but
         // it is not what produces this response.
         UUID variantId = UUID.randomUUID();
-        createInventory(variantId, 10);
+        seed(variantId, 10);
 
         mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/reserve")
                         .with(jwt().authorities(INVENTORY_ADMIN))
@@ -307,11 +292,75 @@ class InventoryIntegrationTest {
                 .andExpect(jsonPath("$.fieldErrors[0].message").value("qty must be >= 1"));
     }
 
-    private void createInventory(UUID variantId, int onHand) throws Exception {
-        mvc.perform(post("/api/v1/admin/inventory")
-                        .with(jwt().authorities(INVENTORY_ADMIN))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"variantId\":\"" + variantId + "\",\"onHand\":" + onHand + "}"))
-                .andExpect(status().isCreated());
+    // ------------------------------------------------------------------
+    // Confirm is a sale.
+    // ------------------------------------------------------------------
+
+    private String sale(int qty, UUID saleLineId) {
+        return "{\"qty\":" + qty + ",\"saleLineId\":\"" + saleLineId + "\"}";
+    }
+
+    @Test
+    @DisplayName("a sale is answered again when it is sent again, and takes nothing the second time")
+    void aRetriedSaleTakesNothingMore() throws Exception {
+        UUID variantId = UUID.randomUUID();
+        UUID saleLine = UUID.randomUUID();
+        seed(variantId, 10);
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/reserve").with(jwt().authorities(INVENTORY_ADMIN))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"qty\":4}")).andExpect(status().isOk());
+
+        for (int i = 0; i < 2; i++) {
+            mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm").with(jwt().authorities(INVENTORY_ADMIN))
+                            .contentType(MediaType.APPLICATION_JSON).content(sale(3, saleLine)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.onHand").value(7))
+                    .andExpect(jsonPath("$.reserved").value(1));
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM stock_movement WHERE reason = 'SALE'", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a sale line already used for a different quantity is a 409")
+    void aUsedSaleLineIsAConflict() throws Exception {
+        UUID variantId = UUID.randomUUID();
+        UUID saleLine = UUID.randomUUID();
+        seed(variantId, 10);
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/reserve").with(jwt().authorities(INVENTORY_ADMIN))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"qty\":5}")).andExpect(status().isOk());
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm").with(jwt().authorities(INVENTORY_ADMIN))
+                .contentType(MediaType.APPLICATION_JSON).content(sale(3, saleLine))).andExpect(status().isOk());
+
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm").with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON).content(sale(2, saleLine)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("already")));
+    }
+
+    @Test
+    @DisplayName("a sale needs its sale line and a real quantity: otherwise 400 naming the field")
+    void aSaleNeedsItsSaleLine() throws Exception {
+        UUID variantId = UUID.randomUUID();
+        seed(variantId, 10);
+
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm").with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"qty\":1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("saleLineId"));
+        mvc.perform(post("/api/v1/admin/inventory/" + variantId + "/confirm").with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON).content(sale(0, UUID.randomUUID())))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("qty"));
+    }
+
+    @Test
+    @DisplayName("a sale of a variant with no stock row is 404, and a plain user is refused")
+    void unknownVariantAndPlainUser() throws Exception {
+        mvc.perform(post("/api/v1/admin/inventory/" + UUID.randomUUID() + "/confirm").with(jwt().authorities(INVENTORY_ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON).content(sale(1, UUID.randomUUID())))
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/admin/inventory/" + UUID.randomUUID() + "/confirm")
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")))
+                        .contentType(MediaType.APPLICATION_JSON).content(sale(1, UUID.randomUUID())))
+                .andExpect(status().isForbidden());
     }
 }

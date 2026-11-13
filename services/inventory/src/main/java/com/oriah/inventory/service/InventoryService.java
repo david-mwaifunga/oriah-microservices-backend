@@ -18,7 +18,10 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Transactional operations on the {@link Inventory} aggregate.
  *
- * <p>The reserve / release / confirm / restock methods share the same
+ * <p>There is no way to create stock, add to it, or sell it here: stock comes only from a received consignment, which
+ * brings its cost lots ({@link StockService#applyReceipt}), and a sale drains those lots ({@link StockService#consume}).
+ *
+ * <p>The reserve / release methods share the same
  * pattern: load by id, apply the domain method (which enforces the
  * invariants), let JPA dirty-checking persist on transaction commit.
  * The shared bit is factored into {@link #applyMutation}.
@@ -42,20 +45,6 @@ public class InventoryService {
         return repository.findById(variantId);
     }
 
-    /**
-     * Seeds an inventory row for a variant. Idempotent: if a row already
-     * exists for the variant, returns the existing one (no overwrite).
-     */
-    @Transactional
-    public Inventory create(UUID variantId, int onHand) {
-        return repository.findById(variantId).orElseGet(() -> {
-            Inventory created = new Inventory(variantId, onHand);
-            Inventory saved = repository.save(created);
-            log.info("Created inventory variantId={} onHand={}", saved.variantId(), saved.onHand());
-            return saved;
-        });
-    }
-
     @Transactional
     public Optional<Inventory> reserve(UUID variantId, int qty) {
         return applyMutation(variantId, inv -> inv.reserve(qty), "Reserved", qty);
@@ -64,16 +53,6 @@ public class InventoryService {
     @Transactional
     public Optional<Inventory> release(UUID variantId, int qty) {
         return applyMutation(variantId, inv -> inv.release(qty), "Released", qty);
-    }
-
-    @Transactional
-    public Optional<Inventory> confirm(UUID variantId, int qty) {
-        return applyMutation(variantId, inv -> inv.confirm(qty), "Confirmed", qty);
-    }
-
-    @Transactional
-    public Optional<Inventory> restock(UUID variantId, int qty) {
-        return applyMutation(variantId, inv -> inv.restock(qty), "Restocked", qty);
     }
 
     /**

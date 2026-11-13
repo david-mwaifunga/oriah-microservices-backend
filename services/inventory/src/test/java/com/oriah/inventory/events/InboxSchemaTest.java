@@ -31,9 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.function.definition=productEvents",
-        "spring.cloud.stream.bindings.productEvents-in-0.destination=catalog.product"
+        "eureka.client.enabled=false"
 })
 class InboxSchemaTest {
 

@@ -1,6 +1,5 @@
 package com.oriah.inventory.controller;
 
-import java.net.URI;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.Optional;
@@ -10,6 +9,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -19,12 +20,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.inventory.dto.AdminInventoryRow;
-import com.oriah.inventory.dto.InventoryCreateRequest;
+import com.oriah.inventory.dto.ConsumeRequest;
 import com.oriah.inventory.dto.InventoryResponse;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.inventory.dto.QuantityRequest;
 import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.service.InventoryService;
+import com.oriah.inventory.service.StockService;
 
 import jakarta.validation.Valid;
 import io.swagger.v3.oas.annotations.Operation;
@@ -41,13 +43,16 @@ import lombok.extern.slf4j.Slf4j;
  * {@code /api/v1/admin/inventory}; will carry {@code @PreAuthorize} once
  * Keycloak is wired in (iteration 7).
  *
- * <p>Reserve, release, confirm, and restock all share the same shape:
- * accept a {@link QuantityRequest}, hand it to the service, return 200
- * on success or 404 when the variant is unknown. The service throws
- * {@link IllegalArgumentException} for domain violations (negative qty,
- * over-reserve, etc.); Spring's default exception handling maps that to
- * 500 today — we'd add a {@code @RestControllerAdvice} to translate it
- * to 400/409 in a polish cycle.
+ * <p>Reserve and release share the same shape: accept a
+ * {@link QuantityRequest}, hand it to the service, return 200 on success or
+ * 404 when the variant is unknown; a domain violation is a 400 or 409 through
+ * the shared exception advice. Confirm is a SALE: it takes a
+ * {@link ConsumeRequest} (the sale line, and when it happened), drains the
+ * oldest cost lots and records what the sale cost, in one transaction.
+ *
+ * <p>There is no endpoint that creates a stock row or adds units to one. That
+ * was retired in Phase 5: stock with no cost makes profit wrong, so stock
+ * comes only from a received consignment, which brings its cost lots.
  */
 @RestController
 @RequestMapping("/api/v1/admin/inventory")
@@ -68,9 +73,11 @@ import lombok.extern.slf4j.Slf4j;
 public class AdminInventoryController {
 
     private final InventoryService service;
+    private final StockService stock;
 
-    public AdminInventoryController(InventoryService service) {
+    public AdminInventoryController(InventoryService service, StockService stock) {
         this.service = service;
+        this.stock = stock;
     }
 
     private static final int MAX_PAGE_SIZE = 200;
@@ -109,20 +116,6 @@ public class AdminInventoryController {
                 outOfStock, PageRequest.of(page, size)));
     }
 
-    @Operation(operationId = "create", summary = "Create a stock record for a variant")
-    @ApiResponse(responseCode = "201", description = "Created; Location points at the public read path")
-    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @PostMapping
-    public ResponseEntity<InventoryResponse> create(
-            @Valid @RequestBody InventoryCreateRequest request) {
-        log.debug("POST /api/v1/admin/inventory variantId={}", request.variantId());
-        Inventory saved = service.create(request.variantId(), request.onHand());
-        URI location = URI.create("/api/v1/inventory/" + saved.variantId());
-        return ResponseEntity.created(location).body(InventoryResponse.from(saved));
-    }
-
     @Operation(operationId = "reserve", summary = "Reserve units against available stock")
     @ApiResponse(responseCode = "200", description = "Updated stock levels")
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
@@ -159,7 +152,12 @@ public class AdminInventoryController {
         return apply(variantId, request, service::release);
     }
 
-    @Operation(operationId = "confirm", summary = "Confirm reserved units as shipped")
+    @Operation(operationId = "confirm",
+            summary = "Consume reserved units for a sale: the oldest cost lots are drained and the cost recorded",
+            description = "The sale line makes a retry safe: the same sale line with the same quantity answers again and takes "
+                    + "nothing; a sale line already used for a different request is a 409. A paid sale is never refused for its "
+                    + "date, only for being in the future. This is the order system's call, not a person's button: the gateway "
+                    + "does not route it.")
     @ApiResponse(responseCode = "200", description = "Updated stock levels")
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
@@ -173,27 +171,17 @@ public class AdminInventoryController {
     @PostMapping("/{variantId}/confirm")
     public ResponseEntity<InventoryResponse> confirm(
             @PathVariable("variantId") UUID variantId,
-            @Valid @RequestBody QuantityRequest request) {
-        return apply(variantId, request, service::confirm);
-    }
-
-    @Operation(operationId = "restock", summary = "Add units to on-hand stock")
-    @ApiResponse(responseCode = "200", description = "Updated stock levels")
-    @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "404", description = "No such resource",
-            content = @Content(mediaType = "application/problem+json",
-                    schema = @Schema(implementation = ProblemDetail.class)))
-    @PostMapping("/{variantId}/restock")
-    public ResponseEntity<InventoryResponse> restock(
-            @PathVariable("variantId") UUID variantId,
-            @Valid @RequestBody QuantityRequest request) {
-        return apply(variantId, request, service::restock);
+            @Valid @RequestBody ConsumeRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        String actor = jwt == null || jwt.getSubject() == null ? "system:unknown" : "user:" + jwt.getSubject();
+        return stock.consume(variantId, request.qty(), request.saleLineId(), request.occurredAt(), actor)
+                .map(InventoryResponse::from)
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new ResourceNotFoundException("Inventory", "variantId", variantId.toString()));
     }
 
     /**
-     * Shared shape for the four state-changing endpoints: pass the
+     * Shared shape for the three state-changing endpoints: pass the
      * variantId + qty to the right service method, return 200 + body or
      * 404 if the variant is unknown.
      */
@@ -201,7 +189,7 @@ public class AdminInventoryController {
             UUID variantId,
             QuantityRequest request,
             BiFunction<UUID, Integer, Optional<Inventory>> serviceCall) {
-        // One 404 path shared by reserve / release / confirm / restock, so all
+        // One 404 path shared by reserve / release, so all
         // four gained a problem body from this single change.
         //
         // Note what is NOT folded in here: an over-reserve is a 409, raised as

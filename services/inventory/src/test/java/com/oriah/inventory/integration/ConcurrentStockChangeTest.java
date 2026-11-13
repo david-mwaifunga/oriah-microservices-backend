@@ -19,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -31,6 +32,8 @@ import com.oriah.inventory.TestcontainersConfiguration;
 import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.repository.InventoryRepository;
 import com.oriah.inventory.service.InventoryService;
+import com.oriah.inventory.service.StockService;
+import com.oriah.inventory.service.StockTestData;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -75,6 +78,12 @@ class ConcurrentStockChangeTest {
     @Autowired
     private InventoryService service;
 
+    @Autowired
+    private StockService stockService;
+
+    @Autowired
+    private JdbcTemplate jdbc;
+
     @MockitoSpyBean
     private InventoryRepository repository;
 
@@ -87,7 +96,7 @@ class ConcurrentStockChangeTest {
 
     @BeforeEach
     void holdEachReaderUntilTheOtherHasReadToo() {
-        repository.deleteAll();
+        StockTestData.wipe(jdbc);
         // The repository is an interface proxy, so the spy has no "real method"
         // to call; its default answer is what forwards to the real repository.
         Answer<?> realRepository = mockingDetails(repository).getMockCreationSettings().getDefaultAnswer();
@@ -145,23 +154,10 @@ class ConcurrentStockChangeTest {
         assertThat(after.onHand()).isEqualTo(1);
     }
 
-    @Test
-    @DisplayName("two restocks of one unit each: one applies, the other gets 409")
-    void restockRace() throws Exception {
-        UUID id = stock(1, 0);
-
-        List<MvcResult> results = race(id, "restock");
-
-        assertOneWonOneLost(results);
-        Inventory after = repository.findById(id).orElseThrow();
-        assertThat(after.onHand()).isEqualTo(2);
-        assertThat(after.reserved()).isZero();
-    }
-
-    /** A row with the given counts, created before any race is armed. */
+    /** A row with the given counts (received into a lot, as real stock is), created before any race is armed. */
     private UUID stock(int onHand, int reserved) {
         UUID id = UUID.randomUUID();
-        service.create(id, onHand);
+        StockTestData.stock(stockService, id, onHand);
         if (reserved > 0) {
             service.reserve(id, reserved);
         }
@@ -177,7 +173,9 @@ class ConcurrentStockChangeTest {
                             post("/api/v1/admin/inventory/" + id + "/" + operation)
                                     .with(jwt().authorities(INVENTORY_ADMIN))
                                     .contentType(MediaType.APPLICATION_JSON)
-                                    .content("{\"qty\":1}"))
+                                    .content(operation.equals("confirm")
+                                            ? "{\"qty\":1,\"saleLineId\":\"" + UUID.randomUUID() + "\"}"
+                                            : "{\"qty\":1}"))
                     .andReturn();
             Future<MvcResult> first = pool.submit(send);
             Future<MvcResult> second = pool.submit(send);

@@ -10,41 +10,70 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * The aggregate's own rules. A stock row is opened for a received variant and holds nothing until units are received
+ * into it: there is no way to create one with a count (stock with no cost makes profit wrong).
+ */
 class InventoryTest {
 
     private static final UUID VARIANT = UUID.fromString("11111111-1111-1111-1111-111111111111");
 
+    /** A row holding {@code onHand} units, the way the receipt service builds one. */
+    private static Inventory holding(int onHand) {
+        var inv = Inventory.open(VARIANT, "SELLABLE");
+        inv.receive(onHand);
+        return inv;
+    }
+
     @Test
     @DisplayName("requires a non-null variantId")
     void requiresVariantId() {
-        assertThatThrownBy(() -> new Inventory(null, 10))
+        assertThatThrownBy(() -> Inventory.open(null, "SELLABLE"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("variantId");
     }
 
     @Test
-    @DisplayName("rejects negative onHand at construction")
-    void rejectsNegativeOnHand() {
-        assertThatThrownBy(() -> new Inventory(VARIANT, -1))
+    @DisplayName("a row is goods or packaging and nothing else")
+    void kindIsGoodsOrPackaging() {
+        assertThat(Inventory.open(VARIANT, "PACKAGING").kind()).isEqualTo("PACKAGING");
+        assertThatThrownBy(() -> Inventory.open(VARIANT, "SERVICE"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("onHand");
+                .hasMessageContaining("kind");
+        assertThatThrownBy(() -> Inventory.open(VARIANT, null)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    @DisplayName("a fresh inventory starts with zero reservations and full availability")
-    void freshInventoryStartsClean() {
-        var inv = new Inventory(VARIANT, 10);
+    @DisplayName("a fresh row holds nothing: no count, no reservations, nothing available")
+    void freshInventoryHoldsNothing() {
+        var inv = Inventory.open(VARIANT, "SELLABLE");
 
         assertThat(inv.variantId()).isEqualTo(VARIANT);
-        assertThat(inv.onHand()).isEqualTo(10);
+        assertThat(inv.onHand()).isZero();
         assertThat(inv.reserved()).isZero();
-        assertThat(inv.available()).isEqualTo(10);
+        assertThat(inv.available()).isZero();
+        assertThat(inv.kind()).isEqualTo("SELLABLE");
+    }
+
+    @Test
+    @DisplayName("receiving units raises the count and what is available, and rejects a non-positive quantity")
+    void receiveAdjustsCounts() {
+        var inv = holding(5);
+        inv.reserve(2);
+
+        inv.receive(10);
+
+        assertThat(inv.onHand()).isEqualTo(15);
+        assertThat(inv.reserved()).isEqualTo(2);
+        assertThat(inv.available()).isEqualTo(13);
+        assertThatThrownBy(() -> inv.receive(0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> inv.receive(-1)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     @DisplayName("reserve increments reserved and lowers available")
     void reserveAdjustsCounts() {
-        var inv = new Inventory(VARIANT, 10);
+        var inv = holding(10);
 
         inv.reserve(3);
 
@@ -56,7 +85,7 @@ class InventoryTest {
     @Test
     @DisplayName("reserve rejects qty exceeding available stock")
     void reserveRejectsOverflow() {
-        var inv = new Inventory(VARIANT, 5);
+        var inv = holding(5);
         inv.reserve(3);
 
         assertThatThrownBy(() -> inv.reserve(3))
@@ -67,7 +96,7 @@ class InventoryTest {
     @Test
     @DisplayName("reserve rejects non-positive qty")
     void reserveRejectsNonPositive() {
-        var inv = new Inventory(VARIANT, 10);
+        var inv = holding(10);
 
         assertThatThrownBy(() -> inv.reserve(0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -78,7 +107,7 @@ class InventoryTest {
     @Test
     @DisplayName("release decrements reserved back into available")
     void releaseAdjustsCounts() {
-        var inv = new Inventory(VARIANT, 10);
+        var inv = holding(10);
         inv.reserve(4);
 
         inv.release(2);
@@ -91,7 +120,7 @@ class InventoryTest {
     @Test
     @DisplayName("release rejects qty exceeding reserved")
     void releaseRejectsOverflow() {
-        var inv = new Inventory(VARIANT, 10);
+        var inv = holding(10);
         inv.reserve(2);
 
         assertThatThrownBy(() -> inv.release(5))
@@ -102,7 +131,7 @@ class InventoryTest {
     @Test
     @DisplayName("confirm decrements both reserved and onHand")
     void confirmAdjustsBothCounts() {
-        var inv = new Inventory(VARIANT, 10);
+        var inv = holding(10);
         inv.reserve(3);
 
         inv.confirm(3);
@@ -115,7 +144,7 @@ class InventoryTest {
     @Test
     @DisplayName("confirm rejects qty exceeding reserved")
     void confirmRejectsOverflow() {
-        var inv = new Inventory(VARIANT, 10);
+        var inv = holding(10);
         inv.reserve(2);
 
         assertThatThrownBy(() -> inv.confirm(3))
@@ -124,15 +153,30 @@ class InventoryTest {
     }
 
     @Test
-    @DisplayName("restock increments onHand and raises available")
-    void restockAdjustsCounts() {
-        var inv = new Inventory(VARIANT, 5);
-        inv.reserve(2);
+    @DisplayName("a write-off takes only stock nobody has reserved, and lowers the count")
+    void writeOffTakesAvailableStock() {
+        var inv = holding(10);
+        inv.reserve(4);
 
-        inv.restock(10);
+        inv.writeOff(6);
 
-        assertThat(inv.onHand()).isEqualTo(15);
-        assertThat(inv.reserved()).isEqualTo(2);
-        assertThat(inv.available()).isEqualTo(13);
+        assertThat(inv.onHand()).isEqualTo(4);
+        assertThat(inv.reserved()).isEqualTo(4);
+        assertThat(inv.available()).isZero();
+        assertThatThrownBy(() -> inv.writeOff(1))
+                .isInstanceOf(InsufficientStockException.class)
+                .hasMessageContaining("only 0 available");
+    }
+
+    @Test
+    @DisplayName("a take-back returns units to the count")
+    void takeBackRaisesTheCount() {
+        var inv = holding(10);
+        inv.writeOff(3);
+
+        inv.takeBack(2);
+
+        assertThat(inv.onHand()).isEqualTo(9);
+        assertThatThrownBy(() -> inv.takeBack(0)).isInstanceOf(IllegalArgumentException.class);
     }
 }

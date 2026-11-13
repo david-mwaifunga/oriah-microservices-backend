@@ -81,12 +81,16 @@ public class ProductEventConsumer {
      * Every type catalog publishes on catalog.product, all handled: each is a
      * full snapshot product_index needs. Nothing is ignored. Payload version 1
      * is {@link ProductCreatedEvent}, {@link ProductUpdatedEvent} and
-     * {@link ProductDeletedEvent}.
+     * {@link ProductDeletedEvent}. Also procurement's {@code consignment.received}
+     * ({@link ConsignmentEventConsumer}), which makes stock, not a projection.
      */
     static final InboxConsumer INVENTORY = InboxConsumer.named("inventory")
             .handles(PRODUCT, ProductCreatedEvent.TYPE, 1)
             .handles(PRODUCT, ProductUpdatedEvent.TYPE, 1)
-            .handles(PRODUCT, ProductDeletedEvent.TYPE, 1);
+            .handles(PRODUCT, ProductDeletedEvent.TYPE, 1)
+            // Procurement's receipts (Phase 5): one per consignment line. CatchUp serves ONE consumer name per
+            // service, and replays arrive under it, so inventory has one declaration and this is it.
+            .handles(ConsignmentEventConsumer.CONSIGNMENT_LINE, ConsignmentEventConsumer.RECEIVED, 1);
 
     @Bean
     public Consumer<Message<byte[]>> productEvents(

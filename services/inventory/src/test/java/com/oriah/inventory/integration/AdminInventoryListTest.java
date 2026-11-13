@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -20,6 +21,8 @@ import com.oriah.inventory.model.Inventory;
 import com.oriah.inventory.model.ProductRef;
 import com.oriah.inventory.repository.InventoryRepository;
 import com.oriah.inventory.repository.ProductRefRepository;
+import com.oriah.inventory.service.StockService;
+import com.oriah.inventory.service.StockTestData;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -67,23 +70,33 @@ class AdminInventoryListTest {
     private InventoryRepository repository;
     @Autowired
     private ProductRefRepository productRefs;
+    @Autowired
+    private StockService stockService;
+    @Autowired
+    private JdbcTemplate jdbc;
     @MockitoBean
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
 
     @BeforeEach
     void reset() {
-        repository.deleteAll();
+        StockTestData.wipe(jdbc);
         productRefs.deleteAll();
     }
 
+    /** A stock row holding {@code onHand} units (received into a lot, as real stock is), {@code reserve} of them reserved. */
     private UUID stock(int onHand, int reserve) {
         UUID variantId = UUID.randomUUID();
-        Inventory inv = new Inventory(variantId, onHand);
-        if (reserve > 0) {
-            inv.reserve(reserve);
+        if (onHand > 0) {
+            StockTestData.stock(stockService, variantId, onHand);
+        } else {
+            repository.saveAndFlush(Inventory.open(variantId, "SELLABLE"));
         }
-        repository.saveAndFlush(inv);
+        if (reserve > 0) {
+            Inventory inv = repository.findById(variantId).orElseThrow();
+            inv.reserve(reserve);
+            repository.saveAndFlush(inv);
+        }
         return variantId;
     }
 

@@ -58,9 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest
 @Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
 @TestPropertySource(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.function.definition=productEvents",
-        "spring.cloud.stream.bindings.productEvents-in-0.destination=catalog.product"
+        "eureka.client.enabled=false"
 })
 class ProductEventBindingTest {
 
@@ -138,9 +136,9 @@ class ProductEventBindingTest {
         BindingProperties binding = bindings.getBindingProperties(BINDING);
 
         assertThat(context.getBean(EventsProperties.class).inbox().topics())
-                .as("oriah.events.inbox.topics")
-                .containsExactly(binding.getDestination())
-                .containsExactly("catalog.product");
+                .as("oriah.events.inbox.topics: the two this service reads through the Inbox")
+                .containsExactlyInAnyOrder("catalog.product", "oriah.procurement")
+                .contains(binding.getDestination());
         assertThat(context.getBean(ListenerContainerWithDlqAndRetryCustomizer.class)
                 .retryAndDlqInBinding(binding.getDestination(), binding.getGroup()))
                 .as("whether the Kafka binder keeps its own retry and dead-lettering for this binding")
