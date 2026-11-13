@@ -264,7 +264,12 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver,  ROLE_DELIVERY_WAIVER",
             "/api/v1/admin/orders/recorded,                                              ROLE_SALES_AGENT",
             "/api/v1/admin/orders/late-recorded,                                         ROLE_BACKDATE_SALE",
-            "/api/v1/admin/payments/confirmations,                                       ROLE_SALES_AGENT"
+            "/api/v1/admin/payments/confirmations,                                       ROLE_SALES_AGENT",
+            // Phase 7: rejecting a false payment claim is the staff's, like confirming (a claim is rejected by its id, which the awaiting-payment list shows).
+            "/api/v1/admin/payments/claims,                                              ROLE_SALES_AGENT",
+            "/api/v1/admin/payments/claims/00000000-0000-0000-0000-000000000001/reject,  ROLE_SALES_AGENT",
+            // Money held for a customer (paid for something that could not be sold) is the owner's: PAYMENT_ADMIN.
+            "/api/v1/admin/payments/held-money,                                          ROLE_PAYMENT_ADMIN"
     })
     void adminPathsRequireTheCorrectRole(String path, String requiredAuthority) {
         assertAdmitted(client
@@ -296,7 +301,10 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver",
             "/api/v1/admin/orders/recorded",
             "/api/v1/admin/orders/late-recorded",
-            "/api/v1/admin/payments/confirmations"
+            "/api/v1/admin/payments/confirmations",
+            "/api/v1/admin/payments/claims",
+            "/api/v1/admin/payments/claims/00000000-0000-0000-0000-000000000001/reject",
+            "/api/v1/admin/payments/held-money"
     })
     void adminPathsRejectNonAdmins(String path) {
         client.mutateWith(mockJwt().authorities(authority("ROLE_USER")))
@@ -339,7 +347,11 @@ class GatewaySecurityConfigTest {
             // A sale recorded late is the owner's call (section 8.2), not every
             // sales assistant's.
             "/api/v1/admin/orders/late-recorded,                                         ROLE_SALES_AGENT",
-            "/api/v1/admin/payments/confirmations,                                       ROLE_PAYMENT_ADMIN"
+            "/api/v1/admin/payments/confirmations,                                       ROLE_PAYMENT_ADMIN",
+            "/api/v1/admin/payments/claims,                                              ROLE_PAYMENT_ADMIN",
+            "/api/v1/admin/payments/claims/00000000-0000-0000-0000-000000000001/reject,  ROLE_PAYMENT_ADMIN",
+            // And the other way: the staff who confirm money never see the money held for customers.
+            "/api/v1/admin/payments/held-money,                                          ROLE_SALES_AGENT"
     })
     void aNarrowerPathIsNotOpenedByTheBroaderRole(String path, String broaderAuthority) {
         client.mutateWith(mockJwt().authorities(authority(broaderAuthority.trim())))

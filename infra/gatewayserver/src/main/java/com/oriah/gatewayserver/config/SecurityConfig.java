@@ -198,6 +198,9 @@ public class SecurityConfig {
                         .pathMatchers("/api/v1/admin/orders/late-recorded/**").hasRole("BACKDATE_SALE")
                         .pathMatchers("/api/v1/admin/orders/recorded/**").hasRole("SALES_AGENT")
                         .pathMatchers("/api/v1/admin/payments/confirmations/**").hasRole("SALES_AGENT")
+                        // Phase 7: rejecting a false payment claim is the staff's, like confirming one. Before the PAYMENT_ADMIN prefix below,
+                        // which guards what is left of /payments (money held for customers).
+                        .pathMatchers("/api/v1/admin/payments/claims/**").hasRole("SALES_AGENT")
                         .pathMatchers("/api/v1/admin/procurement/**").hasRole("PROCUREMENT_ADMIN")
                         .pathMatchers("/api/v1/admin/shipping/**").hasRole("SHIPPING_ADMIN")
                         .pathMatchers("/api/v1/admin/finance/**").hasRole("FINANCE_ADMIN")
