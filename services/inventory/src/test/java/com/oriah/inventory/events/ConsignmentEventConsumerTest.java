@@ -252,4 +252,63 @@ class ConsignmentEventConsumerTest {
         List<Map<String, Object>> lots = jdbc.queryForList("SELECT is_estimated, supplier_id, supplier_name FROM cost_lot WHERE variant_id = ?", variant);
         assertThat(lots).hasSize(2).allSatisfy(l -> assertThat(l).containsEntry("is_estimated", true).containsEntry("supplier_id", null));
     }
+
+    /** The corrected line, as procurement's outbox stores `consignment.amended`: all of the receipt's fields, then the revision, why and when. */
+    private static String amendedPayload(UUID line, UUID variant) {
+        return """
+                {"consignmentId":"%s","consignmentReference":"C-000045","consignmentLineId":"%s","variantId":"%s","sku":"RING-1",
+                 "productTitle":"Aurelia Ring","variantTitle":"Aurelia Ring - RING-1","kind":"SELLABLE",
+                 "supplierId":"%s","supplierName":"Dubai Gold","receivedAt":"%s","isEstimated":false,"currency":"ZMW","quantity":7,
+                 "goodsTotal":10500.00,"sharedCost":4202.90,"landedTotal":14702.90,
+                 "slices":[{"quantity":3,"unitCost":2100.42},{"quantity":4,"unitCost":2100.41}],"linePosition":1,
+                 "revision":2,"reason":"the courier's bill was K4,000 more","amendedAt":"2026-11-13T09:00:00Z"}"""
+                .formatted(UUID.randomUUID(), line, variant, UUID.randomUUID(), RECEIVED_AT);
+    }
+
+    private static Message<byte[]> amendment(UUID line, UUID variant, String payload, String occurredAt, long seq) {
+        return relayed(UUID.randomUUID(), "consignment.amended", line, OUTBOX.incrementAndGet(), occurredAt, payload)
+                .setHeader(EventHeaders.SEQ, Long.toString(seq)).build();
+    }
+
+    @Test
+    @DisplayName("a correction on the live topic re-lays the new unit costs over the line's lots")
+    void aCorrectionIsApplied() {
+        UUID line = UUID.randomUUID();
+        UUID variant = UUID.randomUUID();
+        input.send(receipt(UUID.randomUUID(), line, variant), "oriah.procurement");
+
+        input.send(amendment(line, variant, amendedPayload(line, variant), "2026-11-13T09:00:00Z", 2), "oriah.procurement");
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cost_lot WHERE variant_id = ? AND superseded_at IS NULL AND revision = 2", Integer.class, variant)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT sum(qty_remaining * unit_cost) FROM cost_lot WHERE variant_id = ? AND superseded_at IS NULL",
+                java.math.BigDecimal.class, variant)).isEqualByComparingTo("14702.90");
+        assertThat(onHand(variant)).isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("a correction that arrives BEFORE its receipt makes the stock itself, and the receipt, arriving after, is skipped as older")
+    void aCorrectionBeforeItsReceipt() {
+        UUID line = UUID.randomUUID();
+        UUID variant = UUID.randomUUID();
+
+        input.send(amendment(line, variant, amendedPayload(line, variant), "2026-11-13T09:00:00Z", 2), "oriah.procurement");
+        input.send(receipt(UUID.randomUUID(), line, variant), "oriah.procurement");
+
+        assertThat(onHand(variant)).isEqualTo(7);
+        assertThat(jdbc.queryForObject("SELECT sum(qty_received * unit_cost) FROM cost_lot WHERE variant_id = ?", java.math.BigDecimal.class, variant))
+                .as("the stock is at the CORRECTED cost, and the older receipt did not double it").isEqualByComparingTo("14702.90");
+        assertThat(lots(variant)).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("a correction whose time is not the time the event says it happened is refused")
+    void aCorrectionTimeThatDisagrees() {
+        UUID line = UUID.randomUUID();
+        UUID variant = UUID.randomUUID();
+        input.send(receipt(UUID.randomUUID(), line, variant), "oriah.procurement");
+
+        assertThatThrownBy(() -> live.accept(amendment(line, variant, amendedPayload(line, variant), "2026-11-13T09:00:05Z", 2)))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("amendedAt");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM cost_lot WHERE variant_id = ? AND revision = 2", Integer.class, variant)).isZero();
+    }
 }

@@ -7,9 +7,14 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -79,12 +84,14 @@ public class StockService {
     private final StockLedger ledger;
     private final Clock clock;
     private final JdbcTemplate jdbc;
+    private final EntityManager entityManager;
 
-    public StockService(InventoryRepository inventories, StockLedger ledger, Clock clock, JdbcTemplate jdbc) {
+    public StockService(InventoryRepository inventories, StockLedger ledger, Clock clock, JdbcTemplate jdbc, EntityManager entityManager) {
         this.inventories = inventories;
         this.ledger = ledger;
         this.clock = clock;
         this.jdbc = jdbc;
+        this.entityManager = entityManager;
     }
 
     /**
@@ -97,6 +104,96 @@ public class StockService {
     @Transactional
     public void applyReceipt(ReceiptSnapshot snapshot, EventContext context) {
         snapshot.validate();
+        receive(snapshot, context, 1);
+    }
+
+    /**
+     * A consignment line's cost was corrected: a new revision, restated in full. The line's units are laid over the NEW
+     * unit costs, oldest first, so every sale, write-off and give-away that already drained those units is re-cut at its
+     * own date, what is still held is re-valued, and the old lots are kept, marked replaced. The stock count does not
+     * move, and nothing is an expense: cost simply goes where it belongs.
+     *
+     * <p>An amendment that arrives BEFORE the receipt it corrects (the live and replay streams interleave) is a complete
+     * snapshot, so it makes the stock itself, at the corrected costs; the receipt, when it comes, is skipped.
+     *
+     * @throws IllegalArgumentException the snapshot breaks a promise, or changes the quantity
+     * @throws IllegalStateException    the revision is not after the line's current one
+     */
+    @Transactional
+    public void applyAmendment(ReceiptSnapshot snapshot, EventContext context) {
+        snapshot.validateAmendment();
+        UUID variantId = snapshot.variantId();
+        ledger.lockVariant(variantId);
+        List<StockLedger.LineLot> current = ledger.currentLotsOfLine(snapshot.consignmentLineId());
+        if (current.isEmpty()) {
+            receive(snapshot, context, snapshot.revision());
+            return;
+        }
+        StockLedger.LineLot first = current.get(0);
+        if (snapshot.revision() <= first.revision()) {
+            throw new IllegalStateException("amendment revision " + snapshot.revision() + " is not after the line's current revision " + first.revision());
+        }
+        int heldUnits = current.stream().mapToInt(StockLedger.LineLot::qtyReceived).sum();
+        if (heldUnits != snapshot.quantity()) {
+            throw new IllegalArgumentException("an amendment cannot change the quantity: the line has " + heldUnits + " units, the amendment says "
+                    + snapshot.quantity());
+        }
+        if (!first.variantId().equals(variantId) || !first.kind().equals(snapshot.kind())) {
+            throw new IllegalArgumentException("an amendment cannot change the variant or its kind");
+        }
+        if (sameCosts(current, snapshot)) {
+            log.info("Amendment {} of line {} changes no cost: nothing to do", snapshot.revision(), snapshot.consignmentLineId());
+            return;
+        }
+        Inventory inventory = inventories.findById(variantId)
+                .orElseThrow(() -> new IllegalStateException("the stock row of variant " + variantId + " is gone"));
+        // A correction changes lots, not the count, so nothing would move the stock row's version on its own: force it, so a
+        // sale racing the correction is refused (409, retry) rather than drawing from lots that are being replaced.
+        entityManager.lock(inventory, LockModeType.PESSIMISTIC_FORCE_INCREMENT);
+        ledger.verify(variantId, inventory.onHand());
+
+        // The producer's own time for the correction: authoritative, so not checked against this clock (a replay brings it later).
+        Instant amendedAt = snapshot.amendedAtInstant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        ledger.insertAction(context.eventId(), variantId, "CORRECTION", StockReason.COST_CORRECTED, snapshot.quantity(), amendedAt, context.actor(),
+                snapshot.reason(), null, null);
+        Set<UUID> staged = new LinkedHashSet<>();
+        current.forEach(l -> staged.add(l.id()));
+        int position = 0;
+        for (ReceiptSnapshot.Slice slice : snapshot.slices()) {
+            UUID lotId = UUID.randomUUID();
+            // What the line is (its time, place in its receipt, names, supplier) is copied from the lots it replaces, as at the
+            // receipt: a renamed supplier or product does not rewrite history.
+            ledger.insertLot(new StockLedger.NewLot(lotId, variantId, first.kind(), first.sku(), first.productTitle(), first.variantTitle(),
+                    first.consignmentId(), first.consignmentReference(), snapshot.consignmentLineId(), first.supplierId(), first.supplierName(),
+                    first.receivedAt(), first.fifoTiebreak(), ++position, snapshot.revision(), slice.quantity(), slice.quantity(), slice.unitCost(),
+                    snapshot.isEstimated()));
+            ledger.insertMovement(variantId, context.eventId(), lotId, StockReason.COST_CORRECTED, "LOT_OPEN", slice.quantity(), slice.unitCost(),
+                    snapshot.isEstimated(), first.kind(), null, null, amendedAt, context.actor());
+        }
+        int recut = ledger.conform(variantId, context.actor(), staged);
+        ledger.closeLots(variantId, staged, context.eventId(), StockReason.COST_CORRECTED, amendedAt, context.actor());
+        ledger.verify(variantId, inventory.onHand());
+        ledger.verifyLineValuation(snapshot.consignmentLineId(), snapshot.landedTotal());
+        log.info("Amended line {} of {} to revision {}: {} action(s) re-cut", snapshot.consignmentLineId(), snapshot.consignmentReference(),
+                snapshot.revision(), recut);
+    }
+
+    private static boolean sameCosts(List<StockLedger.LineLot> current, ReceiptSnapshot snapshot) {
+        if (current.size() != snapshot.slices().size()) {
+            return false;
+        }
+        for (int i = 0; i < current.size(); i++) {
+            StockLedger.LineLot lot = current.get(i);
+            ReceiptSnapshot.Slice slice = snapshot.slices().get(i);
+            if (lot.qtyReceived() != slice.quantity() || lot.unitCost().compareTo(slice.unitCost()) != 0 || lot.estimated() != snapshot.isEstimated()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The receipt itself: shared by a receipt and by an amendment that arrives as the first thing known about a line. */
+    private void receive(ReceiptSnapshot snapshot, EventContext context, int revision) {
         UUID variantId = snapshot.variantId();
         ledger.lockVariant(variantId);
 
@@ -128,7 +225,7 @@ public class StockService {
             UUID lotId = UUID.randomUUID();
             ledger.insertLot(new StockLedger.NewLot(lotId, variantId, snapshot.kind(), snapshot.sku(), snapshot.productTitle(),
                     snapshot.variantTitle(), snapshot.consignmentId(), snapshot.consignmentReference(), snapshot.consignmentLineId(),
-                    snapshot.supplierId(), snapshot.supplierName(), receivedAt, tiebreak, ++position, 1, slice.quantity(),
+                    snapshot.supplierId(), snapshot.supplierName(), receivedAt, tiebreak, ++position, revision, slice.quantity(),
                     slice.quantity(), slice.unitCost(), snapshot.isEstimated()));
             ledger.insertMovement(variantId, snapshot.consignmentLineId(), lotId, StockReason.CONSIGNMENT_RECEIVED, "ORIGINAL",
                     slice.quantity(), slice.unitCost(), snapshot.isEstimated(), snapshot.kind(), null, null, receivedAt, context.actor());
@@ -137,6 +234,7 @@ public class StockService {
         // A receipt older than stock already sold from newer lots re-cuts those sales to take it first.
         int recut = ledger.conform(variantId, context.actor());
         ledger.verify(variantId, inventory.onHand());
+        ledger.verifyLineValuation(snapshot.consignmentLineId(), snapshot.landedTotal());
         log.info("Received line {} of {}: {} units of {} in {} lot(s); {} sale(s) re-cut", snapshot.consignmentLineId(),
                 snapshot.consignmentReference(), snapshot.quantity(), variantId, snapshot.slices().size(), recut);
     }

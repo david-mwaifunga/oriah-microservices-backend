@@ -53,6 +53,33 @@ public final class StockTestData {
                 of.quantity(), of.goodsTotal(), of.sharedCost(), of.landedTotal(), of.slices(), linePosition, null, null, null);
     }
 
+    /**
+     * The plan's amendment case: 7 rings costing K1,000.00 each (K7,000.00), with the courier's charge SHARED ON THEM
+     * as {@code shared} (K800.00 as keyed): landed K7,800.00 = 4 x K1,114.29 + 3 x K1,114.28.
+     */
+    public static ReceiptSnapshot sevenRings(UUID variant, String receivedAt, String shared, List<Slice> slices, String landed) {
+        return new ReceiptSnapshot(UUID.randomUUID(), "C-000050", UUID.randomUUID(), variant, "RING-9", "Aurelia Ring", "Aurelia Ring - RING-9",
+                "SELLABLE", UUID.randomUUID(), "Dubai Gold", receivedAt, false, "ZMW", 7, k("7000.00"), k(shared), k(landed), slices, 1, null, null, null);
+    }
+
+    /** K800 shared: 4 x K1,114.29 + 3 x K1,114.28 = K7,800.00. */
+    public static ReceiptSnapshot sevenRingsAsKeyed(UUID variant, String receivedAt) {
+        return sevenRings(variant, receivedAt, "800.00", List.of(new Slice(4, k("1114.29")), new Slice(3, k("1114.28"))), "7800.00");
+    }
+
+    /** The same line, corrected: a new revision, with its reason, new slices and totals (and who knows, a flag). */
+    public static ReceiptSnapshot amended(ReceiptSnapshot of, int revision, String reason, String amendedAt, String shared, String landed,
+                                          List<Slice> slices, boolean estimated) {
+        return new ReceiptSnapshot(of.consignmentId(), of.consignmentReference(), of.consignmentLineId(), of.variantId(), of.sku(), of.productTitle(),
+                of.variantTitle(), of.kind(), of.supplierId(), of.supplierName(), of.receivedAt(), estimated, of.currency(), of.quantity(),
+                of.goodsTotal(), k(shared), k(landed), slices, of.linePosition(), revision, reason, amendedAt);
+    }
+
+    /** What the consumer hands the service for an amendment: the event id becomes the correction's id. */
+    public static StockService.EventContext amendmentContext(long outboxId, String amendedAt) {
+        return new StockService.EventContext(UUID.randomUUID(), outboxId, ACTOR, Instant.parse(amendedAt));
+    }
+
     /** {@code qty} units at one cost (K10.00 each, nothing shared): the simplest stock a test needs. */
     public static ReceiptSnapshot simple(UUID variant, int qty) {
         BigDecimal total = k("10.00").multiply(BigDecimal.valueOf(qty));

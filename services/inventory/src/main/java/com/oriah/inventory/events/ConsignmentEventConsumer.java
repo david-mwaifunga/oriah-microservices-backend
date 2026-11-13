@@ -22,7 +22,9 @@ import com.oriah.inventory.service.StockService;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Turns procurement's {@code consignment.received} into stock: one lot per slice, with its cost stamped on it.
+ * Turns procurement's {@code consignment.received} into stock: one lot per slice, with its cost stamped on it; and its
+ * {@code consignment.amended}, a correction of that cost, into new lots with every sale and write-off that drained the
+ * old ones re-cut at its own date.
  *
  * <p>Two bindings, one effect. {@code consignmentEvents} reads the live topic {@code oriah.procurement};
  * {@code consignmentReplay} reads {@code oriah.replay.inventory}, where procurement answers the replay inventory asked
@@ -54,6 +56,7 @@ public class ConsignmentEventConsumer {
     /** What every consignment event is about: a consignment line, spelled as procurement writes it. */
     static final String CONSIGNMENT_LINE = "consignment_line";
     static final String RECEIVED = "consignment.received";
+    static final String AMENDED = "consignment.amended";
 
     @Bean
     public Consumer<Message<byte[]>> consignmentEvents(Inbox inbox, StockService stock, ObjectMapper objectMapper) {
@@ -112,8 +115,8 @@ public class ConsignmentEventConsumer {
 
         void apply(Message<byte[]> message) {
             String type = header(message, EventHeaders.EVENT_TYPE);
-            if (!RECEIVED.equals(type)) {
-                // Unreachable while the declaration and this switch list the same types.
+            if (!RECEIVED.equals(type) && !AMENDED.equals(type)) {
+                // Unreachable while the declaration and this method list the same types.
                 throw new IllegalStateException("no handling for declared event type " + type);
             }
             ReceiptSnapshot snapshot = read(message);
@@ -123,17 +126,29 @@ public class ConsignmentEventConsumer {
                         + " arrived in an envelope for line " + aggregateId);
             }
             Instant occurredAt = instant(header(message, EventHeaders.OCCURRED_AT), EventHeaders.OCCURRED_AT);
-            snapshot.validate();
-            if (!occurredAt.equals(snapshot.receivedAtInstant())) {
-                throw new IllegalArgumentException("receivedAt " + snapshot.receivedAt() + " is not the time the event says it happened ("
-                        + occurredAt + ")");
-            }
             long outboxId = whole(header(message, EventHeaders.OUTBOX_ID), EventHeaders.OUTBOX_ID);
             String actor = header(message, EventHeaders.ACTOR);
             UUID eventId = UUID.fromString(header(message, EventHeaders.EVENT_ID));
-            log.info("Consuming consignment.received line={} variant={} quantity={}", snapshot.consignmentLineId(),
-                    snapshot.variantId(), snapshot.quantity());
-            stock.applyReceipt(snapshot, new StockService.EventContext(eventId, outboxId, actor, occurredAt));
+            StockService.EventContext context = new StockService.EventContext(eventId, outboxId, actor, occurredAt);
+            if (RECEIVED.equals(type)) {
+                snapshot.validate();
+                if (!occurredAt.equals(snapshot.receivedAtInstant())) {
+                    throw new IllegalArgumentException("receivedAt " + snapshot.receivedAt() + " is not the time the event says it happened ("
+                            + occurredAt + ")");
+                }
+                log.info("Consuming consignment.received line={} variant={} quantity={}", snapshot.consignmentLineId(), snapshot.variantId(),
+                        snapshot.quantity());
+                stock.applyReceipt(snapshot, context);
+            } else {
+                snapshot.validateAmendment();
+                if (!occurredAt.equals(snapshot.amendedAtInstant())) {
+                    throw new IllegalArgumentException("amendedAt " + snapshot.amendedAt() + " is not the time the event says it happened ("
+                            + occurredAt + ")");
+                }
+                log.info("Consuming consignment.amended line={} variant={} revision={}", snapshot.consignmentLineId(), snapshot.variantId(),
+                        snapshot.revision());
+                stock.applyAmendment(snapshot, context);
+            }
         }
 
         private ReceiptSnapshot read(Message<byte[]> message) {

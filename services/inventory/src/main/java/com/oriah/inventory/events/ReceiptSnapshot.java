@@ -130,6 +130,24 @@ public record ReceiptSnapshot(
         }
     }
 
+    /**
+     * What an amendment promises on top of what a receipt does: a revision of 2 or more, why it was made, and when.
+     * The line's quantity, its variant and its position do not change in an amendment; that is checked against what
+     * inventory holds.
+     */
+    public void validateAmendment() {
+        validate();
+        if (revision == null || revision < 2) {
+            throw new IllegalArgumentException("an amendment has a revision of 2 or more, was " + revision);
+        }
+        if (reason == null || reason.isBlank() || reason.length() > 200) {
+            throw new IllegalArgumentException("an amendment says why it was made, in 1 to 200 characters");
+        }
+        if (amendedAt == null) {
+            throw new IllegalArgumentException("amendedAt is missing");
+        }
+    }
+
     private static Instant instant(String field, String value) {
         if (value == null) {
             throw new IllegalArgumentException(field + " is missing");

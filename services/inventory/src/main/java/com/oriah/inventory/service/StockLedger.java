@@ -144,6 +144,68 @@ class StockLedger {
                 Boolean.class, consignmentLineId));
     }
 
+    /** A lot of one consignment line, with what an amendment copies from it. */
+    record LineLot(UUID id, UUID variantId, String kind, String sku, String productTitle, String variantTitle, UUID consignmentId,
+                   String consignmentReference, UUID supplierId, String supplierName, Instant receivedAt, long fifoTiebreak, int slicePosition,
+                   int revision, int qtyReceived, BigDecimal unitCost, boolean estimated) {
+    }
+
+    /** The lots of one consignment line that are current (not replaced), in slice order. */
+    List<LineLot> currentLotsOfLine(UUID consignmentLineId) {
+        return jdbc.query("""
+                SELECT id, variant_id, kind, sku, product_title, variant_title, consignment_id, consignment_reference, supplier_id, supplier_name,
+                       received_at, fifo_tiebreak, slice_position, revision, qty_received, unit_cost, is_estimated
+                  FROM cost_lot WHERE consignment_line_id = ? AND superseded_at IS NULL ORDER BY slice_position""",
+                (rs, n) -> new LineLot(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getString("kind"), rs.getString("sku"),
+                        rs.getString("product_title"), rs.getString("variant_title"), rs.getObject("consignment_id", UUID.class),
+                        rs.getString("consignment_reference"), rs.getObject("supplier_id", UUID.class), rs.getString("supplier_name"),
+                        rs.getTimestamp("received_at").toInstant(), rs.getLong("fifo_tiebreak"), rs.getInt("slice_position"), rs.getInt("revision"),
+                        rs.getInt("qty_received"), rs.getBigDecimal("unit_cost"), rs.getBoolean("is_estimated")),
+                consignmentLineId);
+    }
+
+    /**
+     * Closes lots an amendment replaced, AFTER everything that drained them has been re-cut away: a lot transfer row takes
+     * back what is left in each (all of it, by then), and the lot is marked replaced and emptied in one step.
+     */
+    void closeLots(UUID variantId, java.util.Set<UUID> staged, UUID correctionActionId, StockReason reason, Instant at, String actor) {
+        for (UUID lotId : staged) {
+            LineLot lot = jdbc.queryForObject("""
+                    SELECT id, variant_id, kind, sku, product_title, variant_title, consignment_id, consignment_reference, supplier_id, supplier_name,
+                           received_at, fifo_tiebreak, slice_position, revision, qty_received, unit_cost, is_estimated FROM cost_lot WHERE id = ?""",
+                    (rs, n) -> new LineLot(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getString("kind"), rs.getString("sku"),
+                            rs.getString("product_title"), rs.getString("variant_title"), rs.getObject("consignment_id", UUID.class),
+                            rs.getString("consignment_reference"), rs.getObject("supplier_id", UUID.class), rs.getString("supplier_name"),
+                            rs.getTimestamp("received_at").toInstant(), rs.getLong("fifo_tiebreak"), rs.getInt("slice_position"), rs.getInt("revision"),
+                            rs.getInt("qty_received"), rs.getBigDecimal("unit_cost"), rs.getBoolean("is_estimated")),
+                    lotId);
+            insertMovement(variantId, correctionActionId, lotId, reason, "LOT_CLOSE", -lot.qtyReceived(), lot.unitCost(), lot.estimated(), lot.kind(),
+                    null, null, at, actor);
+            jdbc.update("UPDATE cost_lot SET qty_remaining = 0, superseded_at = ? WHERE id = ?", Timestamp.from(at), lotId);
+        }
+    }
+
+    /**
+     * The valuation invariant for one line: what its current lots still hold, at their cost, plus what has been recognised
+     * out of them (sales, write-offs, give-aways, net of take-backs, over the rows in force), is exactly the line's landed
+     * total, to the ngwee. Whatever has happened to the line, no ngwee has been lost or invented.
+     */
+    void verifyLineValuation(UUID consignmentLineId, BigDecimal landedTotal) {
+        BigDecimal held = jdbc.queryForObject(
+                "SELECT coalesce(sum(qty_remaining * unit_cost), 0) FROM cost_lot WHERE consignment_line_id = ? AND superseded_at IS NULL",
+                BigDecimal.class, consignmentLineId);
+        BigDecimal recognised = jdbc.queryForObject("""
+                SELECT coalesce(sum(-m.qty_delta * m.unit_cost), 0)
+                  FROM live_movement m JOIN cost_lot l ON l.id = m.lot_id
+                 WHERE l.consignment_line_id = ? AND l.superseded_at IS NULL AND m.reason <> 'CONSIGNMENT_RECEIVED'""",
+                BigDecimal.class, consignmentLineId);
+        if (held.add(recognised).compareTo(landedTotal) != 0) {
+            throw new IllegalStateException("line " + consignmentLineId + " is worth " + held.add(recognised).toPlainString()
+                    + " (held " + held.toPlainString() + ", recognised " + recognised.toPlainString() + ") but its landed total is "
+                    + landedTotal.toPlainString());
+        }
+    }
+
     /** What the current lots hold: the number the stock count must equal. */
     int heldQuantity(UUID variantId) {
         return jdbc.queryForObject("SELECT coalesce(sum(qty_remaining), 0) FROM cost_lot WHERE variant_id = ? AND superseded_at IS NULL",
@@ -157,7 +219,16 @@ class StockLedger {
      * @return how many actions were re-cut
      */
     int conform(UUID variantId, String actor) {
-        List<HeldLotRow> held = heldLots(variantId);
+        return conform(variantId, actor, java.util.Set.of());
+    }
+
+    /**
+     * As {@link #conform(UUID, String)}, with some lots STAGED: kept out of the simulation, as if they were already gone.
+     * Whatever drained them is re-cut onto the lots that remain, which is how a corrected cost is laid over the units.
+     * The caller closes the staged lots afterwards ({@link #closeLots}).
+     */
+    int conform(UUID variantId, String actor, java.util.Set<UUID> staged) {
+        List<HeldLotRow> held = heldLots(variantId).stream().filter(l -> !staged.contains(l.id())).toList();
         List<Lot> lots = held.stream().map(l -> new Lot(l.id(), l.qtyReceived())).toList();
 
         List<Action> actions = new ArrayList<>();

@@ -170,4 +170,37 @@ class ReceiptSnapshotTest {
 
         assertThatCode(old::validate).doesNotThrowAnyException();
     }
+
+    // ----- amendments -----
+
+    private static ReceiptSnapshot amendment(Integer revision, String reason, String amendedAt) {
+        ReceiptSnapshot r = ring();
+        return new ReceiptSnapshot(r.consignmentId(), r.consignmentReference(), r.consignmentLineId(), r.variantId(), r.sku(), r.productTitle(),
+                r.variantTitle(), r.kind(), r.supplierId(), r.supplierName(), r.receivedAt(), r.isEstimated(), r.currency(), r.quantity(),
+                r.goodsTotal(), r.sharedCost(), r.landedTotal(), r.slices(), r.linePosition(), revision, reason, amendedAt);
+    }
+
+    @Test
+    @DisplayName("an amendment says which revision it is, why, and when: and is otherwise checked exactly like a receipt")
+    void anAmendment() {
+        assertThatCode(() -> amendment(2, "the courier's bill was K8,000", "2026-11-13T09:00:00Z").validateAmendment()).doesNotThrowAnyException();
+        assertThat(amendment(2, "x", "2026-11-13T09:00:00.5Z").amendedAtInstant()).isEqualTo(Instant.parse("2026-11-13T09:00:00.5Z"));
+    }
+
+    @Test
+    @DisplayName("an amendment with no reason, a revision below 2, or no time is refused")
+    void anAmendmentNeedsItsParts() {
+        assertThatThrownBy(() -> amendment(1, "why", "2026-11-13T09:00:00Z").validateAmendment()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("revision");
+        assertThatThrownBy(() -> amendment(null, "why", "2026-11-13T09:00:00Z").validateAmendment()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("revision");
+        assertThatThrownBy(() -> amendment(2, " ", "2026-11-13T09:00:00Z").validateAmendment()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("why");
+        assertThatThrownBy(() -> amendment(2, "x".repeat(201), "2026-11-13T09:00:00Z").validateAmendment()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("why");
+        assertThatThrownBy(() -> amendment(2, "why", null).validateAmendment()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("amendedAt");
+        assertThatThrownBy(() -> amendment(2, "why", "last week").validateAmendment()).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("amendedAt");
+    }
 }
