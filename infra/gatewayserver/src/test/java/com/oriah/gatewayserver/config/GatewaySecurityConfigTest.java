@@ -412,6 +412,16 @@ class GatewaySecurityConfigTest {
         as(jobRole).get().uri("/internal/anything/else").exchange().expectStatus().isForbidden();
     }
 
+    @ParameterizedTest(name = "{0} cannot reach catalog's internal variant reads through the gateway")
+    @DisplayName("naming variants and pricing a sale at a past date are service to service: no gateway route, and the unmatched-admin rule refuses every person, owner included")
+    @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
+    void internalVariantReadsAreNeverPublic(String jobRole) {
+        // The order system forwards the signed-in person's own token to catalog, directly. SALES_AGENT is checked in catalog; the edge must
+        // never be the way in, or a browser could price a "sale" at any past date.
+        as(jobRole).post().uri("/api/v1/admin/variants/pricing-as-of").exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/variants/lookup").exchange().expectStatus().isForbidden();
+    }
+
     @Test
     @DisplayName("the rest of the inventory admin area stays with INVENTORY_ADMIN: only holds, sales and swaps are walled off")
     void restOfInventoryAdminIsUnchanged() {
