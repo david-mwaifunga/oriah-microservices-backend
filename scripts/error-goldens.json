@@ -20,6 +20,27 @@
     "request": "POST /api/v1/admin/procurement/consignments/<uuid>/amendments  (as admin)",
     "status": 400
   },
+  "400-box-commitment-of-zero": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Request validation failed",
+      "instance": "/api/v1/admin/inventory/box-commitments/<uuid>",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "PUT /api/v1/admin/inventory/box-commitments/<uuid>  (as admin)",
+    "status": 400
+  },
   "400-consignment-without-orders": {
     "contentType": "application/problem+json",
     "problem": {
@@ -59,6 +80,27 @@
       "type": "https://oriah.dev/problems/validation"
     },
     "request": "GET /api/v1/products/not-a-uuid",
+    "status": 400
+  },
+  "400-price-without-a-price": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Request validation failed",
+      "instance": "/api/v1/admin/pricing/variants/<uuid>/price",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "PUT /api/v1/admin/pricing/variants/<uuid>/price  (as admin)",
     "status": 400
   },
   "400-purchase-order-without-lines": {
@@ -187,6 +229,25 @@
     "request": "GET /api/v1/admin/products  (as user)",
     "status": 403
   },
+  "403-box-commitments-as-plain-user": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/inventory/box-commitments",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/inventory/box-commitments  (as user)",
+    "status": 403
+  },
   "403-cost-lots-as-plain-user": {
     "contentType": "application/problem+json",
     "problem": {
@@ -204,6 +265,25 @@
       "type": "https://oriah.dev/problems/forbidden"
     },
     "request": "GET /api/v1/admin/costs/lots  (as user)",
+    "status": 403
+  },
+  "403-pricing-list-as-plain-user": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/pricing/below-cost",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/pricing/below-cost  (as user)",
     "status": 403
   },
   "403-procurement-consignments-as-plain-user": {
@@ -300,6 +380,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/admin/procurement/consignments/<uuid>/amendments  (as admin)",
+    "status": 404
+  },
+  "404-pricing-unknown-variant": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Variant not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/pricing/variants/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/pricing/variants/<uuid>  (as admin)",
     "status": 404
   },
   "404-unknown-consignment": {
@@ -502,6 +602,26 @@
     "request": "GET /api/v1/products/does/not/exist",
     "status": 404
   },
+  "404-unpublish-unknown-product": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Product not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/products/<uuid>/unpublish",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/products/<uuid>/unpublish  (as admin)",
+    "status": 404
+  },
   "405-wrong-method": {
     "contentType": "application/problem+json",
     "problem": {
@@ -521,6 +641,26 @@
     },
     "request": "DELETE /api/v1/products  (as admin)",
     "status": 405
+  },
+  "409-box-commitment-for-an-unknown-product": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "inventory has not yet heard of this product from the catalogue: any change to the product there sends it, then try again",
+      "instance": "/api/v1/admin/inventory/box-commitments/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 409,
+      "title": "Conflict",
+      "type": "https://oriah.dev/problems/product-state-not-received"
+    },
+    "request": "PUT /api/v1/admin/inventory/box-commitments/<uuid>  (as admin)",
+    "status": 409
   },
   "415-wrong-content-type": {
     "contentType": "application/problem+json",

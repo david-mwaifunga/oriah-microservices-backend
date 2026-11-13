@@ -91,6 +91,10 @@ CASES = [
     ("403-write-offs-as-plain-user", "GET", "/api/v1/admin/inventory/write-offs", "user", None),
     ("403-sale-keyed-through-the-gateway", "POST", "/api/v1/admin/inventory/" + MISSING + "/confirm", "admin",
      {"qty": 1, "saleLineId": MISSING}),
+    # Phase 6: pricing shows landed cost, so it needs CATALOG_ADMIN and COST_VIEWER both, and boxes set aside are
+    # INVENTORY_ADMIN's. Both are GETs refused at the edge, so capturing them creates nothing.
+    ("403-pricing-list-as-plain-user", "GET", "/api/v1/admin/pricing/below-cost", "user", None),
+    ("403-box-commitments-as-plain-user", "GET", "/api/v1/admin/inventory/box-commitments", "user", None),
 
     # --- 404: the Tier 5 bodies, through the gateway ----------------------
     ("404-unknown-product", "GET", "/api/v1/products/" + MISSING, None, None),
@@ -109,6 +113,9 @@ CASES = [
     ("404-amend-unknown-consignment", "POST", "/api/v1/admin/procurement/consignments/" + MISSING + "/amendments", "admin",
      {"fromRevision": 1, "reason": "golden: nothing to correct",
       "costLines": [{"costType": "COURIER_INBOUND", "amount": 1.00}]}),
+    # Phase 6: a variant nobody has (found before any cost is asked for), and a product nobody has.
+    ("404-pricing-unknown-variant", "GET", "/api/v1/admin/pricing/variants/" + MISSING, "admin", None),
+    ("404-unpublish-unknown-product", "POST", "/api/v1/admin/products/" + MISSING + "/unpublish", "admin", None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------
@@ -122,6 +129,10 @@ CASES = [
     # Phase 5: a correction must say which revision it was made from and why; refused before anything is read.
     ("400-amendment-without-reason", "POST", "/api/v1/admin/procurement/consignments/" + MISSING + "/amendments", "admin",
      {"fromRevision": 1}),
+    # Phase 6: a price must be given, and a commitment is at least one box; both refused before anything is read or written.
+    ("400-price-without-a-price", "PUT", "/api/v1/admin/pricing/variants/" + MISSING + "/price", "admin",
+     {"expectedPriceId": None}),
+    ("400-box-commitment-of-zero", "PUT", "/api/v1/admin/inventory/box-commitments/" + MISSING, "admin", {"quantity": 0}),
 
     # --- 405 / 415: framework errors, the Tier 0.5 class ------------------
     # Both need a token, or the gateway answers 401 before the service ever
@@ -134,9 +145,14 @@ CASES = [
     ("422-outside-delivery-area", "POST", "/api/v1/shipping/rates", "user",
      {"destinationCountry": "US", "subtotal": 100.00, "currency": "ZMW"}),
 
-    # NOTE: no 409 case. Reproducing inventory's over-reserve (or a stale correction of a consignment) needs a
-    # stock row or a received consignment to exist first, and this script must not create state. Those are
-    # covered by InventoryIntegrationTest.overReserveIsAConflict and ConsignmentAmendHttpTest.aStaleRevision.
+    # --- 409 -----------------------------------------------------------------
+    # Phase 6: inventory has not heard of this product, so nothing can be set aside for it. Refused before anything is written.
+    ("409-box-commitment-for-an-unknown-product", "PUT", "/api/v1/admin/inventory/box-commitments/" + MISSING, "admin", {"quantity": 1}),
+
+    # NOTE: no other 409 case. Reproducing inventory's over-reserve, a stale correction of a consignment or a price below
+    # cost needs a stock row, a received consignment or a priced piece to exist first, and this script must not create
+    # state. Those are covered by InventoryIntegrationTest.overReserveIsAConflict, ConsignmentAmendHttpTest.aStaleRevision
+    # and PriceSettingHttpTest.belowCostWithoutAReasonIsAWarning.
 ]
 
 

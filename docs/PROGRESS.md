@@ -20,6 +20,118 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-13 (MVP_PLAN Phase 6 complete: price and publish)
+
+Phase 6 of `MVP_PLAN.md` is built, tested, reviewed at design time and again on the finished code, verified on the live
+stack and committed (**not pushed**). A price is now **dated history that can be set in exactly one place, and that place
+looks at what the stock cost first**: a price below the dearest lot still on the shelf (plus the dearest box that goes with
+it) is stopped with the figures until the person types a reason and sends back the floor they were shown. It **never
+refuses**, and it never saves a price without having looked at the cost (stock down is a 503, not a guess). The same phase
+adds a suggested price, the product's default box, unpublish, and **boxes set aside for a product** (CLIENT_DECISIONS 4.2).
+Strict test-first throughout; `oriah-web` was not changed.
+
+| What | Commits (`oriah-api`) |
+|---|---|
+| Inventory: boxes set aside for a product, and the held-cost read (Flyway V10) | `9015bc8` |
+| Catalog: dated prices guarded against cost, the default box, unpublish (Flyway V6), with the review's fixes | `7d2a098` |
+| Gateway: the pricing prefix needs `CATALOG_ADMIN` and `COST_VIEWER` | `f39d208` |
+| Smoke step 20f, seven error goldens, two OpenAPI waivers, Postman (128), the plan, the frontend handover, CLAUDE.md, README, LOCAL_DEV, this entry | the commit after them |
+
+`config-repo` was not touched.
+
+### How it works, in plain words
+
+- **One way to a price.** A variant is created **unpriced**; `PUT /api/v1/admin/pricing/variants/{id}/price` is the only
+  way to price it, and it needs **both** `CATALOG_ADMIN` and `COST_VIEWER` (the warning shows what stock cost, so the person
+  must be allowed to see cost). The old `PATCH` on a variant is gone; a variant created with a price is 400.
+- **The warning, with the smoke test's own figures.** The ring's price of K100 (set before any stock existed) reads
+  *below* the K1,502.90 the stock cost; K1,400 with no reason is `409 below-landed-cost` carrying the floor; with a typed
+  reason **and** the floor, it is saved and the row says who and why; K1,510 is simply fine. After the default box was added
+  the floor became K1,555.80 (the ring's cost plus the dearest box).
+- **"Re-runs" is computed, never stored.** `GET /api/v1/admin/pricing/below-cost` judges every priced piece against the
+  stock held **now**. The plan's own case works: the ring was priced K1,580, then the courier's bill was corrected **up** to
+  K6,000, and the list showed the ring **short by K27.98** (floor K1,607.98). A dear lot sold out of clears it again.
+- **Prices keep dated history** (`variant_price`, append-only; the database refuses an edit, a delete and a truncate). A
+  price starts now or up to 72 hours back (a tag changed this morning, keyed tonight), never in the future. Every price that
+  existed before got one `MIGRATED` row that says it was never assessed: **89 on the live database**, and none is left
+  without a history row.
+- **Boxes set aside for a product.** A packaging row carries `committed` beside `on_hand` and `reserved`. A promise of 10
+  boxes needs 10 free boxes (otherwise 409 saying how many are available); a write-off takes free boxes first and cuts promises
+  only for what free cannot absorb, newest first, **naming the product** (the smoke test wrote off 195 of 200 and the cut
+  named it); a take-back does not remake the promise. They are let go when the product is unpublished, deleted or boxed
+  differently, decided from the product's newest snapshot, so a late, doubled or lost message cannot lose a release.
+- **Inventory answers one new question**, `GET /api/v1/admin/costs/held`, and catalog asks it **as the person**, with their
+  own token, through a separate client that is deliberately outside the circuit breaker (the breaker moves each call to
+  another thread, where the person's identity is gone) and has no fallback.
+
+### How it was checked
+
+- **Before any code:** two Codex plan reviews, then a five-lens read-only panel (36 findings: 29 survived two stages, 7
+  refuted); every confirmed one is in the final design (`plan-p6-FINAL.md`).
+- **After the code:** Codex on the whole diff (3 findings: one accepted and shown not to bite, two fixed test-first), then a
+  five-lens panel of 31 agents (13 candidates: 10 confirmed and fixed test-first, 3 refuted). The real ones: a property test
+  that swallowed the invariant checks' own exceptions, the under-the-lock stale-price check with no test, a contract fault
+  from inventory that came out as a 409, a legacy dollar piece quietly redenominated by an omitted currency, and two rounding
+  tests that passed under the wrong mode. A last Codex pass over the finished diff found two more (a legacy piece could not be moved to
+  Kwacha at the *same figure*; a box that products go out in could be deleted from under them), and a small panel on those fixes (11
+  agents) found two more: two sellable products naming each other's variants could still deadlock, and **deleting a category loaded the
+  products using it without a lock and saved them back whole, silently undoing a change made meanwhile** (reproduced: a product that had
+  just been published went back to a draft; older than this phase, but this phase added the default box and the unpublish count to what it
+  could undo). All four were fixed test-first; the category delete is now one statement that changes only the breadcrumb column, and a box
+  in use is refused (409 `packaging-in-use`) with choosing and deleting a box locking the box's product so they cannot cross.
+- **Mutations:** a deliberately wrong sort, a skipped acknowledgement, a wrong cut order and a skipped unpublish count were
+  each caught by the tests.
+- **Found by running real things, not by reading:** Hibernate rejects `CHAR(n)`; Jackson read `2.5` boxes as `2`; the V6
+  backfill needed `COALESCE` for a variant with no dates; a one-thread test server starved the next request; and on the final
+  run **one of my own tests built a state production cannot reach** (a price with no history row, which V6 and the single
+  write path rule out), so the test was fixed to build what a legacy dollar piece really looks like, not the code.
+
+### Verified on 2026-11-13
+
+- **Tests:** catalog **585**, inventory **284**, the gateway **220**, all with 0 failures, each run on the final code.
+  Procurement was not touched and not re-run (524 at Phase 5). Not run: a `clean install` of every module.
+- **Docker, and why the Kafka test needed the whole VM.** `ProductEventDeadLetterKafkaTest` failed three times, each with
+  "Container startup failed for image apache/kafka": the 39-container stack plus 18 leaked Testcontainers had left the
+  VM too little memory for a second Kafka. With the stack stopped it passed (4 of 4), and it passes in the full run.
+  Nothing about the test or the consumer changed to make it pass.
+- **Live stack**, the three changed images rebuilt from the final code, started on the existing databases: catalog's V6
+  gave **89** priced variants a `MIGRATED` row (**0** without one); inventory's V10 applied. **Smoke 29/29 on its first
+  attempt**, including the new step 20f. **Error goldens 36/36** (the seven new ones were `NEW` and the 29 old ones
+  unchanged: no existing client-visible error moved). **OpenAPI PASS** (162 additions, **28 waived** = the earlier 26 plus
+  two reasoned ones in catalog's `VariantCreateRequest`: `unitPrice` removed and `currency` limited to `ZMW`; the gate's
+  self-test 23/23). **Postman 128** endpoints (was 119), its GET check PASS.
+- **Memory:** inventory **496 MiB of 640** after the full smoke test (Phase 5: 486), heap 135 of 217 MiB, catalog 548 of
+  1,536 MiB. That is the state after the smoke test, **not a heavy burst**: the new code adds a commitment cut inside the
+  write-off transaction and was exercised once, not under four writers.
+
+### Things to know
+
+- **Nothing tells anyone when a priced piece falls below cost** until Phase 11 polls the list (written into Phase 11).
+- **Catalog's JVM shows 36 forced metadata collections (7.6 s in all) in its start-up; no other service shows any.** The
+  count did not grow afterwards. No earlier figure for catalog exists, so this cannot be said to be new in Phase 6, but the
+  new code is well under 1% of catalog's 34,869 classes. A plausible cause (not proven): the other services each get one
+  early code-cache collection that resets the metaspace threshold, and catalog's code cache (20 MiB) never reaches the
+  point that triggers it. A candidate fix is a larger `-XX:MetaspaceSize` for catalog; it was **not** tried here.
+- **Inventory's `product_state` is empty after V10** and is filled by a product's next snapshot; a box promise for a product
+  whose snapshot has not arrived is `409 product-state-not-received`. A product only gets a default box through a save, which
+  sends its snapshot, so this does not bite.
+- **A legacy product with two or more variants priced in dollars cannot be moved to Kwacha** through the endpoint (the
+  one-currency-per-product rule objects to each in turn). Only developer data can be in that state.
+- **A dead-lettered unpublish or delete snapshot** leaves a product's boxes set aside until another snapshot arrives (the
+  safe direction: free looks lower than it is).
+- **Reserving from a promise and releasing back to it are Phase 7's** (the reservation lines own them); the primitive
+  `StockService.consumeCommitted` exists and is tested, with no endpoint.
+- **The stack's `oriah-web` still has the old product dialog's Price box and `repriceVariant`** until the frontend stage;
+  `docs/FRONTEND_WORK.md` (Phase 6) lists every screen and the break.
+- **Owner questions O1 to O5** (a price for a never-received piece, 72 hours of back-dating, the target profit percentage,
+  when boxes are let go, no alert until Phase 11) are in the plan, each with a default, none blocking.
+
+### What is next
+
+Phase 7 ("Sell"). `docs/MVP_PLAN.md` Phase 6's "What this phase hands
+on" lists what it must do with prices (price at a true date for a late-keyed sale) and with boxes (reserve from the
+promise first, release to where it came from, and make the box swap ONE idempotent transaction).
+
 ## CURRENT STATE — 2026-11-13 (MVP_PLAN Phase 5 complete: cost-bearing inventory)
 
 Phase 5 of `MVP_PLAN.md` is built, tested, reviewed twice, verified on the live stack and committed (**not

@@ -781,6 +781,125 @@
           }
         },
         {
+          "name": "The priced pieces that stand below cost (or with no cost known, or in the wrong currency), evaluated now",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/pricing/below-cost",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "pricing",
+                "below-cost"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Every priced, active variant of a sellable product that has not been deleted, compared with the stock held NOW, so a dearer lot received, a corrected cost, a dear lot sold out of or a changed default box shows here the next time anyone looks. `status` filters (BELOW by default; NO_COST_KNOWN, CURRENCY_MISMATCH, OK, or ALL); `counts` gives every status whatever the filter. Biggest shortfall first."
+          }
+        },
+        {
+          "name": "A variant's price, its dated history, the cost it stands against and a suggestion",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/pricing/variants/:variantId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "pricing",
+                "variants",
+                ":variantId"
+              ],
+              "query": [
+                {
+                  "key": "targetProfitPercent",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": [
+                {
+                  "key": "variantId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "The cost is read from stock afresh. `targetProfitPercent` (0 to 1000, at most two decimals) asks for a suggested price of the landed cost plus that percentage of it; without it the configured percentage is used, and if there is none there is no suggestion. A suggestion is never applied."
+          }
+        },
+        {
+          "name": "Set a variant's price, compared with what the stock cost",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/pricing/variants/:variantId/price",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "pricing",
+                "variants",
+                ":variantId",
+                "price"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "variantId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"unitPrice\": 0.0,\n  \"currency\": \"\",\n  \"effectiveFrom\": \"2026-11-08T10:00:00Z\",\n  \"belowCostReason\": \"\",\n  \"acknowledgedFloor\": 0.0,\n  \"expectedPriceId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Adds a row of dated history and overwrites nothing. A price below the dearest unit cost still held (plus the dearest held cost of the product's default box) is a 409 `below-landed-cost` carrying every figure; saving it needs `belowCostReason` and the `acknowledgedFloor` the person saw. Nothing is saved without the cost having been looked at: if stock cannot be asked the answer is 503. Prices are in ZMW. `expectedPriceId` is the id of the price the person saw in force (null: unpriced); a price saved in between is `stale-price`."
+          }
+        },
+        {
           "name": "List products for an operator, drafts and packaging included",
           "request": {
             "method": "GET",
@@ -961,6 +1080,45 @@
           }
         },
         {
+          "name": "Choose, change or clear a product's default box",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/products/:id/default-packaging",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "products",
+                ":id",
+                "default-packaging"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"packagingVariantId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
           "name": "Upload an image for a product",
           "request": {
             "method": "POST",
@@ -1110,6 +1268,36 @@
           }
         },
         {
+          "name": "Take a published product off sale (back to DRAFT)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/products/:id/unpublish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "products",
+                ":id",
+                "unpublish"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
           "name": "Add a variant to a product",
           "request": {
             "method": "POST",
@@ -1138,52 +1326,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"sku\": \"\",\n  \"unitPrice\": 0.0,\n  \"currency\": \"\",\n  \"options\": {}\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": ""
-          }
-        },
-        {
-          "name": "Change an existing variant's price",
-          "request": {
-            "method": "PATCH",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/products/:id/variants/:variantId",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "products",
-                ":id",
-                "variants",
-                ":variantId"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "id",
-                  "value": "",
-                  "description": ""
-                },
-                {
-                  "key": "variantId",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"unitPrice\": \"4600.00\",\n  \"currency\": \"ZMW\"\n}",
+              "raw": "{\n  \"sku\": \"\",\n  \"currency\": \"\",\n  \"options\": {}\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1481,6 +1624,36 @@
       "name": "inventory",
       "item": [
         {
+          "name": "What the stock still held cost, per variant: each held lot, the dearest cost and the weighted average",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/costs/held",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "costs",
+                "held"
+              ],
+              "query": [
+                {
+                  "key": "variantIds",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "`variantIds` is a comma-separated list of at most 100 distinct ids. Every id is answered once, in the order first asked; a variant that was never received is answered with nothing held and no cost. A price is compared with `highestUnitCost` (the dearest lot still holding stock), never with the average."
+          }
+        },
+        {
           "name": "The lots: what each slice of each received consignment line cost per unit, and how many are still held",
           "request": {
             "method": "GET",
@@ -1633,6 +1806,142 @@
               "variable": []
             },
             "description": ""
+          }
+        },
+        {
+          "name": "The boxes set aside, by product or by box",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/box-commitments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "box-commitments"
+              ],
+              "query": [
+                {
+                  "key": "productId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "boxVariantId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Oldest first. With neither filter, every record."
+          }
+        },
+        {
+          "name": "Set boxes aside for a product, on its default box",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/box-commitments/:productId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "box-commitments",
+                ":productId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "productId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"quantity\": 0.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The box is the product's default box, which inventory learned from the catalogue. Again for the same product it replaces its record: more takes from free, fewer gives back, the same changes nothing. Needs free boxes (a box is never promised twice): otherwise 409 `insufficient-free-packaging` with `available`, the most that can be set aside for this product. A product inventory has not heard of yet is 409 `product-state-not-received`, one with no default box `no-default-box`."
+          }
+        },
+        {
+          "name": "Let a product's boxes go: they are free again and nothing leaves the building",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/box-commitments/:productId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "box-commitments",
+                ":productId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "productId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Everything done to a product's boxes, in order: set aside, replaced, let go, sold, cut by a write-off",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/box-commitments/:productId/history",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "box-commitments",
+                ":productId",
+                "history"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "productId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Append-only. Each entry says what, how many, how many were left set aside after it, who or what caused it and when."
           }
         },
         {

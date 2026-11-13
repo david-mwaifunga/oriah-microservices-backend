@@ -142,6 +142,18 @@
 #      409, nothing-changed 400, alice 403) and the stock re-costed over what is left
 #      (ring 5 x K1,502.90 + 1 x K1,502.89, the sold unit K1,502.90), every count
 #      agreeing with its lots. It leaves rows behind too (the ledger is never edited).
+#   [20f/20] Price and publish (Phase 6), following the ring (K100 since step 4, before any
+#      stock existed): the pricing view reads it BELOW the K1,502.90 cost with its history,
+#      the list of prices below cost finds it, alice 403, no token 401; K1,400 with no
+#      reason 409 below-landed-cost (with the floor), with a reason and the floor 200 and
+#      recorded with who, a stale save 409, K1,510 OK, dollars 400; the default box added
+#      (floor K1,555.80), a ring refused as a box 400 and the box refused for deletion 409
+#      packaging-in-use while the ring uses it; the plan's own case live: K1,580,
+#      then the courier's bill corrected UP to K6,000, and the list has the ring short by
+#      K27.98; 10 boxes set aside, 201 refused with 200 available, a 195-box write-off cut
+#      the product's 5 and named it, the take-back did not remake the promise; unpublished
+#      (404 in the shop, the boxes let go), published again; a variant created with a price
+#      400 and the old PATCH a 4xx. It leaves rows behind too (prices are history).
 #   [20c/20] Procurement: suppliers. maya creates a supplier under a random
 #      name (so the step can re-run on a live stack): 201, the Location a
 #      relative path, the name stored as sent and the country upper-cased
@@ -437,12 +449,24 @@ $withVariant = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products/$productId/variants" `
     -Headers @{ Authorization="Bearer $maya" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ sku=$sku; unitPrice=100.00; currency="ZMW"; options=@{} })
+    -Body (ConvertTo-Json @{ sku=$sku; currency="ZMW"; options=@{} })
 $variantId = ($withVariant.variants | Select-Object -First 1).id
 if (-not $variantId) { Write-Error "Variant was not created; got: $($withVariant | ConvertTo-Json -Depth 4)"; exit 1 }
 
-# Publish, or the public read and the storefront list both 404. Refuses a
-# zero-priced variant, which is why unitPrice above is real.
+# Since Phase 6 a variant is created UNPRICED, and the only way to a price is the pricing endpoint, which compares it with
+# what the stock cost. No stock has been received yet (that is step 20d), so no cost is known: the price is saved and the
+# answer says so (NO_COST_KNOWN). maya is the OWNER, who holds both CATALOG_ADMIN and COST_VIEWER.
+$firstPrice = Invoke-RestMethod -Method PUT `
+    -Uri "http://localhost:8080/api/v1/admin/pricing/variants/$variantId/price" `
+    -Headers @{ Authorization="Bearer $maya" } `
+    -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ unitPrice=100.00; expectedPriceId=$null })
+if ($firstPrice.assessment -ne "NO_COST_KNOWN" -or $firstPrice.price.unitPrice -ne 100) {
+    Write-Error "Pricing a piece that holds no stock should save K100 as NO_COST_KNOWN; got: $($firstPrice | ConvertTo-Json -Depth 4)"; exit 1
+}
+
+# Publish, or the public read and the storefront list both 404. Refuses an
+# unpriced variant, which is why the price above is real.
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products/$productId/publish" `
     -Headers @{ Authorization="Bearer $maya" } | Out-Null
@@ -859,7 +883,12 @@ $control = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/adm
     -ContentType "application/json" -Body (ConvertTo-Json @{ title=$controlTitle })
 Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products/$($control.id)/variants" `
     -Headers $adminHeaders -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ sku="CTL-$p3"; unitPrice=250.00; options=@{} }) | Out-Null
+    -Body (ConvertTo-Json @{ sku="CTL-$p3"; options=@{} }) | Out-Null
+$controlVariant = ((Invoke-RestMethod -Method GET -Headers $adminHeaders `
+    -Uri "http://localhost:8080/api/v1/admin/products/$($control.id)").variants | Select-Object -First 1).id
+Invoke-RestMethod -Method PUT -Uri "http://localhost:8080/api/v1/admin/pricing/variants/$controlVariant/price" `
+    -Headers $adminHeaders -ContentType "application/json" `
+    -Body (ConvertTo-Json @{ unitPrice=250.00; expectedPriceId=$null }) | Out-Null
 Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/admin/products/$($control.id)/publish" `
     -Headers $adminHeaders | Out-Null
 
@@ -2396,6 +2425,175 @@ if ($costFailures.Count -gt 0) {
     exit 1
 }
 Write-Host "    7 rings and 200 boxes on hand with a lot per slice (ring 4 x K1,528.99 + 3 x K1,528.98), the lots 403 to alice and 401 with no token; a sale keyed through the gateway 403, the order system's own call 200 costing K1,528.99 FIFO and the same sale line again taking nothing; a write-off 201 at K1,528.99 (alice 403, a retry 200), taken back; the courier's bill corrected to K600 (alice 403, nothing-changed 400, stale 409, revision 2 at K21,100.00 with its reason) and the stock re-costed (ring 5 x K1,502.90 + 1 x K1,502.89 remaining, the sold unit now K1,502.90, box 171 x K52.90 + 29 x K52.89), every count agreeing with its lots" -ForegroundColor Gray
+
+Write-Host "[20f/20] Price and publish (Phase 6): the warning, dated prices, the default box, boxes set aside, unpublish..." -ForegroundColor Cyan
+# Follows the ring of steps 4 and 20d-20e, which now holds stock at cost (ring 5 x K1,502.90 + 1 x K1,502.89 after the
+# correction, box 171 x K52.90 + 29 x K52.89) and is priced K100 (set in step 4, before any stock existed).
+#
+#   1. the pricing view says so: the price in force is BELOW the cost now held (floor K1,502.90) and the history has its
+#      first row; the list of prices below cost finds it; alice 403, no token 401;
+#   2. a price below cost is a warning, never a refusal: with no reason 409 below-landed-cost (with the floor), with a
+#      reason and the floor acknowledged 200 and recorded; a price that covers the cost 200 OK;
+#   3. the default box is part of what a sale costs: choosing it raises the floor to K1,555.80 (ring + box);
+#   4. the plan's own case, live: priced K1,580 (above that floor), the courier's bill is corrected back UP to K6,000, and
+#      the very next look at the list has the ring below cost (floor K1,607.98);
+#   5. boxes set aside for the product: 10 set aside, 201 refused with how many are free, a write-off that free cannot
+#      absorb cuts into them and names the product, and taking it back does not remake the promise;
+#   6. taking the product off sale lets its boxes go; publishing again puts it back;
+#   7. the old ways are gone: a variant created with a price 400, PATCH on a variant 404.
+# Like 20d and 20e this leaves rows behind (prices, a revision, a write-off): history is never edited.
+$maya  = Get-Jwt "maya"
+$alice = Get-Jwt "alice"
+$mayaH  = @{ Authorization = "Bearer $maya" }
+$aliceH = @{ Authorization = "Bearer $alice" }
+$priceFailures = @()
+$pricingBase = "http://localhost:8080/api/v1/admin/pricing"
+$adminBase = "http://localhost:8080/api/v1/admin"
+
+function Get-PricingView($Variant) { return (Invoke-Supplier "GET" "$pricingBase/variants/$Variant" $mayaH $null) }
+
+try {
+    if (-not $ringVariant -or -not $productId -or -not $boxVariantId -or -not $cid -or -not $box) { throw "steps 4, 20d and 20e left no ring, box or consignment to price" }
+    # --- 1. where the price stands --------------------------------------------------------------
+    $view = Get-PricingView $ringVariant
+    if ($view.Status -ne 200 -or "$($view.Json.assessment)" -cne "BELOW" -or -not (Same-Money $view.Json.cost.floor "1502.90") -or -not (Same-Money $view.Json.currentPrice.unitPrice "100.00")) {
+        $priceFailures += "the pricing view of the ring says status $($view.Status), assessment '$($view.Json.assessment)', floor '$($view.Json.cost.floor)', price '$($view.Json.currentPrice.unitPrice)', expected 200, BELOW, 1502.90 and 100.00"
+    }
+    if (@($view.Json.history).Count -lt 1 -or "$($view.Json.history[-1].source)" -cne "SET") {
+        $priceFailures += "the ring's price history is [$(@($view.Json.history) | ForEach-Object { "$($_.unitPrice) $($_.source) $($_.assessment)" })], expected at least the K100 set in step 4"
+    }
+    if (@($view.Json.cost.goods.lots).Count -ne 2) { $priceFailures += "the pricing view shows $(@($view.Json.cost.goods.lots).Count) held lots, expected 2 (5 + 1)" }
+    $listed = Invoke-Supplier "GET" "$pricingBase/below-cost?size=100" $mayaH $null
+    $ringItem = @($listed.Json.items | Where-Object { "$($_.variantId)" -ceq "$ringVariant" })
+    if ($listed.Status -ne 200 -or $ringItem.Count -ne 1 -or "$($ringItem[0].assessment)" -cne "BELOW" -or [int]$listed.Json.counts.BELOW -lt 1) {
+        $priceFailures += "the list of prices below cost gave $($listed.Status) with $($ringItem.Count) entries for the ring, expected 200 and the ring once as BELOW"
+    }
+    $aliceView = Invoke-Supplier "GET" "$pricingBase/variants/$ringVariant" $aliceH $null
+    $anonView = Invoke-Supplier "GET" "$pricingBase/variants/$ringVariant" $null $null
+    if ($aliceView.Status -ne 403) { $priceFailures += "alice (no CATALOG_ADMIN or COST_VIEWER) reading the pricing view gave $($aliceView.Status), expected 403" }
+    if ($anonView.Status -ne 401) { $priceFailures += "the pricing view with no token gave $($anonView.Status), expected 401" }
+
+    # --- 2. below cost is a warning, never a refusal ----------------------------------------------
+    $currentId = "$($view.Json.currentPrice.id)"
+    $noReason = Invoke-Supplier "PUT" "$pricingBase/variants/$ringVariant/price" $mayaH @{ unitPrice = 1400.00; expectedPriceId = $currentId }
+    if ($noReason.Status -ne 409 -or "$($noReason.Json.type)" -notmatch "below-landed-cost$" -or -not (Same-Money $noReason.Json.floor "1502.90")) {
+        $priceFailures += "K1,400 against a K1,502.90 cost with no reason gave $($noReason.Status) '$($noReason.Json.type)' floor '$($noReason.Json.floor)', expected 409 below-landed-cost with the floor"
+    }
+    $withReason = Invoke-Supplier "PUT" "$pricingBase/variants/$ringVariant/price" $mayaH @{ unitPrice = 1400.00; expectedPriceId = $currentId; belowCostReason = "smoke: clearing the old stock"; acknowledgedFloor = 1502.90 }
+    if ($withReason.Status -ne 200 -or "$($withReason.Json.assessment)" -cne "BELOW" -or "$($withReason.Json.price.reason)" -cne "smoke: clearing the old stock" -or "$($withReason.Json.price.setBy)" -notmatch "^user:") {
+        $priceFailures += "K1,400 with a reason gave $($withReason.Status) assessment '$($withReason.Json.assessment)' reason '$($withReason.Json.price.reason)' by '$($withReason.Json.price.setBy)', expected 200, BELOW, the reason and who"
+    }
+    $staleSave = Invoke-Supplier "PUT" "$pricingBase/variants/$ringVariant/price" $mayaH @{ unitPrice = 1450.00; expectedPriceId = $currentId; belowCostReason = "smoke: stale"; acknowledgedFloor = 1502.90 }
+    if ($staleSave.Status -ne 409 -or "$($staleSave.Json.type)" -notmatch "stale-price$") { $priceFailures += "a save made against a price that was replaced gave $($staleSave.Status) '$($staleSave.Json.type)', expected 409 stale-price" }
+    $priceId = "$($withReason.Json.price.id)"
+    $covers = Invoke-Supplier "PUT" "$pricingBase/variants/$ringVariant/price" $mayaH @{ unitPrice = 1510.00; expectedPriceId = $priceId }
+    if ($covers.Status -ne 200 -or "$($covers.Json.assessment)" -cne "OK") { $priceFailures += "K1,510 against a K1,502.90 cost gave $($covers.Status) '$($covers.Json.assessment)', expected 200 OK" }
+    $priceId = "$($covers.Json.price.id)"
+    $dollars = Invoke-Supplier "PUT" "$pricingBase/variants/$ringVariant/price" $mayaH @{ unitPrice = 15.00; currency = "USD"; expectedPriceId = $priceId }
+    if ($dollars.Status -ne 400 -or "$($dollars.Json.type)" -notmatch "unsupported-currency$") { $priceFailures += "a price in dollars gave $($dollars.Status) '$($dollars.Json.type)', expected 400 unsupported-currency" }
+    $stored = Invoke-Supplier "GET" "http://localhost:8080/api/v1/products/$productId" $null $null
+    if ($stored.Status -ne 200 -or -not (Same-Money $stored.Json.variants[0].unitPrice "1510.00")) { $priceFailures += "the shop shows '$($stored.Json.variants[0].unitPrice)' for the ring, expected 1510.00 (the price in force)" }
+
+    # --- 3. the default box is part of what a sale costs --------------------------------------------
+    $chosen = Invoke-Supplier "PUT" "$adminBase/products/$productId/default-packaging" $mayaH @{ packagingVariantId = $boxVariantId }
+    if ($chosen.Status -ne 200 -or "$($chosen.Json.defaultPackagingVariantId)" -cne "$boxVariantId") { $priceFailures += "choosing the default box gave $($chosen.Status) '$($chosen.Json.defaultPackagingVariantId)', expected 200 and the box" }
+    $notABox = Invoke-Supplier "PUT" "$adminBase/products/$productId/default-packaging" $mayaH @{ packagingVariantId = $ringVariant }
+    if ($notABox.Status -ne 400) { $priceFailures += "choosing a ring as the box gave $($notABox.Status), expected 400" }
+    $withBox = Get-PricingView $ringVariant
+    if ($withBox.Status -ne 200 -or "$($withBox.Json.cost.boxBasis)" -cne "COUNTED" -or -not (Same-Money $withBox.Json.cost.floor "1555.80") -or "$($withBox.Json.assessment)" -cne "BELOW") {
+        $priceFailures += "with the box chosen the view says basis '$($withBox.Json.cost.boxBasis)', floor '$($withBox.Json.cost.floor)', assessment '$($withBox.Json.assessment)', expected COUNTED, 1555.80 (1502.90 + 52.90) and BELOW for K1,510"
+    }
+    # A box that a product goes out in is not deleted from under it: refused, naming the product (nothing is deleted).
+    $boxInUse = Invoke-Supplier "DELETE" "$adminBase/products/$($box.id)" $mayaH $null
+    if ($boxInUse.Status -ne 409 -or "$($boxInUse.Json.type)" -notmatch "packaging-in-use$" -or "$(@($boxInUse.Json.products)[0].id)" -cne "$productId") {
+        $priceFailures += "deleting the box the ring goes out in gave $($boxInUse.Status) '$($boxInUse.Json.type)', expected 409 packaging-in-use naming the ring"
+    }
+
+    # --- 4. the plan's own case: a cost corrected UP raises the warning -----------------------------
+    $above = Invoke-Supplier "PUT" "$pricingBase/variants/$ringVariant/price" $mayaH @{ unitPrice = 1580.00; expectedPriceId = $priceId; belowCostReason = "smoke: just above the box"; acknowledgedFloor = 1555.80 }
+    $above2 = $above
+    if ($above.Status -ne 200) { $priceFailures += "K1,580 gave $($above.Status), expected 200: $($above.Json.detail)" }
+    $okNow = Get-PricingView $ringVariant
+    if ("$($okNow.Json.assessment)" -cne "OK") { $priceFailures += "K1,580 against the K1,555.80 floor reads '$($okNow.Json.assessment)', expected OK" }
+    $courierUp = @{ fromRevision = 2; reason = "smoke: the courier's bill was K6,000 after all"; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 6000.00 }) }
+    $raised = Invoke-Supplier "POST" "$procBase/consignments/$cid/amendments" $mayaH $courierUp
+    if ($raised.Status -ne 201 -or [int]$raised.Json.revision -ne 3) { throw "correcting the courier's bill back up gave $($raised.Status) revision '$($raised.Json.revision)', expected 201 and revision 3: $($raised.Json.detail)" }
+    $nowBelow = Wait-Until { $v = Get-PricingView $ringVariant; if ($v.Status -eq 200 -and (Same-Money $v.Json.cost.floor "1607.98")) { $v } } 120
+    if (-not $nowBelow) {
+        $priceFailures += "after the cost was corrected up the floor reads '$((Get-PricingView $ringVariant).Json.cost.floor)' after 120 s, expected 1607.98 (ring 1528.99 + box 78.99)"
+    } else {
+        if ("$($nowBelow.Json.assessment)" -cne "BELOW" -or -not (Same-Money $nowBelow.Json.shortfall "27.98")) {
+            $priceFailures += "the corrected cost leaves the ring '$($nowBelow.Json.assessment)' short by '$($nowBelow.Json.shortfall)', expected BELOW by 27.98"
+        }
+        $listedAgain = Invoke-Supplier "GET" "$pricingBase/below-cost?size=100" $mayaH $null
+        $ringAgain = @($listedAgain.Json.items | Where-Object { "$($_.variantId)" -ceq "$ringVariant" })
+        if ($ringAgain.Count -ne 1 -or -not (Same-Money $ringAgain[0].shortfall "27.98")) {
+            $priceFailures += "the list of prices below cost does not show the ring short by 27.98 after the correction ($($ringAgain.Count) entries): a dearer cost slipped under unseen"
+        }
+    }
+
+    # --- 5. boxes set aside for the product ------------------------------------------------------
+    # Inventory learns the default box from catalog's snapshot (Kafka), so the first tries may be 409 until it has.
+    $setAside = Wait-Until { $r = Invoke-Supplier "PUT" "$adminBase/inventory/box-commitments/$productId" $mayaH @{ quantity = 10 }; if ($r.Status -eq 200) { $r } } 120
+    if (-not $setAside -or [int]$setAside.Json.box.committed -ne 10 -or [int]$setAside.Json.box.free -ne 190) {
+        $priceFailures += "setting 10 boxes aside gave '$($setAside.Status)' committed '$($setAside.Json.box.committed)' free '$($setAside.Json.box.free)' after 120 s, expected 200, 10 and 190"
+    }
+    $tooMany = Invoke-Supplier "PUT" "$adminBase/inventory/box-commitments/$productId" $mayaH @{ quantity = 201 }
+    if ($tooMany.Status -ne 409 -or "$($tooMany.Json.type)" -notmatch "insufficient-free-packaging$" -or [int]$tooMany.Json.available -ne 200) {
+        $priceFailures += "201 boxes of 200 gave $($tooMany.Status) '$($tooMany.Json.type)' available '$($tooMany.Json.available)', expected 409 insufficient-free-packaging with 200 available"
+    }
+    $aliceSet = Invoke-Supplier "PUT" "$adminBase/inventory/box-commitments/$productId" $aliceH @{ quantity = 1 }
+    if ($aliceSet.Status -ne 403) { $priceFailures += "alice setting boxes aside gave $($aliceSet.Status), expected 403" }
+    $cutId = [guid]::NewGuid().ToString()
+    $cut = Invoke-Supplier "POST" "$adminBase/inventory/write-offs" $mayaH @{ requestId = $cutId; variantId = $boxVariantId; qty = 195; reason = "WRITE_OFF_BROKEN"; note = "smoke: a crate was crushed" }
+    $cuts = @($cut.Json.cutCommitments)
+    if ($cut.Status -ne 201 -or $cuts.Count -ne 1 -or "$($cuts[0].productId)" -cne "$productId" -or [int]$cuts[0].cut -ne 5 -or [int]$cut.Json.committed -ne 5) {
+        $priceFailures += "writing off 195 boxes gave $($cut.Status) cutting [$(@($cuts | ForEach-Object { "$($_.productId):$($_.cut)" }) -join ',')], committed '$($cut.Json.committed)', expected 201, this product's 5 boxes cut and 5 left set aside"
+    }
+    $back = Invoke-Supplier "POST" "$adminBase/inventory/write-offs/$($cut.Json.actionId)/take-back" $mayaH @{ requestId = [guid]::NewGuid().ToString(); qty = 195; note = "smoke: found them" }
+    if ($back.Status -ne 201 -or [int]$back.Json.onHand -ne 200 -or [int]$back.Json.committed -ne 5) {
+        $priceFailures += "taking the boxes back gave $($back.Status) on hand '$($back.Json.onHand)' set aside '$($back.Json.committed)', expected 201, 200 and 5: a cut promise is not remade"
+    }
+    $historyRows = Invoke-Supplier "GET" "$adminBase/inventory/box-commitments/$productId/history" $mayaH $null
+    $kinds = @($historyRows.Json.changes | ForEach-Object { "$($_.kind)" }) -join ","
+    if ($historyRows.Status -ne 200 -or $kinds -cne "ALLOCATE,WRITE_OFF_CUT") { $priceFailures += "the history of the product's boxes reads '$kinds' ($($historyRows.Status)), expected ALLOCATE,WRITE_OFF_CUT" }
+    $recon = Invoke-Supplier "GET" "$adminBase/inventory/reconciliation" $mayaH $null
+    if ($recon.Status -ne 200 -or @($recon.Json.countMismatches).Count -ne 0 -or @($recon.Json.ledgerMismatches).Count -ne 0 -or @($recon.Json.commitmentMismatches).Count -ne 0) {
+        $priceFailures += "the reconciliation after the commitments found a mismatch ($($recon.Status)): $($recon.Json | ConvertTo-Json -Depth 4 -Compress)"
+    }
+
+    # --- 6. off sale and back ----------------------------------------------------------------------
+    $off = Invoke-Supplier "POST" "$adminBase/products/$productId/unpublish" $mayaH $null
+    if ($off.Status -ne 200 -or "$($off.Json.status)" -cne "DRAFT") { $priceFailures += "unpublishing the ring gave $($off.Status) '$($off.Json.status)', expected 200 DRAFT" }
+    $gone = Invoke-Supplier "GET" "http://localhost:8080/api/v1/products/$productId" $null $null
+    if ($gone.Status -ne 404) { $priceFailures += "the shop still shows an unpublished ring ($($gone.Status)), expected 404" }
+    $released = Wait-Until { $r = Invoke-Supplier "GET" "$adminBase/inventory/box-commitments?productId=$productId" $mayaH $null; if ($r.Status -eq 200 -and @($r.Json.commitments).Count -eq 0) { $r } } 120
+    if (-not $released) { $priceFailures += "the boxes set aside for the unpublished ring were not let go after 120 s" }
+    $offAgain = Invoke-Supplier "POST" "$adminBase/products/$productId/unpublish" $mayaH $null
+    if ($offAgain.Status -ne 409) { $priceFailures += "unpublishing an unpublished ring gave $($offAgain.Status), expected 409" }
+    $on = Invoke-Supplier "POST" "$adminBase/products/$productId/publish" $mayaH $null
+    if ($on.Status -ne 200 -or "$($on.Json.status)" -cne "ACTIVE") { $priceFailures += "publishing the ring again gave $($on.Status) '$($on.Json.status)', expected 200 ACTIVE" }
+
+    # --- 7. the old ways are gone --------------------------------------------------------------------
+    $probe = Invoke-Supplier "POST" "$adminBase/products" $mayaH @{ title = "Smoke price probe $([guid]::NewGuid().ToString().Substring(0,8))" }
+    if ($probe.Status -ne 201) { throw "creating the probe product gave $($probe.Status)" }
+    $priced = Invoke-Supplier "POST" "$adminBase/products/$($probe.Json.id)/variants" $mayaH @{ sku = "NOPRICE-$([guid]::NewGuid().ToString().Substring(0,8))"; unitPrice = 100.00; options = @{} }
+    if ($priced.Status -ne 400) { $priceFailures += "creating a variant WITH a price gave $($priced.Status), expected 400: a variant starts unpriced" }
+    $unpriced = Invoke-Supplier "POST" "$adminBase/products/$($probe.Json.id)/variants" $mayaH @{ sku = "UNPRICED-$([guid]::NewGuid().ToString().Substring(0,8))"; options = @{} }
+    if ($unpriced.Status -ne 201 -or -not (Same-Money $unpriced.Json.variants[0].unitPrice "0.00")) { $priceFailures += "creating a variant with no price gave $($unpriced.Status) price '$($unpriced.Json.variants[0].unitPrice)', expected 201 and 0.00" }
+    $patched = Invoke-Supplier "PATCH" "$adminBase/products/$productId/variants/$ringVariant" $mayaH @{ unitPrice = 1.00 }
+    if ($patched.Status -lt 400 -or $patched.Status -ge 500) { $priceFailures += "the retired PATCH on a variant gave $($patched.Status), expected a 4xx" }
+}
+catch {
+    $priceFailures += "the step stopped early: $($_.Exception.Message)"
+}
+
+if ($priceFailures.Count -gt 0) {
+    $priceFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "price and publish regressed on $($priceFailures.Count) check(s)"
+    exit 1
+}
+Write-Host "    the ring's price (K100, set before any stock existed) read BELOW the K1,502.90 cost with its history, listed as below cost, 403 to alice and 401 with no token; K1,400 with no reason 409 below-landed-cost with the floor, with a reason and the floor 200 recorded with who; a stale save 409; K1,510 OK; dollars 400; the shop shows the price in force; the default box added (floor K1,555.80, a ring refused as a box 400, the box refused for deletion 409 while the ring uses it); K1,580 OK, then the courier's bill corrected UP to K6,000 and the list shows the ring short by K27.98 (floor K1,607.98); 10 boxes set aside (201 refused with 200 available, alice 403), a 195-box write-off cut this product's 5 and named it, the take-back did not remake the promise, history ALLOCATE then WRITE_OFF_CUT, no mismatch; unpublished 200 DRAFT (404 in the shop, the boxes let go, a second unpublish 409), published again; a variant created with a price 400 and the old PATCH a 4xx" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

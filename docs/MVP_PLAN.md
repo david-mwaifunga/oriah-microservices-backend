@@ -460,12 +460,14 @@ used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
 **Updated after Phase 3 (2026-11-12):** catalog used **V5** (`kind`) and search
 **V4** (`listed`). **Updated after Phase 5 (2026-11-13):** inventory used **V7** (lots),
 **V8** (the ledger) and **V9** (`outbox_catch_up`), and procurement used **V7**
-(amendments) — the table below is what is on disk now.
+(amendments). **Updated after Phase 6 (2026-11-13):** catalog used **V6** (price history, the
+default box, the unpublish count) and inventory **V10** (boxes set aside) — the table below is
+what is on disk now.
 
 | Service | Highest now | Next free |
 |---|---|---|
-| catalog | **V5** — USED by Phase 3's `kind` (V4 is Phase 1's outbox) | **V6** |
-| inventory | **V9** — USED: V6 Phase 1's `processed_event`; **V7 Phase 5's `cost_lot`** (and `inventory.kind`, the guard trigger); **V8 the ledger** (`stock_action`, `stock_movement`, `live_movement`); **V9** `outbox_catch_up` (V5 is Phase 0's `@Version`) | **V10** |
+| catalog | **V6** — USED by Phase 6: `variant_price` (the dated, append-only price history), `products.default_packaging_variant_id`, `products.unpublish_count` (V5 is Phase 3's `kind`, V4 Phase 1's outbox) | **V7** |
+| inventory | **V9** — USED: V6 Phase 1's `processed_event`; **V7 Phase 5's `cost_lot`** (and `inventory.kind`, the guard trigger); **V8 the ledger** (`stock_action`, `stock_movement`, `live_movement`); **V9** `outbox_catch_up`; **V10 Phase 6's boxes set aside** (`inventory.committed`, `product_state`, `box_commitment`, `box_commitment_change`) (V5 is Phase 0's `@Version`) | **V11** |
 | order | **V5** — USED by Phase 1's event log (V4 is Phase 0's authoritative totals) | **V6** |
 | cart | V3 | V4 |
 | payment | **V5** — USED by Phase 1: one charge per intent, and the event log | **V6** |
@@ -1656,6 +1658,130 @@ current count. Catalog keeps no count at all.
 
 ### Phase 6 — Price and publish
 
+> **Status: built, 2026-11-13.** Committed in `oriah-api` (not pushed): inventory `9015bc8`, catalog `7d2a098`, gateway `f39d208`, and the closing commit after them
+> (smoke step 20f, goldens, waivers, Postman, the plan and this block, the frontend handover). The design went through two Codex plan reviews
+> (`../.codex-tmp/plan-p6-r1.md`, `-r2.md` and their `.review.md`; `plan-p6-FINAL.md` is the binding record) and a five-lens read-only
+> panel on the design (36 significant findings: 29 survived two stages, 7 refuted; every confirmed one is in the FINAL design). The code
+> was then reviewed three times: Codex on the whole diff (three findings, all fixed or answered: below), a five-lens read-only panel with two
+> skeptics per finding (31 agents: 13 significant findings, 10 survived, all low or medium, 3 refuted), and a last Codex pass over the finished
+> diff after those fixes (two findings, both real, both fixed: below), and a small panel on that last pair of fixes (two more real, fixed).
+>
+> **What it delivers.**
+> - **A price is dated history** (`catalog` V6 `variant_price`, append-only: the database refuses an update, a delete and a truncate). A change
+>   adds a row and overwrites nothing; `product_variants.unit_price` stays as the price in force and is written in the same transaction as the
+>   row it comes from. A price starts **now, or earlier within 72 hours** (a paper tag changed this morning and keyed tonight; the row also
+>   records when it was keyed), **never in the future** (nothing would flip it) and never before the price it follows; two rows from the same
+>   instant order by when they were written, so a typo corrected is the price from the typo's own time. V6 gave every variant that was already
+>   priced one `MIGRATED` row that says it was never assessed against a cost.
+> - **A variant is created unpriced, always**, and the only way to a price is `PUT /api/v1/admin/pricing/variants/{id}/price` (**CATALOG_ADMIN
+>   and COST_VIEWER both**, at the gateway by a matcher that needs both, and again in the service). The old `PATCH` on a variant is gone and a
+>   price on a new variant is 400. Prices are **ZMW only** (an omitted currency means the variant's own, so a legacy dollar piece cannot be
+>   moved without saying so).
+> - **The below-cost warning, which never refuses.** A price is compared with the **dearest unit cost among the lots still holding stock plus the
+>   dearest held lot of the product's default box** (not the average, which a price can clear while the next oldest-first sale still loses
+>   money). Below it, the save is 409 `below-landed-cost` carrying every figure; it succeeds with a typed reason (5 to 200 characters) **and the
+>   floor the person was shown** (a reason is never accepted against figures nobody saw). The reason, the person's name (from the token's `name`
+>   claim, may be empty) and the figures are kept on the row and announced once as `price.set` (topic `catalog.price`, nothing consumes it yet).
+>   **Nothing is ever saved without the cost having been looked at**: stock down is 503, a refusal from stock 502, a contract fault 500, never
+>   "no cost known". A piece that holds nothing is saved as `NO_COST_KNOWN` and re-judged on every later read.
+> - **"Re-runs" is met by computing, not by triggers.** `GET /api/v1/admin/pricing/below-cost` judges every priced piece against the stock held
+>   **now**, so a dearer lot received, a corrected cost (the plan's own test: an estimated opening lot corrected upward past its price), a dear
+>   lot sold out of, a changed default box, all show the next time anyone looks, including causes a trigger list would not name. Nothing is stored
+>   that could go stale, and inventory stays a non-producer (Phase 7 gives it events). `counts` says how many stand at each assessment.
+> - **A suggested price** (`landed cost × (1 + p/100)`, rounded UP to the ngwee, only a suggestion) from `targetProfitPercent` or the configured
+>   `oriah.catalog.pricing.target-profit-percent` (none is configured: the owner has not said). The month's overhead share is Phase 10's.
+> - **Default packaging** (`PUT /api/v1/admin/products/{id}/default-packaging`) and **unpublish** (`POST .../unpublish`, ACTIVE back to DRAFT,
+>   counted). `product.created/updated` end with `defaultPackagingVariantId` and `unpublishCount`. **A box that products go out in cannot be
+>   deleted** (409 `packaging-in-use`, naming them), and choosing a box and deleting it both lock the box's product, so the two cannot cross
+>   into a default that points at a box that is gone.
+> - **Boxes set aside for a product** (inventory V10; CLIENT_DECISIONS 4.2): a packaging row carries `committed` beside `on_hand` and `reserved`
+>   (`free` = what is left), one record per product on its default box, `PUT/DELETE/GET /api/v1/admin/inventory/box-commitments` (INVENTORY_ADMIN).
+>   A promise needs free boxes and says how many are available when it cannot be kept; a sale of a set-aside box (`StockService.consumeCommitted`,
+>   an internal operation) lowers the set-aside AND the count; a write-off takes free boxes first and cuts promises only for what free cannot
+>   absorb, newest first, **naming the products**; a take-back returns to free and never re-sets aside. After every change `committed` is checked
+>   to equal the records' sum (and `reconciliation` reports a drift). A promise is a quantity, never a lot: it touches no cost lot.
+> - **Boxes are let go by state, not by step.** Catalog's snapshot carries `unpublishCount` (only ever up) and the default box; after the newest
+>   snapshot applied, inventory lets a product's boxes go when it is deleted, unpublished since they were set aside, or boxed differently. That
+>   is a function of state, so a snapshot that arrives late (the older one is discarded as stale), twice or not at all cannot lose a release.
+> - **Inventory's one new read** `GET /api/v1/admin/costs/held` (COST_VIEWER): per variant (every asked id answered once, one SQL statement, so
+>   one snapshot) its held lots, the dearest cost, the weighted average and whether any is an estimate. Catalog asks it **as the person**, with
+>   their own token as an explicit parameter on the request thread, through a **separate Feign client** that is not wrapped in the circuit breaker
+>   (the breaker moves each call to another thread, where the security context is empty) and has no fallback. `FeignCircuitBreakerSafetyTest` was
+>   strengthened to pin each of those, not weakened.
+>
+> **Verified.** Tests: catalog **585**, inventory **284**, gateway **220**, all with 0 failures, each run on the final code (procurement was not
+> touched and not re-run). `ProductEventDeadLetterKafkaTest` failed three times with "Container startup failed for image apache/kafka" while the
+> 39-container stack and 18 leaked test containers had left the Docker VM too little memory; with the stack stopped it passes (4 of 4) and it
+> passes in the full inventory run: nothing about the test or the consumer was changed to make it pass. Red first for the pure rules, the
+> migrations and the commitment domain; the injected-bug check (a deliberately wrong sort, a skipped acknowledgement, a wrong cut order, a
+> skipped unpublish count) was caught by the tests every time.
+>
+> **Live, on the existing development databases, three images rebuilt from the final code:** catalog V6 gave all **89** priced variants one
+> `MIGRATED` row (none is left without a history row) and inventory V10 applied; **smoke 29/29 on its first attempt** (step 20f follows the
+> ring through the warning, the default box, a cost corrected UP past the price, boxes set aside and cut by a write-off, unpublish and the
+> retired endpoints); **error goldens 36/36** (the seven new cases were new and the 29 old ones unchanged); **OpenAPI PASS** (162 additions,
+> 28 waived: the earlier 26 plus `VariantCreateRequest.unitPrice` removed and `.currency` limited to ZMW, each with its checked client impact);
+> **Postman 128** endpoints, its GET check PASS. **Memory:** inventory 496 MiB of its 640 MiB after the smoke test (Phase 5: 486), catalog 548 of
+> 1,536; that is the state after the smoke test, not a heavy burst. Catalog's JVM shows 36 forced metadata collections (7.6 s) at start-up that no
+> other service shows; the count did not grow, no earlier figure exists, and the new code is well under 1% of its classes (see PROGRESS.md).
+>
+> **Review findings, all answered.** Codex on the diff: (1) inventory's `product_state` starts empty at V10 and is filled by a product's next
+> snapshot: **accepted and shown not to bite**, because a product only has a default box after a save, which sends its snapshot; (2) the admin
+> product detail dropped the saved default box: **fixed** (admin reads carry it, the shop's never does); (3) a reason padded with spaces was
+> judged on the raw text and failed the database CHECK as a generic 409: **fixed** (400). The panel: the commitment property test swallowed the
+> invariant checks' own exceptions (**fixed**: only a rule's refusal is accepted, and every operation must have run), the under-the-lock
+> stale-price check had no test (**added**, using the stand-in inventory to land a competing save during the cost read), inventory contract faults
+> came out as a 409 conflict (**fixed**: `CostContractException`, a 500; busy inventory 408/429 is a 503), an omitted currency on a legacy dollar
+> piece was quietly redenominated (**fixed**: it must say ZMW), `CURRENCY_MISMATCH` had no HTTP test (**added**), two rounding tests passed under
+> the wrong mode (**added** discriminating cases: K100.03 at 10% is K110.04, 0.025 averages to 0.03). A last Codex pass over the finished diff found
+> two more, both real and **fixed test-first**: a legacy piece could not be moved to Kwacha at the *same figure* (100.00 USD to an explicit 100.00 ZMW
+> was refused as "nothing changed", because only the amount was compared), and a box that products go out in could be deleted from under them
+> (their default would point at a box that is gone, prices would go on adding its cost, inventory would go on holding boxes for them). The delete is
+> now refused while a live product holds the box, and choosing a box and deleting it lock the box's product so they cannot cross (a mutation that
+> loaded the box before the lock was caught by the test; a packaging entry's refused choice is refused before any other product is locked, so two
+> of them cannot wait for each other). A small three-lens panel on those two fixes (11 agents; 4 reports, one a duplicate, one refuted by both
+> skeptics) found two more real ones, both **fixed test-first**: two *sellable* products naming each other's variants could still deadlock (only
+> invalid requests, but a 500 and a deadlock log: the owner lookup now answers only for packaging, so anything else is refused before any lock),
+> and **deleting a category loaded the products using it unlocked and saved them back whole, silently undoing a change made meanwhile**
+> (reproduced: a product that had just been published went back to a draft). That one is older than this phase, but this phase added two more
+> columns to what it could undo (the default box and the unpublish count). It is now one statement that changes only the breadcrumb column.
+>
+> **Accepted for the MVP (written down so nobody rediscovers them).**
+> - **Nothing tells anyone when a priced piece falls below cost** until Phase 11 polls the list (below); the list itself is always current.
+> - **The cost check is "the cost as observed at evaluation time"**, kept with its time. A cross-service check cannot be a commit-time fence: a
+>   sale or a correction landing between the read and the save is not seen; the list is authoritative afterwards.
+> - **A snapshot that is dead-lettered and never followed by another** leaves a product's boxes set aside (free looks lower than it is: the safe
+>   direction). A dead-lettered product event is already an operational incident.
+> - **A legacy product with two or more variants priced in dollars cannot be moved to Kwacha through the endpoint** (the one-currency-per-product
+>   rule objects to each variant in turn). Only developer data can be in that state: delete and recreate it.
+> - **A price for a piece that has never been received is allowed** (`NO_COST_KNOWN`, counted on the list): nothing can be sold without stock,
+>   which arrives only with a received consignment.
+> - **A piece's boxes set aside while inventory's view of the product is stale** are let go when the newer snapshot arrives (safe direction).
+> - **Reserve-from-commitment and release-to-source are not built here** (Phase 7's reservation lines own them; see the hand-off). `confirm` is
+>   unchanged: it consumes `reserved`.
+>
+> **Owner questions (each with its default; none blocks).** O1 may a price be set for a piece never received? (default yes, flagged);
+> O2 may a price start up to 72 hours back, never in the future? (default yes); O3 the target profit percentage (none configured: no suggestion);
+> O4 boxes set aside are let go when a piece is unpublished, deleted or boxed differently, and a write-off cuts the newest set-asides first
+> (default as stated); O5 nobody is told when a price falls below cost until Phase 11 (default as stated).
+>
+> **What this phase hands on.**
+> - **Phase 7:** (a) pricing at a true date: the history answers "the price at an instant" (`PriceHistory.priceAt`, tested) but no cross-service
+>   read exists yet; add an as-of price to the sale-pricing call (`POST /api/v1/variants/pricing` gets an optional `asOf`, or a staff-only twin),
+>   so a late-keyed paper sale is priced at its true date (Q30); (b) **reservations and boxes**: a box line is taken from the product's
+>   commitment first and from free otherwise, into `reserved`, and released back to where it came from exactly once. Codex round 2's points are
+>   required: the reservation line records `{commitmentId, boxVariantId, fromCommitted, fromFree}` (the commitment id is the generation, so a
+>   reservation never restores into a newer promise after an unpublish or a replacement), decide what a commitment reduced to zero by a
+>   reservation is (a retained row with zero balance, or a target/balance split), and make the box swap after payment ONE idempotent inventory
+>   transaction that calls `consumeCommitted` (the primitive exists, tested, no endpoint); (c) the promotion below-cost triggers (promotions are
+>   built there; the evaluator `PriceGuard` is pure and reusable).
+> - **Phase 10 (finance):** `price.set` on `catalog.price` is the audit trail of every price and every below-cost acceptance (who, why, against
+>   which cost, lots by id and revision); the month's overhead share beside the suggestion needs the expenses.
+> - **Phase 11:** tell staff when a priced piece falls below cost (written into Phase 11's block).
+> - **Phase 12:** a returned piece's markdown below cost is the same rule: set it through the same endpoint, with a typed reason.
+> - **Frontend:** `docs/FRONTEND_WORK.md`'s Phase 6 section has the API as built and every screen and break.
+
+
 Retail price set by admin, with a **below-landed-cost warning**. Then publish.
 **A price is kept as dated history** — a change adds a row from a date and never
 overwrites — so a paper sale keyed late is priced at its true date (Phase 7, Q30).
@@ -2114,6 +2240,14 @@ this is narrow. Real email, WhatsApp and SMS must come with:
 - a **timeout of its own on the real sender**: the send runs on the thread
   that polls Kafka, so its time counts against the poll interval
   (`OrderEventBindingTest` adds the worst poll up).
+
+**What Phase 6 leaves for this phase (2026-11-13): tell staff when a priced piece falls below cost.**
+Phase 6 meets "the warning re-runs" by computing where every price stands **at every read** (a stored warning would go
+stale and race inventory), so a dearer lot received, a corrected cost, a dear lot sold out of or a changed default box show
+the next time anyone looks. **Nothing tells anyone.** Phase 11 closes that: poll `GET /api/v1/admin/pricing/below-cost`
+(its `counts.BELOW` and `items`) on a schedule and notify the owner when a piece **newly** appears. It needs an identity
+holding **CATALOG_ADMIN and COST_VIEWER** (the machine account `service-account-oriah-admin` holds only INVENTORY_ADMIN, and
+the pricing prefix refuses either role alone): give notification its own client with exactly those two, not a wider one.
 
 ### Phase 12 — Returns, refunds and exchanges *(new — the client pulled this in)*
 

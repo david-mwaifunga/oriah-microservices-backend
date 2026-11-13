@@ -402,3 +402,48 @@ inventory|operation removed|POST /api/v1/admin/inventory
 inventory|path removed|/api/v1/admin/inventory/{variantId}/restock
 inventory|requestBody schema changed|POST /api/v1/admin/inventory/{variantId}/confirm
 inventory|schema removed|InventoryCreateRequest
+
+# ---------------------------------------------------------------------------
+# Phase 6: a variant is created UNPRICED, and only Kwacha is a price.
+# ---------------------------------------------------------------------------
+#
+# Two breaks in catalog's VariantCreateRequest, one decision (MVP_PLAN Phase 6):
+#
+#   * unitPrice is no longer an input. A variant is created with price 0.00
+#     (unpriced) and a price is set ONLY through
+#     PUT /api/v1/admin/pricing/variants/{id}/price, which looks at what the stock
+#     cost first, needs a typed reason (and the floor the person was shown) to go
+#     below it, and writes a dated, append-only history row. A price taken at
+#     creation would be a second way to set one that never looks at the cost,
+#     which is the whole hole this phase closes. The field is kept in the
+#     published schema NOWHERE: it is hidden on purpose, and a body that still
+#     sends a price above 0.00 is 400 naming the field (tested), so a stale
+#     client fails loudly rather than quietly creating a priced piece.
+#     There is no additive version of this change.
+#
+#   * currency now carries the pattern (?i)ZMW. Oriah prices in Kwacha only
+#     (CLIENT_DECISIONS: a single currency, no FX engine), and a price in
+#     another currency cannot be compared with what the stock cost, which is the
+#     check this phase exists to make. The server already refused any other
+#     currency; the pattern only makes the published contract say so, and an
+#     omitted currency still means ZMW.
+#
+# The same phase removed PATCH /api/v1/admin/products/{id}/variants/{variantId}
+# (repriceVariant) and its VariantUpdateRequest. Neither is in the Tier 0
+# baseline, so the gate does not list them; they are recorded here and in
+# docs/FRONTEND_WORK.md so the removal is not a surprise.
+#
+# Client impact, checked rather than assumed: oriah-web's hand-written fetch
+# wrappers are the callers, so this breaks at RUNTIME, not at build time --
+# src/lib/api/catalog.ts addVariant (POST .../variants with unitPrice, :169-172)
+# and repriceVariant (PATCH .../variants/{id}, :218-221), and
+# src/lib/api/adminProductFlow.ts createSellableProduct, which creates a variant
+# WITH a price (:103-114). They are listed with the specs that change with them
+# (AdminProductsClient.test.tsx, adminProductFlow.test.ts) in docs/FRONTEND_WORK.md
+# (Phase 6). Nothing live depends on any of it: nothing is live until every phase
+# is built, and the frontend is changed after the backend by decision (2026-11-09).
+#
+# Reviewed and accepted 2026-11-13.
+
+catalog|schema property removed|VariantCreateRequest.unitPrice
+catalog|schema property type changed|VariantCreateRequest.currency: {"maxLength": 3, "minLength": 0, "type": "string"} -> {"maxLength": 3, "minLength": 0, "pattern": "(?i)ZMW", "type": "string"}

@@ -212,6 +212,10 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    of a received consignment is a new allocation *revision* (`POST .../amendments`) and a
    `consignment.amended` per changed line; inventory closes the old lots and re-cuts every
    sale, write-off, give-away and take-back that drew on them, each at its own date.
+   **Built in Phase 6:** a price is **dated history** (`variant_price`, append-only), set only through the
+   pricing endpoint (a variant is created **unpriced**), and a price below the **dearest held lot plus the
+   default box's** needs a typed reason and the floor the person was shown (the warning never refuses); where
+   every price stands is computed **from the stock held now at every read**, never stored.
 8. **Own delivery is revenue, not a cost allocation.** Clients pay for it
    rather than put something expensive in a Yango. Fuel and driver time are
    separate period expenses.
@@ -251,7 +255,8 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 promotion, shipping, customer, review, search, notification, **procurement**
 (Phases 2 and 4: suppliers, purchase orders, consignments with the landed-cost
 allocator, receiving, invoices, and corrections of a received consignment's cost; Flyway V1-V7;
-**inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads; Flyway V1-V9).
+**inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads, and since Phase 6 the boxes
+set aside for products; Flyway V1-V10; **catalog since Phase 6** holds the dated price history and the default box; Flyway V1-V6).
 `checkout` and `shipping` are **stateless** and own no database.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
@@ -269,7 +274,9 @@ first, `linePosition` last) and, since Phase 5, **`consignment.amended`** (the n
 the same snapshot plus `revision`, `reason`, `amendedAt`; only for lines whose cost a
 correction changed). **Inventory consumes both, from the beginning, with `onceInOrder`; any
 NEW procurement event type must be declared by inventory (handles/ignores) before procurement
-emits it.** Three
+emits it.** Since Phase 6 catalog also writes **`price.set`** (one per saved price: who, what, why, against which cost) to
+**`catalog.price`**; nothing consumes it yet, and `product.created` / `product.updated` end with `defaultPackagingVariantId` and
+`unpublishCount` (inventory releases the boxes set aside for a product from them). Three
 more serve the event log itself: `oriah.outbox.replay-requests` (a late
 consumer asks a producer to send its history again),
 `oriah.replay.<consumer>` (the answer, one topic per consumer) and the
@@ -393,7 +400,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b, 20c, 20d and 20e**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b, 20c, 20d, 20e and 20f**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, inventory,
 cart, checkout **quote then commit**, order transitions, Kafka-driven search
@@ -407,7 +414,9 @@ live. **There are no promo steps** — checkout refuses promotion codes until
 Phase 7 (Phase 0, `0e24a94`). **Step 2 seeds no stock** (since Phase 5 stock only arrives through a
 received consignment): step 20d's consignment is the stock and step 20e follows it — lots, a sale made
 on inventory's own port 8082 (the gateway does not route it), a write-off and its take-back, a corrected
-courier bill and the re-costed stock.
+courier bill and the re-costed stock; **step 4 and the control ring price through the pricing endpoint** (a variant is
+created unpriced) and step 20f follows the ring through the below-cost warning, the default box, a cost corrected UP,
+boxes set aside, unpublish and the retired endpoints.
 
 ### Keycloak
 
@@ -531,6 +540,16 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   write-offs behind on purpose** (history is never deleted), and **opening stock can no
   longer be received on a stack where a shipment has been**: a go-live database starts
   empty.
+- ✅ **Prices are guarded against cost (Phase 6, 2026-11-13).** A price is set only through
+  `PUT /api/v1/admin/pricing/variants/{id}/price` (**CATALOG_ADMIN and COST_VIEWER both**, at the gateway and in the service);
+  below the dearest held lot plus the default box's it is 409 `below-landed-cost` until a reason of 5 to 200 characters and the
+  floor the person saw are sent; it is **never refused**, and never saved without the cost having been looked at (stock down is
+  503, never a guess). `GET .../pricing/below-cost` says where every priced piece stands NOW. A price may start up to 72 hours
+  back, never in the future; the old `PATCH` on a variant is gone and a variant created with a price is 400. **Nothing tells
+  anyone when a piece falls below cost until Phase 11 polls that list** (written into Phase 11). Boxes can be set aside for a
+  product (`/api/v1/admin/inventory/box-commitments`, INVENTORY_ADMIN, one record per product on its default box) and are
+  let go by the product's snapshot (deleted, unpublished since, or boxed differently). A box that products go out in cannot
+  be deleted (409 `packaging-in-use`).
 - ✅ **FIXED in Phase 3 (2026-11-12): `search` indexed unpublished products.**
   Each row now carries `listed` (V4): true only for a product that is `ACTIVE`
   **and** `SELLABLE`, decided afresh by every snapshot, and the search query
