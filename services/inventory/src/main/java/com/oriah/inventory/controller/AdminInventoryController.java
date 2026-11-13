@@ -116,6 +116,17 @@ public class AdminInventoryController {
                 outOfStock, PageRequest.of(page, size)));
     }
 
+    @Operation(operationId = "reconcileInventory",
+            summary = "Check every stock count against its cost lots, and every lot against its ledger",
+            description = "One count, not three: on-hand must equal what the current lots hold. Counts only, no cost. "
+                    + "A clean system reports no mismatches.")
+    @ApiResponse(responseCode = "200", description = "The report; both lists are empty when everything agrees")
+    @GetMapping("/reconciliation")
+    public ResponseEntity<StockService.ReconciliationReport> reconcile(
+            @RequestParam(name = "variantId", required = false) UUID variantId) {
+        return ResponseEntity.ok(stock.reconcile(variantId));
+    }
+
     @Operation(operationId = "reserve", summary = "Reserve units against available stock")
     @ApiResponse(responseCode = "200", description = "Updated stock levels")
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",

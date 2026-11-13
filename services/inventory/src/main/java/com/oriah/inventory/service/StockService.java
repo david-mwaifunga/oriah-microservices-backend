@@ -63,6 +63,18 @@ public class StockService {
                               int takenBack, int outstanding, Instant occurredAt, Instant recordedAt, String actor, String note) {
     }
 
+    /** A stock count that disagrees with what its lots hold. */
+    public record CountMismatch(UUID variantId, int onHand, int heldInLots, int difference) {
+    }
+
+    /** A lot whose remaining quantity is not what its ledger rows add up to. */
+    public record LedgerMismatch(UUID lotId, UUID variantId, int qtyRemaining, int ledgerSum) {
+    }
+
+    /** The one-count-not-three check: every stock count against its lots, and every lot against its ledger. Counts only, no cost. */
+    public record ReconciliationReport(int checkedVariants, List<CountMismatch> countMismatches, List<LedgerMismatch> ledgerMismatches) {
+    }
+
     private final InventoryRepository inventories;
     private final StockLedger ledger;
     private final Clock clock;
@@ -325,6 +337,36 @@ public class StockService {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * Checks that {@code on_hand} is the single count of a thing: for every stock row, the lots still current hold exactly
+     * that many; and for every lot, what is left is what its ledger rows add up to. A clean system reports nothing wrong.
+     *
+     * @param variantId one variant, or null for all
+     */
+    @Transactional(readOnly = true)
+    public ReconciliationReport reconcile(UUID variantId) {
+        Object[] filter = variantId == null ? new Object[0] : new Object[] {variantId};
+        String forVariant = variantId == null ? "" : " AND i.variant_id = ?";
+        int checked = jdbc.queryForObject("SELECT count(*) FROM inventory i WHERE true" + forVariant, Integer.class, filter);
+        List<CountMismatch> counts = jdbc.query("""
+                SELECT i.variant_id, i.on_hand, coalesce(h.held, 0) AS held
+                  FROM inventory i
+                  LEFT JOIN (SELECT variant_id, sum(qty_remaining) AS held FROM cost_lot WHERE superseded_at IS NULL GROUP BY variant_id) h
+                         ON h.variant_id = i.variant_id
+                 WHERE i.on_hand <> coalesce(h.held, 0)""" + forVariant + " ORDER BY i.variant_id",
+                (rs, n) -> new CountMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("on_hand"), rs.getInt("held"),
+                        rs.getInt("on_hand") - rs.getInt("held")), filter);
+        String forLotVariant = variantId == null ? "" : " AND l.variant_id = ?";
+        List<LedgerMismatch> ledgers = jdbc.query("""
+                SELECT l.id, l.variant_id, l.qty_remaining, coalesce(m.sum, 0) AS ledger_sum
+                  FROM cost_lot l
+                  LEFT JOIN (SELECT lot_id, sum(qty_delta) AS sum FROM stock_movement GROUP BY lot_id) m ON m.lot_id = l.id
+                 WHERE l.qty_remaining <> coalesce(m.sum, 0)""" + forLotVariant + " ORDER BY l.id",
+                (rs, n) -> new LedgerMismatch(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getInt("qty_remaining"),
+                        rs.getInt("ledger_sum")), filter);
+        return new ReconciliationReport(checked, counts, ledgers);
     }
 
     /** The variant's current lots, oldest first (the order FIFO draws in). */
