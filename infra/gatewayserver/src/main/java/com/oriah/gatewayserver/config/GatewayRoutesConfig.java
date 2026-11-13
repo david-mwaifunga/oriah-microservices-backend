@@ -234,6 +234,9 @@ public class GatewayRoutesConfig {
         // now, consignments and purchase orders in later phases, each guarded by
         // PROCUREMENT_ADMIN at the edge (SecurityConfig) and again in the service.
         routes = simple(routes, "procurement-admin-route", "/api/v1/admin/procurement/**", "procurement");
+        // Delivery prices by town and option (Phase 7): towns, options, prices (draft then published) and the free-delivery
+        // threshold, guarded by SHIPPING_ADMIN at the edge (SecurityConfig has matched the prefix since Phase 0) and again in the service.
+        routes = simple(routes, "shipping-admin-route", "/api/v1/admin/shipping/**", "shipping");
 
         // --------------------- OpenAPI aggregation ---------------------
         // /v3/api-docs/<svc> on the edge -> /v3/api-docs upstream. These back
