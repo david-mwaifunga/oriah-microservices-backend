@@ -12,7 +12,14 @@
 # call PaymentReconciler.reconcile() directly; ReconcilerScheduleTest switches
 # the schedule back on to prove it, and ReconcilerSettingsTest pins that the
 # main file ships it on.
+#
+# The card path is ON in tests (oriah.payment.card.enabled): the shipped file has it off (Phase 7: money reaches an order only by a person
+# confirming it), but the card path's own tests, and the code that stays until Phase 13 turns it on, still run against it. Set here and not in
+# each test's @TestPropertySource so that every test keeps the same properties and therefore the same cached Spring context.
+# CardPathSwitchTest switches it off for itself to prove the off state.
 oriah:
   payment:
+    card:
+      enabled: true
     reconciler:
       enabled: false

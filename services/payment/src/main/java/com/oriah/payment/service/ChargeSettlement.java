@@ -46,6 +46,7 @@ import lombok.extern.slf4j.Slf4j;
  * CHARGING with this reference was already settled, so nothing is recorded
  * again and no second event is written.
  */
+@org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty("oriah.payment.card.enabled")
 @Component
 @Slf4j
 public class ChargeSettlement {

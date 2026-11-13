@@ -23,7 +23,9 @@ import com.oriah.payment.service.PaymentReconciler;
  */
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
-@ConditionalOnBooleanProperty("oriah.payment.reconciler.enabled")
+// Both: the reconciler settles card charges, so without the card path there is nothing for it to settle and no PaymentReconciler to run.
+// The shipped yaml asks for the reconciler in every profile; a card path that is off must not make that stop the service from starting.
+@ConditionalOnBooleanProperty({"oriah.payment.reconciler.enabled", "oriah.payment.card.enabled"})
 public class ReconcilerSchedule {
 
     private final PaymentReconciler reconciler;

@@ -50,6 +50,7 @@ import lombok.extern.slf4j.Slf4j;
  * </ul>
  * The table refuses UPDATE and DELETE, so a decided outcome never changes.
  */
+@org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty("oriah.payment.card.enabled")
 @Component
 @Slf4j
 public class FakePaymentGateway implements PaymentGateway {

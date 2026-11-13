@@ -31,6 +31,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
+@org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty("oriah.payment.card.enabled")
 @RestController
 @RequestMapping("/api/v1/payments")
 @Tag(name = "Payments", description = "Payment intents and confirmation")

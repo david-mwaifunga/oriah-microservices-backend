@@ -179,6 +179,15 @@ oriah:
 
   payment:
     # -------------------------------------------------------------------------
+    # The card path (Phase 7): the intent endpoints (/api/v1/payments/intents), the service behind them, the fake card gateway, the
+    # reconciler below and the Feign client to order. OFF: money reaches an order only by a person confirming it (staff confirmations,
+    # /api/v1/admin/payments/confirmations), so there is no second road to PAID. Phase 13 turns it on when ZynlePay makes a card charge a
+    # confirmation. Exactly true or false; the tests run with it on (src/test/resources/config/application.yaml).
+    # -------------------------------------------------------------------------
+    card:
+      enabled: false
+
+    # -------------------------------------------------------------------------
     # The reconciler (PaymentReconciler): settles intents whose charge outcome
     # never reached payment -- a gateway timeout, a crash, or a failure to
     # record the answer -- by asking the gateway about the charge reference.

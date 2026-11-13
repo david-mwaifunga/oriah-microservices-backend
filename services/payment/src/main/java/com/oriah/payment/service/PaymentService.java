@@ -28,6 +28,7 @@ import com.oriah.payment.repository.PaymentIntentRepository;
 
 import lombok.extern.slf4j.Slf4j;
 
+@org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty("oriah.payment.card.enabled")
 @Service
 @Slf4j
 public class PaymentService {

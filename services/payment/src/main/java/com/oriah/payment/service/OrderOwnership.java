@@ -35,6 +35,7 @@ import lombok.extern.slf4j.Slf4j;
  *       never the shopper's fault, and the same on every retry.</li>
  * </ul>
  */
+@org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty("oriah.payment.card.enabled")
 @Service
 @Slf4j
 public class OrderOwnership {

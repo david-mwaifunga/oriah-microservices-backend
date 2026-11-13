@@ -70,6 +70,7 @@ import lombok.extern.slf4j.Slf4j;
  * settlements racing, the version check lets one in; the other rolls back
  * before writing anything.
  */
+@org.springframework.boot.autoconfigure.condition.ConditionalOnBooleanProperty("oriah.payment.card.enabled")
 @Component
 @Slf4j
 public class PaymentReconciler {
