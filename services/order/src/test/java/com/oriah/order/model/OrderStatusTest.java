@@ -17,10 +17,14 @@ class OrderStatusTest {
     }
 
     @Test
-    @DisplayName("cancellation allowed from CREATED and PAID only")
+    @DisplayName("an order is cancelled only while it is unpaid: from CREATED, never from PAID (a paid sale is not undone here; refunds are a later phase) and never from PAYMENT_SUBMITTED")
     void cancellation() {
+        // Phase 7 retired PAID -> CANCELLED: a paid sale is never edited or undone by a status change; undoing one is a refund, and refunds are
+        // Phase 12. This assertion used to say the opposite.
         assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
-        assertThat(OrderStatus.PAID.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
+        assertThat(OrderStatus.PAID.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
+        assertThat(OrderStatus.PAYMENT_SUBMITTED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
+        assertThat(OrderStatus.EXPIRED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
         assertThat(OrderStatus.FULFILLED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
         assertThat(OrderStatus.SHIPPED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
         assertThat(OrderStatus.DELIVERED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
@@ -43,5 +47,65 @@ class OrderStatusTest {
         assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.SHIPPED)).isFalse();
         assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.DELIVERED)).isFalse();
         assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.FULFILLED)).isFalse();
+    }
+
+    // ---------------------------------------------------------------- Phase 7: the hold and the payment claim
+
+    @Test
+    @DisplayName("an unpaid order may have a payment claim submitted, lapse (EXPIRED), be cancelled or be paid; a submitted one is paid or lapses")
+    void theUnpaidStates() {
+        assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.PAYMENT_SUBMITTED)).isTrue();
+        assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.EXPIRED)).isTrue();
+        assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
+        assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.PAID)).isTrue();
+
+        assertThat(OrderStatus.PAYMENT_SUBMITTED.canTransitionTo(OrderStatus.PAID)).isTrue();
+        assertThat(OrderStatus.PAYMENT_SUBMITTED.canTransitionTo(OrderStatus.EXPIRED)).isTrue();
+        assertThat(OrderStatus.PAYMENT_SUBMITTED.canTransitionTo(OrderStatus.CREATED)).as("a claim is not withdrawn").isFalse();
+        assertThat(OrderStatus.PAYMENT_SUBMITTED.canTransitionTo(OrderStatus.FULFILLED)).isFalse();
+    }
+
+    @Test
+    @DisplayName("a lapsed order can still be paid (money that arrives after the hold lapsed settles the sale if the piece is still free) and goes nowhere else")
+    void aLapsedOrderCanStillBePaid() {
+        assertThat(OrderStatus.EXPIRED.canTransitionTo(OrderStatus.PAID)).isTrue();
+        for (OrderStatus next : OrderStatus.values()) {
+            if (next != OrderStatus.PAID) {
+                assertThat(OrderStatus.EXPIRED.canTransitionTo(next)).as("EXPIRED -> " + next).isFalse();
+            }
+        }
+        assertThat(OrderStatus.EXPIRED.isTerminal()).isFalse();
+    }
+
+    @Test
+    @DisplayName("PAID is reached from exactly three states (CREATED, PAYMENT_SUBMITTED, EXPIRED), and never from PAID itself")
+    void whoCanReachPaid() {
+        for (OrderStatus from : OrderStatus.values()) {
+            boolean allowed = from == OrderStatus.CREATED || from == OrderStatus.PAYMENT_SUBMITTED || from == OrderStatus.EXPIRED;
+            assertThat(from.canTransitionTo(OrderStatus.PAID)).as(from + " -> PAID").isEqualTo(allowed);
+        }
+    }
+
+    @Test
+    @DisplayName("the statuses a person is allowed to ask for through the admin transition are only the fulfilment ones, and cancelling an unpaid order")
+    void adminMayAskForOnly() {
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.FULFILLED)).isTrue();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.SHIPPED)).isTrue();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.DELIVERED)).isTrue();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.CANCELLED)).isTrue();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.PAID)).as("only money, through the settlement saga, makes an order paid").isFalse();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.EXPIRED)).as("only the hold lapsing, or a rejected claim").isFalse();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.PAYMENT_SUBMITTED)).as("only the shopper's claim").isFalse();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.CREATED)).isFalse();
+    }
+
+    @Test
+    @DisplayName("a status name fits the column (20 characters) and reads as the event type payment, inventory and notification declare")
+    void namesFitAndMatchTheEvents() {
+        for (OrderStatus status : OrderStatus.values()) {
+            assertThat(status.name().length()).as(status.name()).isLessThanOrEqualTo(20);
+        }
+        assertThat("order." + OrderStatus.PAYMENT_SUBMITTED.name().toLowerCase()).isEqualTo("order.payment_submitted");
+        assertThat("order." + OrderStatus.EXPIRED.name().toLowerCase()).isEqualTo("order.expired");
     }
 }

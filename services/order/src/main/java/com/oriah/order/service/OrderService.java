@@ -180,7 +180,17 @@ public class OrderService {
      */
     @Transactional
     public Optional<Order> transition(UUID orderId, OrderStatus targetStatus, String actor) {
-        return repository.findById(orderId).map(o -> move(o, targetStatus, actor));
+        // The order is looked up FIRST: one that does not exist is a 404 whatever is asked of it.
+        return repository.findById(orderId).map(o -> {
+            if (!OrderStatus.adminMayRequest(targetStatus)) {
+                // Only money makes an order PAID (the settlement saga), only a lapsed hold or a rejected claim makes it EXPIRED, only the shopper's claim
+                // makes it PAYMENT_SUBMITTED. A person asking for one of them would skip the money, the stock and the receipt.
+                throw new IllegalStateException("Order " + o.id() + " cannot be moved to " + targetStatus + " by a person: "
+                        + (targetStatus == OrderStatus.PAID ? "only a confirmed payment makes an order paid"
+                        : "it is set by the shopper's claim, or by the hold lapsing or a rejected claim"));
+            }
+            return move(o, targetStatus, actor);
+        });
     }
 
     private Order move(Order order, OrderStatus target, String actor) {

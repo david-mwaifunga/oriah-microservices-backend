@@ -99,6 +99,9 @@ class OrderEventContractTest {
     void everyStatusHasItsEventType() {
         Map<OrderStatus, String> expected = Map.of(
                 OrderStatus.CREATED, "order.created",
+                // Phase 7: payment, inventory and notification declared these two names BEFORE order emitted them (a type nobody declared is refused).
+                OrderStatus.PAYMENT_SUBMITTED, "order.payment_submitted",
+                OrderStatus.EXPIRED, "order.expired",
                 OrderStatus.PAID, "order.paid",
                 OrderStatus.FULFILLED, "order.fulfilled",
                 OrderStatus.SHIPPED, "order.shipped",
