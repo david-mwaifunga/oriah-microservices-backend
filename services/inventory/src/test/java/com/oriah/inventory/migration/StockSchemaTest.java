@@ -156,8 +156,10 @@ class StockSchemaTest {
 
         assertThat(refusal("""
                 INSERT INTO cost_lot %s VALUES ('%s', '%s', 'SELLABLE', 'R', NULL, 'R', '%s', 'C-1', '%s', NULL, NULL,
-                        now(), 1, 1, 1, 1, 1, -0.01, false)""".formatted(LOT_COLUMNS, UUID.randomUUID(), v, UUID.randomUUID(), line)))
-                .contains("cost_lot");
+                        now(), 1, 2, 1, 1, 1, -0.01, false)""".formatted(LOT_COLUMNS, UUID.randomUUID(), v, UUID.randomUUID(), line)))
+                // Slice 2, which the line does not have yet: only the cost can be what is refused (the same slice again would
+                // be refused by the uniqueness rule first, and a message that merely names the table proves nothing).
+                .contains("ck_cost_lot_unit_cost");
         assertThat(refusal("""
                 INSERT INTO cost_lot %s VALUES ('%s', '%s', 'SELLABLE', 'R', NULL, 'R', '%s', 'C-1', '%s', NULL, NULL,
                         now(), 1, 1, 1, 1, 1, 5.00, false)""".formatted(LOT_COLUMNS, UUID.randomUUID(), v, UUID.randomUUID(), line)))

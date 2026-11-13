@@ -1,10 +1,14 @@
 package com.oriah.inventory.repository;
 
+import java.util.Optional;
 import java.util.UUID;
+
+import jakarta.persistence.LockModeType;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -12,6 +16,14 @@ import com.oriah.inventory.dto.AdminInventoryRow;
 import com.oriah.inventory.model.Inventory;
 
 public interface InventoryRepository extends JpaRepository<Inventory, UUID> {
+
+    /**
+     * The stock row, read WITH its row lock: what a receipt does before it checks the count against the lots, so that
+     * nothing can commit between the read and the check.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select i from Inventory i where i.variantId = :variantId")
+    Optional<Inventory> findByIdForUpdate(@Param("variantId") UUID variantId);
 
     /**
      * The admin list: stock joined to the catalog title, scarcest first.

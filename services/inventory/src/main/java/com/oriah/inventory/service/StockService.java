@@ -35,10 +35,11 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Stock with its cost: what a received consignment line becomes, and (in the next steps) what drains it.
  *
- * <p>Every change to the stock of a variant takes that variant's lock first (an advisory lock, which works before the
- * stock row exists), makes its change to the lots and the ledger, and ends by checking the invariants: each lot holds
- * what its ledger rows add up to, and the lots hold exactly the stock count. A change that would break them throws, and
- * the transaction rolls back whole.
+ * <p>A receipt or a correction takes the variant's advisory lock (which works before the stock row exists) and the stock
+ * row's own lock; a sale, write-off or take-back is optimistic (the stock row is written first, so of two changes racing
+ * on one row exactly one applies and the other is told to retry). Every change makes its change to the lots and the
+ * ledger, and ends by checking the invariants: each lot holds what its ledger rows add up to, and the lots hold exactly
+ * the stock count. A change that would break them throws, and the transaction rolls back whole.
  */
 @Service
 @Slf4j
@@ -200,7 +201,10 @@ public class StockService {
         if (ledger.actionExists(snapshot.consignmentLineId()) || ledger.lineHasLots(snapshot.consignmentLineId())) {
             throw new IllegalStateException("consignment line " + snapshot.consignmentLineId() + " was already received");
         }
-        Inventory inventory = inventories.findById(variantId).orElse(null);
+        // Read WITH its row lock, before the check below: a sale, write-off or take-back that commits between a plain read
+        // and the check would make a valid receipt look corrupt, and a corrupt-looking receipt is parked for good. Locked,
+        // such a change either commits first (and is seen) or waits, and then finds the row's version moved (a retry).
+        Inventory inventory = inventories.findByIdForUpdate(variantId).orElse(null);
         if (inventory == null) {
             inventory = Inventory.open(variantId, snapshot.kind());
         } else {
@@ -254,12 +258,14 @@ public class StockService {
      */
     @Transactional
     public Optional<Inventory> consume(UUID variantId, int qty, UUID saleLineId, Instant occurredAt, String actor) {
+        String digest = digest(variantId, qty, occurredAt);
+        // The repeat check first, the row after: a repeat is answered with the stock as it is AFTER the original (read the
+        // other way round, the original could commit in between and the answer would carry the count from before it).
+        Optional<StockLedger.ActionRow> existing = ledger.findAction(saleLineId);
         Inventory inventory = inventories.findById(variantId).orElse(null);
         if (inventory == null) {
             return Optional.empty();
         }
-        String digest = digest(variantId, qty, occurredAt);
-        Optional<StockLedger.ActionRow> existing = ledger.findAction(saleLineId);
         if (existing.isPresent()) {
             StockLedger.ActionRow was = existing.get();
             if (was.variantId().equals(variantId) && "SALE".equals(was.kind()) && was.qty() == qty && digest.equals(was.digest())) {
@@ -300,12 +306,13 @@ public class StockService {
         if (reason == null || !reason.isWriteOffOrGiveAway()) {
             throw new IllegalArgumentException("a write-off or give-away needs one of the write-off or give-away reasons, was " + reason);
         }
+        String digest = digest(variantId, qty, reason, occurredAt, note, null);
+        // The repeat check first, the row after (see consume).
+        Optional<StockLedger.ActionRow> existing = ledger.findAction(requestId);
         Inventory inventory = inventories.findById(variantId).orElse(null);
         if (inventory == null) {
             return Optional.empty();
         }
-        String digest = digest(variantId, qty, reason, occurredAt, note, null);
-        Optional<StockLedger.ActionRow> existing = ledger.findAction(requestId);
         if (existing.isPresent()) {
             StockLedger.ActionRow was = existing.get();
             boolean same = was.variantId().equals(variantId) && was.kind().matches("WRITE_OFF|GIVE_AWAY") && was.qty() == qty
@@ -351,10 +358,11 @@ public class StockService {
                     + ", not a write-off or a give-away: only those can be taken back");
         }
         UUID variantId = original.variantId();
+        String digest = digest(variantId, qty, StockReason.TAKEN_BACK, occurredAt, note, writeOffActionId);
+        // The repeat check first, the row after (see consume).
+        Optional<StockLedger.ActionRow> existing = ledger.findAction(requestId);
         Inventory inventory = inventories.findById(variantId).orElseThrow(
                 () -> new IllegalStateException("the stock row of variant " + variantId + " is gone"));
-        String digest = digest(variantId, qty, StockReason.TAKEN_BACK, occurredAt, note, writeOffActionId);
-        Optional<StockLedger.ActionRow> existing = ledger.findAction(requestId);
         int outstandingBefore = original.qty() - ledger.takenBack(writeOffActionId);
         if (existing.isPresent()) {
             StockLedger.ActionRow was = existing.get();
@@ -371,8 +379,14 @@ public class StockService {
         }
         Instant now = clock.instant();
         Instant when = MovementTimes.resolve(occurredAt, now, null);
-        if (occurredAt != null && occurredAt.isBefore(original.occurredAt())) {
-            throw new IllegalArgumentException("occurredAt " + occurredAt + " is before the write-off it takes back (" + original.occurredAt() + ")");
+        if (when.isBefore(original.occurredAt())) {
+            if (occurredAt != null) {
+                throw new IllegalArgumentException("occurredAt " + occurredAt + " is before the write-off it takes back (" + original.occurredAt() + ")");
+            }
+            // No date was given, so "now": but a write-off may have been accepted a little ahead of this clock (the
+            // allowance for clocks that disagree), and stock cannot come back before it left. A date nobody chose is
+            // moved up to the write-off's own, never refused (and never left to put the restoration in an earlier month).
+            when = original.occurredAt();
         }
         inventory.takeBack(qty);
         inventories.saveAndFlush(inventory);

@@ -277,6 +277,28 @@ class StockWriteOffTest {
     }
 
     @Test
+    @DisplayName("a take-back with no date is never recorded before the write-off it takes back, even when that was dated a little ahead of this clock")
+    void anUndatedTakeBackIsNotBeforeItsWriteOff() {
+        UUID variant = rings();
+        // Within the five minutes of allowance for clocks that disagree, so the write-off is accepted.
+        Instant ahead = Instant.now().plusSeconds(180);
+        StockService.WriteOffResult gift = writeOff(variant, 3, StockReason.GIVEN_AWAY_GIFT, ahead);
+
+        StockService.TakeBackResult back = stock.takeBack(UUID.randomUUID(), gift.actionId(), 1, null, null, ACTOR).orElseThrow();
+
+        assertThat(back.occurredAt()).as("the answer").isAfterOrEqualTo(gift.occurredAt());
+        Instant recorded = jdbc.queryForObject("SELECT occurred_at FROM stock_action WHERE id = ?", Timestamp.class, back.actionId()).toInstant();
+        assertThat(recorded).as("what was recorded").isAfterOrEqualTo(gift.occurredAt());
+        assertThat(jdbc.queryForList("SELECT occurred_at FROM stock_movement WHERE action_id = ?", Timestamp.class, back.actionId()))
+                .as("and every ledger row it wrote").isNotEmpty()
+                .allSatisfy(t -> assertThat(t.toInstant()).isAfterOrEqualTo(gift.occurredAt()));
+        // The same request again is the same answer, with the time the first one recorded.
+        UUID request = UUID.randomUUID();
+        StockService.TakeBackResult first = stock.takeBack(request, gift.actionId(), 1, null, null, ACTOR).orElseThrow();
+        assertThat(stock.takeBack(request, gift.actionId(), 1, null, null, ACTOR).orElseThrow().occurredAt()).isEqualTo(first.occurredAt());
+    }
+
+    @Test
     @DisplayName("an OLDER receipt arriving after a give-away and a take-back re-cuts BOTH, and the take-back still restores what the give-away took")
     void anOlderReceiptRecutsAGiveAwayAndItsTakeBack() {
         UUID variant = UUID.randomUUID();

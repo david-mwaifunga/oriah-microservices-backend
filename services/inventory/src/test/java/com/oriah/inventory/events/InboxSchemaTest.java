@@ -15,6 +15,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import com.oriah.events.InboxSchemaGuard;
 import com.oriah.inventory.TestcontainersConfiguration;
 
+import static com.oriah.events.InboxSchemaGuard.Table.OUTBOX_CATCH_UP;
 import static com.oriah.events.InboxSchemaGuard.Table.PROCESSED_AGGREGATE;
 import static com.oriah.events.InboxSchemaGuard.Table.PROCESSED_EVENT;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,8 +44,9 @@ class InboxSchemaTest {
     private JwtDecoder jwtDecoder;
 
     @Test
-    @DisplayName("processed_event and processed_aggregate are exactly the agreed shape; processed_event is append-only")
+    @DisplayName("processed_event, processed_aggregate and outbox_catch_up are exactly the agreed shape; processed_event is append-only")
     void inboxTablesAreTheAgreedShape() {
-        assertThat(InboxSchemaGuard.problems(dataSource, PROCESSED_EVENT, PROCESSED_AGGREGATE)).isEmpty();
+        // outbox_catch_up is V9's copy of the event log module's reference (the catch-up bookkeeping of a consumer).
+        assertThat(InboxSchemaGuard.problems(dataSource, PROCESSED_EVENT, PROCESSED_AGGREGATE, OUTBOX_CATCH_UP)).isEmpty();
     }
 }
