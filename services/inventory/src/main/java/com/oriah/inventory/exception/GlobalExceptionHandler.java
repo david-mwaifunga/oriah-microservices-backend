@@ -53,6 +53,20 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
             URI.create("https://oriah.dev/problems/insufficient-stock");
 
     /**
+     * A request about boxes set aside for a product that was understood and cannot be done. The problem's type is its stable name
+     * ({@code insufficient-free-packaging}, {@code no-default-box}...), so a screen can switch on it; how many boxes are free rides along as
+     * a member of the body.
+     */
+    @ExceptionHandler(CommitmentProblem.class)
+    public org.springframework.http.ProblemDetail commitmentProblem(CommitmentProblem ex) {
+        log.debug("{} box commitment problem {}: {}", ex.status().value(), ex.code(), ex.getMessage());
+        org.springframework.http.ProblemDetail pd = problem(ex.status(), URI.create("https://oriah.dev/problems/" + ex.code()),
+                ex.status().getReasonPhrase(), ex.getMessage());
+        ex.properties().forEach(pd::setProperty);
+        return pd;
+    }
+
+    /**
      * 409, inherited — this method changes only the {@code type}.
      *
      * <p>Logged at DEBUG like every other 4xx. An over-reserve is a normal race

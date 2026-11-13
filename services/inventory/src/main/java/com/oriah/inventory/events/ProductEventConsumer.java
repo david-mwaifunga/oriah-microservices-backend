@@ -18,6 +18,7 @@ import com.oriah.events.Inbox;
 import com.oriah.events.InboxConsumer;
 import com.oriah.inventory.model.ProductRef;
 import com.oriah.inventory.repository.ProductRefRepository;
+import com.oriah.inventory.service.BoxCommitmentService;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -97,8 +98,9 @@ public class ProductEventConsumer {
     public Consumer<Message<byte[]>> productEvents(
             Inbox inbox,
             ProductRefRepository repository,
-            ObjectMapper objectMapper) {
-        return new ProductEventHandler(inbox, repository, objectMapper);
+            ObjectMapper objectMapper,
+            BoxCommitmentService commitments) {
+        return new ProductEventHandler(inbox, repository, objectMapper, commitments);
     }
 
     /**
@@ -110,11 +112,13 @@ public class ProductEventConsumer {
         private final Inbox inbox;
         private final ProductRefRepository repository;
         private final ObjectMapper objectMapper;
+        private final BoxCommitmentService commitments;
 
-        ProductEventHandler(Inbox inbox, ProductRefRepository repository, ObjectMapper objectMapper) {
+        ProductEventHandler(Inbox inbox, ProductRefRepository repository, ObjectMapper objectMapper, BoxCommitmentService commitments) {
             this.inbox = inbox;
             this.repository = repository;
             this.objectMapper = objectMapper;
+            this.commitments = commitments;
         }
 
         @Override
@@ -127,15 +131,40 @@ public class ProductEventConsumer {
         private void apply(Message<byte[]> message) {
             String type = header(message, EventHeaders.EVENT_TYPE);
             switch (type) {
-                case ProductCreatedEvent.TYPE ->
-                        handleCreated(snapshot(message, ProductCreatedEvent.class, ProductCreatedEvent::id));
-                case ProductUpdatedEvent.TYPE ->
-                        handleUpdated(snapshot(message, ProductUpdatedEvent.class, ProductUpdatedEvent::id));
-                case ProductDeletedEvent.TYPE ->
-                        handleDeleted(snapshot(message, ProductDeletedEvent.class, ProductDeletedEvent::id));
+                case ProductCreatedEvent.TYPE -> {
+                    ProductCreatedEvent event = snapshot(message, ProductCreatedEvent.class, ProductCreatedEvent::id);
+                    handleCreated(event);
+                    rememberProduct(event.id(), event.kind(), event.status(), event.defaultPackagingVariantId(), event.unpublishCount(), false, message);
+                }
+                case ProductUpdatedEvent.TYPE -> {
+                    ProductUpdatedEvent event = snapshot(message, ProductUpdatedEvent.class, ProductUpdatedEvent::id);
+                    handleUpdated(event);
+                    rememberProduct(event.id(), event.kind(), event.status(), event.defaultPackagingVariantId(), event.unpublishCount(), false, message);
+                }
+                case ProductDeletedEvent.TYPE -> {
+                    ProductDeletedEvent event = snapshot(message, ProductDeletedEvent.class, ProductDeletedEvent::id);
+                    handleDeleted(event);
+                    rememberProduct(event.id(), null, "ARCHIVED", null, null, true, message);
+                }
                 // Unreachable while INVENTORY and this switch list the same types.
                 default -> throw new IllegalStateException("no handling for declared event type " + type);
             }
+        }
+
+        /**
+         * Keeps what the newest snapshot says of the product (its kind, whether it is on sale, its default box, how often it was
+         * unpublished) and lets the boxes set aside for it go if that says they are not needed. In the same transaction as the
+         * projection above and the Inbox's record of the event.
+         *
+         * <p>An absent kind reads as SELLABLE (every snapshot before Phase 3 lacks one) and an absent count as 0. A delete event carries
+         * only the id, so it passes what it knows: deleted, no box.
+         */
+        private void rememberProduct(UUID productId, String kind, String status, UUID defaultBox, Integer unpublishCount, boolean deleted,
+                                     Message<byte[]> message) {
+            String actor = header(message, EventHeaders.ACTOR);
+            commitments.applyProduct(new BoxCommitmentService.ProductSnapshot(productId, kind == null || kind.isBlank() ? "SELLABLE" : kind,
+                            status == null || status.isBlank() ? "DRAFT" : status, defaultBox, unpublishCount == null ? 0 : unpublishCount, deleted),
+                    UUID.fromString(header(message, EventHeaders.EVENT_ID)), actor == null || "null".equals(actor) ? "system:catalog" : actor);
         }
 
         /**

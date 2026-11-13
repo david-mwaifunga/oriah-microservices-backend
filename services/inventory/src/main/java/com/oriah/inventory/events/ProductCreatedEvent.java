@@ -56,7 +56,11 @@ public record ProductCreatedEvent(
         List<String> tags,
         String productType,
         String status,
-        List<VariantPayload> variants
+        List<VariantPayload> variants,
+        // Added in Phase 6; an event from before then carries none of the three (kind reads as SELLABLE, the count as 0).
+        String kind,
+        UUID defaultPackagingVariantId,
+        Integer unpublishCount
 ) {
     public static final String TYPE = "product.created";
 }

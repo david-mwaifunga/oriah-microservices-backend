@@ -40,6 +40,9 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 @PreAuthorize("hasRole('COST_VIEWER')")
 public class CostController {
 
+    /** How many variants one held-cost read may name: the price check chunks its goods and boxes into calls of this size. */
+    static final int MAX_HELD_IDS = 100;
+
     private static final int MAX_PAGE_SIZE = 200;
     private static final int DEFAULT_PAGE_SIZE = 50;
 
@@ -64,6 +67,42 @@ public class CostController {
             @RequestParam(name = "size", defaultValue = "" + DEFAULT_PAGE_SIZE) int size) {
         checkPage(page, size);
         return ResponseEntity.ok(costs.lots(variantId, open, includeReplaced, page, size));
+    }
+
+    /** What the price check asks: the dearest unit cost still held, per variant. */
+    public record HeldCostResponse(java.util.List<CostReadService.HeldVariantCost> variants) {
+    }
+
+    @Operation(operationId = "heldCosts",
+            summary = "What the stock still held cost, per variant: each held lot, the dearest cost and the weighted average",
+            description = "`variantIds` is a comma-separated list of at most " + MAX_HELD_IDS + " distinct ids. Every id is answered once, "
+                    + "in the order first asked; a variant that was never received is answered with nothing held and no cost. "
+                    + "A price is compared with `highestUnitCost` (the dearest lot still holding stock), never with the average.")
+    @ApiResponse(responseCode = "200", description = "One entry per distinct id asked about")
+    @ApiResponse(responseCode = "400", description = "No ids, more than " + MAX_HELD_IDS + " distinct ids, or one that is not a UUID",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping("/held")
+    public ResponseEntity<HeldCostResponse> held(@RequestParam(name = "variantIds", required = false) String variantIds) {
+        return ResponseEntity.ok(new HeldCostResponse(costs.held(parseIds(variantIds))));
+    }
+
+    /** Rejected, not trimmed to size: a caller that asks about 150 variants and is answered about 100 must be told. */
+    private static java.util.List<UUID> parseIds(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw new IllegalArgumentException("variantIds is required: a comma-separated list of variant ids");
+        }
+        java.util.List<UUID> ids = new java.util.ArrayList<>();
+        for (String part : raw.split(",")) {
+            try {
+                ids.add(UUID.fromString(part.trim()));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("variantIds must be variant ids separated by commas, but '" + part.trim() + "' is not one");
+            }
+        }
+        if (ids.stream().distinct().count() > MAX_HELD_IDS) {
+            throw new IllegalArgumentException("variantIds may name at most " + MAX_HELD_IDS + " variants at a time");
+        }
+        return ids;
     }
 
     @Operation(operationId = "listCostMovements",

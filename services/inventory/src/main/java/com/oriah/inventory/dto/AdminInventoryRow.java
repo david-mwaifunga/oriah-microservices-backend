@@ -20,5 +20,9 @@ public record AdminInventoryRow(
         String title,
         int onHand,
         int reserved,
-        int available
+        int available,
+        // Boxes set aside for products (packaging only; 0 for goods), and what is free to promise or reserve: the same figure as
+        // `available`, under the name the box counts use. onHand == free + committed + reserved.
+        int committed,
+        int free
 ) {}

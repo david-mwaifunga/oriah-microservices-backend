@@ -56,12 +56,12 @@ public class StockService {
 
     /** A write-off or give-away as it was recorded, and the stock counts after it. {@code replay}: this was a repeat. */
     public record WriteOffResult(UUID actionId, UUID variantId, StockReason reason, int qty, Instant occurredAt, int onHand, int reserved,
-                                 int available, boolean replay) {
+                                 int available, int committed, List<BoxCommitmentService.CutCommitment> cutCommitments, boolean replay) {
     }
 
     /** A take-back as it was recorded, how many of the write-off are still out, and the stock counts after it. */
     public record TakeBackResult(UUID actionId, UUID writeOffActionId, UUID variantId, int qty, Instant occurredAt, int outstanding,
-                                 int onHand, int reserved, int available, boolean replay) {
+                                 int onHand, int reserved, int available, int committed, boolean replay) {
     }
 
     /** One write-off or give-away, with what has come back. No cost: reading cost is a different capability. */
@@ -77,8 +77,16 @@ public class StockService {
     public record LedgerMismatch(UUID lotId, UUID variantId, int qtyRemaining, int ledgerSum) {
     }
 
-    /** The one-count-not-three check: every stock count against its lots, and every lot against its ledger. Counts only, no cost. */
-    public record ReconciliationReport(int checkedVariants, List<CountMismatch> countMismatches, List<LedgerMismatch> ledgerMismatches) {
+    /** A box whose set-aside count is not what the products' records add up to. */
+    public record CommitmentMismatch(UUID variantId, int committed, int sumOfCommitments) {
+    }
+
+    /**
+     * The one-count-not-three check: every stock count against its lots, every lot against its ledger, and every box's set-aside count
+     * against the products' records. Counts only, no cost.
+     */
+    public record ReconciliationReport(int checkedVariants, List<CountMismatch> countMismatches, List<LedgerMismatch> ledgerMismatches,
+                                       List<CommitmentMismatch> commitmentMismatches) {
     }
 
     private final InventoryRepository inventories;
@@ -86,13 +94,16 @@ public class StockService {
     private final Clock clock;
     private final JdbcTemplate jdbc;
     private final EntityManager entityManager;
+    private final BoxCommitmentService commitments;
 
-    public StockService(InventoryRepository inventories, StockLedger ledger, Clock clock, JdbcTemplate jdbc, EntityManager entityManager) {
+    public StockService(InventoryRepository inventories, StockLedger ledger, Clock clock, JdbcTemplate jdbc, EntityManager entityManager,
+                        BoxCommitmentService commitments) {
         this.inventories = inventories;
         this.ledger = ledger;
         this.clock = clock;
         this.jdbc = jdbc;
         this.entityManager = entityManager;
+        this.commitments = commitments;
     }
 
     /**
@@ -286,6 +297,45 @@ public class StockService {
     }
 
     /**
+     * A sale of boxes that were set aside for a product and never reserved (the box swapped in after payment is one): the product's record
+     * and the stock count both fall by what was sold, the OLDEST lots of the box are drained, and the ledger gets one row per lot, all in
+     * this transaction. A sale of a set-aside box that only lowered the count would leave the promise outliving the box it was for.
+     *
+     * <p>An internal stock operation, not an endpoint: the order system calls it (Phase 7) and never a person. Idempotent per
+     * {@code saleLineId} like {@link #consume}.
+     *
+     * @return the stock row after the change, or empty if the box has no stock row
+     * @throws InsufficientStockException when the product has fewer than {@code qty} set aside on this box
+     * @throws IllegalStateException      when the sale line was already used for something else
+     */
+    @Transactional
+    public Optional<Inventory> consumeCommitted(UUID productId, UUID variantId, int qty, UUID saleLineId, Instant occurredAt, String actor) {
+        String digest = digest(variantId + "|" + qty + "|" + occurredAt + "|set-aside for " + productId);
+        Optional<StockLedger.ActionRow> existing = ledger.findAction(saleLineId);
+        Inventory inventory = inventories.findById(variantId).orElse(null);
+        if (inventory == null) {
+            return Optional.empty();
+        }
+        if (existing.isPresent()) {
+            StockLedger.ActionRow was = existing.get();
+            if (was.variantId().equals(variantId) && "SALE".equals(was.kind()) && was.qty() == qty && digest.equals(was.digest())) {
+                return Optional.of(inventory);
+            }
+            throw new IllegalStateException("sale line " + saleLineId + " was already used for a different request");
+        }
+        Instant when = MovementTimes.resolve(occurredAt, clock.instant(), null);
+        inventory.consumeCommitted(qty);
+        inventories.saveAndFlush(inventory);
+        commitments.consumeFromCommitment(productId, variantId, qty, saleLineId, actor, when);
+        ledger.insertAction(saleLineId, variantId, "SALE", StockReason.SALE, qty, when, actor, null, null, digest);
+        ledger.conform(variantId, actor);
+        ledger.verify(variantId, inventory.onHand());
+        commitments.verifyBox(variantId);
+        log.info("Sold {} set-aside boxes {} for product {} (sale line {}, {} left)", qty, variantId, productId, saleLineId, inventory.onHand());
+        return Optional.of(inventory);
+    }
+
+    /**
      * Stock leaves with no sale: written off (lost, stolen, broken) or given away (to a model, an influencer, as a gift
      * or a prize). It takes the OLDEST lots at their cost and releases that cost into the month it happened, as a ledger
      * row with a reason of its own. Only stock nobody has reserved can go.
@@ -321,21 +371,24 @@ public class StockService {
                 throw new IllegalStateException("request " + requestId + " was already used for a different request");
             }
             return Optional.of(new WriteOffResult(was.id(), variantId, was.reason(), was.qty(), was.occurredAt(), inventory.onHand(),
-                    inventory.reserved(), inventory.available(), true));
+                    inventory.reserved(), inventory.available(), inventory.committed(), commitments.cutsOf(was.id()), true));
         }
         Instant now = clock.instant();
         Instant when = MovementTimes.resolve(occurredAt, now, null);
-        inventory.writeOff(qty);
+        // Free boxes go first; only for what free cannot absorb are boxes set aside for products taken, and the products named.
+        int cut = inventory.writeOff(qty);
         inventories.saveAndFlush(inventory);
+        List<BoxCommitmentService.CutCommitment> cuts = cut > 0 ? commitments.cutForWriteOff(variantId, cut, requestId, actor, when) : List.of();
         ledger.insertAction(requestId, variantId, reason.category() == StockReason.Category.WRITE_OFF ? "WRITE_OFF" : "GIVE_AWAY", reason,
                 qty, when, actor, note, null, digest);
         ledger.conform(variantId, actor);
         ledger.verify(variantId, inventory.onHand());
+        commitments.verifyBox(variantId);
         // Stock cannot have left before it arrived: checked against the lots it actually came out of.
         MovementTimes.resolve(when, now, ledger.latestReceivedAmongLiveRows(requestId));
         log.info("{} of {} (action {}): {} left", reason, variantId, requestId, inventory.onHand());
         return Optional.of(new WriteOffResult(requestId, variantId, reason, qty, when, inventory.onHand(), inventory.reserved(),
-                inventory.available(), false));
+                inventory.available(), inventory.committed(), cuts, false));
     }
 
     /**
@@ -372,7 +425,7 @@ public class StockService {
                 throw new IllegalStateException("request " + requestId + " was already used for a different request");
             }
             return Optional.of(new TakeBackResult(was.id(), writeOffActionId, variantId, was.qty(), was.occurredAt(), outstandingBefore,
-                    inventory.onHand(), inventory.reserved(), inventory.available(), true));
+                    inventory.onHand(), inventory.reserved(), inventory.available(), inventory.committed(), true));
         }
         if (qty > outstandingBefore) {
             throw InsufficientStockException.cannot("take back", qty, outstandingBefore, "outstanding");
@@ -396,7 +449,7 @@ public class StockService {
         MovementTimes.resolve(when, now, ledger.latestReceivedAmongLiveRows(requestId));
         log.info("Took back {} of {} from action {} ({} still out)", qty, variantId, writeOffActionId, outstandingBefore - qty);
         return Optional.of(new TakeBackResult(requestId, writeOffActionId, variantId, qty, when, outstandingBefore - qty,
-                inventory.onHand(), inventory.reserved(), inventory.available(), false));
+                inventory.onHand(), inventory.reserved(), inventory.available(), inventory.committed(), false));
     }
 
     /** Write-offs and give-aways, newest first, each with what has come back. Carries no cost. */
@@ -478,7 +531,13 @@ public class StockService {
                  WHERE l.qty_remaining <> coalesce(m.sum, 0)""" + forLotVariant + " ORDER BY l.id",
                 (rs, n) -> new LedgerMismatch(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getInt("qty_remaining"),
                         rs.getInt("ledger_sum")), filter);
-        return new ReconciliationReport(checked, counts, ledgers);
+        List<CommitmentMismatch> setAside = jdbc.query("""
+                SELECT i.variant_id, i.committed, coalesce(c.total, 0) AS total
+                  FROM inventory i
+                  LEFT JOIN (SELECT box_variant_id, sum(quantity) AS total FROM box_commitment GROUP BY box_variant_id) c ON c.box_variant_id = i.variant_id
+                 WHERE i.committed <> coalesce(c.total, 0)""" + forVariant + " ORDER BY i.variant_id",
+                (rs, n) -> new CommitmentMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("committed"), rs.getInt("total")), filter);
+        return new ReconciliationReport(checked, counts, ledgers, setAside);
     }
 
     /** The variant's current lots, oldest first (the order FIFO draws in). */

@@ -43,6 +43,19 @@ public class CostReadService {
                               String sku, String productTitle, String variantTitle, String consignmentReference, boolean live) {
     }
 
+    /** One lot that still holds stock, as the price check sees it. */
+    public record HeldLotRow(UUID lotId, BigDecimal unitCost, int qtyRemaining, boolean estimated, int revision, Instant receivedAt,
+                             String consignmentReference) {
+    }
+
+    /**
+     * What one variant's held stock cost: the dearest lot (what the price is compared with), the weighted average (shown beside
+     * it, never compared with) and the lots themselves. A variant that holds nothing still has an entry, with no cost.
+     */
+    public record HeldVariantCost(UUID variantId, int onHand, int heldUnits, BigDecimal highestUnitCost, BigDecimal averageUnitCost,
+                                  String currency, boolean estimated, List<HeldLotRow> lots) {
+    }
+
     private final JdbcTemplate jdbc;
 
     public CostReadService(JdbcTemplate jdbc) {
@@ -78,6 +91,52 @@ public class CostReadService {
                   FROM cost_lot l""" + clause + " ORDER BY l.variant_id, l.received_at, l.fifo_tiebreak, l.slice_position, l.revision, l.id LIMIT ? OFFSET ?",
                 this::lot, args.toArray());
         return new PageImpl<>(rows, PageRequest.of(page, size), total);
+    }
+
+    /**
+     * What the stock these variants still hold cost, one answer per DISTINCT id, in the order first asked. One that was never
+     * received is answered with nothing held (never left out: a caller that read a missing entry as "no cost" would let a price
+     * through unseen).
+     *
+     * <p>One SQL statement, so every variant's count and lots come from one snapshot: a sale committing between two statements
+     * would otherwise show a lot already drained next to the count from before it.
+     */
+    @Transactional(readOnly = true)
+    public List<HeldVariantCost> held(List<UUID> variantIds) {
+        List<UUID> ids = variantIds.stream().distinct().toList();
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        java.util.Map<UUID, Integer> onHand = new java.util.LinkedHashMap<>();
+        java.util.Map<UUID, List<HeldLotRow>> lots = new java.util.LinkedHashMap<>();
+        for (UUID id : ids) {
+            onHand.put(id, 0);
+            lots.put(id, new ArrayList<>());
+        }
+        jdbc.query(con -> {
+            java.sql.PreparedStatement ps = con.prepareStatement("""
+                    SELECT r.variant_id, i.on_hand, l.id AS lot_id, l.unit_cost, l.qty_remaining, l.is_estimated, l.revision,
+                           l.received_at, l.consignment_reference
+                      FROM unnest(?::uuid[]) WITH ORDINALITY AS r(variant_id, ord)
+                      LEFT JOIN inventory i ON i.variant_id = r.variant_id
+                      LEFT JOIN cost_lot l ON l.variant_id = r.variant_id AND l.qty_remaining > 0 AND l.superseded_at IS NULL
+                     ORDER BY r.ord, l.received_at, l.fifo_tiebreak, l.slice_position, l.revision, l.id""");
+            ps.setArray(1, con.createArrayOf("uuid", ids.toArray()));
+            return ps;
+        }, (java.sql.ResultSet rs) -> {
+            UUID variant = rs.getObject("variant_id", UUID.class);
+            int count = rs.getInt("on_hand");
+            if (!rs.wasNull()) {
+                onHand.put(variant, count);
+            }
+            UUID lotId = rs.getObject("lot_id", UUID.class);
+            if (lotId != null) {
+                lots.get(variant).add(new HeldLotRow(lotId, rs.getBigDecimal("unit_cost"), rs.getInt("qty_remaining"),
+                        rs.getBoolean("is_estimated"), rs.getInt("revision"), rs.getTimestamp("received_at").toInstant(),
+                        rs.getString("consignment_reference")));
+            }
+        });
+        return ids.stream().map(id -> HeldCosts.summarise(id, onHand.get(id), lots.get(id))).toList();
     }
 
     @Transactional(readOnly = true)

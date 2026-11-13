@@ -15,10 +15,12 @@ public record TakeBackResponse(
         int outstanding,
         int onHand,
         int reserved,
-        int available
+        int available,
+        int committed,
+        int free
 ) {
     public static TakeBackResponse from(StockService.TakeBackResult r) {
         return new TakeBackResponse(r.actionId(), r.writeOffActionId(), r.variantId(), r.qty(), r.occurredAt(), r.outstanding(), r.onHand(),
-                r.reserved(), r.available());
+                r.reserved(), r.available(), r.committed(), r.available());
     }
 }

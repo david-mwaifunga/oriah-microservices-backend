@@ -53,7 +53,11 @@ public record ProductUpdatedEvent(
         List<String> tags,
         String productType,
         String status,
-        List<VariantPayload> variants
+        List<VariantPayload> variants,
+        // Added in Phase 6 (kind in Phase 3, which inventory ignored until now); an event from before carries none of them.
+        String kind,
+        UUID defaultPackagingVariantId,
+        Integer unpublishCount
 ) {
     public static final String TYPE = "product.updated";
 }

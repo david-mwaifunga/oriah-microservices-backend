@@ -25,8 +25,15 @@ import com.oriah.jpa.BaseEntity;
  *   <li>{@code reserved} — units claimed by carts that haven't shipped
  *       yet. Goes up on reserve, down on release (abandon) or confirm
  *       (ship). Invariant: {@code 0 <= reserved <= onHand}.</li>
- *   <li>{@code available = onHand - reserved} — computed, not stored.</li>
+ *   <li>{@code committed} — boxes set aside for products (packaging only): a PROMISE, not a movement. It reserves a
+ *       quantity and never a lot, so it touches no cost lot. Invariant: {@code reserved + committed <= onHand}.</li>
+ *   <li>{@code free = onHand - committed - reserved} — what can still be promised or reserved; computed, not stored, and
+ *       never below zero. {@link #available()} is the same figure under its older name.</li>
  * </ul>
+ *
+ * <p>The trap is promising the same box twice: 50 pouches to the gold studs and 50 to the silver ones out of 60 held. So
+ * {@link #commit} needs free boxes, a reservation sees only what is free, and a write-off takes free boxes first and cuts
+ * into what is promised only for what free cannot absorb.
  *
  * <p>A stock row exists only because goods were received: there is no way to create one with a count, because a
  * count with no lots has no cost, and stock with no cost makes profit wrong.
@@ -47,6 +54,10 @@ public class Inventory extends BaseEntity {
 
     @Column(name = "reserved", nullable = false)
     private int reserved;
+
+    /** Boxes promised to products; always 0 for goods. See the class comment. */
+    @Column(name = "committed", nullable = false)
+    private int committed;
 
     /** {@code SELLABLE} or {@code PACKAGING}, taken from the receipt that created the row; never changes. */
     @Column(name = "kind", nullable = false, updatable = false)
@@ -104,8 +115,57 @@ public class Inventory extends BaseEntity {
         return kind;
     }
 
+    public int committed() {
+        return committed;
+    }
+
+    /** What can still be promised to a product or reserved by an order: held, less what is set aside and what is reserved. */
+    public int free() {
+        return onHand - reserved - committed;
+    }
+
+    /** What an order may still reserve: the same as {@link #free()}. Boxes promised to a product are not for the next order to take. */
     public int available() {
-        return onHand - reserved;
+        return free();
+    }
+
+    /**
+     * Sets {@code qty} boxes aside for a product. They stay held (the count does not change); they stop being free.
+     *
+     * @throws IllegalStateException      if this row is goods: only packaging is set aside (409)
+     * @throws InsufficientStockException if fewer than {@code qty} are free
+     */
+    public void commit(int qty) {
+        requirePositive(qty);
+        if (!"PACKAGING".equals(kind)) {
+            throw new IllegalStateException("only packaging is set aside for products, and this is " + kind);
+        }
+        if (qty > free()) {
+            throw InsufficientStockException.cannot("set aside", qty, free(), "free");
+        }
+        this.committed += qty;
+    }
+
+    /** Lets {@code qty} set-aside boxes go back to free. Nothing leaves the building. */
+    public void uncommit(int qty) {
+        requirePositive(qty);
+        if (qty > committed) {
+            throw InsufficientStockException.cannot("let go", qty, committed, "set aside");
+        }
+        this.committed -= qty;
+    }
+
+    /**
+     * A sale of boxes that were set aside for the product and never reserved: the set-aside and the count both fall. If only the
+     * count fell, the promise would outlive the box it was for and what is set aside would drift upward until nothing could be promised.
+     */
+    public void consumeCommitted(int qty) {
+        requirePositive(qty);
+        if (qty > committed) {
+            throw InsufficientStockException.cannot("sell", qty, committed, "set aside");
+        }
+        this.committed -= qty;
+        this.onHand -= qty;
     }
 
     /**
@@ -168,16 +228,23 @@ public class Inventory extends BaseEntity {
     }
 
     /**
-     * Units written off or given away: stock that was not reserved for anyone leaves with no sale.
+     * Units written off or given away: stock that was not reserved for anyone leaves with no sale. Free units go first; only for
+     * what free cannot absorb are boxes that were set aside for products taken, and the caller is told how many, so it can cut the
+     * records and name the products.
      *
-     * @throws InsufficientStockException if more than is available (a state conflict, 409)
+     * @return how many of the units written off were set aside (0 for goods, and for boxes free could absorb)
+     * @throws InsufficientStockException if more than is held and not reserved (a state conflict, 409)
      */
-    public void writeOff(int qty) {
+    public int writeOff(int qty) {
         requirePositive(qty);
-        if (qty > available()) {
-            throw InsufficientStockException.cannot("write off", qty, available(), "available");
+        int unreserved = onHand - reserved;
+        if (qty > unreserved) {
+            throw InsufficientStockException.cannot("write off", qty, unreserved, "available");
         }
+        int cut = Math.max(0, qty - free());
+        this.committed -= cut;
         this.onHand -= qty;
+        return cut;
     }
 
     /** Units that were written off or given away come back, to the lots they came out of. */

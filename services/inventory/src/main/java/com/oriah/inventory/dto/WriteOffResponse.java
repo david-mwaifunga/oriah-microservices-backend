@@ -14,10 +14,14 @@ public record WriteOffResponse(
         Instant occurredAt,
         int onHand,
         int reserved,
-        int available
+        int available,
+        // Boxes still set aside for products after this, and the products whose boxes it cut into (empty unless free could not absorb it).
+        int committed,
+        int free,
+        java.util.List<com.oriah.inventory.service.BoxCommitmentService.CutCommitment> cutCommitments
 ) {
     public static WriteOffResponse from(StockService.WriteOffResult r) {
         return new WriteOffResponse(r.actionId(), r.variantId(), r.reason().name(), r.qty(), r.occurredAt(), r.onHand(), r.reserved(),
-                r.available());
+                r.available(), r.committed(), r.available(), r.cutCommitments());
     }
 }

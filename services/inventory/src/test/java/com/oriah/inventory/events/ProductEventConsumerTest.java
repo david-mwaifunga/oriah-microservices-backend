@@ -70,13 +70,13 @@ class ProductEventConsumerTest {
     private static ProductCreatedEvent created(UUID productId, String title,
                                                VariantPayload... variants) {
         return new ProductCreatedEvent(productId, title, List.of("rings"),
-                "JEWELLERY", "ACTIVE", List.of(variants));
+                "JEWELLERY", "ACTIVE", List.of(variants), "SELLABLE", null, 0);
     }
 
     private static ProductUpdatedEvent updated(UUID productId, String title,
                                                VariantPayload... variants) {
         return new ProductUpdatedEvent(productId, title, null, List.of("rings"),
-                "JEWELLERY", "ACTIVE", List.of(variants));
+                "JEWELLERY", "ACTIVE", List.of(variants), "SELLABLE", null, 0);
     }
 
     @Test
@@ -127,7 +127,7 @@ class ProductEventConsumerTest {
         // The topic has no configured retention and there is no outbox, so
         // pre-upgrade messages can still be redelivered. `variants` is null
         // rather than empty in that case.
-        send(new ProductCreatedEvent(productId, "Legacy", List.of("rings"), null, null, null),
+        send(new ProductCreatedEvent(productId, "Legacy", List.of("rings"), null, null, null, null, null, null),
                 ProductCreatedEvent.TYPE);
 
         assertThat(productRefs.count()).isZero();
