@@ -84,6 +84,13 @@ CASES = [
     ("403-procurement-suppliers-as-plain-user", "GET", "/api/v1/admin/procurement/suppliers", "user", None),
     # procurement (Phase 4): consignments, their costs and invoices are PROCUREMENT_ADMIN only.
     ("403-procurement-consignments-as-plain-user", "GET", "/api/v1/admin/procurement/consignments", "user", None),
+    # Phase 5: what stock cost is COST_VIEWER's, writing stock off is STOCK_WRITE_OFF's, and nobody keys a sale by
+    # hand: the gateway does not route confirm for anyone, an owner included (the denial is the case). All three are
+    # refused before anything is read or written, so capturing them creates no state.
+    ("403-cost-lots-as-plain-user", "GET", "/api/v1/admin/costs/lots", "user", None),
+    ("403-write-offs-as-plain-user", "GET", "/api/v1/admin/inventory/write-offs", "user", None),
+    ("403-sale-keyed-through-the-gateway", "POST", "/api/v1/admin/inventory/" + MISSING + "/confirm", "admin",
+     {"qty": 1, "saleLineId": MISSING}),
 
     # --- 404: the Tier 5 bodies, through the gateway ----------------------
     ("404-unknown-product", "GET", "/api/v1/products/" + MISSING, None, None),
@@ -97,6 +104,11 @@ CASES = [
     ("404-unknown-purchase-order", "GET", "/api/v1/admin/procurement/purchase-orders/" + MISSING, "admin", None),
     ("404-unknown-consignment", "GET", "/api/v1/admin/procurement/consignments/" + MISSING, "admin", None),
     ("404-unknown-procurement-document", "GET", "/api/v1/admin/procurement/documents/" + MISSING + "/content", "admin", None),
+    # Phase 5: a write-off nobody recorded, and a correction of a consignment nobody has (nothing is written).
+    ("404-unknown-write-off", "GET", "/api/v1/admin/inventory/write-offs/" + MISSING, "admin", None),
+    ("404-amend-unknown-consignment", "POST", "/api/v1/admin/procurement/consignments/" + MISSING + "/amendments", "admin",
+     {"fromRevision": 1, "reason": "golden: nothing to correct",
+      "costLines": [{"costType": "COURIER_INBOUND", "amount": 1.00}]}),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------
@@ -107,6 +119,9 @@ CASES = [
     ("400-purchase-order-without-lines", "POST", "/api/v1/admin/procurement/purchase-orders", "admin",
      {"lines": []}),
     ("400-consignment-without-orders", "POST", "/api/v1/admin/procurement/consignments", "admin", {}),
+    # Phase 5: a correction must say which revision it was made from and why; refused before anything is read.
+    ("400-amendment-without-reason", "POST", "/api/v1/admin/procurement/consignments/" + MISSING + "/amendments", "admin",
+     {"fromRevision": 1}),
 
     # --- 405 / 415: framework errors, the Tier 0.5 class ------------------
     # Both need a token, or the gateway answers 401 before the service ever
@@ -119,9 +134,9 @@ CASES = [
     ("422-outside-delivery-area", "POST", "/api/v1/shipping/rates", "user",
      {"destinationCountry": "US", "subtotal": 100.00, "currency": "ZMW"}),
 
-    # NOTE: no 409 case. Reproducing inventory's over-reserve needs a stock row
-    # to exist first, and this script must not create state. That status is
-    # covered by InventoryIntegrationTest.overReserveIsAConflict.
+    # NOTE: no 409 case. Reproducing inventory's over-reserve (or a stale correction of a consignment) needs a
+    # stock row or a received consignment to exist first, and this script must not create state. Those are
+    # covered by InventoryIntegrationTest.overReserveIsAConflict and ConsignmentAmendHttpTest.aStaleRevision.
 ]
 
 

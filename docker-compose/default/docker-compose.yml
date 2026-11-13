@@ -1008,6 +1008,14 @@ services:
       service: microservice-keycloak-config
     image: oriah/inventory:dev
     container_name: oriah-inventory
+    # Memory: keeps the shared 640m (common-config.yml). Re-measured 2026-11-13 after Phase 5 made inventory
+    # cost-bearing (three Kafka consumers, a replay at start, a ledger engine that reads every live action of a
+    # variant): the container read 486 MiB after the smoke test (76%), and a worst-case burst, 122 write-offs on ONE
+    # variant by four writers at once (26 more were told to retry, as designed) and then a correction that re-cut
+    # all 122, moved it to 492 MiB (77%) and finished in about 6 s with no count out of line with its lots. Inside
+    # the JVM: heap 86 of 217 MiB, class metadata 153 of 186, code cache 38 of 64, 55 threads (peak 57) of a
+    # 125-thread budget: the same shape as the other ordinary services. There is no large payload here (unlike
+    # procurement's invoices or catalog's photographs), so no native-memory burst to size a bigger limit for.
     environment:
       SPRING_DATASOURCE_USERNAME: inventory
       SPRING_DATASOURCE_PASSWORD: inventory

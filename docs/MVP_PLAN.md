@@ -458,12 +458,14 @@ used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
 **V3** and notification **V3**. **Updated after Phase 2 (2026-11-10):** the new
 `procurement` service used its **V1** (`suppliers`) and nothing else changed.
 **Updated after Phase 3 (2026-11-12):** catalog used **V5** (`kind`) and search
-**V4** (`listed`) — the table below is what is on disk now.
+**V4** (`listed`). **Updated after Phase 5 (2026-11-13):** inventory used **V7** (lots),
+**V8** (the ledger) and **V9** (`outbox_catch_up`), and procurement used **V7**
+(amendments) — the table below is what is on disk now.
 
 | Service | Highest now | Next free |
 |---|---|---|
 | catalog | **V5** — USED by Phase 3's `kind` (V4 is Phase 1's outbox) | **V6** |
-| inventory | **V6** — USED by Phase 1's `processed_event` (V5 is Phase 0's `@Version`) | **V7** — Phase 5's `cost_lot` |
+| inventory | **V9** — USED: V6 Phase 1's `processed_event`; **V7 Phase 5's `cost_lot`** (and `inventory.kind`, the guard trigger); **V8 the ledger** (`stock_action`, `stock_movement`, `live_movement`); **V9** `outbox_catch_up` (V5 is Phase 0's `@Version`) | **V10** |
 | order | **V5** — USED by Phase 1's event log (V4 is Phase 0's authoritative totals) | **V6** |
 | cart | V3 | V4 |
 | payment | **V5** — USED by Phase 1: one charge per intent, and the event log | **V6** |
@@ -472,7 +474,7 @@ used catalog **V4**, inventory **V6**, order **V5**, payment **V5**, search
 | promotion / customer / review | V2 | V3 |
 | checkout | *(stateless, no DB)* | — |
 | shipping | *(stateless today)* | **V1** — gains a database in Phase 7 for provinces, towns and delivery prices |
-| procurement | **V6** — USED: V1 Phase 2's `suppliers`; V2 the event log; V3 purchase orders; V4 consignments, lines, cost lines; V5 receiving (the recorded allocation, the freezes); V6 documents (Phase 4) | **V7** |
+| procurement | **V7** — USED: V1 Phase 2's `suppliers`; V2 the event log; V3 purchase orders; V4 consignments, lines, cost lines; V5 receiving (the recorded allocation, the freezes); V6 documents (Phase 4); **V7 amendments (Phase 5)** | **V8** |
 | finance | *(new service, Phase 10)* | **V1** |
 
 ### Phase 0 — Fix what is live and wrong
@@ -1514,6 +1516,143 @@ once — a test.
 `Σ cost_lot.qty_remaining` must equal it, enforced in the aggregate and checked
 by a reconciliation query. Procurement records what was *received*, never a
 current count. Catalog keeps no count at all.
+
+> **Phase 5 is built (2026-11-13; commits in `oriah-api`: `04a897a` procurement's `linePosition`, `bd158a0` the pure
+> parts, `02fe34a` the gateway, `602f260` lots, the ledger, receipts and sales, `7f5a811` write-offs, `f16d7cd` the cost
+> reads, `5deae87` the inventory re-cut, `6511d0e` procurement's correction, `8d2d0d8` catalog's stock badge, `f4778c4` and `5f5cde1` the review's fixes, and the commit after them (the platform wiring, this block and the frontend handover); `config-repo` `5cf6d70`).
+> Not pushed.** Strict test-first. Numbers at the end of the phase: **inventory 214 tests, procurement 524, catalog
+> 468, the gateway 207, all green**: the FIFO engine on its own (a seeded property test among them), the schema as
+> raw SQL, every stock change against a real PostgreSQL, the races driven deterministically, the consumer through the real
+> Kafka bindings (live, replayed, redelivered, refused), every endpoint over HTTP, and the OpenAPI contract.
+> Reviewed twice, as in Phases 3 and 4: Codex on the whole diff (one finding: an undated
+> take-back could be recorded before the write-off it reverses, when that was accepted a few minutes ahead of the clock), and a
+> five-lens read-only panel with two skeptics per finding (31 agents): 13 candidates, **5 confirmed and fixed test-first** (a receipt
+> read the stock row without its lock, so a sale that committed in the gap made a valid receipt look corrupt and it was parked in the
+> dead-letter topic for good: reproduced with a deliberate overlap, now the row is read locked; a repeated sale, write-off or take-back
+> could answer with the count from before the original; the consignments list ignored a correction that the detail showed; a handover
+> sentence about admin availability; a schema test that passed by accident), 3 disputed and 5 rejected. The disputed ones: a
+> correction that arrives before its receipt leaves its reason out of inventory's ledger (accepted, procurement keeps the history); the
+> four removed inventory operations had no waiver in the API gate (written at the live step, below); a comment overstated what a
+> test proved (the test now proves it).
+> The API as built, every error and the screens that use it are in `docs/FRONTEND_WORK.md` (Phase 5); this block is what
+> was **decided while building it**.
+>
+> **What exists.** *Inventory* V7 `cost_lot` (one lot per unit-cost slice of a consignment line; immutable apart from
+> `qty_remaining` and `superseded_at`), V8 the ledger (`stock_action`: one row per thing that happened; `stock_movement`:
+> one row per action and lot, append-only; the view `live_movement`: the rows in force), V9 `outbox_catch_up`. **The plan's "COGS table" is the `stock_movement` ledger:** one row per (action, lot) with its quantity, unit cost, method (`FIFO`) and basis (`RECEIVED_AT`), the lot it drew on (so a return can go back to its source lot), `reverses_movement_id`, `occurred_at` and `recorded_at`, append-only from its first migration. Stock now
+> **enters only through `consignment.received`** (consumed from the beginning, once each, in order); the endpoints that
+> created a count or topped it up are gone. A sale (`POST .../{variantId}/confirm`, now `{qty, saleLineId, occurredAt?}`)
+> drains the oldest lots and writes one ledger row per lot drained, in the same transaction as the count. Write-offs and
+> give-aways (`/api/v1/admin/inventory/write-offs`, `STOCK_WRITE_OFF`) and their take-backs. Cost reads
+> (`/api/v1/admin/costs/lots` and `/movements`, `COST_VIEWER`). `GET .../inventory/reconciliation`. *Procurement* V7, and
+> `POST /consignments/{id}/amendments`, `GET /consignments/{id}/revisions`, `GET /allocation?revision=n`, and the new event
+> `consignment.amended`. *Gateway*: a route for `/api/v1/admin/costs/**`, and **no route at all for a sale**.
+> *Catalog*: the stock badge asks per variant and reads "no stock record" as none in stock.
+>
+> **Decisions made while building** (each with its reason; none reopens the settled list):
+> - **One engine keeps the books honest: "conform the ledger to FIFO".** What each unit cost is a pure function of two
+>   things: the variant's lots in FIFO order, and its sales, write-offs, give-aways and take-backs in the order they were
+>   *recorded*. After any change to either (a receipt, a correction) the stored ledger is made equal to that function's
+>   answer: an action whose chunks differ is reversed and written again at its own `occurred_at`; one that does not differ is
+>   left alone; run twice it writes nothing (a property test). So **the order events arrive in stops mattering for
+>   correctness**, and the single-partition requirement, the detective guard and the catch-up gate of the first design were
+>   dropped. A receipt that is dead-lettered leaves stock *under*-counted (it cannot oversell); replaying it repairs the cost
+>   flow.
+> - **The FIFO key is `(received_at, fifo_tiebreak, slice_position)`.** The lines of one receipt share `received_at`, so the
+>   line's position in its consignment (`consignment.received` gained `linePosition`, last in the field list) breaks the tie in
+>   the order the lines were typed; an event from before that field was added falls back to the outbox id.
+> - **FIFO follows RECORDING order, not the date a sale happened.** A sale keyed late takes the lot that is first in line when
+>   it is keyed, and is dated at its true day (owner question Q2).
+> - **Corrections are reversals, never edits.** A correction (the courier's K800 was K8,000) makes new lots, closes the old
+>   ones (`COST_CORRECTED`, a pure move of value between lots that is not profit) and re-cuts every sale, write-off, give-away
+>   and take-back that drew on them: a reversal row and a replacement row, each carrying **the economic reason and the date
+>   of the action it re-cuts** (so a report by reason and month nets to the corrected cost in the month the unit left).
+>   Worked in a test from the plan's own case: K800 → K8,000 over 7 rings with 3 sold in March and 1 written off in April:
+>   March +K3,085.71, April +K1,028.57, held +K3,085.72, **+K7,200.00 in all, to the ngwee**. After every change the code
+>   checks, and refuses to commit otherwise: each lot's ledger adds up to its `qty_remaining`; the lots add up to `on_hand`;
+>   and per consignment line, cost recognised + cost held == the landed total.
+> - **The closed list of 15 reasons is born here** (the plan's list, as CHECKed codes: consignment received, sale, return,
+>   three write-offs, four give-aways, taken back, cancelled before dispatch, relisted marked down, box swapped, cost
+>   corrected); later phases add handlers, not reasons.
+> - **Idempotency by the caller's own id.** A sale line id, or a write-off's `requestId`, is used once: the same request again
+>   is answered again and takes nothing, a different one under the same id is 409. An id is global, so reusing one against
+>   another variant is 409 too. Times are kept to the microsecond the database keeps.
+> - **Locking.** A receipt or a correction takes an advisory lock for the variant and forces the stock row's version up; a
+>   sale, write-off or take-back stays optimistic (the stock row is written first, so the loser gets 409
+>   `concurrent-update` before it touches a lot). Two simultaneous changes: exactly one applies.
+> - **A sale is not a person's button.** The gateway has a `denyAll` matcher for `/api/v1/admin/inventory/*/confirm`; the
+>   order system calls inventory directly (its own identity), as do the tests and the smoke test (port 8082). Known
+>   limitation: anyone holding `INVENTORY_ADMIN` who can reach a service port directly can still consume (ports are closed in
+>   production by the layering rule); every row records the actor.
+> - **Cost is gated where it is born.** `cost_lot` and ledger reads need `COST_VIEWER`; no cost appears on the admin stock list
+>   or the public stock read; write-off lists show quantities, not cost.
+> - **Procurement's correction is a new revision, worked out from the revision before it.** Never from the draft's rows
+>   (frozen): a revision's goods and costs are in its recorded inputs (`allocation_revision.inputs`, schema 2 adds each
+>   cost's `incurredOn` and `note`), so a revision can carry costs that were never cost lines of the draft, and the
+>   cost-share rows no longer need a `cost_line` behind them. `fromRevision` is the concurrency token (the consignment's own
+>   row stays frozen and is locked first, so two corrections run one after the other); a correction may replace the whole cost
+>   list (the same rules as a draft's: no bank charge, duty only per line, splits that name every line and add up), correct
+>   any line's goods total (the purchase order and its invoice keep what was typed), and clear a shipment's "estimate" flag
+>   (the opening stock stays an estimate for good). Typed splits keep their typist across revisions. One that changes nothing
+>   is refused. **Events only for the lines whose figures, or estimate flag, changed.**
+> - **`consignment.amended` is a full snapshot**, the next event of the line's own history: everything a receipt says, then
+>   `revision`, `reason`, `amendedAt`. Its `receivedAt` is still the receipt's (the line's place in FIFO never moves) and
+>   its `occurredAt` is `amendedAt`. An amendment that arrives before its receipt is applied as the first snapshot.
+> - **Legacy inventory rows are deleted by V7**, with a count in the log: they were uncosted seed stock from the retired
+>   create endpoint, no cost basis exists for them, only developer data exists, and a go-live database starts empty.
+> - **Catalog's badge** asks per variant (the product's own id is a variant's id only for products that predate variants),
+>   sums them for the product, and reads a 404 as an answer: none in stock. Counted as a failure it would have opened the
+>   circuit breaker after a handful of product views (found with the real client against a real HTTP server: Jackson 3 also
+>   refused to read inventory's 404 body into integer fields, so the figures are `Integer`).
+> - **The smoke test seeds no stock.** Step 2 no longer stocks; step 20d's received consignment is the stock and step 20e
+>   follows it (see below).
+>
+> **Verified live (2026-11-13):** the four changed images rebuilt from the final code and the whole stack started on the existing
+> development databases, which is a test of its own: inventory's V7 removed **60** old uncosted stock rows (the log says so) and
+> migrated to V9, asked procurement to replay its history, and turned the four earlier receipts into **8 lots holding 414
+> units**, with the catch-up complete, every count equal to its lots, no error in the log and the dead-letter topic empty. Smoke
+> **28/28 on its first attempt (108 s)**, including the new step 20e: the 7 rings and 200 boxes of step 20d appear as lots (ring 4 x
+> K1,528.99 + 3 x K1,528.98); a sale made on inventory's own port costs K1,528.99 FIFO and the same sale line again takes nothing,
+> while the gateway refuses to route it (403, for an owner too); a write-off costs the next unit K1,528.99 and is taken back; the
+> courier's bill corrected from K6,000 to K600 (revision 2, K21,100.00; a stale one 409, a nothing-changed one 400, alice 403) re-costs
+> the stock (ring 5 x K1,502.90 + 1 x K1,502.89 left, the sold unit now K1,502.90, box 171 x K52.90 + 29 x K52.89) with no count out
+> of line with its lots. **Checked again straight from the database, outside the script:** for all six consignment lines, cost
+> recognised + cost held equals the landed total to the ngwee (the corrected ring: K1,502.90 + K9,017.39 = K10,520.29). Error goldens
+> **29/29** (six new: cost lots and write-offs 403 to a plain user, a sale keyed through the gateway 403, an unknown write-off and an
+> unknown consignment's correction 404, a correction without a reason 400); OpenAPI **PASS** (additions, the same 22 waived breaks, and
+> **four new waivers with their reasons**: the retired create and restock endpoints, `InventoryCreateRequest`, and confirm's new body);
+> Postman **119** endpoints with its GET check PASS. The product page was checked live: a received piece reads `IN_STOCK`, one never
+> received reads `OUT_OF_STOCK`, and 30 views of the unreceived one left the circuit breaker closed (no fallback line in the log).
+> Playwright was not re-run: `oriah-web` is unchanged.
+> **Memory.** Inventory keeps the shared 640 MiB. It read 486 MiB after the smoke test (76%) and a worst-case burst moved it only to
+> 492 MiB: **122 write-offs on one variant by four writers at once** (26 more were told to retry, as designed), then a **correction
+> that re-cut all 122** in about 6 s, with no mismatch afterwards. Inside the JVM: heap 86 of 217 MiB, class metadata 153 of 186, code
+> cache 38 of 64, 55 threads of a budget of 125. There is no large payload to size a bigger limit for, unlike procurement's invoices.
+>
+> **Accepted for the MVP:** no inventory events yet (Phases 6, 7 and 10 define theirs with their consumers; the ledger carries
+> everything a publisher needs, so an outbox can be back-filled from it); a line's quantity, variant or line set cannot be
+> corrected after receipt (goods price and costs can; Q1); between two line events of one correction the consignment is
+> briefly mixed-revision (each line is applied on its own; Q3); a lost unit found again is taken back through the write-off
+> that lost it; the marked-down child lot and a return's restore to its source lot are Phase 12's (the take-back already
+> restores to the lot a unit left, at the cost it left at).
+>
+> **Open questions for the owner** (defaults chosen, none blocks): Q1 can a clerical error in the **quantity or variant** of a
+> received line ever be corrected? (default: no path; goods price and costs only); Q2 FIFO by the order stock changes were
+> *recorded* or by the day they *happened*, for a sale keyed late? (default: recording order, dated at its true day); Q3
+> a short moment where one line of a corrected consignment shows the new cost and another the old is acceptable; Q4 a
+> take-back for every write-off and give-away (default yes); Q5 selling stock is the order system's act only (default yes).
+>
+> **What this phase hands on.**
+> - **Phase 6:** the price guard and "a lot's cost changed" re-runs read `GET /api/v1/admin/costs/lots?open=true` (a held lot's
+>   unit cost, `revision`, `estimated`); a lot changes only through a correction (`superseded_at`, a new `revision`).
+> - **Phase 7:** reserving and selling become a saga: `confirm` is already the consume (`saleLineId` is the order line);
+>   re-key reserve/release by reservation id; a sale that loses a race with a correction answers 409 `concurrent-update` and
+>   is simply retried; **a sale must pass `occurredAt` for a late-keyed one** (never in the future).
+> - **Phase 10 (finance):** read `live_movement` (the rows in force); a `RECUT_*` row carries its action's own `occurred_at`
+>   and economic reason, `LOT_OPEN` and `LOT_CLOSE` are valuation transfers and are **not** profit; for a revision's inputs read
+>   `allocation_revision.inputs` (schema 2), and note that `PERIOD` costs are still only in those inputs.
+> - **Phase 12:** a return restores to the lot the unit left, at the cost it left at: reuse the take-back path with the reason
+>   `RETURN`; a marked-down child lot needs a `parent_lot_id` and the correction must then walk the family.
 
 ### Phase 6 — Price and publish
 

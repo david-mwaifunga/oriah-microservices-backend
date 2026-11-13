@@ -287,6 +287,80 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 
 ### Phase 5 — Cost-bearing inventory
 
+> **Built 2026-11-13 — what the API does now (the bullets below it are the screens that use it).** Every error is
+> `application/problem+json` (a refusal made by a service carries a `traceId`); money is a JSON number to the ngwee and always
+> `ZMW`; a list is a page (`content`, `totalElements`, `number`, `size`) and **a `size` outside 1 to 200 or a negative `page` is a
+> 400, never clamped**. Regenerate the inventory and procurement types (`npm run codegen`).
+>
+> **Stock enters only through a received consignment.** `POST /api/v1/admin/inventory` (create a count) and `.../restock` **no
+> longer exist** (the Inventory page's seed form must go: `seedInventory` calls a path that is now 404/405). `GET
+> /api/v1/admin/inventory` (the list: on hand, reserved, available; **no cost**) and `reserve` / `release` are as before.
+> **`confirm` (a sale) is not routed by the gateway for anyone, an owner included (403):** selling stock is the order system's act
+> (Phase 7), never a button. Inventory learns of a receipt from Kafka, so **a consignment's stock appears a second or two after
+> Receive**, not in the same reply: a screen that jumps to the stock page after Receive should expect the lots to arrive a moment
+> later (poll, or show "being stocked").
+>
+> **Cost reads — `COST_VIEWER` (`OWNER`, `MANAGER`, `BOOKKEEPER`), a plain customer is 403.** `GET /api/v1/admin/costs/lots?variantId=&open=&includeReplaced=&page=&size=`
+> (`listCostLots`): one row per lot, oldest first (FIFO order): `id`, `variantId`, `kind`, `sku`, `productTitle`, `variantTitle` (copied from the
+> receipt, so a BOOKKEEPER needs no catalog access), `consignmentId`, `consignmentReference`, `consignmentLineId`, `supplierId`, `supplierName` (null on
+> opening stock), `receivedAt`, `slicePosition`, **`revision`** (1 as received; higher after a correction), `qtyReceived`, `qtyRemaining`,
+> `unitCost`, `currency`, **`estimated`**, `replaced`. `open=true` hides lots with nothing left; a lot a correction replaced holds nothing and
+> is hidden unless `includeReplaced=true`. `GET /api/v1/admin/costs/movements?variantId=&lotId=&actionId=&reason=&page=&size=`
+> (`listCostMovements`): the ledger, **in the order the rows were written**: `id`, `actionId`, `actionKind` (`RECEIPT`, `SALE`, `WRITE_OFF`,
+> `GIVE_AWAY`, `TAKE_BACK`, `CORRECTION`), `lotId`, `reason` (the closed list below), `role` (`ORIGINAL`, `RECUT_REVERSAL`, `RECUT_REPLACEMENT`,
+> `LOT_OPEN`, `LOT_CLOSE`), **`qtyDelta` (negative when units left the lot; the cost released is `-qtyDelta x unitCost`)**, `unitCost`, `estimated`,
+> `kind`, `costMethod` (`FIFO`), `costBasis` (`RECEIVED_AT`), `reversesMovementId`, `replacesMovementId`, `occurredAt` (**when it happened**),
+> `recordedAt` (**when the system learned of it**), `actor`, `note`, and **`live`**: whether the row is in force. Show the ledger so that **a row a
+> correction replaced stays visible beside the one that replaced it** (`live: false`, greyed), with the reason a correction gave on the
+> revision. `LOT_OPEN` / `LOT_CLOSE` rows are the old lots' value moving to the new ones (`COST_CORRECTED`): label them "cost corrected",
+> not as a sale. **Never sum `qtyDelta x unitCost` over all rows to get a month's cost: use the `live` rows with role `ORIGINAL` or
+> `RECUT_REPLACEMENT`** (Phase 10 does). The closed list of reasons: `CONSIGNMENT_RECEIVED`, `SALE`, `RETURN`, `WRITE_OFF_LOST`, `WRITE_OFF_STOLEN`,
+> `WRITE_OFF_BROKEN`, `GIVEN_AWAY_MODEL`, `GIVEN_AWAY_INFLUENCER`, `GIVEN_AWAY_GIFT`, `GIVEN_AWAY_PRIZE`, `TAKEN_BACK`, `CANCELLED_BEFORE_DISPATCH`,
+> `RELISTED_MARKED_DOWN`, `BOX_SWAPPED`, `COST_CORRECTED` (offer in a picker only those a screen can cause: the write-off and give-away ones).
+>
+> **Write-offs and give-aways — `STOCK_WRITE_OFF` (`OWNER` only; `MANAGER` is 403).** `POST /api/v1/admin/inventory/write-offs` (`recordWriteOff`):
+> `{requestId, variantId, qty, reason, occurredAt?, note?}` with `reason` one of `WRITE_OFF_LOST|STOLEN|BROKEN` or `GIVEN_AWAY_MODEL|INFLUENCER|GIFT|PRIZE`
+> (a picker, never free text; `note` up to 200). **`requestId` is a UUID the screen makes once per form** and sends again on a retry: the same request
+> is answered again (200, nothing more taken); a different one under the same id is 409. A new one is **201** with a relative `Location`; the reply is
+> `{actionId, variantId, reason, qty, occurredAt, onHand, reserved, available}`. Only **units nobody has reserved** can go (409 otherwise, with the
+> numbers); `occurredAt` defaults to now, **never in the future and never before the stock arrived** (400 saying so). `POST
+> .../write-offs/{actionId}/take-back` (`takeBackWriteOff`): `{requestId, qty, occurredAt?, note?}` for **any** write-off or give-away (a lost piece
+> found, a mistaken write-off), **201**, up to the quantity still out (409 beyond it); the reply adds `outstanding`. The units re-enter **the lot they
+> left at the cost they left at**. `GET .../write-offs?variantId=&page=&size=` (`listWriteOffs`, newest first) and `GET .../write-offs/{actionId}`
+> (`getWriteOff`): `actionId`, `variantId`, `sku`, `productTitle`, `variantTitle`, `reason`, `qty`, **`takenBack`**, **`outstanding`**, `occurredAt`,
+> `recordedAt`, `actor`, `note`: **quantities only, no cost** (cost is on the Costs screen, for `COST_VIEWER`).
+>
+> **Reconciliation — `INVENTORY_ADMIN`.** `GET /api/v1/admin/inventory/reconciliation?variantId=` (`reconcileInventory`): `{checkedVariants,
+> countMismatches[], ledgerMismatches[]}`; **both lists empty means every count equals its lots and every lot equals its ledger**. Anything in
+> them is a bug to report, not something a person fixes; a small "stock checks out" indicator on the Inventory page is enough.
+>
+> **Correcting a received consignment — `PROCUREMENT_ADMIN`** (all under `/api/v1/admin/procurement/consignments/{id}`). The consignment is never
+> edited; a correction is a new **revision** of its allocation. `GET {id}` now carries **`revision`** (null on a draft; 1 as received; higher after a
+> correction) and, once corrected, its lines' `goodsTotal`, its `costLines` and `estimated` **are the latest revision's** (the `version` stays the one
+> from receipt: do not use it for a correction). **The list (`GET /consignments`) follows the correction too**: each row carries `revision`, and the goods total and `estimated` that stand. `POST {id}/amendments` (`amendConsignment`): `{fromRevision, reason, costLines?, goodsLines?,
+> estimated?}`. **Say only what changes:** `costLines`, when sent, **replaces the whole cost list** (the same rules and the same `CostLineRequest` as a
+> draft: send the courier's charge again with the new amount, and every other cost you want kept; no bank charge; duty only per line; a typed split
+> names every line and adds up); `goodsLines` is `[{lineId, goodsTotal}]` for the lines whose all-in total was mistyped (above zero; the purchase order
+> and its invoice keep what was typed, only the cost follows); `estimated` clears a shipment's "approximate" flag (**the opening stock stays an estimate
+> for good: false is a 400**). **`fromRevision` is the revision the person was looking at**: someone else's correction since is **409
+> `concurrent-update`** (reload and show the new figures); a draft is 409; **a correction that changes nothing is 400**; a missing `reason` (up to 200)
+> or `fromRevision` is a 400 with `fieldErrors`. **201**, a relative `Location` (`.../allocation?revision=2`) and `{revision, reason, amendedBy,
+> amendedAt, estimated, allocation, recutLines}`: `allocation` is the corrected allocation exactly as `GET .../allocation` shows it, and
+> **`recutLines` are the lines whose cost changed** (inventory is told about those and only those; the others are untouched). `GET
+> {id}/revisions` (`listConsignmentRevisions`): every revision, oldest first, with `reason` (null for the receipt), `createdBy` (the person's id:
+> resolve it to a name as elsewhere), `createdAt`, `estimated`, the totals and `changedLines`. `GET {id}/allocation?revision=n` reads any one
+> revision (404 for one that does not exist); left out, the revision that stands. **The screen shows the original beside the correction and says that
+> every month whose sales, write-offs or give-aways used those units is corrected** (inventory does it, usually within seconds; the Costs screen shows the
+> replaced lots and ledger rows, `live: false`, and the new ones with the higher `revision`).
+>
+> **Storefront.** `GET /api/v1/products/{id}` (the product page): **each variant now carries its own `availability`** (`IN_STOCK`, `LOW_STOCK` for under
+> 5, `OUT_OF_STOCK`, `UNKNOWN`), and the product's `availability` is the variants' **together**. A variant that was never received, or is sold out,
+> is `OUT_OF_STOCK` (not `UNKNOWN`); `UNKNOWN` means the stock service could not be asked. A withdrawn or unpriced variant has none (null). The product list and the admin product LIST still carry none; the admin single-product read (`GET /api/v1/admin/products/{id}`) carries the same badges as the public page (it asks inventory once per size, so do not call it in a loop).
+>
+> **Breaks in `oriah-web`:** the Inventory page's seed form (`seedInventory`, `POST /v1/admin/inventory`) calls a retired path, and nothing may call
+> `confirm` through the gateway; no Playwright spec seeds inventory, so none breaks (checked). Nothing else changes shape: `VariantResponse.availability`
+> is the field that already existed (it was always null on this read before).
+
 **Admin screens**
 
 - Inventory screen (INVENTORY_ADMIN): remove the 'seed inventory' form (variant id plus on-hand) and the page's 'Seed on-hand stock for a variant' text, because 'Stock enters only through a received consignment'. Keep on hand, reserved and available. 'One count, not three' means on_hand is the only stock count in the system: catalog keeps none, procurement records only what was received, and the sum of the lots' qty_remaining must equal on_hand. It does not mean reserved disappears from the screen.
@@ -296,7 +370,7 @@ The outbox itself shows shoppers nothing, but the follow-ups Phase 1 fixed chang
 
 **Storefront**
 
-- No change on screen. The availability badge already reads inventory, so a piece with no received stock already shows 'Sold out'. The buy box decides on price alone (BuyBox keeps active, priced variants) and still offers 'Add to bag'. That only matters once checkout reserves, in Phase 7.
+- **Corrected in Phase 5:** the availability badge did NOT read stock for new products before (the page asked inventory about the product's id, which is a variant's id only for products that predate variants, so a newer product showed no badge at all). It now asks per variant: a piece with no received stock shows 'Sold out' (`OUT_OF_STOCK`), and each size can show its own badge (`variants[i].availability`). The buy box decides on price alone (BuyBox keeps active, priced variants) and still offers 'Add to bag' on a sold-out piece: that only matters once checkout reserves, in Phase 7, so the screen may grey a size whose `availability` is `OUT_OF_STOCK` from then on.
 
 **What it breaks in oriah-web today**
 

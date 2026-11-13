@@ -20,6 +20,101 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-13 (MVP_PLAN Phase 5 complete: cost-bearing inventory)
+
+Phase 5 of `MVP_PLAN.md` is built, tested, reviewed twice, verified on the live stack and committed (**not
+pushed**). Inventory now knows **what every piece cost**. A received consignment becomes cost lots (one per
+unit-cost slice); a sale, a write-off or a give-away takes the **oldest** lot first and records the cost of the
+unit that left, in an append-only ledger; and if the courier's bill is corrected later, the stock and everything
+that already left it is re-costed, each in the month it left, to the ngwee. Stock enters **only** through a
+received consignment (the endpoints that created or topped up a count are gone), and **selling stock is not a
+person's button** (the gateway does not route it). Strict test-first throughout; `oriah-web` was not changed.
+
+| What | Commits (`oriah-api`) |
+|---|---|
+| Procurement: `consignment.received` says where its line sits in its consignment (`linePosition`) | `04a897a` |
+| The pure parts, test-first: the FIFO engine (`FifoConformer`), the closed list of reasons, movement dates, the receipt snapshot | `bd158a0` |
+| Gateway: nobody keys a sale; the cost reads get their route | `02fe34a` |
+| Lots, the ledger, receipts through the real consumer, sales | `602f260` |
+| Write-offs, give-aways and take-backs | `7f5a811` |
+| Cost reads (`COST_VIEWER`) and the reconciliation read | `f16d7cd` |
+| A corrected cost re-lays the new unit costs over the stock (inventory half) | `5deae87` |
+| A received consignment's cost can be corrected, as a new revision (procurement half) | `6511d0e` |
+| Catalog's stock badge asks per variant; "no stock record" is an answer | `8d2d0d8` |
+| The review's fixes | `f4778c4`, `5f5cde1` |
+| Smoke step 20e, six error goldens, four OpenAPI waivers, Postman (119), the plan, the frontend handover, CLAUDE.md, README, LOCAL_DEV, this entry | the commit after them |
+
+`config-repo` `5cf6d70` (inventory's contact-info text).
+
+### How it works, in plain words
+
+- **Cost belongs to a lot, never to a product.** A consignment line that lands at two unit costs a ngwee apart
+  (4 rings at K1,528.99 and 3 at K1,528.98) is two lots. A sale takes the oldest lot first; the ledger row says
+  which lot, how many, at what cost, why (from a closed list of 15 reasons) and when it happened.
+- **One engine keeps the books honest** ("conform the ledger to FIFO"): what a unit cost is worked out from the
+  lots in order and the sales and write-offs in the order they were recorded. After any receipt or correction
+  the stored ledger is made to equal that answer, so **the order events arrive in no longer matters**, and
+  running it twice changes nothing (a property test). After every change the code checks, and refuses to commit
+  otherwise, that each lot's ledger adds up to its remaining quantity, the lots add up to the stock count, and
+  for each consignment line cost recognised + cost held equals the landed total.
+- **A correction is a reversal, never an edit.** The plan's own case, K800 corrected to K8,000 over 7 rings
+  with 3 sold in March and 1 written off in April, comes out as March +K3,085.71, April +K1,028.57, held
+  +K3,085.72: **+K7,200.00 in all, to the ngwee** (a test).
+- **Procurement** records the correction as a new numbered version of the costing with who and why; only the
+  lines whose cost changed are announced to inventory (`consignment.amended`).
+
+### How it was checked
+
+- **Codex reviewed the whole diff.** One finding, fixed test-first: an undated take-back could be recorded before
+  the write-off it reverses, when that was accepted a few minutes ahead of the clock.
+- **A five-lens read-only panel** (31 agents, two skeptics per finding): 13 candidates, 5 confirmed and fixed
+  test-first, 3 disputed, 5 rejected. The real ones: a receipt read the stock row without its lock, so a sale
+  committing in the gap made a valid receipt look corrupt and it was parked in the dead-letter topic for good
+  (reproduced with a deliberate overlap; the row is now read locked); a repeated request could answer with the
+  count from before the original; the consignments list ignored a correction the detail showed; and two
+  documentation or test weaknesses.
+- **Three real faults were found by running real things, not by reading:** Jackson 3 refused to read inventory's
+  404 body into integer fields, which turned the normal "no stock record" answer into a failure that would have
+  opened catalog's circuit breaker (found with the real client against a real HTTP server, because the fallback
+  hides the cause); a new database rule shadowed an older test's expected constraint; and the outbox tables
+  cannot be emptied between tests, so a count must be scoped to the test's own lines.
+
+### Verified on 2026-11-13
+
+- **Tests:** inventory **214**, procurement **524**, catalog **468**, the gateway **207**, all with 0 failures
+  (each run on the final code). Not run: a `clean install` of every module.
+- **Live stack**, the four changed images rebuilt from the final code, started on the existing development
+  databases: inventory's V7 removed **60** old uncosted rows and migrated to V9; the replay turned the four
+  earlier receipts into **8 lots (414 units)**, no count out of line, no dead letter. Smoke **28/28 on its first
+  attempt (108 s)**, including step 20e; **a check straight from the database** that for all six consignment lines
+  cost recognised + cost held equals the landed total to the ngwee; error goldens **29/29**; OpenAPI **PASS**
+  (the same 22 waived breaks and four new, reasoned ones); Postman **119** endpoints, its GET check PASS; the
+  product page live (`IN_STOCK`, `OUT_OF_STOCK`, and 30 views of an unreceived piece left the breaker closed).
+- **Memory:** inventory keeps 640 MiB. 486 MiB after the smoke test, 492 MiB after 122 write-offs on one variant
+  by four writers and a correction re-cutting all of them (about 6 s); heap 86 of 217 MiB.
+
+### Things to know
+
+- **Inventory V7 deletes every pre-existing stock row** (a count is in the log): they were uncosted seed stock
+  from the retired create endpoint. Only developer data exists; a go-live database starts empty.
+- **FIFO follows the order stock changes were recorded**, not the day they happened (a sale keyed late takes the
+  lot first in line when it is keyed, dated at its true day). Owner question Q2.
+- **Nothing in the sale path calls inventory yet** (Phase 7) and profit cannot be reported until finance
+  (Phase 10): `docs/MVP_PLAN.md` Phase 5's "What this phase hands on" lists what Phases 6, 7, 10 and 12 must do.
+- **A line's quantity or variant cannot be corrected after receipt** (goods price and costs can). Owner
+  question Q1; the other four (Q2 to Q5) are in the plan, each with a default, none blocking.
+- **A correction that arrives before its receipt** is applied as the first snapshot and leaves its reason
+  out of inventory's ledger (procurement keeps the revision history). Accepted.
+- **The smoke test leaves a received consignment, a sale, a write-off and a correction behind each run**
+  (the ledger is never edited); opening stock still cannot be received on a stack where a shipment has been.
+- **The stack's `oriah-web` still has the old Inventory seed form and generated types** until the frontend
+  stage; `docs/FRONTEND_WORK.md` (Phase 5) lists every screen and the break.
+
+### What is next
+
+Phase 6 (price and publish: the below-cost warning reads the held lots' unit costs from
+`GET /api/v1/admin/costs/lots?open=true`, and re-runs when a lot arrives or a correction changes one).
+
 ## CURRENT STATE — 2026-11-12 (MVP_PLAN Phase 4 complete: purchase orders, consignments, landed cost, receiving and invoices)
 
 Phase 4 of `MVP_PLAN.md` is built, tested, reviewed twice, verified on the live stack and

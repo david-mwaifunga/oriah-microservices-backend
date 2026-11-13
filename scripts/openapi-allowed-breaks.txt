@@ -365,3 +365,40 @@ order|property became required|PlaceOrderRequest.quoteDigest
 
 payment|schema property type changed|AdminPaymentResponse.status: {"enum": ["PENDING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"} -> {"enum": ["PENDING", "CHARGING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"}
 payment|schema property type changed|PaymentIntentResponse.status: {"enum": ["PENDING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"} -> {"enum": ["PENDING", "CHARGING", "SUCCEEDED", "FAILED", "REFUNDED"], "type": "string"}
+
+# ---------------------------------------------------------------------------
+# Phase 5: stock enters only through a received consignment, and a sale is no
+# longer a person's button.
+# ---------------------------------------------------------------------------
+#
+# Four breaks in inventory's admin surface, all one decision (MVP_PLAN Phase 5,
+# CLIENT_DECISIONS 1.1 "every stock change is a reason-coded movement"):
+#
+#   * POST /api/v1/admin/inventory (create a stock count with an on-hand) and
+#     POST /api/v1/admin/inventory/{variantId}/restock (top it up) are RETIRED,
+#     with InventoryCreateRequest. Both added stock with no cost and no reason, so
+#     they broke "one count, not three" (on_hand must equal the cost lots) and the
+#     profit the shop exists to track. Stock now arrives only through a received
+#     consignment (consignment.received), which carries what every unit cost.
+#     There is no additive version of this: keeping either endpoint keeps the hole.
+#
+#   * POST /api/v1/admin/inventory/{variantId}/confirm changes its request from
+#     {qty} to {qty, saleLineId, occurredAt?}. Confirm is now the sale: it drains
+#     the oldest cost lots and records the cost, and the sale line id is what makes
+#     a retry safe (the same line again takes nothing). The gateway does not route
+#     it for anyone: it is the order system's call (Phase 7), made on inventory's
+#     own port, so no browser can be sending the old body.
+#
+# oriah-web was checked (docs/FRONTEND_WORK.md, Phase 5): its Inventory page's
+# seed form (seedInventory, POST /v1/admin/inventory with onHand) calls a retired
+# path, and /restock is hard-coded in no spec (no Playwright spec seeds
+# inventory). Both are recorded there for the frontend stage, with the screens
+# that replace them (the Costs screen and the write-off screen). Nothing live
+# depends on any of the four: nothing is live until every phase is built.
+#
+# Reviewed and accepted 2026-11-13.
+
+inventory|operation removed|POST /api/v1/admin/inventory
+inventory|path removed|/api/v1/admin/inventory/{variantId}/restock
+inventory|requestBody schema changed|POST /api/v1/admin/inventory/{variantId}/confirm
+inventory|schema removed|InventoryCreateRequest

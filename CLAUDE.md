@@ -107,7 +107,7 @@ all of it in one place).
 >
 > ⛔ **Round 2 removed two things.** **Stock locations are OUT** — it reversed
 > Q31 (*"No we don't do that"*), so `inventory`'s `variant_id` primary key stays,
-> the reserve/release/confirm/restock API is not re-keyed, and stock locations
+> the reserve/release/confirm/restock API is not re-keyed (restock was retired in Phase 5: stock enters only through a received consignment), and stock locations
 > are not built (Phase 13's number now holds payment integrations). **And there is only ONE kind of hold**: the payment hold, **10 minutes**,
 > configurable — extended to at most 24 hours once a website customer submits a
 > payment reference and until staff confirm it or reject a false claim —
@@ -189,6 +189,10 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    goes through one gate (an advisory lock), each gets a `received_at` later than the
    last even if the clock steps back, and **opening stock must be received before any
    shipment** (otherwise it would count as newer than a shipment it predates).
+   **Built in Phase 5:** FIFO is by `(received_at, line position, slice)`, and the ledger is
+   *conformed* to it after every change, so what each unit cost never depends on the order
+   events arrived in (`FifoConformer`; idempotent, property-tested). It follows the order stock
+   changes were *recorded*, not the day they happened (owner question Q2).
 5. **Two new services: `procurement` and `finance`.** Procurement owns
    suppliers, POs, consignments, cost lines and the allocator — *what we paid*.
    Finance owns expenses, the append-only business event ledger and the profit
@@ -197,10 +201,17 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    computes the landed unit cost and emits `consignment.received`; inventory
    owns the lot. This is load-bearing: the stock decrement and the lot drain
    must commit in **one local transaction**, or a sale can decrement stock
-   without draining a lot and silently corrupt COGS.
+   without draining a lot and silently corrupt COGS. **Built in Phase 5:** `cost_lot`
+   (one per unit-cost slice), `stock_action` + `stock_movement` (the append-only ledger,
+   one row per action and lot) and the view `live_movement`; after every change the code
+   checks that each lot's ledger adds up to its `qty_remaining`, the lots add up to
+   `on_hand`, and per consignment line cost recognised + cost held == landed total.
 7. **No late-cost subsystem.** Freight and duty are known before goods clear,
    so a lot is created with its final cost. Corrections use
-   **amend-with-reversal** against the append-only log.
+   **amend-with-reversal** against the append-only log. **Built in Phase 5:** a correction
+   of a received consignment is a new allocation *revision* (`POST .../amendments`) and a
+   `consignment.amended` per changed line; inventory closes the old lots and re-cuts every
+   sale, write-off, give-away and take-back that drew on them, each at its own date.
 8. **Own delivery is revenue, not a cost allocation.** Clients pay for it
    rather than put something expensive in a Yango. Fuel and driver time are
    separate period expenses.
@@ -239,8 +250,9 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 **13 domain services:** catalog, inventory, cart, checkout, order, payment,
 promotion, shipping, customer, review, search, notification, **procurement**
 (Phases 2 and 4: suppliers, purchase orders, consignments with the landed-cost
-allocator, receiving, and invoices; Flyway V1-V6). `checkout` and `shipping` are
-**stateless** and own no database.
+allocator, receiving, invoices, and corrections of a received consignment's cost; Flyway V1-V7;
+**inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads; Flyway V1-V9).
+`checkout` and `shipping` are **stateless** and own no database.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -253,8 +265,11 @@ inventory, search), `oriah.order` (order → notification), `oriah.payment`
 (payment's `payment.succeeded` / `payment.failed`; nothing reads it yet) and, since
 Phase 4, `oriah.procurement` (one **`consignment.received` per consignment line**,
 aggregate `consignment_line`, a full snapshot with the unit-cost slices dearer
-first; nothing reads it until Phase 5's inventory, which must apply it with
-`onceInOrder`). Three
+first, `linePosition` last) and, since Phase 5, **`consignment.amended`** (the next event of the same line:
+the same snapshot plus `revision`, `reason`, `amendedAt`; only for lines whose cost a
+correction changed). **Inventory consumes both, from the beginning, with `onceInOrder`; any
+NEW procurement event type must be declared by inventory (handles/ignores) before procurement
+emits it.** Three
 more serve the event log itself: `oriah.outbox.replay-requests` (a late
 consumer asks a producer to send its history again),
 `oriah.replay.<consumer>` (the answer, one topic per consumer) and the
@@ -378,7 +393,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b, 20c and 20d**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b, 20c, 20d and 20e**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, inventory,
 cart, checkout **quote then commit**, order transitions, Kafka-driven search
@@ -389,7 +404,10 @@ and returns a fingerprint of that price (`quoteDigest`); confirm must send the
 fingerprint back. The script works the digest out on its own in PowerShell and
 it must match the server's, and a quantity changed after preview is refused
 live. **There are no promo steps** — checkout refuses promotion codes until
-Phase 7 (Phase 0, `0e24a94`).
+Phase 7 (Phase 0, `0e24a94`). **Step 2 seeds no stock** (since Phase 5 stock only arrives through a
+received consignment): step 20d's consignment is the stock and step 20e follows it — lots, a sale made
+on inventory's own port 8082 (the gateway does not route it), a write-off and its take-back, a corrected
+courier bill and the re-costed stock.
 
 ### Keycloak
 
@@ -471,7 +489,8 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
 ## Known live defects — do not treat these as working
 
 - **Nothing in the sale path touches stock.** `inventory`'s
-  `reserve`/`release`/`confirm` are `INVENTORY_ADMIN`-only and
+  `reserve`/`release`/`confirm` are `INVENTORY_ADMIN`-only (`confirm` is the cost-draining
+  sale since Phase 5, and the gateway does not route it) and
   `CheckoutService` never calls them, so a paid sale decrements nothing and
   the shop can oversell without limit. Critical for one-of-a-kind pieces.
   Phase 7 of `docs/MVP_PLAN.md`.
@@ -499,13 +518,19 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   still race.
 - **`Review.orderId` is client-supplied** and never verified against
   order-service, so "verified purchase" is self-asserted.
-- **Landed cost is now worked out and recorded, but nothing consumes it yet**
-  (Phase 4, 2026-11-12): receiving a consignment records the allocation (revision 1,
-  append-only) and publishes one `consignment.received` per line, but inventory has
-  no cost lots until Phase 5, so cost of goods and profit still cannot be computed.
-  **The smoke test leaves received consignments behind on purpose** (history is never
-  deleted), and **opening stock can no longer be received on a stack where a shipment
-  has been**: a go-live database starts empty.
+- ✅ **Landed cost is now consumed (Phase 5, 2026-11-13).** Receiving a consignment records
+  the allocation (revision 1, append-only) and publishes one `consignment.received` per
+  line; **inventory turns each into cost lots, and every sale, write-off and give-away
+  drains the oldest lots and records the cost** in an append-only ledger. A correction of a
+  received consignment's cost is a new revision (`POST .../amendments`) that re-costs
+  the stock and everything that already left it. **Profit still cannot be reported**: the
+  sale path does not call inventory until Phase 7 and finance is Phase 10. Stock enters
+  **only** through a received consignment (no create or top-up endpoint), selling stock is
+  not routed by the gateway, and `GET /api/v1/admin/inventory/reconciliation` says whether
+  every count equals its lots. **The smoke test leaves received consignments, sales and
+  write-offs behind on purpose** (history is never deleted), and **opening stock can no
+  longer be received on a stack where a shipment has been**: a go-live database starts
+  empty.
 - ✅ **FIXED in Phase 3 (2026-11-12): `search` indexed unpublished products.**
   Each row now carries `listed` (V4): true only for a product that is `ACTIVE`
   **and** `SELLABLE`, decided afresh by every snapshot, and the search query

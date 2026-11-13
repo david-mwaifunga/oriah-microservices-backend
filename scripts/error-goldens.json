@@ -1,4 +1,25 @@
 {
+  "400-amendment-without-reason": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Request validation failed",
+      "instance": "/api/v1/admin/procurement/consignments/<uuid>/amendments",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "POST /api/v1/admin/procurement/consignments/<uuid>/amendments  (as admin)",
+    "status": 400
+  },
   "400-consignment-without-orders": {
     "contentType": "application/problem+json",
     "problem": {
@@ -166,6 +187,25 @@
     "request": "GET /api/v1/admin/products  (as user)",
     "status": 403
   },
+  "403-cost-lots-as-plain-user": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/costs/lots",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/costs/lots  (as user)",
+    "status": 403
+  },
   "403-procurement-consignments-as-plain-user": {
     "contentType": "application/problem+json",
     "problem": {
@@ -203,6 +243,64 @@
     },
     "request": "GET /api/v1/admin/procurement/suppliers  (as user)",
     "status": 403
+  },
+  "403-sale-keyed-through-the-gateway": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/inventory/<uuid>/confirm",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "POST /api/v1/admin/inventory/<uuid>/confirm  (as admin)",
+    "status": 403
+  },
+  "403-write-offs-as-plain-user": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/inventory/write-offs",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/inventory/write-offs  (as user)",
+    "status": 403
+  },
+  "404-amend-unknown-consignment": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Consignment not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/procurement/consignments/<uuid>/amendments",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/procurement/consignments/<uuid>/amendments  (as admin)",
+    "status": 404
   },
   "404-unknown-consignment": {
     "contentType": "application/problem+json",
@@ -362,6 +460,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/admin/procurement/suppliers/<uuid>  (as admin)",
+    "status": 404
+  },
+  "404-unknown-write-off": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Write-off not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/inventory/write-offs/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/inventory/write-offs/<uuid>  (as admin)",
     "status": 404
   },
   "404-unmapped-path-under-prefix": {

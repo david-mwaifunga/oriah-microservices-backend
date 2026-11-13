@@ -1481,6 +1481,120 @@
       "name": "inventory",
       "item": [
         {
+          "name": "The lots: what each slice of each received consignment line cost per unit, and how many are still held",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/costs/lots",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "costs",
+                "lots"
+              ],
+              "query": [
+                {
+                  "key": "variantId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "open",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "includeReplaced",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Oldest first, which is the order oldest-first selling draws in. Each lot carries the names it was received under."
+          }
+        },
+        {
+          "name": "The ledger: what every action (a receipt, a sale, a write-off, a give-away, a take-back, a correction) did to each lot, at the lot's cost",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/costs/movements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "costs",
+                "movements"
+              ],
+              "query": [
+                {
+                  "key": "variantId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "lotId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "actionId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "reason",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "In the order the rows were written. A row a correction reversed is no longer live, but stays on record; the cost released by a row is -qtyDelta x unitCost."
+          }
+        },
+        {
           "name": "All stock records, scarcest first, optionally only out-of-stock",
           "request": {
             "method": "GET",
@@ -1522,12 +1636,12 @@
           }
         },
         {
-          "name": "Create a stock record for a variant",
+          "name": "Check every stock count against its cost lots, and every lot against its ledger",
           "request": {
-            "method": "POST",
+            "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/inventory",
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/reconciliation",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1535,14 +1649,157 @@
                 "api",
                 "v1",
                 "admin",
-                "inventory"
+                "inventory",
+                "reconciliation"
+              ],
+              "query": [
+                {
+                  "key": "variantId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "One count, not three: on-hand must equal what the current lots hold. Counts only, no cost. A clean system reports no mismatches."
+          }
+        },
+        {
+          "name": "Write-offs and give-aways, newest first, each with what has come back and what is still out",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/write-offs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "write-offs"
+              ],
+              "query": [
+                {
+                  "key": "variantId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Write stock off, or give it away: the oldest lots, at their cost, released into the month it happened",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/write-offs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "write-offs"
               ],
               "query": [],
               "variable": []
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"onHand\": 1\n}",
+              "raw": "{\n  \"requestId\": \"00000000-0000-0000-0000-000000000000\",\n  \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"qty\": 1,\n  \"reason\": \"WRITE_OFF_LOST\",\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"note\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Only stock nobody has reserved can go. The same requestId with the same fields answers again (200) and takes nothing; the same requestId for anything else is a 409."
+          }
+        },
+        {
+          "name": "One write-off or give-away, with what has come back",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/write-offs/:actionId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "write-offs",
+                ":actionId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "actionId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Some of what was written off or given away comes back: to the lots it left, newest first, at the same cost",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/write-offs/:actionId/take-back",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "write-offs",
+                ":actionId",
+                "take-back"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "actionId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requestId\": \"00000000-0000-0000-0000-000000000000\",\n  \"qty\": 1,\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"note\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1553,7 +1810,7 @@
           }
         },
         {
-          "name": "Confirm reserved units as shipped",
+          "name": "Consume reserved units for a sale: the oldest cost lots are drained and the cost recorded",
           "request": {
             "method": "POST",
             "header": [],
@@ -1581,14 +1838,14 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"qty\": 1\n}",
+              "raw": "{\n  \"qty\": 1,\n  \"saleLineId\": \"00000000-0000-0000-0000-000000000000\",\n  \"occurredAt\": \"2026-11-08T10:00:00Z\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": ""
+            "description": "The sale line makes a retry safe: the same sale line with the same quantity answers again and takes nothing; a sale line already used for a different request is a 409. A paid sale is never refused for its date, only for being in the future. This is the order system's call, not a person's button: the gateway does not route it."
           }
         },
         {
@@ -1647,45 +1904,6 @@
                 "inventory",
                 ":variantId",
                 "reserve"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "variantId",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"qty\": 1\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": ""
-          }
-        },
-        {
-          "name": "Add units to on-hand stock",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/inventory/:variantId/restock",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "inventory",
-                ":variantId",
-                "restock"
               ],
               "query": [],
               "variable": [
@@ -3544,6 +3762,44 @@
                 ":id",
                 "allocation"
               ],
+              "query": [
+                {
+                  "key": "revision",
+                  "value": "",
+                  "disabled": true,
+                  "description": "A received consignment's earlier revision (1 is the receipt itself); left out, the revision that stands"
+                }
+              ],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "The courier's charge and every other cost shared out to the unit, to the ngwee. For a draft it is worked out afresh and changes nothing; when it cannot be costed yet, ready is false and problems says what to fix. For a received consignment it is the allocation recorded when the goods landed (revision, receivedAt), never recomputed; after a correction it is the latest revision unless one is asked for."
+          }
+        },
+        {
+          "name": "Correct the cost of a received consignment",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/amendments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "amendments"
+              ],
               "query": [],
               "variable": [
                 {
@@ -3553,7 +3809,16 @@
                 }
               ]
             },
-            "description": "The courier's charge and every other cost shared out to the unit, to the ngwee. For a draft it is worked out afresh and changes nothing; when it cannot be costed yet, ready is false and problems says what to fix. For a received consignment it is the allocation recorded when the goods landed (revision, receivedAt), never recomputed."
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fromRevision\": 1,\n  \"reason\": \"The courier's bill was K600, not K6,000\",\n  \"estimated\": \"\",\n  \"costLines\": \"\",\n  \"goodsLines\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The courier's bill was keyed wrong, a duty assessment arrived late, a supplier's total was mistyped. Nothing already recorded is edited: this adds a NEW revision of the allocation with the reason and who made it, worked out from the revision before it by the rules a draft is costed by, and announces (consignment.amended) each line whose cost it changed so inventory re-lays the new unit costs over the stock. Send fromRevision, the revision you were looking at, so two people never overwrite each other. costLines, when present, replaces the whole cost list; goodsLines corrects the goods totals it names. All or nothing."
           }
         },
         {
@@ -3897,6 +4162,37 @@
               }
             },
             "description": "Works out what each unit cost and records it for good (revision 1), makes the consignment and every order in it RECEIVED, and announces each line (consignment.received) for inventory. All or nothing. From now on nothing about it changes. The opening stock must be received before any shipment. Send the version it was decided from."
+          }
+        },
+        {
+          "name": "Every revision of a received consignment's allocation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/procurement/consignments/:id/revisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "procurement",
+                "consignments",
+                ":id",
+                "revisions"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Oldest first: the receipt (1) and each correction with who made it, why, the totals and the lines whose cost it changed. A draft has none."
           }
         },
         {

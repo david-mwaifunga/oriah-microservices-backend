@@ -5,8 +5,10 @@
 # Drives the full backend through the gateway. Each step is listed under the
 # banner it prints, so a failure on screen can be found here by its number:
 #   [1/20] JWTs. maya (staff, job role OWNER) and alice (a customer) sign in.
-#   [2/20] Admin: product + inventory. maya creates a product, gives it a
-#      variant priced K100, publishes it and stocks 10. (No promo code: codes
+#   [2/20] Admin: product + variant. maya creates a product, gives it a
+#      variant priced K100 and publishes it. It is NOT stocked here: since
+#      Phase 5 stock only arrives through a received consignment (step 20d),
+#      and step 20e follows it. (No promo code: codes
 #      are retired until Phase 7's scoped promotions, and refused with 422 --
 #      steps 5b and 6b check that.)
 #   [3/20] Customer: profile + address. alice self-provisions a profile and a
@@ -131,6 +133,15 @@
 #      cursor past them and both on the oriah.procurement topic; a stopped supplier takes
 #      no new order; alice 403, anonymous 401. It leaves a received consignment behind
 #      on purpose (history is never deleted); see the comment at the step.
+#   [20e/20] Cost-bearing stock (Phase 5), following the 7 rings and 200 boxes that
+#      20d received: one cost lot per slice (ring 4 x K1,528.99 + 3 x K1,528.98) read by
+#      maya, 403 to alice, 401 with no token; a sale keyed through the gateway 403, the
+#      order system's own call costing the oldest lot at K1,528.99 FIFO, the same sale
+#      line again taking nothing; a write-off 201 (alice 403, a retry 200) taken back;
+#      the courier's bill corrected from K6,000 to K600 (revision 2, K21,100.00; stale
+#      409, nothing-changed 400, alice 403) and the stock re-costed over what is left
+#      (ring 5 x K1,502.90 + 1 x K1,502.89, the sold unit K1,502.90), every count
+#      agreeing with its lots. It leaves rows behind too (the ledger is never edited).
 #   [20c/20] Procurement: suppliers. maya creates a supplier under a random
 #      name (so the step can re-run on a live stack): 201, the Location a
 #      relative path, the name stored as sent and the country upper-cased
@@ -401,7 +412,7 @@ Write-Host "[1/20] JWTs..." -ForegroundColor Cyan
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 
-Write-Host "[2/20] Admin: product + inventory..." -ForegroundColor Cyan
+Write-Host "[2/20] Admin: product + variant (priced, published)..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products" `
     -Headers @{ Authorization="Bearer $maya" } `
@@ -436,12 +447,11 @@ Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/admin/products/$productId/publish" `
     -Headers @{ Authorization="Bearer $maya" } | Out-Null
 
-Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/admin/inventory" `
-    -Headers @{ Authorization="Bearer $maya" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$variantId; onHand=10 }) | Out-Null
-Write-Host "    product=$productId, variant=$variantId, published, inventory=10" -ForegroundColor Gray
+# NO STOCK IS SEEDED HERE. Since Phase 5 there is no endpoint that creates or tops up a stock count
+# (POST /admin/inventory and .../restock are retired): stock arrives only through a received
+# consignment, which carries what each unit cost. This variant is stocked by step 20d (7 rings), and
+# step 20e then follows that stock: lots, a sale, a write-off, a correction of the courier's bill.
+Write-Host "    product=$productId, variant=$variantId, published (stock comes from a received consignment, step 20d)" -ForegroundColor Gray
 
 Write-Host "[3/20] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
@@ -2209,6 +2219,183 @@ if ($procFailures.Count -gt 0) {
     exit 1
 }
 Write-Host "    two orders placed 201 (PO- references, a relative Location), an unknown variant 400 naming the line, a supplier with an order not deletable 409; a consignment from both orders 201 (C- reference, goods K20,500.00) with its orders frozen 409; a bank charge refused 400 naming the field, the courier's K6,000.00 keyed; the preview is the worked example to the ngwee (ring 4 x K1,528.99 + 3 x K1,528.98, box 110 x K78.99 + 90 x K78.98); a courier invoice stored (fingerprint, type, relative Location), downloaded byte for byte as a nosniff attachment, the same file again 409, a program named .pdf 400; received 200 (consignment and both orders RECEIVED, revision 1 recorded, a second receive 409, a late cost change 409); two consignment.received rows in the outbox and on the oriah.procurement topic; a stopped supplier takes no new order 409; alice 403 and anonymous 401" -ForegroundColor Gray
+
+Write-Host "[20e/20] Cost-bearing stock (Phase 5): lots, a sale, a write-off, a corrected courier bill..." -ForegroundColor Cyan
+# Follows the 7 rings and 200 boxes that step 20d received, through inventory, live and through the
+# gateway (a sale is the one call made on inventory's own port: the gateway does not route it).
+# Inventory learns of the receipt from Kafka, so every read of its answer is a short poll.
+#
+#   1. the stock arrives: 7 rings and 200 boxes on hand, one cost lot per slice
+#      (ring 4 x K1,528.99 + 3 x K1,528.98), found by maya (COST_VIEWER) and refused to alice 403 and
+#      to a request with no token 401;
+#   2. a sale cannot be keyed from the gateway (403 for everyone); the order system's call, made on
+#      inventory's own port, takes the OLDEST lot and costs the unit K1,528.99, and the same sale
+#      line again takes nothing;
+#   3. a write-off (STOCK_WRITE_OFF: maya yes, alice 403) costs the next unit K1,528.99; a retry is
+#      the same write-off; it is taken back and the stock is whole again;
+#   4. the courier's bill was K600, not K6,000: a correction made from revision 1 is 201 (revision 2,
+#      the consignment at K21,100.00), a stale one is 409, one that changes nothing 400, alice 403;
+#      inventory re-lays the new unit costs over the stock (ring 6 x K1,502.90 + 1 x K1,502.89, so the
+#      one sold now cost K1,502.90 and 5 + 1 remain; box 171 x K52.90 + 29 x K52.89), with no
+#      mismatch between any count and its lots.
+# Like 20d, this leaves rows behind (a sale, a write-off, a revision): the ledger is never edited.
+$maya  = Get-Jwt "maya"
+$alice = Get-Jwt "alice"
+$mayaH  = @{ Authorization = "Bearer $maya" }
+$aliceH = @{ Authorization = "Bearer $alice" }
+$costFailures = @()
+
+# Re-reads an answer until it is what is wanted (inventory learns of things from Kafka), for at most $Seconds.
+function Wait-Until([scriptblock]$Probe, [int]$Seconds) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ($true) {
+        $answer = & $Probe
+        if ($answer) { return $answer }
+        if ((Get-Date) -gt $deadline) { return $null }
+        Start-Sleep -Seconds 2
+    }
+}
+# "on_hand:reserved" of a variant from inventory's own database, or "" while it has no row.
+function Get-StockCounts($Variant) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-inventory", "psql", "-U", "inventory", "-d", "inventory", "-t", "-A", "-F", ":", "-c",
+        "SELECT on_hand, reserved FROM inventory WHERE variant_id = '$Variant'")
+    return (@($rows | Where-Object { $_ -match "^\d+:\d+$" }) -join "").Trim()
+}
+# The open lots of a variant, oldest slice first.
+function Get-OpenLots($Variant) {
+    $reply = Invoke-Supplier "GET" "http://localhost:8080/api/v1/admin/costs/lots?variantId=$Variant&open=true" $mayaH $null
+    if ($reply.Status -ne 200 -or $null -eq $reply.Json) { return @() }
+    return @($reply.Json.content | Sort-Object { [int]$_.slicePosition })
+}
+function Lots-Say($Lots, [string[]]$Wanted) {
+    # $Wanted is "remaining@cost" per lot, e.g. "4@1528.99".
+    if (@($Lots).Count -ne $Wanted.Count) { return $false }
+    for ($i = 0; $i -lt $Wanted.Count; $i++) {
+        $qty, $cost = $Wanted[$i] -split "@"
+        if ([int]$Lots[$i].qtyRemaining -ne [int]$qty -or -not (Same-Money $Lots[$i].unitCost $cost)) { return $false }
+    }
+    return $true
+}
+function Describe-Lots($Lots) {
+    return (@($Lots | ForEach-Object { "$($_.qtyRemaining)@$($_.unitCost)" }) -join " + ")
+}
+
+try {
+    if (-not $cid -or -not $received -or -not $boxVariantId) { throw "step 20d left no received consignment to follow" }
+    $costBase = "http://localhost:8080/api/v1/admin"
+    $inventoryOwn = "http://localhost:8082/api/v1/admin/inventory"
+    $ringVariant = $variantId
+    $ringLineId = "$($received.Json.lines[0].id)"
+
+    # --- 1. the stock arrives, with its cost -------------------------------------------------
+    $arrived = Wait-Until { if ((Get-StockCounts $ringVariant) -ceq "7:0" -and (Get-StockCounts $boxVariantId) -ceq "200:0") { "yes" } } 120
+    if (-not $arrived) {
+        throw "inventory holds ring '$(Get-StockCounts $ringVariant)' and box '$(Get-StockCounts $boxVariantId)' (on hand:reserved) after 120 s, expected 7:0 and 200:0: the receipt was not applied"
+    }
+    $ringLots = Get-OpenLots $ringVariant
+    $boxLots = Get-OpenLots $boxVariantId
+    if (-not (Lots-Say $ringLots @("4@1528.99", "3@1528.98"))) { $costFailures += "the ring's open lots are [$(Describe-Lots $ringLots)], expected 4@1528.99 + 3@1528.98" }
+    if (-not (Lots-Say $boxLots @("110@78.99", "90@78.98"))) { $costFailures += "the box's open lots are [$(Describe-Lots $boxLots)], expected 110@78.99 + 90@78.98" }
+    if ($ringLots.Count -gt 0 -and "$($ringLots[0].consignmentReference)" -cne "$($received.Json.reference)") {
+        $costFailures += "the ring lot names consignment '$($ringLots[0].consignmentReference)', expected '$($received.Json.reference)'"
+    }
+    $aliceLots = Invoke-Supplier "GET" "$costBase/costs/lots?variantId=$ringVariant" $aliceH $null
+    $anonLots = Invoke-Supplier "GET" "$costBase/costs/lots?variantId=$ringVariant" $null $null
+    if ($aliceLots.Status -ne 403) { $costFailures += "alice (no COST_VIEWER) reading the cost lots gave $($aliceLots.Status), expected 403" }
+    if ($anonLots.Status -ne 401) { $costFailures += "the cost lots with no token gave $($anonLots.Status), expected 401" }
+
+    # --- 2. a sale: never a person's button; the oldest lot is drained and costed --------------
+    $byHand = Invoke-Supplier "POST" "$costBase/inventory/$ringVariant/confirm" $mayaH @{ qty = 1; saleLineId = [guid]::NewGuid().ToString() }
+    if ($byHand.Status -ne 403) { $costFailures += "selling stock through the gateway gave $($byHand.Status), expected 403: nobody keys a sale by hand" }
+    $reserve = Invoke-Supplier "POST" "$costBase/inventory/$ringVariant/reserve" $mayaH @{ qty = 1 }
+    if ($reserve.Status -ne 200) { throw "reserving one ring gave $($reserve.Status), expected 200: $($reserve.Json.detail)" }
+    $saleLine = [guid]::NewGuid().ToString()
+    $sale = Invoke-Supplier "POST" "$inventoryOwn/$ringVariant/confirm" $mayaH @{ qty = 1; saleLineId = $saleLine }
+    if ($sale.Status -ne 200 -or [int]$sale.Json.onHand -ne 6) {
+        $costFailures += "the sale gave $($sale.Status) with on hand '$($sale.Json.onHand)', expected 200 and 6"
+    }
+    $saleAgain = Invoke-Supplier "POST" "$inventoryOwn/$ringVariant/confirm" $mayaH @{ qty = 1; saleLineId = $saleLine }
+    if ($saleAgain.Status -ne 200 -or [int]$saleAgain.Json.onHand -ne 6) {
+        $costFailures += "the same sale line again gave $($saleAgain.Status) with on hand '$($saleAgain.Json.onHand)', expected 200 and nothing taken (6)"
+    }
+    $saleRows = Invoke-Supplier "GET" "$costBase/costs/movements?variantId=$ringVariant&reason=SALE" $mayaH $null
+    $saleMoves = @($saleRows.Json.content | Where-Object { $_.live -eq $true })
+    if ($saleRows.Status -ne 200 -or $saleMoves.Count -ne 1 -or [int]$saleMoves[0].qtyDelta -ne -1 -or -not (Same-Money $saleMoves[0].unitCost "1528.99") -or
+        "$($saleMoves[0].costMethod)" -cne "FIFO") {
+        $costFailures += "the sale's ledger rows are [$((@($saleMoves | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost) $($_.costMethod)" })) -join ' | ')] (status $($saleRows.Status)), expected one live row -1@1528.99 FIFO"
+    }
+
+    # --- 3. a write-off, a retry, and taking it back ------------------------------------------
+    $writeOffId = [guid]::NewGuid().ToString()
+    $writeOff = Invoke-Supplier "POST" "$costBase/inventory/write-offs" $mayaH @{ requestId = $writeOffId; variantId = $ringVariant; qty = 1; reason = "WRITE_OFF_BROKEN"; note = "smoke: dropped" }
+    if ($writeOff.Status -ne 201 -or [int]$writeOff.Json.onHand -ne 5) {
+        $costFailures += "the write-off gave $($writeOff.Status) with on hand '$($writeOff.Json.onHand)', expected 201 and 5"
+    }
+    $writeOffAgain = Invoke-Supplier "POST" "$costBase/inventory/write-offs" $mayaH @{ requestId = $writeOffId; variantId = $ringVariant; qty = 1; reason = "WRITE_OFF_BROKEN"; note = "smoke: dropped" }
+    if ($writeOffAgain.Status -ne 200 -or [int]$writeOffAgain.Json.onHand -ne 5) {
+        $costFailures += "the same write-off again gave $($writeOffAgain.Status) with on hand '$($writeOffAgain.Json.onHand)', expected 200 and nothing more taken (5)"
+    }
+    $aliceWriteOff = Invoke-Supplier "POST" "$costBase/inventory/write-offs" $aliceH @{ requestId = [guid]::NewGuid().ToString(); variantId = $ringVariant; qty = 1; reason = "WRITE_OFF_LOST" }
+    if ($aliceWriteOff.Status -ne 403) { $costFailures += "alice (no STOCK_WRITE_OFF) writing stock off gave $($aliceWriteOff.Status), expected 403" }
+    $writeOffRows = Invoke-Supplier "GET" "$costBase/costs/movements?variantId=$ringVariant&reason=WRITE_OFF_BROKEN" $mayaH $null
+    $writeOffMoves = @($writeOffRows.Json.content | Where-Object { $_.live -eq $true })
+    if ($writeOffRows.Status -ne 200 -or $writeOffMoves.Count -ne 1 -or -not (Same-Money $writeOffMoves[0].unitCost "1528.99")) {
+        $costFailures += "the write-off's ledger rows are [$((@($writeOffMoves | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost)" })) -join ' | ')] (status $($writeOffRows.Status)), expected one live row at 1528.99"
+    }
+    $takeBack = Invoke-Supplier "POST" "$costBase/inventory/write-offs/$($writeOff.Json.actionId)/take-back" $mayaH @{ requestId = [guid]::NewGuid().ToString(); qty = 1; note = "smoke: found it" }
+    if ($takeBack.Status -ne 201 -or [int]$takeBack.Json.onHand -ne 6) {
+        $costFailures += "taking the write-off back gave $($takeBack.Status) with on hand '$($takeBack.Json.onHand)', expected 201 and 6"
+    }
+    $reconBefore = Invoke-Supplier "GET" "$costBase/inventory/reconciliation?variantId=$ringVariant" $mayaH $null
+    if ($reconBefore.Status -ne 200 -or @($reconBefore.Json.countMismatches).Count -ne 0 -or @($reconBefore.Json.ledgerMismatches).Count -ne 0) {
+        $costFailures += "the reconciliation before the correction found a mismatch (status $($reconBefore.Status)): $($reconBefore.Json | ConvertTo-Json -Depth 4 -Compress)"
+    }
+
+    # --- 4. the courier's bill was K600, not K6,000 --------------------------------------------
+    $procBase = "http://localhost:8080/api/v1/admin/procurement"
+    $fix = @{ fromRevision = 1; reason = "smoke: the courier's bill was K600, not K6,000"; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 600.00 }) }
+    $aliceFix = Invoke-Supplier "POST" "$procBase/consignments/$cid/amendments" $aliceH $fix
+    if ($aliceFix.Status -ne 403) { $costFailures += "alice correcting a consignment's cost gave $($aliceFix.Status), expected 403" }
+    $nothing = Invoke-Supplier "POST" "$procBase/consignments/$cid/amendments" $mayaH @{ fromRevision = 1; reason = "smoke: nothing changes"; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 6000.00 }) }
+    if ($nothing.Status -ne 400) { $costFailures += "a correction that changes nothing gave $($nothing.Status), expected 400" }
+    $amended = Invoke-Supplier "POST" "$procBase/consignments/$cid/amendments" $mayaH $fix
+    if ($amended.Status -ne 201 -or [int]$amended.Json.revision -ne 2 -or -not (Same-Money $amended.Json.allocation.landedTotal "21100.00") -or @($amended.Json.recutLines).Count -ne 2) {
+        throw "correcting the courier's bill gave $($amended.Status), revision '$($amended.Json.revision)', landed '$($amended.Json.allocation.landedTotal)', $(@($amended.Json.recutLines).Count) lines changed: expected 201, 2, 21100.00 and 2: $($amended.Json.detail)"
+    }
+    $stale = Invoke-Supplier "POST" "$procBase/consignments/$cid/amendments" $mayaH $fix
+    if ($stale.Status -ne 409) { $costFailures += "a second correction made from revision 1 gave $($stale.Status), expected 409 (revision 2 exists)" }
+    $revisions = Invoke-Supplier "GET" "$procBase/consignments/$cid/revisions" $mayaH $null
+    $revisionRows = @($revisions.Json)
+    if ($revisions.Status -ne 200 -or $revisionRows.Count -ne 2 -or [int]$revisionRows[1].revision -ne 2 -or "$($revisionRows[1].reason)" -cne $fix.reason -or
+        -not (Same-Money $revisionRows[0].landedTotal "26500.00") -or -not (Same-Money $revisionRows[1].landedTotal "21100.00")) {
+        $costFailures += "the revisions read [$($revisions.Json | ConvertTo-Json -Depth 4 -Compress)] (status $($revisions.Status)), expected the receipt at 26500.00 and the correction at 21100.00 with its reason"
+    }
+
+    # inventory re-lays the new unit costs over the stock (one ring was sold, so 5 + 1 remain)
+    $recut = Wait-Until { $lots = Get-OpenLots $ringVariant; if (Lots-Say $lots @("5@1502.90", "1@1502.89")) { $lots } } 120
+    if (-not $recut) { $costFailures += "after the correction the ring's open lots are [$(Describe-Lots (Get-OpenLots $ringVariant))] after 120 s, expected 5@1502.90 + 1@1502.89" }
+    $boxRecut = Wait-Until { $lots = Get-OpenLots $boxVariantId; if (Lots-Say $lots @("171@52.90", "29@52.89")) { $lots } } 120
+    if (-not $boxRecut) { $costFailures += "after the correction the box's open lots are [$(Describe-Lots (Get-OpenLots $boxVariantId))] after 120 s, expected 171@52.90 + 29@52.89" }
+    $saleNow = Invoke-Supplier "GET" "$costBase/costs/movements?variantId=$ringVariant&reason=SALE" $mayaH $null
+    $saleNowLive = @($saleNow.Json.content | Where-Object { $_.live -eq $true })
+    if ($saleNow.Status -ne 200 -or $saleNowLive.Count -ne 1 -or -not (Same-Money $saleNowLive[0].unitCost "1502.90")) {
+        $costFailures += "after the correction the sale's live ledger rows are [$((@($saleNowLive | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost) $($_.role)" })) -join ' | ')], expected one live row costing 1502.90: the sold unit is re-costed, its old row stays on record"
+    }
+    $reconAfter = Invoke-Supplier "GET" "$costBase/inventory/reconciliation" $mayaH $null
+    if ($reconAfter.Status -ne 200 -or @($reconAfter.Json.countMismatches).Count -ne 0 -or @($reconAfter.Json.ledgerMismatches).Count -ne 0) {
+        $costFailures += "the reconciliation after the correction found a mismatch (status $($reconAfter.Status)): $($reconAfter.Json | ConvertTo-Json -Depth 4 -Compress)"
+    }
+}
+catch {
+    $costFailures += "the step stopped early: $($_.Exception.Message)"
+}
+
+if ($costFailures.Count -gt 0) {
+    $costFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "cost-bearing stock regressed on $($costFailures.Count) check(s)"
+    exit 1
+}
+Write-Host "    7 rings and 200 boxes on hand with a lot per slice (ring 4 x K1,528.99 + 3 x K1,528.98), the lots 403 to alice and 401 with no token; a sale keyed through the gateway 403, the order system's own call 200 costing K1,528.99 FIFO and the same sale line again taking nothing; a write-off 201 at K1,528.99 (alice 403, a retry 200), taken back; the courier's bill corrected to K600 (alice 403, nothing-changed 400, stale 409, revision 2 at K21,100.00 with its reason) and the stock re-costed (ring 5 x K1,502.90 + 1 x K1,502.89 remaining, the sold unit now K1,502.90, box 171 x K52.90 + 29 x K52.89), every count agreeing with its lots" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green
