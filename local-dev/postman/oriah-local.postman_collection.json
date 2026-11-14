@@ -3357,6 +3357,45 @@
           }
         },
         {
+          "name": "Make delivery free on an order that is still waiting for a payment reference",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/delivery-waiver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "delivery-waiver"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Delivery becomes K0.00 and the order's total falls by exactly what delivery would have cost; who, why, when and how much are kept on the order (delivery revenue given up, never goods revenue). Only an order that is CREATED with its pieces held and no money being applied: once a payment is claimed, being applied or made, the total cannot move. Staff must then confirm the new, lower total. One waiver per order."
+          }
+        },
+        {
           "name": "Drive an allowed FSM transition",
           "request": {
             "method": "POST",

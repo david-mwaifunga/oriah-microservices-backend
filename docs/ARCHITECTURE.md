@@ -16,7 +16,9 @@ the answer is probably here.
 >
 > **The code is the source of truth.** For current scope and current defects
 > read `../CLAUDE.md`; for current state read `PROGRESS.md` from the top
-> (it is newest-first).
+> (it is newest-first; its newest entry still dates from Phase 6 until slice 7.6
+> adds Phase 7's, so for the sale read "The sale" below and the "Built in
+> Phase 7" block of `../CLAUDE.md`).
 >
 > ⛔ `../../design/oriah-screens-meta.jsx` is **not** a source-of-truth spec.
 > It is a May 2026 wireframe: it names Vite (the app is Next.js 15) and lists
@@ -25,10 +27,380 @@ the answer is probably here.
 
 ---
 
+## The sale: hold the pieces, staff confirm the money, order settles it (Phase 7, 2026-11-14)
+
+Phase 7 of `MVP_PLAN.md` joined the sale to stock, cost, payment and delivery.
+It replaced a path where checkout charged a card, order marked itself paid and
+nothing in the sale touched stock, with one where **order owns the sale**. Each
+piece below says why. (The plan text under Phase 7 in `MVP_PLAN.md` was written
+before the build and differs in places: it says checkout reserves, that a gross
+different from the total is refused, that the card path becomes test-profile
+only, that nothing in the repository is `@Scheduled`, and it pins the version 1
+price fingerprint. Where it differs, this section and the binding design
+`../.codex-tmp/plan-p7-FINAL.md` win.) Commits are in `oriah-api`: inventory
+`6680f22`, shipping `ce54c2c`, promotion `12583e5`, catalog `4234661` (and
+`86c321a`, the below-cost check on the net price), payment `1b513a2`, order
+`378feba` (review fixes `d6233d9`), checkout `19a2609` (review fixes `8c4536e`),
+shared quote `656ae15`, notification `d78aa9f` and `50e9a9c`, shipping's retired
+`/rates` `d9d8e45`; the gateway rules `85978a1`, `0d78562`, `299e2d6`, `e95d8cd`
+and `ec5994b` (the table under "Who may do what"); the API waivers `c8abd6b` and
+the error goldens and Postman collection `9fdced1`. Phase 7's whole
+list (after Phase 6's closing commit `b3fbfe5`) is
+`git log --oneline b3fbfe5..HEAD`. `smoke-test.ps1` proves it live through the
+gateway (`2063b68`):
+steps 2b to 6j set a sale up (stock, a default box, a price, a promotion),
+preview and place it, make the claim, have staff confirm the money, see the order
+`PAID` with its pieces sold from the oldest lot and dated to the day the money
+arrived, and then try a wrong amount (held), a rejected claim, the limits, who
+may do what, a box swap and a delivered order bound to its town and payer; steps
+10, 20 and 20b check the notifications, the money-path authorization and
+payment's rules.
+The requirements are `CLIENT_DECISIONS.md` §1.3 (payments confirmed by staff),
+§1.4 (delivery per town, scoped promotions, the 24-hour hold once a payment is
+claimed) and §8.5 (that hold, early rejection of a false claim, money that
+arrives late or for another amount); §6 rules out any other kind of hold.
+
+### Placing an order holds the pieces and touches no money
+
+**Decision:** an order is a *hold*: the pieces are set aside for the shopper
+for a short time while they pay outside the system, by mobile money or bank
+transfer. Checkout checks that any delivery address is the shopper's own, prices
+the bag, checks the quote (see "Quote, then commit" below) and asks order to
+place it. It has no card, no payment intent and nothing to reconcile.
+**A 200 from `POST /api/v1/checkout/confirm` means placed and held, not paid**:
+`orderStatus` is `CREATED` and `holdExpiresAt` says when the hold lapses. Order
+does the work, in this order:
+
+1. It checks, with the shopper's own token, that the delivery address is one of
+   theirs (none is needed for `SELF_COLLECT`). Someone else's is a 400 and
+   nothing is written.
+2. It prices every line itself at catalog (list price, discount per piece,
+   promotion) and the delivery at shipping, and answers **409 `pricing-changed`**
+   unless its own fingerprint equals the shopper's.
+3. It writes the order with status `CREATED` and hold state `PENDING`. (The hold
+   state is a second field beside the status: `PENDING`, `HELD`, `RELEASED` or
+   `CONSUMED`.) Nothing is announced yet.
+4. It asks inventory for **one reservation for the whole order**, all or
+   nothing, one box per piece: the product's default box (Phase 6). A shortfall
+   is **409 `insufficient-stock`** and names every short line (`shortages`, each
+   marked as goods or as a box). A product with no default box, one not for sale,
+   or one inventory has not yet heard of from the catalogue is refused too
+   (409 `no-default-box`, `not-a-sellable-product`, `product-state-not-received`).
+5. It sets the hold state to `HELD` and publishes `order.created`.
+
+**A placement that stops half done is cleaned up.** If inventory never answers,
+or order stops between steps 3 and 5, the row stays `PENDING` and was never
+announced. A repeat with the same key finishes that same placement. Otherwise
+order's hold job (every 15 s) deletes the row once it is older than
+`oriah.sales.pending-grace` (one minute) and gives its hold back; a hold it
+cannot give back lapses by itself in 10 minutes.
+
+**The clock.** A hold lasts 10 minutes (`oriah.sales.hold`). Once the shopper
+says how they paid it is stretched, to at most 24 hours counted from when the
+hold was made, not from the claim (`oriah.sales.payment-submitted-hold`: a claim
+three hours after placing leaves about 21 hours). When it runs out, inventory's sweeper
+(every 30 s) gives the pieces back and announces `reservation.expired`, and
+order marks the order `EXPIRED`; if that announcement is lost, order's own
+hold job ends the order two minutes after the hold ran out
+(`oriah.sales.lapse-grace`).
+
+**Limits and repeats.** A shopper may hold at most **3 live orders and 20
+pieces** (`oriah.sales.max-live-orders`, `oriah.sales.max-held-pieces`); the next
+placement is **409 `hold-limit-reached`**. A repeat must never place twice
+(*idempotent*: doing it again changes nothing): the same `Idempotency-Key`
+answers the same order, and so does the same live bag under a new key. A reused
+key for another bag is **409 `idempotency-key-reused`**, the same bag to another
+delivery address is **409 `live-order-has-another-address`**, and cancelling an
+order whose placement is still being written is **409 `placement-in-progress`**.
+Checkout clears the bag the moment the order is placed, so a retry after a lost
+reply may find it empty (**409 `cart-empty`**): the shopper's orders show what
+was placed. A repeated key whose order has meanwhile lapsed or been cancelled is
+**409 `order-no-longer-held`** (it carries `orderId` and `orderStatus`; the bag
+is kept, and a new key places a new order). A key longer than 128 characters is
+a 400 at checkout. Shopper-facing refusals keep their own names when checkout
+passes them on.
+
+**Why order reserves, not checkout.** Only order holds the machine login (the
+`oriah-admin` client's credentials); checkout is a service with no token of its
+own and stays one. Inventory's reservation, sale, release and box-swap
+endpoints (`/api/v1/admin/inventory/reservations/**` and `/box-swaps/**`) are
+the order system's acts, never a person's: the gateway denies them to everyone
+(`denyAll`), and inventory itself accepts only the machine identity (its token's
+`preferred_username` is `service-account-oriah-admin`) on top of
+`INVENTORY_ADMIN`, so an `OWNER` token sent straight to inventory is 403. The
+old per-variant `reserve`, `release` and `confirm` are gone: a bare counter with
+no owner and no clock cannot be given back exactly once, and a person who
+could call `confirm` could sell a piece with no money behind it.
+
+### Money reaches an order only when a person confirms it
+
+**Decision:** payment records what staff say has arrived. It never reads an
+order: it *announces* the money (publishes an event that other services read),
+and order decides what the money does. Order knows the total and the state,
+payment does not, and a wrong amount must still be recorded, never turned away.
+
+- **The shopper's claim is not money.** `POST /api/v1/orders/{id}/payment-claim`
+  takes `method` (`MTN`, `AIRTEL`, `ZAMTEL` or `BANK_TRANSFER`, never cash) and
+  the provider's `reference`. Order stretches the hold, moves the order to
+  `PAYMENT_SUBMITTED` and publishes `order.payment_submitted`; payment keeps its
+  own copy of the claim. One claim per order: the same reference again is the
+  same claim, a different one is **409 `payment-already-submitted`**. A claim is
+  taken only while the hold still runs: after it lapses the claim is **409
+  `hold-expired`** (place the order again), and an order that is not waiting for
+  payment is `order-not-awaiting-payment` or `order-not-held`. The claim is
+  written first, the hold is stretched at inventory afterwards, and
+  `order.payment_submitted` goes out only once the stretch is done; if inventory
+  does not answer, order's hold job (every 15 s) asks again.
+- **Money for an order whose hold lapsed, or whose shopper never gave a
+  reference** (cash at the counter, say) is confirmed by staff all the same.
+  They find the order at `GET /api/v1/admin/orders/awaiting-payment?orderId=`,
+  which answers for one order that is `CREATED`, `PAYMENT_SUBMITTED` or `EXPIRED`
+  (and not being settled); a lapsed order is paid only if its pieces are still
+  free, otherwise the money is held for the customer.
+- **Staff confirm money that arrived.** `POST /api/v1/admin/payments/confirmations`
+  (`SALES_AGENT`) records the `orderId` it pays (required: staff name the order,
+  payment never reads it), `method` (`CASH`, `MTN`, `AIRTEL`, `ZAMTEL`,
+  `BANK_TRANSFER`), `reference` (cash needs none), `gross` (what the customer
+  sent), `fee` (what the provider kept), an optional `currency` (three letters),
+  and **the date the money arrived** (`arrivedAt`, default now, never in the
+  future). Net, what reached Oriah, is gross less fee, worked out by payment and
+  never accepted. The `Idempotency-Key` header is required: the same key with the
+  same request answers the same confirmation (200, not a second record), the same
+  key with a different request is **409 `idempotency-key-reused`**. A (method,
+  reference) pair confirms money once (**409 `reference-already-used`**). Money
+  that arrived more than 72 hours ago needs `BACKDATE_SALE` (403 without it) and
+  a `backdateReason` (400 without one): the sale keeps its true date, the window
+  decides only who may key it late (`CLIENT_DECISIONS.md` §8.2).
+- **Staff can say a claim is false.** Staff list claims at
+  `GET /api/v1/admin/payments/claims` (optionally `?orderId=`; each says whether
+  money is already recorded for it, `moneyRecorded`, and whether its reference
+  is used for another order, `usedElsewhere`: the evidence for a rejection; the
+  awaiting-payment row carries no claim id). `POST /api/v1/admin/payments/claims/{claimId}/reject`
+  (`SALES_AGENT`) is bound to that claim, so the order, method and reference are
+  copied from it and never typed. The proof is `NOT_FOUND_AT_PROVIDER` (with
+  written evidence) or `REFERENCE_ALREADY_USED` (payment checks that itself). The
+  order expires and its pieces are free again. The refusals are 404
+  `claim-not-found` and 409 `already-rejected`, `reference-not-used-elsewhere`
+  and `money-recorded-for-claim` (a claim whose reference already holds money for
+  that same order is not false).
+- **A mistake is voided, never edited.** `POST .../confirmations/{id}/void` (a
+  reason of at least 10 characters) frees the reference, closes any money held
+  for that confirmation and announces `payment.voided`. A confirmation that has
+  already paid a sale cannot be voided (409 `confirmation-settled`): undoing a
+  paid sale is a refund, Phase 12. A second void is 409 `already-voided`, an
+  unknown id 404 `confirmation-not-found`. One race remains: a void accepted
+  while order is already settling. If the pieces were not yet sold, the money is
+  never applied; if they were (or the reply that said so was lost), they cannot
+  be un-sold, so the sale stays `PAID`, payment marks the confirmation
+  `SETTLED_AFTER_VOID` and both services log an ERROR. Nothing alerts staff
+  before Phase 11, and someone must put the books right.
+- **Money that cannot pay a sale is held for the customer.** If the amount is
+  wrong, the order is cancelled, already paid or unknown, or its piece was sold
+  to someone else meanwhile, order answers `order.payment_unsettled` and payment
+  records *held money* with the reason (`WRONG_AMOUNT`, `ORDER_CANCELLED`,
+  `ALREADY_PAID`, `ORDER_UNKNOWN`, `PIECE_SOLD`). It is owed back to the
+  customer, never revenue. `GET /api/v1/admin/payments/held-money` lists it
+  (`PAYMENT_ADMIN`, which only `OWNER` holds); repaying it is Phase 12.
+- **The card path is switched off.** The endpoints that create, read and confirm
+  a payment intent (`/api/v1/payments/intents/**`), the fake card gateway and the
+  reconciler exist only while `oriah.payment.card.enabled` is true; it defaults
+  to false, the stack never sets it, and nothing calls them (they answer 404, and
+  are out of the published API). Two older read-only admin reads of the intent
+  history stay, `GET /api/v1/admin/payments` and `GET /api/v1/admin/payments/summary`
+  (`PAYMENT_ADMIN`): they are not behind the switch, and with the card path off
+  they show only intents that already existed (none on a new database).
+  ZynlePay in Phase 13 gives the path a caller again: a card charge will then
+  become a confirmation.
+
+**Why records and answers, not calls.** Because payment never calls order for a
+staff confirmation, there is no payment-to-order read to secure and no new
+role. The cost is that money can sit with no answer if an event is lost, so
+payment is the *detector*: each confirmation carries an outcome (pending, settled
+or held), and payment announces a still-pending one again after five minutes
+(`oriah.sales.settlement-stuck-after`, with growing gaps, ten times in all).
+`GET /api/v1/admin/payments/confirmations/pending` lists what is still
+unanswered. **Open owner question:** a shopper who types the reference wrongly
+cannot correct it (a second, different claim is 409); staff reject the claim,
+the order expires, and the shopper places it again.
+
+### Order settles the money: the settlement saga
+
+A *saga* is one job spread over several services, each step committed on its own,
+written down so that a crash can pick it up again. Staff confirming money starts
+this one, and it is asynchronous: an order turns `PAID` a moment after the
+confirmation, not inside it.
+
+1. **Receive.** Order hears `payment.confirmed` and, under the order's row lock,
+   decides. A confirmation id it has already seen changes no state: order only
+   repeats its earlier answer (`order.paid` marked `republished: true`, or
+   `order.payment_unsettled`), and nothing while that settlement is still in
+   flight. A wrong
+   currency or a gross that is not the total is *unsettled* (`WRONG_AMOUNT`); the
+   order keeps its state and hold. A cancelled order, an order already paid or
+   settling, and an order it does not know (or one placed before Phase 7, which
+   holds nothing) are unsettled too. Otherwise (`CREATED`, `PAYMENT_SUBMITTED` or
+   `EXPIRED`, exact total) it records that the sale is being settled.
+2. **Sell.** With no database transaction open, order asks inventory to consume
+   the reservation: every line is sold, dated to the day the money arrived, goods
+   and boxes in **one commit**, each draining the oldest cost lot first (FIFO,
+   first in first out), so the sale carries what that piece really cost.
+   If the hold had lapsed, order gives the old reservation back and takes a new
+   one under a new id, then consumes that. A piece sold to someone else meanwhile
+   is unsettled (`PIECE_SOLD`) and the order expires. Only a missing **box**
+   blocks (`BLOCKED_BOX`, retried and shown to staff naming the box): a paid ring
+   that is still free is never refunded for want of a box. Failed calls back off
+   from 15 s to 5 minutes.
+3. **Finish.** The order becomes `PAID` (never `PAID` to `PAID`), gets a receipt
+   number `OR-000123` from a sequence (ours, never a tax invoice) and publishes
+   `order.paid` version 2. The receipt number is stored on the order's own row and
+   published in that event, and **no order endpoint returns it yet**: a screen
+   that shows a receipt needs it added. Every unsettled outcome except `VOIDED`
+   (money payment itself voided, which payment already knows) is announced as
+   `order.payment_unsettled`.
+
+While a settlement is in flight the order's own actions (a shopper cancel, a
+staff move) are **409 `payment-being-applied`**, and a lapse or a rejection
+arriving meanwhile is deferred and applied only if the settlement ends unsettled.
+Money voided before the order had seen it leaves a tombstone (`VOIDED`), so its
+late announcement can never pay a sale.
+`GET /api/v1/admin/orders/settlements` (`SALES_AGENT`) shows what is in flight
+(stuck after five minutes), waiting for a box, unsettled or voided.
+
+**Order states.** `CREATED`, `PAYMENT_SUBMITTED`, `PAID`, `FULFILLED`, `SHIPPED`,
+`DELIVERED`, `CANCELLED`, `EXPIRED`. (Whether the pieces are held is the separate
+hold state of step 3 above, so an order being placed is already `CREATED`.)
+`CREATED` goes to `PAYMENT_SUBMITTED` (the
+claim), `EXPIRED`, `CANCELLED` or `PAID`; `PAYMENT_SUBMITTED` goes to `PAID` or
+`EXPIRED`; `EXPIRED` can still go to `PAID`, by money only, if its pieces are
+free (a shopper cannot claim a payment for it: staff find it at
+`awaiting-payment?orderId=`, see above); `PAID` goes on through `FULFILLED`, `SHIPPED`, `DELIVERED`. **Only money
+makes an order `PAID`**: no person asks for `PAID`, `EXPIRED` or
+`PAYMENT_SUBMITTED` through the admin transition. There is no `PAID` to
+`CANCELLED`. The staff lists are served by order, not payment, because order
+owns the data: `GET /api/v1/admin/orders/awaiting-payment` (shoppers who say
+they have paid, soonest to lapse first) and `/settlements` are `SALES_AGENT`'s,
+matched at the gateway before the `ORDER_ADMIN` prefix.
+
+**Box swap.** A box changed after payment is `POST /api/v1/admin/orders/{id}/box-swaps`
+(`ORDER_ADMIN`): inventory reverses the old box's sale and sells the new one,
+both dated to the sale, and order keeps an append-only record (V7). It is for a
+`PAID` order not yet fulfilled; `amendmentId` makes a retry safe.
+
+**Delivery waiver.** Free delivery on one order is `POST /api/v1/admin/orders/{id}/delivery-waiver`
+(`DELIVERY_WAIVER`, the owner): only while the order waits for a payment reference
+(`CREATED` and held), so a total the shopper may already have paid never moves. It
+sets delivery to K0.00 and recomputes the total (the V4 check, total = goods +
+delivery - discount, still holds), and keeps who, why, when and the amount given
+up on the order row (V8; the four columns are set together or not at all, by a
+CHECK). Staff then confirm the lower amount; the old one is the ordinary
+`WRONG_AMOUNT`. Checkout, when it gets such an order back for a repeated confirm,
+accepts a total lower than its quote by exactly the amount waived. No event is
+published (nobody downstream needs one yet); `order.paid` does not carry the
+amount, which finance (Phase 10) adds as a compatible field. The shopper's own
+reads carry the amount saved; who and why are the staff views' alone.
+
+### Delivery is priced per town (shipping)
+
+Shipping now owns a database (Postgres on 5445, plain JDBC, Flyway V1 and V2):
+Zambia's ten provinces, a list of main towns and the options a parcel can go by
+(Oriah's own delivery `OWN_DELIVERY`, Yango, Platinum, EMS; `SELF_COLLECT` is
+always offered at K0.00) are seeded; admin adds towns and options (bus companies)
+and switches them on and off. **A delivery price is never seeded.** It is data an
+admin drafts and *publishes* per town and option; a published price is history
+and is replaced, never edited, and a stale edit is **409 `stale-version`**. Until
+it is published a draft can be edited (`PUT .../prices/{priceId}`) or discarded
+(`DELETE`); after that both are **409 `price-published`**, and a second draft for
+a town and option is **409 `draft-exists`**. A price may carry a delivery-time
+range (`etaDaysMin`, `etaDaysMax`). A
+town and option are offered only when both are on and a price is published, so a
+town nobody has priced is **409 `town-not-offered`**, never "outside the delivery
+area" (an unknown town is 404 `town-not-found`). Prices are read at
+`GET /api/v1/shipping/towns`, quoted at
+`POST /api/v1/shipping/quote` (the quote names the `priceId` it used), and
+managed under `/api/v1/admin/shipping/**` (`SHIPPING_ADMIN`; adding a town or
+option that exists is 409 `town-exists` or `option-exists`). Who pays the
+courier is `ORIAH_COLLECTS` (in the total) or `RECIPIENT_PAYS` (paid on arrival,
+**K0.00 on the order**; **409 `payer-not-offered`** if the price does not allow
+it). The free-delivery threshold (off until set) is judged on the goods **after
+discount**: `SHIPPING_ADMIN` sets it, changes it or switches it off at
+`PUT /api/v1/admin/shipping/settings` (with the version they saw, or 409
+`stale-version`, and an optional reason), every change is kept at
+`GET .../settings/changes`, and a quote that was waived says so
+(`freeByThreshold`) and keeps the fare it waived as `listAmount`. Shipping is the only place the delivery amount is worked out; order
+and checkout never compute it. If its database is away it answers **503
+`shipping-unavailable`**, never free delivery. The old zone and country quote
+`POST /api/v1/shipping/rates` is retired (404).
+
+### A promotion is a rule applied by itself, per piece (promotion, catalog)
+
+A promotion covers one product, one category (with the categories beneath it)
+or the whole shop, for Lusaka calendar days (the last day included), as a
+Kwacha amount or a percentage off **each piece**. Nobody types a code: there is
+no apply, redeem or disable-by-code. Promotion keeps only the definitions, and
+never edits one: an edit is a *replacement* that stops the old promotion and names
+it, so any past moment has exactly one answer. **Catalog decides which promotion
+covers which piece**, because it owns the prices and the category tree: one
+promotion applies to a piece, whichever takes most off (they never add up; a tie
+goes to the earlier start, then the lower id), a percentage is rounded half up to
+the ngwee (a hundredth of a Kwacha), and nothing takes more than the piece costs. If promotion cannot be
+asked, catalog answers 503 rather than quote the full price during a promotion.
+Catalog's public price answer (`POST /api/v1/variants/pricing`) now carries
+`discountPerPiece`, `promotionId` and `netUnitPrice`; `unitPrice` stays the list
+price. A staff-only twin, `POST /api/v1/admin/variants/pricing-as-of`
+(`SALES_AGENT`, not routed by the gateway), prices a past sale with the price and
+promotion in force at that moment. The below-cost check of Phase 6 now judges
+what the customer pays (`netPrice`). Admin: `/api/v1/admin/promotions`
+(`CATALOG_ADMIN`; the realm has no promotion capability).
+
+### Events
+
+Inventory now **produces** to `oriah.inventory` (`reservation.consumed` with
+what each line cost, `reservation.expired`, `box.swapped`) and **consumes**
+`oriah.order` (a cancelled or expired order gives back the reservation *its event
+names*, never another of the same order). Order consumes `oriah.payment`
+(`payment.confirmed`, `payment.rejected`, `payment.voided`) and `oriah.inventory`
+(`reservation.expired`). Payment consumes `oriah.order` (`order.payment_submitted`,
+`order.paid` version 2, `order.payment_unsettled`). `order.paid` version 2 keeps
+the version 1 fields and adds the confirmation id, receipt number, the date the
+money arrived, the method, gross, fee and net, the delivery town and payer, and
+per line its id, product, discount per piece, promotion and box; its envelope date
+is the day the money arrived. A repeated confirmation makes order publish its
+answer again: `order.paid` then carries `republished: true` (only that event has
+the field), notification sends no second email, and a finance reader must dedupe
+by confirmation id. What each side **produces**: order writes
+`order.created`, `order.payment_submitted`, `order.paid` (version 2),
+`order.payment_unsettled`, `order.cancelled` and `order.expired` (these two carry
+the `reservationId`), then `order.fulfilled`, `order.shipped` and
+`order.delivered`, all on `oriah.order`; payment writes `payment.confirmed`,
+`payment.voided` and `payment.held` (each about a confirmation) and
+`payment.rejected` (about a claim) on `oriah.payment`. Notification declared
+order's new types before order emitted them: it sends the shopper a message for
+created, paid (versions 1 and 2), fulfilled, shipped, delivered, cancelled and
+expired orders, and declares `order.payment_submitted` and
+`order.payment_unsettled` only to ignore them, since they are facts for staff.
+Every consumer built on the
+shared event log (`shared/oriah-events`) declares the types and versions it
+handles or ignores and throws on anything undeclared, so a declaration lands
+*before* a producer emits a new type.
+
+**Not built here, on purpose:** the account-less phone order, paper sales priced
+at their true date (staff's `pricing-as-of` door is built and has no caller) and
+the staff screen to change a box before payment (Phase 9); finance reading the
+sale and money events (`reservation.consumed`, `box.swapped`, `order.paid`
+version 2, `payment.confirmed`, `payment.voided`, `payment.held`) and posting
+each confirmation's fee once (Phase 10); alerts to staff for a stuck settlement,
+for a payment-submitted hold about to lapse (a client requirement, `CLIENT_DECISIONS.md`
+§8.5) and for a piece falling below cost (Phase 11; until then the staff lists
+are the only warning: `awaiting-payment`, soonest to lapse first, `settlements`,
+and the below-cost list), repaying held money and correcting a paid confirmation
+(Phase 12), card charges as confirmations (Phase 13).
+
+---
+
 ## Who may do what, and quote-then-commit (Phase 0, 2026-11-09)
 
 Three decisions from Phase 0 of `MVP_PLAN.md`. Commits are in `oriah-api`
-unless marked `oriah-web`.
+unless marked `oriah-web`. Updated 2026-11-14 for Phase 7 where it says so.
 
 ### Capability roles and job roles (`2e43b92`)
 
@@ -60,8 +432,10 @@ role's capabilities exactly, so a wrong bundle fails a test.
 **Who holds what.** The committed realm carries **no person and no secret**.
 Its only user is the machine identity `service-account-oriah-admin`, holding
 exactly `USER` + `INVENTORY_ADMIN` — `USER` for order's delivery price (below),
-`INVENTORY_ADMIN` for checkout's stock reservations in Phase 7. It used to hold
-`USER` + all five admin roles; the old advice "reuse it, it holds
+`INVENTORY_ADMIN` for stock reservations (written as "checkout's stock
+reservations in Phase 7"; *superseded 2026-11-14: they are **order's** holds and
+sales, because checkout has no token of its own, see "The sale" above*). It used
+to hold `USER` + all five admin roles; the old advice "reuse it, it holds
 `ORDER_ADMIN`" is no longer true. People live elsewhere: in development, three
 test users in `keycloak/dev/oriah-users-0.json` (see "Realm + roles + user"
 below); in production, the owner's account, which
@@ -79,11 +453,14 @@ otherwise the broad rule would let the wrong person in:
 | Path | Capability |
 |---|---|
 | `/api/v1/admin/inventory/write-offs/**` | `STOCK_WRITE_OFF` |
+| `/api/v1/admin/inventory/reservations/**`, `/box-swaps/**` (Phase 7) | nobody: `denyAll`, the order system's calls |
 | `/api/v1/admin/orders/*/dispatch/**` | `FULFILMENT_AGENT` |
 | `/api/v1/admin/orders/*/delivery-waiver/**` | `DELIVERY_WAIVER` |
 | `/api/v1/admin/orders/late-recorded/**` | `BACKDATE_SALE` |
 | `/api/v1/admin/orders/recorded/**` | `SALES_AGENT` |
+| `/api/v1/admin/orders/awaiting-payment/**`, `/settlements/**` (Phase 7) | `SALES_AGENT` |
 | `/api/v1/admin/payments/confirmations/**` | `SALES_AGENT` |
+| `/api/v1/admin/payments/claims/**` (Phase 7) | `SALES_AGENT` |
 | `/api/v1/admin/procurement/**` | `PROCUREMENT_ADMIN` |
 | `/api/v1/admin/shipping/**` | `SHIPPING_ADMIN` |
 | `/api/v1/admin/finance/**` | `FINANCE_ADMIN` |
@@ -91,50 +468,116 @@ otherwise the broad rule would let the wrong person in:
 
 **Any other `/api/v1/admin/**` path is denied to everyone** (`denyAll`).
 
+*Updated 2026-11-14.* The table lists the Phase 0 rules plus the Phase 7 rows
+marked above, and is not every rule in `SecurityConfig.java` (Phase 5 and 6
+added more, e.g. `/api/v1/admin/pricing/**`, which needs `CATALOG_ADMIN` and
+`COST_VIEWER` both). Order matters because the first match wins: the
+`awaiting-payment`, `settlements` and `claims` rules come **before** the broad
+`ORDER_ADMIN` and `PAYMENT_ADMIN` prefixes, or sales staff would be shut out of
+them. What is left of `/api/v1/admin/payments/**` (the held-money list and the
+older intent list and summary) is `PAYMENT_ADMIN`. Also new in Phase 7: `/api/v1/admin/promotions/**` is
+`CATALOG_ADMIN`, and `/internal/**` is denied to everyone (catalog reads
+promotion's in-force list there with no token, service to service, and no route
+carries it).
+
 **Why:** a forgotten rule fails closed. A new admin endpoint without its rule
 is refused to everyone, not opened to every signed-in user. So each building
 phase adds four things together: the route, the service's own method-level
 check, an `adminPathsRejectNonAdmins` case and a job-role gateway test.
-`scripts/validate_roles.py` reports the 9 capabilities still waiting for their
-endpoints.
+`scripts/validate_roles.py` reports the capabilities still waiting for their
+endpoints (9 when this was written, 2026-11-09; the count shrinks as phases
+land, so run the script for today's list).
 
-**Not yet right:** the storefront's own admin gate is `endsWith("_ADMIN")`, so
-a `SALES` (`SALES_AGENT`) or `DISPATCH` (`FULFILMENT_AGENT`) person would be
-refused `/admin`, and a `BOOKKEEPER` gets in with no menu entry. To fix when
-their screens are built.
+**Not yet right (as of 2026-11-09):** the storefront's own admin gate is
+`endsWith("_ADMIN")`, so a `SALES` (`SALES_AGENT`) or `DISPATCH`
+(`FULFILMENT_AGENT`) person would be refused `/admin`, and a `BOOKKEEPER` gets
+in with no menu entry. To fix when their screens are built. *Superseded
+2026-11-14: the gate was fixed on 2026-11-09. It is `isStaff` (any of the 14
+capabilities) in `oriah-web/src/lib/auth/capabilities.ts`; the screens for the
+new roles are still to be built.*
 
-### Quote, then commit (`0e24a94`, `oriah-web` `ce503e6`)
+### Quote, then commit (`0e24a94`, `oriah-web` `ce503e6`; fingerprint `oriah-quote/2` since Phase 7, `656ae15`)
 
-**Decision:** the shopper agrees one price before anything is charged, and the
-order records that same price.
+**Decision:** the shopper agrees one price before anything is held, and the
+order records that same price. *Updated 2026-11-14: the fingerprint is now
+version 2 and nothing is charged any more (checkout holds pieces, it takes no
+money); points 1 to 3 are rewritten to what is true now, point 4 is superseded.*
 
-1. **Preview** (`POST /api/v1/checkout/preview`). Once the shopper has picked a
-   delivery option, it returns that option's charge, the total and a
-   `quoteDigest`. The digest is a SHA-256 fingerprint of the quote (lines,
-   currency, delivery option, delivery amount), made by `shared/oriah-quote`.
-   With no option picked there is no total and no digest.
-2. **Confirm** (`POST /api/v1/checkout/confirm`) must send back the
-   `deliveryOption` and the `quoteDigest`. Checkout works the quote out again.
-   If anything moved — a quantity, a price, a delivery price — it answers
-   **409 pricing-changed** before anything is ordered or charged. It charges
-   the option the shopper named (it used to take the cheapest).
-3. **Order checks too.** `PlaceOrderRequest` requires both. Order prices
-   delivery itself: its own Feign client calls shipping signed with **client
-   credentials** (`oriah-admin`, secret from `ORIAH_SERVICE_CLIENT_SECRET`) —
-   order signs in as itself, not with the shopper's token. That makes order the
-   machine identity's first caller. The client is kept apart from the payment
-   client, which passes on the shopper's own token. Order's Flyway **V4** stores
-   `shipping_amount`, `discount_amount` and `delivery_option`, and a CHECK holds
-   an order marked `totals_authoritative` to total = subtotal + shipping −
-   discount. Orders from before V4 have NULL there (unknown) and stay payable.
-4. **The payment is for the order's total.** Checkout creates the payment
+1. **Preview** (`POST /api/v1/checkout/preview`). The shopper names a delivery:
+   `deliveryOption`, plus `deliveryTownId` and optionally `payer` for any option
+   but `SELF_COLLECT` (which takes neither). With no option named, preview
+   returns the priced bag (each line's list price and its `discountPerPiece`)
+   with no total and no digest; what is on offer comes from shipping's
+   `GET /api/v1/shipping/towns`, not from preview. With a delivery named it
+   returns the delivery charge, the total and a `quoteDigest`: a SHA-256
+   fingerprint of the whole quote, made by `shared/oriah-quote`.
+2. **The fingerprint is canonical form `oriah-quote/2`** (`QuoteDigest.java`).
+   The text hashed is UTF-8, with the unit separator (`US`, U+001F) between
+   fields and the record separator (`RS`, U+001E) after each record, characters
+   that cannot occur in any value:
+
+   ```
+   "oriah-quote/2" RS
+   currency RS
+   deliveryOption US deliveryTownId US payer US n(deliveryAmount) RS
+   n(total) RS
+   each line, sorted by its own text:
+       variantId US quantity US n(unitPrice) US n(discountPerPiece) US promotionId RS
+   ```
+
+   `n(x)` is the amount with trailing zeros removed, so 100, 100.0 and 100.00 are
+   one price; an absent town, payer or promotion is the empty string. Version 2
+   binds what the shopper agreed to about delivery (the town it is priced for and
+   who pays the courier) and which promotion took the discount off each line, so
+   the same K10.00 off from another promotion is another quote. The version
+   prefix is part of the hashed text, so a version 1 digest can never be accepted
+   for a version 2 quote or the other way round. Two golden digests pin the
+   format in `QuoteDigestTest`, each computed independently with `sha256sum`, and
+   `smoke-test.ps1` works the same digest out on its own in PowerShell and checks
+   both:
+
+   | Quote | `quoteDigest` |
+   |---|---|
+   | one ring at K100.00, quantity 1, self-collect, ZMW | `aec7f876488fe689849ec2234df2c58030c1ff404eba191a25d1f3d561ee9f4a` |
+   | 2 rings at K100.00, K10.00 off each by a promotion, `OWN_DELIVERY` to a town at K125.00, `ORIAH_COLLECTS`; total K305.00 | `25873b34c8bfc2245067d652cfcd773db6a98afd2f7854f98b82569670eb5097` |
+
+   (The first quote's version 1 digest was `532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802c`;
+   a test keeps it from ever matching.) The quote's own rules: self-collect has no
+   town and no payer; a courier the recipient pays costs K0.00 on the order; a
+   promotion is named only on a line it takes something off.
+3. **Confirm** (`POST /api/v1/checkout/confirm`) must send back the same
+   delivery (`deliveryOption`, `deliveryTownId`, `payer`) and the `quoteDigest`,
+   plus `shippingAddressId` for every option but `SELF_COLLECT` (checkout and
+   order both check it is the shopper's own).
+   Checkout works the quote out again (every line priced at catalog with its
+   promotion; shipping's price for the town, on the goods after discount). If
+   anything moved (a quantity, a price, a promotion, the delivery or its price)
+   it answers **409 `pricing-changed`** before anything is placed. Then **order
+   checks too**: `PlaceOrderRequest` carries the same fields, and order prices
+   everything itself, computes its own digest and refuses with the same 409
+   before it writes or holds anything. Order prices delivery with its own Feign
+   client calling shipping signed with **client credentials** (`oriah-admin`,
+   secret from `ORIAH_SERVICE_CLIENT_SECRET`): order signs in as itself, not with
+   the shopper's token, which makes order the machine identity's first caller
+   (since Phase 7 order uses the same login to call inventory too). That client
+   is kept apart from order's customer client, which passes on the shopper's own
+   token. Order's Flyway **V4** stores `shipping_amount`, `discount_amount` and
+   `delivery_option`, and a CHECK holds an order marked `totals_authoritative`
+   to total = subtotal + shipping − discount. The smoke test's bag: 2 rings at
+   K100.00 is K200.00, K10.00 off each is K20.00, self-collect is K0.00:
+   **K180.00**.
+4. ~~**The payment is for the order's total.** Checkout creates the payment
    intent for the total order recorded, and only when it equals the agreed
    quote. `PaymentIntentVerifier` refuses an intent whose amount is not the
-   order's total — too little and too much alike.
+   order's total — too little and too much alike.~~ **Superseded 2026-11-14.**
+   There is no payment intent on the sale path: `PaymentIntentVerifier` and order's
+   `POST /api/v1/orders/{id}/pay` are removed, and the sale is paid only when
+   staff confirm the money (see "The sale" above). What replaced the check: the
+   money's gross must equal the order's total, or it is held for the customer.
 
 **Why two checks:** checkout and order are separate services. Checkout must not
-charge for a quote that moved; order must not record a total it did not work
-out itself. ✅ This **fixed** an old defect: the order's own total used to leave
+place a quote that moved; order must not record a total it did not work out
+itself. ✅ This **fixed** an old defect: the order's own total used to leave
 out the delivery and discount that checkout charged.
 
 ---
@@ -246,16 +689,21 @@ spring.cloud.config.server.git:
 - `../config-repo/` — sibling git repo. (Written when it held three YAMLs;
   it now holds `application.yaml` plus **one per domain service** — cart,
   catalog, checkout, customer, inventory, notification, order, payment,
-  promotion, review, search, shipping.)
+  procurement, promotion, review, search, shipping.)
 
 > ⚠️ A service's config is the **merge** of `config-repo/<service>.yaml`
 > over its local `application.yaml`. Some settings exist in only one of the
-> two, so check both before concluding a property is unset — e.g. shipping's
-> `tariff.currency` lives **only** in shipping's local `application.yaml`;
-> `config-repo/shipping.yaml` has no `tariff` entries at all. (There is no
-> rate card or zone list any more: since `4cb1385` shipping offers Zambia
-> only `SELF_COLLECT` at K0 until Phase 7, and `tariff.currency` is the only
-> key left under `tariff`.)
+> two, so check both before concluding a property is unset. *Updated
+> 2026-11-14:* the example that stood here, shipping's `tariff.currency`, is
+> gone with the rate card. Shipping has no `tariff` key in either file: since
+> Phase 7 (`d9d8e45`) delivery prices are rows in shipping's own database,
+> published by admin, not configuration. (Between `4cb1385` and Phase 7 shipping
+> offered Zambia only `SELF_COLLECT` at K0.) A current example: the Phase 7 sale
+> settings (`oriah.sales.*`: the 10-minute hold, which inventory defaults in its
+> code; order's `max-live-orders`, `max-held-pieces`, `payment-submitted-hold`
+> and the two jobs' delays, in order's own `application.yaml`; and
+> `settlement-stuck-after`, in both order's and payment's) live in the owning
+> service's own files, and nothing in `config-repo` sets any of them.
 
 The Config Server's URI points at the local clone via `file:///` for
 dev. Production points at `https://github.com/<org>/config-repo` (or
@@ -354,7 +802,8 @@ The existing synchronous catalog→inventory Feign call for availability
 > `catalog.product` with a full envelope (event id, aggregate type and id,
 > a per-aggregate `seq`, who and when); and the rows are kept, so a late
 > consumer can ask for a replay. Point 3 below, the "future polish", is
-> built. Order and payment publish the same way. The design is in
+> built. Order and payment publish the same way, and since Phase 7 so does
+> inventory (`oriah.inventory`, 2026-11-14). The design is in
 > `MVP_PLAN.md` (Phase 1) and `shared/oriah-events/README.md`.
 
 `ProductService.create()` publishes via Spring's in-process
@@ -464,6 +913,12 @@ Caveats from setup:
 full stack: two PostgreSQL instances (catalog + inventory), Keycloak, Config
 Server, Eureka, Gateway, catalog, and inventory.
 
+> *Scale, as of 2026-11-14:* the compose file now defines **40 containers**:
+> 13 Postgres (twelve domain databases and Keycloak's), Keycloak, Kafka, Redis,
+> SeaweedFS and its bucket-setup job, Prometheus, Grafana, Loki, Tempo, Alloy,
+> the 3 infra modules, the 13 domain services and `oriah-web`. The file is in
+> `docker-compose/default/` and the root `docker-compose.yml` includes it.
+
 Service images are built via **Spring Boot Buildpacks** (`mvnw spring-boot:build-image`),
 not hand-written Dockerfiles. Build with `./build-images.ps1`, run with
 `docker compose up -d`.
@@ -517,7 +972,7 @@ This is set per-service in `application-docker.yaml`, activated by
 > roles, and **no person** — the dev people are in a second file,
 > `keycloak/dev/oriah-users-0.json`, mounted beside it in the dev stack only
 > (each file on its own, read-only: a file inside a read-only folder mount
-> stops the container). See "Who may do what" at the top of this file.
+> stops the container). See "Who may do what" above.
 
 `keycloak/import/oriah-realm.json` is mounted into
 `/opt/keycloak/data/import/`. The container runs `start-dev --import-realm`,
@@ -527,11 +982,13 @@ grants enabled), and a test user `maya` with password `password` and both
 roles. ~~The service-account user for `oriah-admin` also carries both roles so
 machine-to-machine flows work.~~ **Now it holds exactly `USER` +
 `INVENTORY_ADMIN`** (`2e43b92`), and order is its first machine caller: it
-prices delivery by calling shipping with client credentials (`0e24a94`).
+prices delivery by calling shipping with client credentials (`0e24a94`). Since
+Phase 7 (2026-11-14) order also holds, sells and releases stock at inventory
+with the same login; no other service has the secret.
 
 Import only runs on first start (when the realm doesn't already exist). ~~To
 re-seed, `docker compose down -v` (drops the volume) then `up` again.~~
-**Wrong now — `down -v` wipes all twelve databases** (eleven when this was written). To apply a realm edit in
+**Wrong now — `down -v` wipes all thirteen databases** (eleven when this was written, twelve until Phase 7 gave shipping one). To apply a realm edit in
 dev, remove **only** Keycloak's volume and start again:
 
 ```powershell
@@ -584,8 +1041,9 @@ hardened. Dev favors debuggability.
 
 > The **pattern** below is current; the **rows** are the two-service era.
 > Every domain service follows the `catalog` row: its own Postgres +
-> eurekaserver + configserver + keycloak. `checkout` and `shipping` have no
-> Postgres row because they are stateless. Read
+> eurekaserver + configserver + keycloak. `checkout` has no Postgres row
+> because it is stateless (`shipping` was stateless too until Phase 7 gave it a
+> database, 2026-11-14; it now follows the `catalog` row). Read
 > `docker-compose/default/docker-compose.yml` for the real graph.
 
 The startup order matches the user's stated topology:
@@ -606,15 +1064,17 @@ finished initializing.
 ### Postgres: one instance per service, not one with many schemas
 
 > Written when there were two services. The principle held and scaled: the
-> stack now runs **eleven** Postgres containers for the domain services on host
-> ports **5433–5442** and **5444** — catalog, inventory, customer, cart,
+> stack now runs **twelve** Postgres containers for the domain services on host
+> ports **5433–5442**, **5444** and **5445** — catalog, inventory, customer, cart,
 > payment, order, promotion, notification, review, search and procurement
-> (5444, Phase 2) — plus Keycloak's own on 5443. (`checkout` and `shipping` are
-> stateless and own no database, which is why 13 services need only 11
-> instances.)
+> (5444, Phase 2) and shipping (5445, Phase 7) — plus Keycloak's own on 5443.
+> (Only `checkout` is stateless and owns no database, which is why 13 services
+> need only 12 instances. *Updated 2026-11-14: it read "eleven ... `checkout` and
+> `shipping` are stateless ... 11 instances" until shipping got its own database
+> in Phase 7, `ce54c2c`.*)
 >
 > ⚠️ Consequence worth stating plainly: **`docker compose down -v` destroys
-> all twelve databases** — these eleven *and* Keycloak's own
+> all thirteen databases** — these twelve *and* Keycloak's own
 > (`postgres-keycloak`). The realm imports only when it does not yet exist, so
 > to apply a realm edit remove **only** Keycloak's volume — steps under
 > "Realm import on first start" above. Never `down -v` for that.
@@ -670,8 +1130,7 @@ Admin console at `http://localhost:7080/`. Log in as `admin/admin`.
 >
 > - **Roles:** 14 capability roles plus `USER`, and five job roles
 >   (`OWNER`, `MANAGER`, `SALES`, `DISPATCH`, `BOOKKEEPER`) built from them —
->   the full list and who gets what is under "Who may do what" at the top of
->   this file
+>   the full list and who gets what is under "Who may do what" above
 > - **Users:** the realm file holds **one** — the machine account
 >   `service-account-oriah-admin`, holding exactly `USER` + `INVENTORY_ADMIN`.
 >   ~~already holds `ORDER_ADMIN` — **reuse it**~~ — **no longer true.** The

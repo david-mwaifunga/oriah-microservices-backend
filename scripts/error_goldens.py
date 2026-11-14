@@ -127,6 +127,13 @@ CASES = [
      {"townId": MISSING, "optionCode": "OWN_DELIVERY", "goodsTotal": 100.00, "currency": "ZMW"}),
     ("404-box-swap-on-an-unknown-order", "POST", "/api/v1/admin/orders/" + MISSING + "/box-swaps", "admin",
      {"lineId": MISSING, "replacementBoxVariantId": MISSING, "reason": "golden: no such order to change"}),
+    # Phase 7 (the delivery waiver): an order nobody has; a reason too short is refused before the order is read; a shopper does not hold DELIVERY_WAIVER.
+    ("404-delivery-waiver-on-an-unknown-order", "POST", "/api/v1/admin/orders/" + MISSING + "/delivery-waiver", "admin",
+     {"reason": "golden: no such order to waive"}),
+    ("400-delivery-waiver-reason-too-short", "POST", "/api/v1/admin/orders/" + MISSING + "/delivery-waiver", "admin",
+     {"reason": "no"}),
+    ("403-delivery-waiver-by-a-shopper", "POST", "/api/v1/admin/orders/" + MISSING + "/delivery-waiver", "user",
+     {"reason": "golden: a shopper may not waive delivery"}),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

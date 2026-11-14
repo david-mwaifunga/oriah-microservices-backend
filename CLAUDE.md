@@ -6,7 +6,8 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state.
+state (2026-11-14: Phase 7 complete; the **"Built in Phase 7 (Sell)"** block below is the
+contract-level detail).
 
 ---
 
@@ -54,11 +55,11 @@ Things that follow from this, and that older docs in this repo get wrong:
 ### MVP scope, as of 2026-11
 
 **In:** procurement + landed cost · packaging as a tracked cost of sale ·
-cost-bearing inventory that is actually reserved during checkout, **with
-reservations that expire** · delivery & fulfillment for Zambian couriers ·
+cost-bearing inventory that is actually reserved when an order is placed, **with
+reservations that expire** (built in Phase 7) · delivery & fulfillment for Zambian couriers ·
 expenses · profit reporting · phone orders · an append-only audit log for money
-and stock movements · **payments confirmed by staff (Phase 7) and through
-ZynlePay for mobile money and cards (Phase 13), both live at go-live** · **tax readiness — the core built
+and stock movements · **payments confirmed by staff (built in Phase 7) and through
+ZynlePay for mobile money and cards (Phase 13, not built), both live at go-live** · **tax readiness — the core built
 ready for ZRA Smart Invoice, and taxes entered by hand; Smart Invoice itself
 (Phase 14) comes after the MVP** · **returns, refunds and exchanges after
 dispatch** · **stock that moves without a sale** (write-offs, gifts, prizes —
@@ -92,6 +93,11 @@ all of it in one place).
 > never a tax invoice**; **every stock change is a reason-coded movement** from
 > one closed list born in Phase 5; and **a late-keyed sale is recorded at its
 > true date**, the 72-hour window deciding only who may key it (§8.2).
+> **Built in Phase 7:** a paid order carries a receipt number `OR-nnnnnn` (kept in the
+> order's own row and published in `order.paid` v2; **no order reply carries it yet**, see
+> **Open after Phase 7**); each order
+> line stores `discount_per_piece` and `promotion_id`; `order.paid` version 2 publishes the sale
+> with each line's discount, promotion and box, and the sale is dated to the day the money arrived.
 >
 > **The regime is turnover tax, not VAT, and it computes ZERO today.** Oriah
 > is far below the K800,000 VAT threshold; turnover tax has a **nil band of
@@ -107,16 +113,17 @@ all of it in one place).
 >
 > ⛔ **Round 2 removed two things.** **Stock locations are OUT** — it reversed
 > Q31 (*"No we don't do that"*), so `inventory`'s `variant_id` primary key stays,
-> the reserve/release/confirm/restock API is not re-keyed (restock was retired in Phase 5: stock enters only through a received consignment), and stock locations
+> the stock API is not re-keyed (restock was retired in Phase 5: stock enters only through a received consignment; the per-variant reserve/release/confirm
+> doors were retired in Phase 7, when a hold became **a reservation per order**), and stock locations
 > are not built (Phase 13's number now holds payment integrations). **And there is only ONE kind of hold**: the payment hold, **10 minutes**,
-> configurable — extended to at most 24 hours once a website customer submits a
+> configurable (`oriah.sales.hold`) — extended to at most 24 hours (`oriah.sales.payment-submitted-hold`) once a website customer submits a
 > payment reference and until staff confirm it or reject a false claim —
-> agreed in round 5 (`CLIENT_DECISIONS.md` §8.5). Holding an unpaid piece for a named customer is *not built* —
+> agreed in round 5 (`CLIENT_DECISIONS.md` §8.5) and **built in Phase 7**. Holding an unpaid piece for a named customer is *not built* —
 > *"that's not part of our model. we are a cash business."*
 >
 > **Round 4 (2026-11-08): payments are confirmed by staff** — method,
 > reference, gross, fee, the date the money arrived, who — and that is the only
-> way an order becomes paid, with ZynlePay (mobile money and cards) in Phase
+> way an order becomes paid (**built in Phase 7**), with ZynlePay (mobile money and cards) in Phase
 > 13 and tax after the MVP. **The full role set is built now, for hiring**:
 > capability roles the code checks, and job roles (`OWNER`, `MANAGER`, `SALES`,
 > `DISPATCH`, `BOOKKEEPER`) that people hold — `CLIENT_DECISIONS.md` §1.3.
@@ -126,7 +133,7 @@ all of it in one place).
 > towns seeded as reference data, more added by admin, prices published and
 > never seeded; **promotions cover one product, one category or the whole
 > shop**, apply by themselves and are worked out per piece, so no discount is
-> split across an order; a cancellation before dispatch refunds delivery —
+> split across an order (**both built in Phase 7**); a cancellation before dispatch refunds delivery —
 > `CLIENT_DECISIONS.md` §1.4, with four of our designs played back in §8.8.
 >
 > **How the work is done (owner, 2026-11-08):** one work package — nothing goes
@@ -193,6 +200,10 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    *conformed* to it after every change, so what each unit cost never depends on the order
    events arrived in (`FifoConformer`; idempotent, property-tested). It follows the order stock
    changes were *recorded*, not the day they happened (owner question Q2).
+   **Built in Phase 7:** a sale reaches FIFO only through the order saga: staff confirm the money,
+   `order` asks `inventory` to consume the order's reservation, and the oldest lots drain, each
+   line costed at the lot it left and **dated to the day the money arrived**, not the day it was
+   recorded.
 5. **Two new services: `procurement` and `finance`.** Procurement owns
    suppliers, POs, consignments, cost lines and the allocator — *what we paid*.
    Finance owns expenses, the append-only business event ledger and the profit
@@ -206,6 +217,10 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    one row per action and lot) and the view `live_movement`; after every change the code
    checks that each lot's ledger adds up to its `qty_remaining`, the lots add up to
    `on_hand`, and per consignment line cost recognised + cost held == landed total.
+   **Built in Phase 7:** consuming a reservation is that one local transaction for a sale: the
+   goods and their boxes drain their lots and the counts move together, each under the order's own
+   sale-line id (so a line can never be sold twice), and inventory publishes
+   `reservation.consumed` with what each line cost.
 7. **No late-cost subsystem.** Freight and duty are known before goods clear,
    so a lot is created with its final cost. Corrections use
    **amend-with-reversal** against the append-only log. **Built in Phase 5:** a correction
@@ -216,6 +231,11 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
    pricing endpoint (a variant is created **unpriced**), and a price below the **dearest held lot plus the
    default box's** needs a typed reason and the floor the person was shown (the warning never refuses); where
    every price stands is computed **from the stock held now at every read**, never stored.
+   **Built in Phase 7:** that floor is judged on what the customer pays, the list price less the
+   promotion in force (`netPrice`); a promotion needs no reason and is never blocked, it is warned
+   about and listed. A box changed after payment is the same amend-with-reversal:
+   `POST /api/v1/admin/orders/{id}/box-swaps` reverses the old box's sale and sells the new one,
+   both dated to the sale.
 8. **Own delivery is revenue, not a cost allocation.** Clients pay for it
    rather than put something expensive in a Yango. Fuel and driver time are
    separate period expenses.
@@ -231,7 +251,186 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 10. **Nothing transactional is seeded.** Reference data (product types,
     provinces and towns, courier list) may be. Products, variants, prices, suppliers, consignments,
     costs and stock are all created through admin endpoints — which is what
-    proves the admin surface works.
+    proves the admin surface works. **Built in Phase 7:** `shipping` seeds the ten
+    provinces, their main towns and four delivery options (`OWN_DELIVERY`, `YANGO`, `PLATINUM`,
+    `EMS`) and **no price**: a delivery price is the client's own figure, entered by admin.
+
+### Built in Phase 7 (Sell): the sale path, end to end
+
+Design: `../.codex-tmp/plan-p7-FINAL.md` (its amendments A to H win over `plan-p7-r1.md`); the
+plan text is `docs/MVP_PLAN.md` Phase 7. Slices 7.1 to 7.5 are code and the live smoke test passed
+on the full container stack on 2026-11-14 (`2063b68`); 7.6 is the documents, API goldens and
+Postman. **What "proved live" covers:** the smoke test passed on its first run, and **again on
+the final images** (order from `103926c`, checkout from `3beb85a`: the compose change that
+no longer makes checkout wait for payment, and the delivery waiver with its step 6j), with no ERROR line in order's or checkout's logs.
+The frontend is not changed (what it must now do is in `docs/FRONTEND_WORK.md`). **The
+sale, in order:** `checkout` prices the bag and `order` places it, which **holds** the pieces at
+`inventory` → the shopper pays outside the system and tells `order` how → **staff confirm the
+money** in `payment` → `order` settles it: the stock is sold and the order is PAID.
+
+- **`inventory` (7.1): a reservation per order.** `POST /api/v1/admin/inventory/reservations`
+  holds every line or none (a shortage is 409 `insufficient-stock` naming each short line),
+  idempotent by the reservation id the order system chose; `.../{id}/consume` sells it,
+  `.../release` lets it go, `.../extend` stretches it (to at most 24 hours) and a sweeper lapses an
+  unpaid hold (10 minutes by default). A box is one per piece, taken from the product's set-aside
+  first. These doors are for the order system only (see **Keycloak**) and the gateway does not
+  route them. Inventory now **produces** `reservation.consumed`, `reservation.expired` and
+  `box.swapped` and consumes `oriah.order`. The old per-variant reserve/release/confirm are gone.
+- **`shipping` (7.2): its own database.** Delivery is priced **per town and option** as
+  admin-managed, dated, switchable data; a price is a draft until published, then history (a
+  stale edit is 409 `stale-version`). Shoppers read `GET /api/v1/shipping/towns` and
+  `POST /api/v1/shipping/quote`: the payer is `ORIAH_COLLECTS` or `RECIPIENT_PAYS` (K0 on the
+  order, the recipient pays the courier), the free-delivery threshold is judged on the goods
+  **after** discount, and each quote names the published price it used. Admin:
+  `/api/v1/admin/shipping/**` (SHIPPING_ADMIN). A town or payer nobody priced is 409
+  `town-not-offered` / `payer-not-offered`; the database away is 503 `shipping-unavailable`.
+  `POST /api/v1/shipping/rates` and its zones and countries are **retired** (404).
+- **`promotion` + `catalog` (7.3): per-piece promotions.** A promotion covers one product, one
+  category (with its sub-categories) or the whole shop, for Lusaka calendar days, as a Kwacha
+  amount or a percentage off **each piece**; it applies by itself (no code, no apply or redeem)
+  and is never edited (one stop only; an edit is a replacement that names the old one). Admin:
+  `/api/v1/admin/promotions` (CATALOG_ADMIN: there is no PROMOTION_ADMIN role). Catalog asks
+  promotion's `GET /internal/promotions/in-force?at=` (anonymous, never routed) and works the
+  discount out; if promotion cannot answer, catalog answers 503, never the full price. The public
+  `POST /api/v1/variants/pricing` carries `discountPerPiece`, `promotionId` and `netUnitPrice`
+  (`unitPrice` stays the list price). **When two promotions cover one piece, only one applies:**
+  whichever takes the most off in Kwacha at that piece's price (they never add up; a tie goes to
+  the earlier start); a percentage is rounded half up to the ngwee, and a fixed amount never takes
+  a piece below K0.00. Only that pricing answer, the checkout preview and the order carry the
+  discount: the bag (cart) and the product reads show list prices.
+  `POST /api/v1/admin/variants/pricing-as-of` is the staff twin that prices a sale at its true past
+  date. **It is internal:** the gateway has no route for it and denies unmatched
+  `/api/v1/admin/**` paths, so a call through port 8080 is 403. It is meant for the order service,
+  which would reach it directly, forwarding the signed-in person's own token (`SALES_AGENT`), to
+  price a late-keyed sale; nothing in `order` calls it yet (phone and paper sales are Phase 9).
+- **`payment` (7.4): staff confirm money.** `POST /api/v1/admin/payments/confirmations`
+  (SALES_AGENT, a required `Idempotency-Key`) takes `orderId` (a confirmation names the order it
+  pays), `method` (`CASH` / `MTN` / `AIRTEL` / `ZAMTEL` / `BANK_TRANSFER`), `reference` (every
+  method but cash needs one), `gross` (the full amount that reached Oriah), an optional `fee` (what
+  the provider or bank took), and the date the money **arrived**
+  (`arrivedAt`, default now, with a `backdateReason`). **Net is never sent:** the service works it
+  out as gross less fee, and a request that carries it is 400. **The amount that must equal the
+  order's total is the gross**, so a provider's fee never turns a correct payment into a wrong one;
+  any other gross is held as `WRONG_AMOUNT`. A new confirmation is 201 and the same key with the
+  same request again is 200. Money that arrived more than 72 hours ago needs `BACKDATE_SALE` (403)
+  and a reason (400). For every method but cash, one (method, reference) confirms money once (409
+  `reference-already-used`); cash carries no unique reference. Staff (SALES_AGENT) also **void** a
+  mistake (`POST .../confirmations/{id}/void`: a reason of 10 to 200 characters; it frees the
+  reference and closes any held money for it; a confirmation that has already paid a sale is
+  never voided, 409 `confirmation-settled`, because correcting it is Phase 12's; a second void is
+  409 `already-voided`) and **reject** a false claim (`POST .../claims/{claimId}/reject`) with a
+  `proofType`: `NOT_FOUND_AT_PROVIDER` needs `evidence` of at least 10 characters, and
+  `REFERENCE_ALREADY_USED` is checked by the service (the same reference must already be confirmed
+  for another order). A claim whose own order already has money recorded under its reference is not
+  false and cannot be rejected (409 `money-recorded-for-claim`). Payment's other problem types:
+  `already-rejected`, `reference-not-used-elsewhere`, `claim-not-found`, `confirmation-not-found`,
+  `idempotency-key-reused` (the same key for a different request) and `unsupported-currency` (400).
+  Money that cannot settle a sale (wrong amount, order
+  cancelled, piece sold, already paid, unknown order) is **held for the customer**
+  (`/api/v1/admin/payments/held-money`, PAYMENT_ADMIN, which `MANAGER` lacks, so only `OWNER` reads it),
+  never lost or refused. Payment reads no
+  order: it announces `payment.confirmed` and order answers; a watcher announces it again (ten
+  times at most) until it does. The card path is **switched off** (`oriah.payment.card.enabled`, default false) and nothing
+  calls it; ZynlePay (Phase 13) gives it a caller.
+- **`order` (7.5) owns the sale.** Placement (`POST /api/v1/orders`) writes a PENDING row, holds
+  the pieces, then marks it HELD and emits `order.created`; a shopper may have 3 live orders and
+  20 pieces held at once (409 `hold-limit-reached`; the settings are `oriah.sales.max-live-orders`
+  and `oriah.sales.max-held-pieces`). **A new order is 201 and a repeat of the same placement is
+  200** (the OpenAPI declares only the 201): the same `Idempotency-Key` with the same bag and
+  address, or the same live bag under a new key, answers the same order. The same key with another
+  bag or address is 409 `idempotency-key-reused`; the same live bag sent to another delivery address
+  is 409 `live-order-has-another-address` (self-collect ignores the address). The shopper's
+  `POST /api/v1/orders/{id}/payment-claim` `{method, reference}` takes `MTN`, `AIRTEL`, `ZAMTEL` or
+  `BANK_TRANSFER` (cash is 400: it is paid in person and staff confirm it); the same method and
+  reference again is the same claim. It moves the order to PAYMENT_SUBMITTED and stretches the hold
+  to at most 24 hours from when it was first taken. When
+  staff confirm the money, order **settles** it (a saga, that is a chain of steps across
+  services each safe to repeat: consume at inventory, then PAID with a
+  receipt number `OR-nnnnnn`, ours and never a tax invoice, and `order.paid` v2). New states:
+  PAYMENT_SUBMITTED, and EXPIRED (the hold ran out, or staff rejected the claim). **EXPIRED is not
+  final:** money staff confirm for an expired order still pays it if its pieces are still free (they
+  are held again and sold at the order's own prices, dated to the day the money arrived, and the order
+  becomes PAID); if they were sold meanwhile the money is held for the customer as `PIECE_SOLD`.
+  How long a lapsed order may still be settled at its old price is not limited yet (open question
+  Q14, below). No person moves an order to PAID, EXPIRED or PAYMENT_SUBMITTED. **A shopper (or
+  staff) can cancel only an order that is still CREATED,** that is before a payment reference was
+  given; once a reference is claimed, or the order is expired, paid or shipped, cancel is 409 (a
+  paid sale is undone by a refund, Phase 12, never by a status change). While an order is still
+  being placed, cancel is 409 `placement-in-progress`; while confirmed money is being applied to
+  it, 409 `payment-being-applied`.
+  Queues for SALES_AGENT: `GET /api/v1/admin/orders/awaiting-payment` (orders whose shopper has
+  claimed a payment, soonest hold to lapse first; with `?orderId=` the one order that can still take
+  money, waiting, claimed or lapsed, so staff can confirm for a customer who never typed a
+  reference) and `GET /api/v1/admin/orders/settlements` (confirmed money that has not simply paid
+  its sale; `?state=` is `IN_FLIGHT`, `BLOCKED_BOX`, `UNSETTLED` or `VOIDED`, any other value is
+  400). **A sale whose box has run out is never refunded:** it waits as `BLOCKED_BOX`, names the box
+  to receive, and tries again by itself every minute until the box is received. Confirmed money
+  that has had no answer for 5 minutes (`oriah.sales.settlement-stuck-after`) is flagged `stuck`
+  (here and in payment's `GET /api/v1/admin/payments/confirmations/pending`) and counted by the
+  `payment.confirmations.stuck` gauge, and payment logs an ERROR once it has announced it ten times
+  unanswered. Nothing pushes an alert before Phase 11, so these lists are the alert.
+  A box swap, `POST /api/v1/admin/orders/{id}/box-swaps`, is ORDER_ADMIN's: only a PAID order that
+  has not been fulfilled can be swapped, `reason` is 10 to 200 characters, and a repeat with the
+  same `amendmentId` answers the same swap. The card `POST /orders/{id}/pay` is **removed**.
+  **Delivery waiver:** `POST /api/v1/admin/orders/{id}/delivery-waiver {reason}` (`DELIVERY_WAIVER`,
+  so `OWNER` only; reason 5 to 200 characters) makes delivery free on **one order that is still
+  waiting** (CREATED, its pieces held): delivery goes to K0.00, the total falls by exactly it, and
+  the order records what was waived (`delivery_waived_amount`, who, why, when; Flyway V8, all four
+  set together or none, a CHECK holds it). It never touches a claimed, settling or paid order
+  (409 `delivery-waiver-not-allowed` / `payment-being-applied`), an order with no delivery charge
+  (409 `no-delivery-to-waive`) or one already waived (409 `delivery-already-waived`). The order
+  answer carries `deliveryWaivedAmount` for the shopper; **who, why and when are the staff views'
+  alone** (the waiver answer and `GET /api/v1/admin/orders`). Staff then confirm the lower total (the old
+  one, if sent, is a held `WRONG_AMOUNT`). Checkout accepts an order whose total is lower than
+  its quote by exactly the waived amount (a repeat of a confirm after a lost reply) and refuses
+  any other difference. No event is published for a waiver, and `order.paid` does not carry the
+  amount waived (a hand-off to finance in Phase 10: add it as a compatible field).
+  Problem types (all 409 unless noted): `insufficient-stock` (placement; names each short line),
+  `hold-limit-reached`, `idempotency-key-reused`, `live-order-has-another-address`; on a cancel
+  `placement-in-progress` and `payment-being-applied`; on a payment claim
+  `payment-already-submitted` (another reference was
+  given), `order-not-awaiting-payment` (the order is not CREATED), `order-not-held` (it holds no
+  pieces: place it again), `hold-expired` and `payment-being-applied`; on a box swap
+  `box-swap-not-allowed`, `same-box`, `no-box-on-line`, `amendment-id-used` (that id was used for a
+  different swap) and `payment-being-applied`; on a delivery waiver `delivery-waiver-not-allowed`,
+  `delivery-already-waived`, `no-delivery-to-waive` and `payment-being-applied`.
+- **`checkout` (7.5) touches no money.** Confirm = price at catalog, check the address is the
+  shopper's, ask shipping for the town's price on the goods after discount, check the fingerprint
+  (`quoteDigest`, shared module `oriah-quote`, canonical `oriah-quote/2`: town, payer and each
+  line's discount and promotion are part of it), place the order with the `Idempotency-Key`
+  forwarded. **A 200 means placed and held, not paid.** Preview with no delivery chosen returns
+  the priced bag with no total; with `deliveryOption`, `deliveryTownId` and payer it returns the
+  total and the digest. 409 `pricing-changed` when the quote moved. The refusals a shopper can act
+  on pass through under their own names, all as 409: from order `insufficient-stock`,
+  `hold-limit-reached`, `idempotency-key-reused` and `live-order-has-another-address`; from
+  inventory, through order, `no-default-box`, `not-a-sellable-product` and
+  `product-state-not-received` (a product with no default box, not for sale, or with no stock
+  received yet cannot be placed online, and the 409 names the product); from shipping
+  `town-not-offered`, `payer-not-offered` and `town-not-found` (shipping's own 404, passed on as 409).
+  **A repeat with the same `Idempotency-Key`** (after a lost reply) gets the first order back only
+  while it is still held (CREATED or PAYMENT_SUBMITTED). If it is any other status by then (lapsed or
+  cancelled, say), confirm answers 409 `order-no-longer-held` (with `orderId` and `orderStatus`), keeps the bag, and
+  the shopper confirms again with a **new** key. A key longer than 128 characters is 400 at checkout.
+  Both came with `8c4536e`, after the live smoke run.
+- **Around them.** `notification` declares the new order events. It sends the shopper a message
+  for each order event it handles (placed, paid, cancelled, fulfilled, shipped, delivered and the
+  new `order.expired`, which reads "Your order has expired" and names no figure). It reads
+  `order.paid` in both versions, 1 and 2, and sends nothing for a repeated one (`republished: true`;
+  finance in Phase 10 must dedupe by `confirmationId`). It declares
+  `order.payment_submitted` and `order.payment_unsettled` and **ignores them**: they are facts for
+  staff, so nobody is messaged when a claim is received or when money could not settle a sale.
+  The gateway sends the staff queues to SALES_AGENT, denies `/internal/**` and the inventory
+  reservation and box-swap prefixes to everyone, and routes `/api/v1/admin/shipping/**`.
+- **The sale's settings** (defaults in code; `config-repo` may override), all under `oriah.sales`:
+  `hold` PT10M (inventory's first hold), `payment-submitted-hold` PT24H, `max-live-orders` 3,
+  `max-held-pieces` 20, `settlement-stuck-after` PT5M (read by order and by payment),
+  `pending-grace` PT1M (how long an order written but not yet confirmed by inventory waits before
+  the hold job gives its hold back and deletes it), `lapse-grace` PT2M (how long past its hold an
+  order is ended by the clock when inventory's `reservation.expired` was lost), and `hold-job` and
+  `settlement-job`, each with `enabled` and a `delay` of 15000 ms. Payment's own watcher
+  (`oriah.payment.watcher`) announces at most `max-emit-attempts` 10 times. Beside them:
+  `oriah.payment.card.enabled` (false) and `oriah.payment.backdate-window` (PT72H).
+  `docs/ARCHITECTURE.md` explains each.
 
 ---
 
@@ -255,9 +454,14 @@ Agreed 2026-11-07. Full reasoning and worked arithmetic in `docs/MVP_PLAN.md`.
 promotion, shipping, customer, review, search, notification, **procurement**
 (Phases 2 and 4: suppliers, purchase orders, consignments with the landed-cost
 allocator, receiving, invoices, and corrections of a received consignment's cost; Flyway V1-V7;
-**inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads, and since Phase 6 the boxes
-set aside for products; Flyway V1-V10; **catalog since Phase 6** holds the dated price history and the default box; Flyway V1-V6).
-`checkout` and `shipping` are **stateless** and own no database.
+**inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads, since Phase 6 the boxes
+set aside for products and **since Phase 7 the reservations that hold stock for an order**; Flyway V1-V11; **catalog since Phase 6** holds the dated price
+history and the default box, and **since Phase 7 works out each piece's promotion**; Flyway V1-V6 (Phase 7 added none);
+**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver); Flyway V1-V8;
+**payment since Phase 7 records staff-confirmed money**; Flyway V1-V6; **promotion since Phase 7 keeps scoped, dated
+promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
+`checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
+(host port 5445), so 12 of the 13 services own a database.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -266,8 +470,10 @@ own git repo, with **its own `CLAUDE.md` — read that before touching it.**
 It is built and running, not pending.
 
 **Kafka topics (Phase 1, 2026-11-10):** `catalog.product` (catalog →
-inventory, search), `oriah.order` (order → notification), `oriah.payment`
-(payment's `payment.succeeded` / `payment.failed`; nothing reads it yet) and, since
+inventory, search), `oriah.order` (order → notification, and since Phase 7 inventory and
+payment too), `oriah.payment` (since Phase 7 payment's staff-confirmed money; order reads it;
+before, its `payment.succeeded` / `payment.failed` were read by nobody) and, since Phase 7,
+`oriah.inventory` (what happened to a hold; order reads it) and, since
 Phase 4, `oriah.procurement` (one **`consignment.received` per consignment line**,
 aggregate `consignment_line`, a full snapshot with the unit-cost slices dearer
 first, `linePosition` last) and, since Phase 5, **`consignment.amended`** (the next event of the same line:
@@ -275,8 +481,24 @@ the same snapshot plus `revision`, `reason`, `amendedAt`; only for lines whose c
 correction changed). **Inventory consumes both, from the beginning, with `onceInOrder`; any
 NEW procurement event type must be declared by inventory (handles/ignores) before procurement
 emits it.** Since Phase 6 catalog also writes **`price.set`** (one per saved price: who, what, why, against which cost) to
-**`catalog.price`**; nothing consumes it yet, and `product.created` / `product.updated` end with `defaultPackagingVariantId` and
-`unpublishCount` (inventory releases the boxes set aside for a product from them). Three
+**`catalog.price`**; nothing consumes it yet (since Phase 7 it ends with `discountPerPiece`, `promotionId` and `netPrice`),
+and `product.created` / `product.updated` end with `defaultPackagingVariantId` and
+`unpublishCount` (inventory releases the boxes set aside for a product from them).
+**Phase 7 made the sale a conversation between four services over Kafka.** Order emits to
+`oriah.order`: `order.created`, `order.payment_submitted`, `order.paid` (version 2: it names the
+confirmation, the receipt number and the date the money arrived), `order.payment_unsettled` (money
+that could not pay the sale), `order.cancelled` and `order.expired` (both carry the `reservationId`),
+`order.fulfilled`, `order.shipped` and `order.delivered`. Payment emits `payment.confirmed`,
+`payment.voided` and `payment.held` (aggregate `payment_confirmation`) and `payment.rejected`
+(aggregate `payment_claim`); the card path's `payment.succeeded` / `payment.failed` appear only if it is
+switched on. Inventory emits `reservation.consumed` (with what each line cost), `reservation.expired`
+and `box.swapped`. **Order consumes** `oriah.payment` and `oriah.inventory` (Inbox on: it settles a
+sale from `payment.confirmed`, ends an order on a rejected claim or a lapsed hold) and its
+dead-letter topics are `oriah.payment.dlq.order` and `oriah.inventory.dlq.order`; **inventory
+consumes `oriah.order`** (it releases the reservation a cancelled or expired order names);
+**payment consumes `oriah.order`** (a claim, the sale paid, money that could not pay it). A consumer
+refuses an event type nobody declared, so **any NEW event type must be declared by every consumer
+before its producer emits it** (notification declared order's new types first). Three
 more serve the event log itself: `oriah.outbox.replay-requests` (a late
 consumer asks a producer to send its history again),
 `oriah.replay.<consumer>` (the answer, one topic per consumer) and the
@@ -286,7 +508,8 @@ parked there, never dropped). Every event goes through the shared module
 `product.created` / `product.updated` end with a `kind` (`SELLABLE` |
 `PACKAGING`); a consumer must read an absent `kind` as `SELLABLE`** (every earlier
 snapshot lacks one). Search reads `status` and `kind` by name to decide whether a
-product is listed; inventory ignores `kind` until Phase 5.
+product is listed; inventory has read `kind` since Phase 6 (a box set aside must be `PACKAGING`
+and its product `SELLABLE`).
 
 ---
 
@@ -326,7 +549,11 @@ product is listed; inventory ignores `kind` until Phase 5.
 .\mvnw.cmd -ntp -pl services/catalog spring-boot:test-run   # run one service locally
 ```
 
-Docker Desktop must be running — Testcontainers needs it.
+Docker Desktop must be running — Testcontainers needs it. A single-module build reads the
+`shared/*` jars from `~/.m2`, so after changing one (the price fingerprint in `shared/oriah-quote`,
+say) run `.\mvnw.cmd -ntp -pl shared/oriah-quote install -DskipTests` before testing `order` or
+`checkout` — otherwise they test the old copy. A running container stack has also made Maven's
+test contexts time out fetching config (seen in Phase 7): `docker compose stop` first.
 
 ### Local development — the everyday loop
 
@@ -337,7 +564,7 @@ connections and the Postman collection (`local-dev/postman/`, generated from
 the services' OpenAPI by `scripts/local-dev/postman_from_openapi.py`).
 
 ```powershell
-.\scripts\dev-stack.ps1      # 12 Postgres, Keycloak, Kafka, Redis, SeaweedFS
+.\scripts\dev-stack.ps1      # 13 Postgres, Keycloak, Kafka, Redis, SeaweedFS
 ```
 
 Then run **1. Platform (local)** and **2. All services (local)** from `.run/`.
@@ -360,7 +587,7 @@ docker compose up -d
 powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 ```
 
-**~39 containers:** 12 Postgres instances (host ports 5433–5444: procurement's is 5444, and Keycloak's is 5443), Keycloak,
+**~40 containers:** 13 Postgres instances (host ports 5433–5445: procurement's is 5444, shipping's is 5445 since Phase 7, and Keycloak's is 5443), Keycloak,
 Kafka, Redis, SeaweedFS + its init job, Prometheus, Grafana, Loki, Tempo,
 Alloy, the 3 infra modules, all 13 domain services (ports 8081–8093), and `oriah-web`.
 
@@ -372,7 +599,7 @@ volumes.
 
 **Memory (Phase 2, measured 2026-11-11).** Every container has a `mem_limit`
 (and an equal `memswap_limit`, so no swap), with the measured peak written beside
-it in the compose file. **Procurement's limit is 768 MiB since Phase 4** (it was 640): with the upload gate at four, the second burst of sixteen 5 MB invoices got the 640 MiB container killed by the kernel (exit 137) although the Java heap had room: the rest is native memory. Two uploads are taken at a time now (`UploadGate`) and six bursts in a row plateau at about 714 MiB of 768, from an idle 437 MiB; a burst of uploads adds to procurement's idle figure what the 8.8 GiB below (measured before it) does not count. The whole stack peaks at **8.8 GiB**, so Docker's VM must
+it in the compose file. **Procurement's limit is 768 MiB since Phase 4** (it was 640): with the upload gate at four, the second burst of sixteen 5 MB invoices got the 640 MiB container killed by the kernel (exit 137) although the Java heap had room: the rest is native memory. Two uploads are taken at a time now (`UploadGate`) and six bursts in a row plateau at about 714 MiB of 768, from an idle 437 MiB; a burst of uploads adds to procurement's idle figure what the 8.8 GiB below (measured before it) does not count. The whole stack peaks at **8.8 GiB** (measured before Phase 7 gave `shipping` its own Postgres container), so Docker's VM must
 be capped at **10 GB** in `%USERPROFILE%\.wslconfig` (`[wsl2] memory=10GB`,
 `[experimental] autoMemoryReclaim=dropcache`, then `wsl --shutdown` and restart
 Docker Desktop): uncapped, Docker takes whatever it is given and starves Windows.
@@ -388,8 +615,8 @@ and fetches every 10 s, so only **committed** changes reach the containers, with
 out (the smoke test needed five runs; Playwright needs `--timeout=180000`): see
 Phase 2's status block in `docs/MVP_PLAN.md`.
 
-> ⚠️ **`docker compose down -v` destroys all twelve Postgres volumes** — the
-> eleven domain databases *and* Keycloak's own (`postgres-keycloak`, added
+> ⚠️ **`docker compose down -v` destroys all thirteen Postgres volumes** — the
+> twelve domain databases *and* Keycloak's own (`postgres-keycloak`, added
 > 2026-11-08 so logins survive a restart; `scripts/keycloak-persistence-test.ps1`
 > proves it). The realm is imported **only when it does not yet exist in that
 > database**, so in development a realm edit to
@@ -400,21 +627,31 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 4b, 5b, 6b, 8b, 20b, 20c, 20d, 20e and 20f**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20f**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
-any list that names the services is missing one): the full admin + customer saga through the gateway (product, inventory,
-cart, checkout **quote then commit**, order transitions, Kafka-driven search
+any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
+cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
+order PAID with its stock sold, order transitions, Kafka-driven search
 index, reviews, notifications, 401-without-token), plus a Tempo trace
 assertion, Prometheus scrape coverage, gateway body-size limits, and
 readiness/liveness probes. "Quote then commit" means: preview prices the bag
 and returns a fingerprint of that price (`quoteDigest`); confirm must send the
-fingerprint back. The script works the digest out on its own in PowerShell and
-it must match the server's, and a quantity changed after preview is refused
-live. **There are no promo steps** — checkout refuses promotion codes until
-Phase 7 (Phase 0, `0e24a94`). **Step 2 seeds no stock** (since Phase 5 stock only arrives through a
-received consignment): step 20d's consignment is the stock and step 20e follows it — lots, a sale made
-on inventory's own port 8082 (the gateway does not route it), a write-off and its take-back, a corrected
-courier bill and the re-costed stock; **step 4 and the control ring price through the pricing endpoint** (a variant is
+fingerprint back. The script works the digest out on its own in PowerShell
+(`oriah-quote/2`, with both golden values checked) and it must match the server's, and a quantity
+changed after preview is refused live (409 `pricing-changed`). **The sale steps (Phase 7)** each
+leave a worked example of the request and the answer: **2b** makes the sale's own ring, two box sizes, a received consignment, a
+price, publication and a K10.00-off-each-piece promotion; **5b** has admin price a town for delivery (a town nobody priced is 409
+`town-not-offered`); **6** places the order (CREATED: held, **not paid**; K180.00 = K200.00 − K20.00 + K0.00; the same key, or the same bag under a
+new key, answers the same order); **6c** is the shopper's claim and **6d** staff confirming the exact total (the order is polled until PAID, and its receipt
+number is read from order's own database, because no reply carries it; its stock is sold from the oldest lot and dated to the day the money arrived; a second confirmation is held, never a second sale); **6e** a
+wrong amount held and a rejected claim giving the pieces back; **6f** the caps and `insufficient-stock`; **6g** who may do what; **6h** a box swap on the paid
+order; **6i** an order for delivery to a priced town (the town and payer are part of the digest), paid in cash by staff. **Promotions are now in the smoke test** (2b, 5, 6, 20, which ends the promotion and sees the discount
+go); the old "no promo steps" ended when Phase 7 replaced the discount codes. Step 12's Tempo trace now covers checkout, cart, catalog, shipping, order and inventory
+(no payment: checkout no longer touches money). **Step 2 seeds no stock** (since Phase 5 stock only arrives through a
+received consignment): step 20d's consignment is the stock of the "original" ring and step 20e follows it — lots, the doors a sale no longer has (the order
+system's own paths are 403 at the gateway and a person's token is 403 on inventory's own port 8082), a write-off and its take-back, a corrected
+courier bill and the re-costed stock, and the sale consignment's bill corrected too (K36.00 to K72.00, re-costing the rings the paid orders sold);
+**steps 2, 2b and the control ring of 8b price through the pricing endpoint** (a variant is
 created unpriced) and step 20f follows the ring through the below-cost warning, the default box, a cost corrected UP,
 boxes set aside, unpublish and the retired endpoints.
 
@@ -430,8 +667,12 @@ Postgres on first start — only when the realm does not exist there yet.
   holding exactly `USER` + `INVENTORY_ADMIN`. It used to hold `USER` + all
   five admin roles, so the old advice "reuse it, it already holds
   `ORDER_ADMIN`" is **no longer true**. `order` signs in as `oriah-admin`
-  to price delivery — *client credentials*: the service signs in as itself,
-  with the client's id and secret, not on behalf of a person.
+  to ask shipping for the delivery price **and, since Phase 7, to hold, sell and
+  release stock at inventory** — *client credentials*: the service signs in as itself,
+  with the client's id and secret, not on behalf of a person. Inventory's reservation
+  and box-swap doors accept only this account: they need `INVENTORY_ADMIN`, which an
+  owner and a manager hold too, **and** a token whose `preferred_username` is
+  `service-account-oriah-admin` (a second wall behind the gateway, which routes none of them).
 - **Roles — two kinds.** 14 **capability roles**, the ones the code checks:
   `CATALOG_ADMIN`, `INVENTORY_ADMIN`, `CUSTOMER_ADMIN`, `ORDER_ADMIN`,
   `PAYMENT_ADMIN`, `PROCUREMENT_ADMIN`, `FINANCE_ADMIN`, `SHIPPING_ADMIN`,
@@ -480,7 +721,7 @@ docker compose up -d keycloak
 ```
 
 Then **restart `order`** — its cached machine token was signed by the old
-keys. Never `down -v` (that wipes all twelve databases); never a console edit
+keys. Never `down -v` (that wipes all thirteen databases); never a console edit
 (it drifts from the committed files). Both files are imported only when the
 realm does not yet exist.
 
@@ -497,18 +738,26 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
 
 ## Known live defects — do not treat these as working
 
-- **Nothing in the sale path touches stock.** `inventory`'s
-  `reserve`/`release`/`confirm` are `INVENTORY_ADMIN`-only (`confirm` is the cost-draining
-  sale since Phase 5, and the gateway does not route it) and
-  `CheckoutService` never calls them, so a paid sale decrements nothing and
-  the shop can oversell without limit. Critical for one-of-a-kind pieces.
-  Phase 7 of `docs/MVP_PLAN.md`.
-- ✅ **FIXED in Phase 0 (`4cb1385`).** `Zone.DOMESTIC` was `{NG}` (Nigeria)
+- ✅ **FIXED in Phase 7 (2026-11-13, proved live 2026-11-14 at `2063b68`): the sale path now touches
+  stock.** It did not: `inventory`'s `reserve`/`release`/`confirm` were
+  `INVENTORY_ADMIN`-only and `CheckoutService` never called them, so a paid sale decremented
+  nothing and the shop could oversell without limit (critical for one-of-a-kind pieces). Now
+  placing an order **holds** its pieces at `inventory` (a reservation per order: 10 minutes,
+  stretched to at most 24 hours once the shopper gives a payment reference), and staff-confirmed
+  money **sells** them, draining the oldest lot at its cost. Asking for more than is there is
+  409 `insufficient-stock`, naming every short line. The old per-variant
+  `reserve`/`release`/`confirm` are **gone**; the new reservation doors are the order system's
+  alone (`service-account-oriah-admin`) and the gateway does not route them.
+- ✅ **FIXED in Phase 0 (`4cb1385`), then replaced by the real thing in Phase 7.**
+  `Zone.DOMESTIC` was `{NG}` (Nigeria)
   while all tariffs were in ZMW, so a Zambian customer was classified
   `INTERNATIONAL` and charged ~9× (K1,125.00 instead of K125.00), and there
-  was **no self-collect option**. Now shipping offers Zambia exactly
-  one option, `SELF_COLLECT` at K0, until Phase 7; any other country is 422
-  `outside-delivery-area`; zones are gone. A shipping outage is 503 — never
+  was **no self-collect option**. Phase 0 left Zambia exactly one option, `SELF_COLLECT` at
+  K0, until Phase 7 priced delivery **per town**: `SELF_COLLECT` is still always offered at K0,
+  every other option needs a **published price** for the town (a town nobody priced is 409
+  `town-not-offered`, never "outside the delivery area"), zones and countries are gone, the old
+  `POST /api/v1/shipping/rates` answers 404 and the 422 `outside-delivery-area` no longer
+  exists. A shipping outage is 503 (`shipping-unavailable` when its database is away) — never
   free delivery.
 - ✅ **FIXED in Phase 0 (`0e24a94`).** `Order.recomputeTotals()` ended
   `total = subtotal` ("no shipping/discount yet"), so the order's own total
@@ -518,13 +767,20 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   marked authoritative to total = subtotal + shipping − discount. Checkout
   charges the option the shopper named (it used to take the cheapest), and
   order refuses a payment whose amount is not that total — too little and too
-  much alike. Orders from before V4 have NULL there (unknown) and stay
-  payable.
-- **`@Version` exists on `Inventory`, `Order` and `PaymentIntent`** (Phase 0
-  item 3, `95d5b63`, inventory V5, then Phase 1: order V5 and payment V5): the
-  losing writer of a race gets 409. **Every other aggregate still has no
-  `@Version`** — no optimistic locking, so read-modify-write updates there can
-  still race.
+  much alike. Orders from before V4 have NULL there (unknown). **Since Phase 7**
+  order's own `/pay` is gone: money reaches an order only when staff confirm it and it equals the
+  order's total; any other amount is **held for the customer** as `WRONG_AMOUNT`, never applied.
+  An order placed before V6 is "legacy": it holds no pieces, and money confirmed for it is
+  held for the customer, never settled.
+- **`@Version` (optimistic locking) exists on `Inventory`, `Order` and `PaymentIntent`** (Phase 0
+  item 3, `95d5b63`, inventory V5, then Phase 1: order V5 and payment V5) **and, in procurement
+  (Phases 2 and 4), on `Supplier`, `PurchaseOrder` and `Consignment`**: the
+  losing writer of a race gets 409. Shipping (Phase 7) keeps a `version` on the rows admin edits and
+  refuses a stale edit with 409 `stale-version` (hand-written SQL, not `@Version`). **Every other
+  JPA aggregate still has no `@Version`** (catalog's products, customer, cart, review ...), so
+  read-modify-write updates there can still race. Phase 7's money and stock paths do not rely on it:
+  they take locks (an advisory lock per shopper and per payment reference, `FOR UPDATE` row locks
+  in one fixed order) and constraints the database enforces.
 - **`Review.orderId` is client-supplied** and never verified against
   order-service, so "verified purchase" is self-asserted.
 - ✅ **Landed cost is now consumed (Phase 5, 2026-11-13).** Receiving a consignment records
@@ -532,11 +788,14 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   line; **inventory turns each into cost lots, and every sale, write-off and give-away
   drains the oldest lots and records the cost** in an append-only ledger. A correction of a
   received consignment's cost is a new revision (`POST .../amendments`) that re-costs
-  the stock and everything that already left it. **Profit still cannot be reported**: the
-  sale path does not call inventory until Phase 7 and finance is Phase 10. Stock enters
+  the stock and everything that already left it. **Profit still cannot be reported**: finance
+  is Phase 10 (the sale path does call inventory since Phase 7: a paid order drains the oldest
+  lots and inventory publishes `reservation.consumed` with what each line cost). Stock enters
   **only** through a received consignment (no create or top-up endpoint), selling stock is
-  not routed by the gateway, and `GET /api/v1/admin/inventory/reconciliation` says whether
-  every count equals its lots. **The smoke test leaves received consignments, sales and
+  not routed by the gateway (a sale is the order system consuming a reservation), and `GET /api/v1/admin/inventory/reconciliation` says whether
+  every count equals its lots (`countMismatches`), every lot its ledger (`ledgerMismatches`), every box's set-aside count the
+  products' records (`commitmentMismatches`) and, since Phase 7, every `reserved` count what its held reservation lines add up to
+  (`reservedMismatches`: `reserved` against `sumOfHeldLines`). **The smoke test leaves received consignments, paid orders and
   write-offs behind on purpose** (history is never deleted), and **opening stock can no
   longer be received on a stack where a shipment has been**: a go-live database starts
   empty.
@@ -544,7 +803,8 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   `PUT /api/v1/admin/pricing/variants/{id}/price` (**CATALOG_ADMIN and COST_VIEWER both**, at the gateway and in the service);
   below the dearest held lot plus the default box's it is 409 `below-landed-cost` until a reason of 5 to 200 characters and the
   floor the person saw are sent; it is **never refused**, and never saved without the cost having been looked at (stock down is
-  503, never a guess). `GET .../pricing/below-cost` says where every priced piece stands NOW. A price may start up to 72 hours
+  503, never a guess). **Since Phase 7 the price judged is the one the customer pays, the list price less the promotion in force**
+  (the 409 then also names `discountPerPiece`, `promotionId` and `netPrice`). `GET .../pricing/below-cost` says where every priced piece stands NOW. A price may start up to 72 hours
   back, never in the future; the old `PATCH` on a variant is gone and a variant created with a price is 400. **Nothing tells
   anyone when a piece falls below cost until Phase 11 polls that list** (written into Phase 11). Boxes can be set aside for a
   product (`/api/v1/admin/inventory/box-commitments`, INVENTORY_ADMIN, one record per product on its default box) and are
@@ -565,11 +825,35 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   (`payment.succeeded` / `payment.failed`), to an `outbox` table in the same
   transaction (the database refuses updates, deletes and truncates); a relay
   publishes it, a late consumer can ask for the whole history, and notification,
-  search and inventory apply each event once. **Payment's outbox holds charge
-  outcomes only:** creating an intent and starting a charge are not recorded,
-  so a replay shows what the money did, not each step of an intent. Phase 1's status block in
+  search and inventory apply each event once (since Phase 7 order and payment
+  read events too, and apply each once; inventory writes an outbox of its own).
+  **Payment's outbox holds what the money did, not each step of an intent:**
+  in Phase 1 only charge outcomes, and since Phase 7 what staff did with money
+  (`payment.confirmed`, `payment.voided`, `payment.held`, `payment.rejected`); the card
+  path's `payment.succeeded` / `payment.failed` appear only if it is switched on, and
+  creating an intent or starting a charge is still not recorded. Phase 1's status block in
   `docs/MVP_PLAN.md` has the commits, the numbers every service must keep and
   what is accepted for the MVP.
+- **Open after Phase 7 (the owner's call, or a gap to close):**
+  - **A shopper who mistypes the payment reference cannot correct it.** A second claim naming
+    another reference is 409 `payment-already-submitted`. That does not block the payment: a claim
+    is not money, and settlement never compares the claim's reference, so staff who find the real
+    payment can still confirm it against the order under the reference they see, and the order
+    settles. Staff can also reject the claim (the order expires and its pieces go, smoke step
+    6e), or the hold runs out by itself (at most 24 hours). The open question is only whether a
+    shopper may correct the claim.
+  - **How long a lapsed order may still be paid at its old price** (design question Q14). An
+    EXPIRED order can still be settled by money staff confirm while its pieces are free, and
+    nothing limits how late (the default, as the client wrote it). Not settled.
+  - **An order whose total is K0.00 has no way to be paid.** A promotion may be a percentage up to
+    100, or a fixed amount that takes a piece to K0.00, and delivery can be K0.00, so a total can be
+    K0.00. The database allows it (`total >= 0`) and nothing in `order` or `checkout` refuses it, but
+    payment refuses a confirmation with a gross below K0.01, so such an order simply lapses. The
+    design file calls it a Phase 9 / Phase 12 matter (Q10).
+  - **The receipt number cannot be read through the API.** It is stored on the paid order and
+    published in `order.paid` v2, but no order reply (the shopper's or staff's) carries it, and the
+    smoke test reads it from order's database. Adding it to the order replies is a backend change
+    that has to come before the frontend can show it.
 
 Follow-ups found during Phase 1 — **fixed 2026-11-10**:
 
@@ -578,22 +862,40 @@ Follow-ups found during Phase 1 — **fixed 2026-11-10**:
   payment (404 / 409), with the caller's own token; order down is 503 with
   `Retry-After`. A repeated create for the same order and amount gets the same
   intent back (200, not 201), so checkout can repeat a create whose reply was
-  lost.
+  lost. **Since Phase 7 the card path that makes intents is switched off**
+  (`oriah.payment.card.enabled`, default false) and nothing calls it: these checks come
+  back with it, when ZynlePay (Phase 13) gives it a caller.
 - **checkout repeats only what cannot happen twice** (`NetworkFailures`, the
-  three retry rules in its `application.yaml`). A 502/503/504 that carries
-  `Retry-After` is never repeated; confirm (the call that charges the card) is
-  repeated only when the request never arrived; creating an intent has its own
-  client with its own timeouts (1 s to connect, 6 s to answer). A confirm whose
-  outcome is unknown is **502**, and its message tells the shopper not to pay
-  again (`FRONTEND_WORK.md` has the copy). **The storefront's 30 s proxy
-  timeout is shorter than checkout's worst confirm** — a must-do recorded there.
-- **payment runs two scheduled jobs** (the outbox relay and the reconciler that
-  settles intents stuck `CHARGING`), so its scheduling pool is 2. Add a thread
-  for any further `@Scheduled` job.
-- **Still open, owned by Phase 7:** a charge that goes through after a 502 never
-  reaches the order (it stays `CREATED`); an order cancelled while its intent is
-  pending can still be charged; a page reload sends a new `Idempotency-Key`.
-  Each is a required test in Phase 7 of `docs/MVP_PLAN.md`.
+  retry rule in its `application.yaml`). A 502/503/504 that carries
+  `Retry-After` is never repeated; `order.place` (which saves an order and holds its pieces; before
+  Phase 7 this was the confirm that charged the card) is
+  repeated only when the request never arrived or the answer was a 502/503/504 without
+  `Retry-After`. **Since Phase 7 checkout touches no money:** there is no payment-intent
+  client, no charge and no "outcome unknown is 502" case. A lost reply from `order.place` is a 503
+  whose message says to retry with the **same `Idempotency-Key`**: an order placed before the
+  reply was lost comes back as that same order, never a second one, **while it is still held**.
+  The bag is cleared the
+  moment the order is placed, so a repeat after a lost reply may find it empty (409 `cart-empty`):
+  the storefront should then send the shopper to their orders. If the order that comes back has
+  lapsed or been cancelled meanwhile, the repeat is 409 `order-no-longer-held` (carrying `orderId`
+  and `orderStatus`): the bag is kept and the shopper confirms again with a **new** key. A key over
+  128 characters is 400. **The storefront's 30 s proxy timeout can be shorter than checkout's worst
+  confirm:** a confirm is up to six calls one after another (cart, catalog, customer, shipping,
+  order, clearing the bag), each allowed 15 s and order's 20 s, so two slow ones together outlast
+  30 s while checkout carries on and may still place the order. The proxy timeout has to be set
+  explicitly above that: a must-do in `docs/FRONTEND_WORK.md`.
+- **payment runs three scheduled jobs** (the outbox relay, the settlement watcher that announces
+  confirmed money again, and, only while the card path is on, the reconciler that settles intents
+  stuck `CHARGING`), so its scheduling pool is 3; **order** runs three (the relay, the hold job and
+  the settlement job: pool 3) and **inventory** two (the relay and the reservation sweeper: pool 2).
+  Add a thread for any further `@Scheduled` job.
+- ✅ **Closed by Phase 7** (these were "still open, owned by Phase 7"): a charge that went through after a
+  502 never reached the order; an order cancelled while its intent was pending could still be
+  charged; a page reload sent a new `Idempotency-Key`. Now nothing charges a card, and money
+  reaches an order only when staff confirm it: payment announces it and keeps announcing it (ten
+  times at most) until order answers, and money for an order cancelled meanwhile is **held for the
+  customer** (`ORDER_CANCELLED`), never applied. A page reload's new key finds the same live order
+  by the quote's digest instead of placing a second one (smoke step 6).
 
 Follow-ups found during Phase 0 — **fixed 2026-11-09**:
 
@@ -601,39 +903,57 @@ Follow-ups found during Phase 0 — **fixed 2026-11-09**:
   `POST /api/v1/orders` used to store any `shippingAddressId`. It now asks
   customer for the caller's addresses, with the caller's own token, before
   pricing: someone else's address is 400 and nothing is written; customer
-  down is 503. The placement path's four calls (customer, catalog, the
-  machine token, shipping) fit inside the 15 s checkout waits for order —
+  down is 503. The placement path's calls (customer, catalog, the
+  machine token, shipping and, since Phase 7, inventory's hold) fit inside the **20 s** checkout
+  waits for order (15 s before Phase 7) —
   `WritePathBudgetTest` adds them up; catalog went from 2 s/5 s to 1 s/3 s to
-  make room. **Since Phase 1 they total 13 s** (customer and shipping 0.5 s +
-  2 s), which leaves 2 s for order's own save, and the test fails unless that
-  margin holds; order's call to payment on the pay path (0.5 s + 3 s) has its own
-  test, `PayPathBudgetTest`. Smoke step 20 (g) proves it live.
+  make room. **Since Phase 7 they total 15.5 s** (customer 2.5 s, catalog 4 s, the token 4 s,
+  shipping 2.5 s, inventory 2.5 s, each its connect plus read wait), which leaves at least 2 s for
+  order's own save, and the test fails unless that
+  margin holds. The pay path and its `PayPathBudgetTest` went with the card `/pay` in Phase 7.
+  Smoke step 20 (g) proves the address check live.
 - **The storefront's admin gate is `isStaff`** — any of the 14 capabilities,
   from one list (`oriah-web/src/lib/auth/capabilities.ts`) that a test keeps
   equal to the realm file — not `endsWith("_ADMIN")`.
-- **Phase 7's late payment confirmation** needs `BACKDATE_SALE` past 72 hours:
-  a check in payment's service, not a gateway path, written into Phase 7 with
-  its tests.
+- ✅ **Built in Phase 7: a late payment confirmation** needs `BACKDATE_SALE` past 72 hours:
+  a check in payment's service (`ConfirmationService`, via `ArrivalWindow`; the window is
+  `oriah.payment.backdate-window`, `PT72H`), not a gateway path. Money that arrived more than
+  72 hours before it is keyed is 403 without `BACKDATE_SALE` and 400 without a reason of 5 to 200
+  characters; the sale is recorded at the true date the money arrived, and the 72 hours decide only
+  who may key it. The live smoke test does not assert the 403 (no dev user holds `SALES_AGENT`
+  without `BACKDATE_SALE`: `maya` and `admin` are `OWNER`); the payment tests do.
 
 **The frontend is built after the backend** (decided 2026-11-09): from Phase 1,
 `oriah-web` is not changed while backend phases are built. Each phase records
 what the frontend must do in **`docs/FRONTEND_WORK.md`**, in the same commit —
 endpoint, request and reply, errors, the capability, and any Playwright spec it
-breaks. A failing spec not listed there is a regression.
+breaks. A failing spec not listed there is a regression. **Phase 7 breaks the storefront on
+purpose:** a confirmed checkout is now a held order, not a paid one (the shopper then claims a
+payment and staff confirm it), the order states grow (`PAYMENT_SUBMITTED`, `EXPIRED`), delivery is
+chosen by town with a payer, and the card `/pay` path is gone; `oriah-web` has not been changed
+to match.
 
 ---
 
 ## Where to read next
 
 - **`docs/MVP_PLAN.md`** — **the live plan.** Business-flow ordered phases, the
-  settled decisions with their reasoning, the allocator worked by hand, and the
-  verified next-free Flyway version per service.
+  settled decisions with their reasoning, the allocator worked by hand, and a
+  next-free Flyway table **verified at the end of Phase 6** (Phase 7's migrations are not in it
+  yet; on disk they are inventory V11, order V8, payment V6, promotion V3 and shipping V1-V2,
+  as the Services paragraph above says. Check the highest file on disk before adding one).
 - **`docs/CLIENT_DECISIONS.md`** — ✅ **the requirements baseline.** The client
   answered on 2026-11-07: 28 of 30 assumptions confirmed, all 31 questions
   answered over **two rounds**, scope reversals in both directions (§1 in, §6
   out), the **Zambian tax law with primary sources (§12)**, and only **one
   point still open (§8.4, for ZRA or an adviser), none blocking.** It wins over every other document in
   this repo. Read it before the plan.
+- **`../.codex-tmp/plan-p7-FINAL.md`** — the binding design of Phase 7 (its amendments A to H
+  win over `plan-p7-r1.md`, which carries the reasons for each deviation from the plan text).
+  **`.codex-tmp/current/openapi/<service>.json`** is the OpenAPI captured from the live stack,
+  the machine-readable contract of each service's endpoints; the intended breaks
+  against the Tier 0 baseline are listed in `scripts/openapi-allowed-breaks.txt`, under
+  "Phase 7 (Sell)".
 - **`shared/oriah-events/README.md`** — the event log module (outbox, relay,
   replay, inbox, dead-letter handling, every startup refusal). Read it before
   adding a producer or a consumer.
@@ -654,7 +974,9 @@ breaks. A failing spec not listed there is a regression.
 - **`docs/PROGRESS.md`** — read **from the top**; it is newest-first. **No
   "Next exact action" line in it is live** — both remaining ones are completed
   history and are marked where they sit; one would destroy the finished
-  frontend if executed.
+  frontend if executed. Its topmost entry is dated 2026-11-13 and stops at Phase 6; Phase 7's
+  entry comes with slice 7.6, and until then the "Built in Phase 7 (Sell)" block above is the
+  current state.
 - **`docs/ARCHITECTURE.md`** — decisions and rationale. Accurate on *why*; its
   present-tense claims are frozen at their own dates and the stale ones are now
   marked inline.
@@ -692,13 +1014,39 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
 
 - `project-oriah-currency-zmw.md` — ZMW is the default; the display locale
   must be pinned or RSC and client disagree
-- `project-oriah-phase7-products.md` — variants/types/categories/images scope
-- `project-oriah-docker-stack-ops.md` — the compose project is `default` under
-  `docker-compose/default`; a passing healthcheck can be the container you
-  failed to replace
-- `project-oriah-codex-invocation.md` — codex needs `-ExecutionPolicy Bypass`
-  or the skill silently writes no review file
+- `project-oriah-requirements-locked.md` — `docs/CLIENT_DECISIONS.md` is the
+  baseline; tax = ZRA Smart Invoice, deferred past the MVP (core integration-ready);
+  delivery per town; promotions per product, category or shop
+- `project-oriah-phase7-sell.md` — **the MVP plan's Phase 7 "Sell"**: six slices, the
+  design file (`.codex-tmp/plan-p7-FINAL.md`), the decisions that differ from the plan
+  text, slice status and the traps found while building it. Read it before touching the
+  sale path
+- `project-oriah-phase5-cost-ledger.md`, `project-oriah-phase6-pricing.md` — what
+  Phases 5 and 6 built (the FIFO ledger; the price floor, price history and boxes) and
+  their hand-offs to later phases
+- `project-oriah-phase7-products.md` — **not the MVP plan's Phase 7**: an earlier
+  October 2026 "Phase 7" that rebuilt products (variants/types/categories/images); shaped by a
+  live client-priced checkout hole and MinIO's images being withdrawn
+- `project-oriah-docker-stack-ops.md` — day to day: backing services in Docker, all
+  Java in IntelliJ (profile `local`); the Kafka HOST listener; PS 5.1 `byte[]` trap; redeploy
+  traps for the full stack (the compose project is `default` under `docker-compose/default`);
+  `s3-init` exits 0 by design
+- `project-oriah-full-stack-slow-host-traps.md`,
+  `project-oriah-container-native-memory.md` — why the full stack is slow on this laptop and
+  how procurement's memory limit was set
+- `project-oriah-codex-invocation.md` — codex is the CLI only (its MCP server was removed);
+  single-quote the `-Command` string, no `-m`, effort high; a run counts only with exit 0 and a
+  non-empty `-o` file. `project-oriah-codex-usage-limit.md` — Codex is out until 2026-11-15
+  07:30; the Phase 6 final-state and Phase 7 reviews are owed
 - `project-oriah-heredoc-backslash-trap.md` — Bash heredocs eat a backslash
   level; use the Edit tool for regex changes
+- `project-oriah-ps51-script-traps.md`, `project-oriah-spring-test-traps.md` — traps that made
+  a PowerShell 5.1 check or a Spring, Jackson or OpenAPI test lie
+- `feedback-correct-design-over-shortcuts.md`, `feedback-plain-language-zambian-client.md`,
+  `feedback-oriah-one-work-package.md`, `feedback-agents-no-maven-docker.md`,
+  `feedback-review-panel-after-codex.md` — how the owner wants the work done: the correct
+  design over a shortcut, plain language and every sum line by line in Kwacha, one work
+  package with no midway go-live, agents never run Maven or Docker, and a review panel as well
+  as Codex after a phase
 
 These load via `MEMORY.md`. Treat as load-bearing for tone and approach.

@@ -20,6 +20,94 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-14 (MVP_PLAN Phase 7 complete: sell)
+
+Phase 7 of `MVP_PLAN.md` is built, tested, reviewed by read-only panels, verified on the live stack and committed (**not pushed**). **A sale now works
+end to end, and the only way an order becomes paid is that staff confirm the money.** A shopper's order *holds* the pieces; the shopper pays outside the
+system (mobile money or a bank transfer) and tells the shop how; staff confirm what reached Oriah; the order then sells the stock from the oldest lot,
+dated to the day the money **arrived**, and is paid, with a receipt number of its own (never a tax invoice). Money that cannot pay a sale is **held for the
+customer**, never lost. Strict test-first except where noted below; `oriah-web` was not changed.
+
+**Codex has not reviewed Phase 7 (or Phase 6's final diff): its usage limit ran out and returns at 07:30 on 2026-11-15, and those reviews are owed.** Read-only
+panels did the reviewing meanwhile, and they found real defects (below).
+
+| What | Commits (`oriah-api`) |
+|---|---|
+| 7.1 Inventory: a reservation per order, boxes held by orders, the box swap, events; gateway keeps them off the edge | `6680f22`, `85978a1` |
+| 7.2 Shipping: its own database, delivery priced per town and option; wiring; gateway route | `ce54c2c`, `43f3724`, `0d78562` |
+| 7.3 Promotion and catalog: per-piece promotions replace discount codes; `/internal/**` denied; below-cost judged on the net price | `12583e5`, `299e2d6`, `4234661`, `6962954`, `86c321a` |
+| 7.4 Payment: staff confirm money, reject false claims, void mistakes; the card path switched off; gateway roles | `a4d0b69`, `8cc522d`, `1b513a2`, `e95d8cd` |
+| 7.5 Order, checkout, the shared quote, notification, gateway, the retired `/rates`, the smoke test | `cdb97b4`, `d78aa9f`, `656ae15`, `50e9a9c`, `ec5994b`, `d9d8e45`, `378feba`, `19a2609`, `8eaf14a`, `2063b68` |
+| The review panels' fixes (order twice, checkout once) | `d6233d9`, `0a7371f`, `8c4536e` |
+| The delivery waiver, which a requirement audit found unbuilt, and four late-money tests: order, then checkout | `103926c`, `3beb85a` |
+| 7.6 OpenAPI waivers, error goldens, Postman, this entry, the plan, the frontend handover, CLAUDE.md, README, ARCHITECTURE, LOCAL_DEV | `c8abd6b`, `9fdced1`, and the closing commit |
+
+`config-repo` got one commit: the contact-info description of payment, promotion, shipping, checkout and order now says what they do.
+
+### How it works, in plain words
+
+- **A sale, in order.** `checkout` prices the bag (list price, the discount per piece, the promotion that gave it) and asks `shipping` for the town's delivery
+  price; the shopper confirms, and `order` writes the order and asks `inventory` to hold every piece (and a box per piece) or none. A hold lasts 10 minutes. The
+  shopper pays outside the system and tells `order` how (`POST /api/v1/orders/{id}/payment-claim`), which stretches the hold to at most a day. Staff confirm the money
+  in `payment`. `order` settles it: it asks `inventory` to sell the held pieces, makes the order PAID with a receipt number and publishes `order.paid` (version 2).
+  A shopper may hold three orders and twenty pieces at once.
+- **Nothing is sold without money.** No person can move an order to PAID, EXPIRED or "payment submitted"; the old card `/pay` is gone and the per-variant stock
+  doors with it. Checkout touches no money at all: a 200 from it means *placed and held*, not paid.
+- **What staff see.** SALES_AGENT has two queues: the orders whose shopper has claimed a payment (soonest hold to lapse first) and the confirmed money that has not
+  simply paid its sale (waiting for a box, held, voided). A sale whose **box** has run out is never refunded for it: it waits and tries again every minute. A sale
+  whose **piece** was sold to someone else becomes held money for the customer. A confirmation staff keyed wrongly is voided (never once it has paid a sale).
+- **Delivery is priced per town.** Provinces and main towns are seeded; prices are never seeded: admin publishes a dated price per town and option, and a town nobody has
+  priced is a clear "not offered yet", never a guess. If the recipient pays the courier, the order carries K0 for delivery.
+- **Free delivery on one order, by the owner.** While an order is still waiting for a payment reference, the owner (`DELIVERY_WAIVER`) can make its delivery free
+  (`POST /api/v1/admin/orders/{id}/delivery-waiver`, with a reason): delivery goes to K0.00, the total falls by exactly that, and the order keeps who, why, when and how
+  much was given up (Flyway V8). Staff then confirm the lower amount; the old amount, if already sent, is held for the customer as a wrong amount. It never touches an
+  order whose payment is claimed, being applied or paid, one with no delivery charge, or one already waived. The shopper sees the lower total and the amount saved,
+  never who waived it or why. Added last, after a requirement audit found it unbuilt; it is covered by tests, mutation checks and smoke step 6j.
+- **A promotion applies by itself.** It covers one product, one category or the whole shop, for dates, as an amount or a percentage off *each piece*; the shopper never
+  types a code. Where two cover a piece, the one taking more off wins; they do not add.
+- **The price the shopper sees is the price they pay.** The preview ends in a fingerprint of the whole quote (goods, discounts, promotions, town, who pays the courier,
+  the delivery price); confirm must send it back, and any change (a price, a promotion, a quantity) is a clear 409 instead of a surprise.
+- **Safe to repeat.** The same confirm twice (same `Idempotency-Key`, or the same live bag) is one order; the same bag to a different address is refused rather than
+  quietly sent to the first; a lost reply is recovered by retrying with the same key. A settlement is a chain of steps, each safe to repeat; a confirmed payment the
+  order service has not answered is announced again (up to ten times) and flagged after five minutes.
+
+### How it was checked
+
+- **Tests**, each module run on the final code, 0 failures: order **387**, checkout **286**, payment **290**, shipping **54**, gateway **256**, notification **41**,
+  the shared quote **29**, inventory **372**, promotion **24**, catalog **656**.
+- **Mutation checks, because some tests came after the code.** Single-line breakages of the production code were run against the whole checkout suite (26: one
+  survived, a self-collect quote that kept a town and payer shipping named; it got its own test) and against the order tests (33: two survived, the re-checks under
+  the order's lock that the job's own query hid; they got direct tests; the last eight are for the delivery waiver and the late-money cases). Every one is now caught.
+- **Review panels (read-only agents, three skeptics per finding):** order, 96 agents, 30 findings, 23 confirmed (8 distinct defects, 5 test gaps); the fixes
+  reviewed again, 52 agents, 13 confirmed; checkout, 84 agents, 21 confirmed. The real defects, all fixed test-first: a replacement hold that lapsed was retried for ever
+  and confirmed money never paid the order; the hold job could release the hold of an order a repeat had just finished; an order whose expiry event was lost stayed live
+  for ever; a repeat of the same bag to another address was answered as success; a box swap could not be retried after a lost reply; a staff void could undo a sale whose
+  reply was lost; checkout turned order's new refusal into an opaque 500 and reported a dead order as "placed and held"; an over-long `Idempotency-Key` was a 500.
+- **Live, on the full 39-container stack** (all sixteen images rebuilt; order and checkout again from the final code): the **smoke test passed on its first run and again on
+  the final images** (the last run, with the waiver's step 6j, first failed in step 2b when procurement's first call to catalog was a 503 on cold services, the known
+  cold-start trap, and passed when repeated warm; steps 2b to 6j drive a received consignment, a price, a promotion, a checkout, a claim, a confirmation, a wrong amount, a rejected claim, the caps,
+  who may do what, a box swap, a delivered order paid in cash and the delivery waiver); **error goldens 44** (3 replaced, 11 added, 33 unchanged); **OpenAPI PASS** (261 additions, 71 waived: the
+  earlier 22 plus 49 for Phase 7, each with its reason) and the content audit passes after 20 admin endpoints were given an explicit 200; **Postman 156**, its GET check PASS.
+- **Memory** after two full smoke runs (a reading, not a burst): order 471 of its 640 MiB, checkout 299, payment 478, shipping 336, inventory 515 (Phase 6: 496),
+  promotion 350, notification 452 of 640; catalog 546 of 1,536. Order now runs two scheduled jobs and a Kafka consumer pair and is not near its limit; a heavy burst was
+  not measured. Neither order nor checkout logged one ERROR line across the runs.
+
+### What is not done, or not settled
+
+- **Codex review** of Phase 6's final diff and of Phase 7's design and diff (owed from 2026-11-15 07:30).
+- **Accepted and left open** (full list in `MVP_PLAN.md`, Phase 7): one shopper can exhaust checkout's shared rate limiter; checkout clears the whole cart after placing;
+  a dead replacement hold is replaced on the next attempt (up to five minutes unheld while inventory is failing); a box-swap reason of ten UTF-16 units but fewer than ten
+  characters passes validation; no interleaving test for the stale-placement claim.
+- **Hand-offs found by the requirement audit:** `order.paid` does not say how much delivery was waived (Phase 10 adds it as a compatible field when finance needs it); the
+  72-hour limit on keying a late sale is payment's `oriah.payment.backdate-window`, which Phase 9 must read rather than copy.
+- **Owner questions**: how long a lapsed order may still be settled at its old price (Q14); whether DISPATCH may swap a box; who may waive delivery and whether a waiver
+  needs a limit (as built: the owner only); the walk-in sale channel; the wording of two
+  shopper notices; whether staff need a list of unclaimed orders and of what each promotion covers. They are in `docs/FRONTEND_WORK.md`.
+- **The frontend** still talks to the old contract and will break at runtime until it is rebuilt after the backend (decided 2026-11-09): `docs/FRONTEND_WORK.md` lists every
+  endpoint, field, order state and problem type, the screens and specs that break, and what the shop's own people must supply (delivery prices per town, retail prices).
+
+---
+
 ## CURRENT STATE — 2026-11-13 (MVP_PLAN Phase 6 complete: price and publish)
 
 Phase 6 of `MVP_PLAN.md` is built, tested, reviewed at design time and again on the finished code, verified on the live

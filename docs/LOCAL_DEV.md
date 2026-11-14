@@ -70,11 +70,20 @@ A service started in IntelliJ with `SPRING_PROFILES_ACTIVE=local` reads
    > the shared settings. If that happens, just restart that service.
 
 3. **Start the services:** run **2. All services (local)**, or only the ones
-   you need. Who calls whom: cart → catalog; catalog → inventory; order →
-   catalog, payment, shipping; checkout → cart, catalog, customer, shipping,
-   order, payment (checkout no longer calls promotion — Phase 0, `0e24a94`).
-   For the one you are investigating
-   use **Debug** (the bug icon) instead of Run, and set your breakpoints.
+   you need. Who calls whom (updated 2026-11-14, Phase 7): cart → catalog;
+   catalog → inventory (stock and cost) and promotion (the discount in force);
+   checkout → cart, catalog, customer, shipping, order; order → catalog,
+   customer, inventory, shipping; procurement → catalog. Checkout no longer
+   calls promotion (Phase 0, `0e24a94`) or payment (Phase 7), and order no longer
+   calls payment: order and payment talk only through Kafka events (so Kafka
+   must be up for a sale to be paid), and order and inventory also hear each
+   other's events besides order's direct calls. Payment calls order only if the
+   card path is switched on, which it is not by default. **Promotion must be
+   running whenever catalog prices a piece**: if catalog cannot ask it, the
+   price is a 503 rather than a full price quoted during a promotion, so a cart,
+   a preview or an order fails with promotion stopped. For the one you are
+   investigating use **Debug** (the bug icon) instead of Run, and set your
+   breakpoints.
 
 4. **Check:** http://localhost:8761 lists every service you started, each as
    `localhost:<port>`.
@@ -101,6 +110,35 @@ powershell.exe -ExecutionPolicy Bypass -File .\scripts\local-dev-test.ps1 -Runni
 Without `-Running` it starts all 16 apps (the 3 platform apps and the 13 services) from source itself, checks each and
 stops them again (about 30 minutes) — the proof that this setup works at all.
 
+### Placing an order on your own PC (Phase 7)
+
+Nothing that moves money or stock is seeded, so a fresh database cannot sell
+anything until the admin endpoints have given it what a sale needs. Step 2b of
+`smoke-test.ps1` is the worked example, with every request body:
+
+- **Stock.** Only a received consignment makes any (a supplier, a purchase
+  order, a consignment with its costs, then receive it). Inventory learns of it
+  through Kafka a short while later; the first message after a cold start can be
+  slow (the smoke test polls for up to 120 seconds), so check the stock at
+  `GET /api/v1/admin/inventory` before placing the order.
+- **A published, priced product with a default box.** A variant is created
+  unpriced; its price is set through the pricing endpoint. One box goes with each
+  piece, so the product needs a default box (a packaging product), or inventory
+  refuses the hold (409 `no-default-box`).
+- **For any delivery except self-collect, a published price for that town and
+  option.** Provinces and main towns are seeded, delivery prices never are
+  (`/api/v1/admin/shipping/prices`: draft, then publish). A town nobody has
+  priced is 409 `town-not-offered`; self-collect needs none.
+- **Optionally a promotion** (`/api/v1/admin/promotions`).
+- **For any delivery except self-collect, a delivery address of the shopper's
+  own.** The customer profile and its addresses are the shopper's to create
+  (`POST /api/v1/customers/me`, then `POST /api/v1/customers/me/addresses`, as
+  alice); step 3 of `smoke-test.ps1` shows the bodies. An address that is not the
+  caller's is a 400 and nothing is placed.
+
+Then place it, give the payment reference and confirm the money, as in the
+Postman steps below.
+
 ---
 
 ## Credentials (all development-only)
@@ -111,7 +149,7 @@ stops them again (about 30 minutes) — the proof that this setup works at all.
 | Staff user — job role `OWNER` (every capability) + `USER` | log in through Postman or the storefront | `maya` | `password` |
 | Customer user — `USER` only | same | `alice` | `password` |
 | Owner placeholder — `OWNER` + `USER`, email `admin@oriah.local` | same | `admin` | temporary `ChangeMeOnFirstLogin!`; must set a new one at first login — use `maya` instead |
-| OAuth client (Postman, scripts, order's own calls to shipping) | realm `oriah` | `oriah-admin` | secret `oriah-admin-secret` |
+| OAuth client (Postman, scripts, order's own calls to inventory and shipping) | realm `oriah` | `oriah-admin` | secret `oriah-admin-secret` |
 | Grafana (only with `-Traces`) | http://localhost:3000 | `admin` | `admin` |
 | Image store, catalog's key | http://localhost:8333 | `catalogkey` | `catalogsecret` |
 
@@ -154,15 +192,23 @@ Shoppers hold `USER`. Today `admin` and `maya` hold `OWNER` + `USER`, and
 who a program becomes when it logs in as the `oriah-admin` client with the
 client secret (no user name, no password). It holds exactly **`USER` +
 `INVENTORY_ADMIN`**. It used to hold every admin role; it no longer holds
-`ORDER_ADMIN` or any other, so do not reuse it for them.
+`ORDER_ADMIN` or any other, so do not reuse it for them. Since Phase 7 it is
+**the only identity inventory accepts for holding, selling and releasing stock**
+(`/api/v1/admin/inventory/reservations/**` and `/box-swaps`): inventory checks
+that the token's `preferred_username` is `service-account-oriah-admin` (setting
+`oriah.inventory.machine-caller`) on top of `INVENTORY_ADMIN`, and the gateway
+does not route those paths at all. So an `OWNER` token such as maya's, sent
+straight to inventory's port 8082, is 403 there. Order is the caller; to try
+those endpoints by hand, ask Keycloak for a token as the client itself (grant
+`client_credentials`, client `oriah-admin`, the secret below).
 
 **The development secret, and where it is set.** The realm file holds only a
 placeholder, `${ORIAH_ADMIN_CLIENT_SECRET}`. Keycloak fills it in at import
 from its own environment: `docker-compose/default/docker-compose.yml` sets
 `ORIAH_ADMIN_CLIENT_SECRET: oriah-admin-secret` on `keycloak`. The same value
 is used by the scripts that sign in and by **order**, which signs its own calls
-to shipping with it, read from `ORIAH_SERVICE_CLIENT_SECRET`. All of them must
-match:
+to inventory and shipping with it, read from `ORIAH_SERVICE_CLIENT_SECRET`. No
+other service needs it. All of them must match:
 
 - order in a container — the compose file sets `ORIAH_SERVICE_CLIENT_SECRET`.
 - order from IntelliJ (profile `local`) — it needs `ORIAH_SERVICE_CLIENT_SECRET`
@@ -216,29 +262,95 @@ environment.
    or **as alice** (customer). It stores the token in `bearerToken`; every other request sends
    it. Tokens last 30 minutes — log in again on a 401.
 2. **1. Is it up?** — one health check per app, straight to its port.
-3. One folder per service with **all 128 endpoints**, each with its path
-   variables, query parameters and an example body. They go through the gateway
-   (`{{baseUrl}}`); the few the gateway does not expose (inventory's internal
-   reads) go straight to the service and say so in their description.
-4. **Checkout: preview first, then confirm** (as alice, with something in her
-   cart). Since Phase 0 (`0e24a94`) checkout quotes, then commits:
+3. One folder per service with **every endpoint the services published when it
+   was last generated** (156 on 2026-11-14, after Phase 7; 128 at the end of
+   Phase 6), each with its path variables, query parameters and an example body.
+   Most go through the gateway (`{{baseUrl}}`). The few the gateway does not
+   route go straight to the service and say so in their description: inventory's
+   `/api/v1/inventory/**` reads (`{{inventoryUrl}}`, port 8082) and catalog's
+   `/api/v1/admin/variants/lookup` and `/pricing-as-of` (`{{catalogUrl}}`, port
+   8081). **Inventory's reservation and box-swap requests are in the inventory
+   folder but are generated against the gateway, which answers 403 to them
+   (`denyAll`: they are the order system's calls, never a person's).** To try
+   one by hand, send it to inventory's own port 8082 with a token for the
+   machine identity (grant `client_credentials`, see *The machine identity*
+   above); a person's token, even `OWNER`'s, is 403 there too. Promotion's
+   `/internal/promotions/in-force` is not in the collection at all (it is hidden
+   from the API description).
+
+   Since the regeneration, the collection no longer carries Phase 6's checkout
+   `cardNumber` and `promotionCode`, `POST /api/v1/shipping/rates`, the card
+   `/payments/intents` or the promotion-code requests, and it does carry the
+   payment-claim, order-queue, box-swap, delivery-waiver, delivery-town and price, held-money and
+   promotion `replace` and `stop` requests. Regenerate it after any endpoint
+   changes (the apps must be running; command below) and re-import.
+4. **Checkout: preview, confirm, say how you paid, then staff confirm the money**
+   (as alice, with something in her cart, for a piece that is stocked, priced
+   and has a default box: see *Placing an order on your own PC* above). Since
+   Phase 0 (`0e24a94`) checkout quotes, then commits; since Phase 7 it only holds
+   the pieces, and a person confirms the money:
    - **Price the caller's cart** (`POST /api/v1/checkout/preview`). Leave
-     `deliveryOption` empty and it lists `shippingOptions`, with no total and
-     no `quoteDigest` yet. Today Zambia gets exactly one option,
-     `SELF_COLLECT` at K0. Send it again with `"deliveryOption": "SELF_COLLECT"`
-     and it returns the total and a `quoteDigest` — a fingerprint of that
-     exact price.
-   - **Run the checkout saga** (`POST /api/v1/checkout/confirm`). Send the same
-     `deliveryOption`, that `quoteDigest` and a `cardNumber`.
-     `shippingAddressId` is needed only for an option that delivers, so for
-     `SELF_COLLECT` remove the example's placeholder. There is no
-     `destinationCountry` on confirm any more.
-   - Leave **`promotionCode` empty** (the example bodies still show it): any
-     code is refused with **422 promotion-codes-not-accepted** until Phase 7.
-   - If a quantity, a price or the delivery price changed after the preview,
-     confirm answers **409 pricing-changed** before anything is ordered or
-     charged. Preview again
-     and confirm with the new `quoteDigest`.
+     `deliveryOption` out and you get the priced bag (each line's `unitPrice`,
+     `discountPerPiece` and `netUnitPrice`) with no total and no `quoteDigest`.
+     Name a delivery and it returns the total and a `quoteDigest`, a fingerprint
+     of that exact price. For collecting, send `{"deliveryOption": "SELF_COLLECT"}`
+     (no town, no payer). For a delivery send `deliveryOption`, `deliveryTownId`
+     (from `GET /api/v1/shipping/towns`, which lists only towns with a published
+     price) and optionally `payer` (`ORIAH_COLLECTS` or `RECIPIENT_PAYS`; the
+     courier paid on arrival is K0.00 on the order). Preview no longer lists
+     shipping options, and there is no `destinationCountry`.
+   - **Place the order** (`POST /api/v1/checkout/confirm`). Send the same
+     delivery fields and that `quoteDigest`, plus `shippingAddressId` for an
+     option that delivers (leave it out for `SELF_COLLECT`, and remove the
+     example's placeholder). There is **no `cardNumber` and no `promotionCode`**:
+     promotions apply by themselves. Add an `Idempotency-Key` header with any
+     fresh text per attempt: the same key again returns the same order instead
+     of placing a second. **A 200 means placed and held, not paid**:
+     `orderStatus` is `CREATED` and `holdExpiresAt` is about ten minutes away.
+   - **Say how you paid** (`POST /api/v1/orders/{id}/payment-claim`, as alice):
+     `{"method": "MTN", "reference": "<the provider's reference>"}`
+     (`MTN`, `AIRTEL`, `ZAMTEL` or `BANK_TRANSFER`; cash is refused). The order
+     becomes `PAYMENT_SUBMITTED` and its hold stretches to at most 24 hours
+     after the order was placed. Once the first 10 minutes have run out this is
+     **409 `hold-expired`**: place the order again.
+   - **Confirm the money** (`POST /api/v1/admin/payments/confirmations`, as maya,
+     with a required `Idempotency-Key` header): `orderId`, `method`, `reference`,
+     `gross` (exactly the order's total) and `fee`, and `arrivedAt` if the money
+     came earlier (more than 72 hours back needs `BACKDATE_SALE` and a
+     `backdateReason`). A moment later the order is `PAID`: poll
+     `GET /api/v1/orders/{id}`. Staff see what awaits money at
+     `GET /api/v1/admin/orders/awaiting-payment`, and money that did not pay its
+     sale at `GET /api/v1/admin/orders/settlements`. **The receipt number is not
+     in that reply or any other API answer.** A paid order carries it in its own
+     row, column `receipt_number` of table `orders` in the order database (port
+     5438, see *Seeing the data*; `smoke-test.ps1` reads it there), and in the
+     `order.paid` event, version 2.
+   - **Try the other staff acts** (as maya, who holds every capability). *Find
+     the claim:* `GET /api/v1/admin/payments/claims?orderId=<id>` (it appears a
+     short while after the shopper's claim; each row says `moneyRecorded` and
+     `usedElsewhere`). *Reject a false claim:*
+     `POST /api/v1/admin/payments/claims/{claimId}/reject` with `proofType`
+     `NOT_FOUND_AT_PROVIDER` and `evidence` of 10 or more characters, or
+     `REFERENCE_ALREADY_USED`; the order becomes `EXPIRED` and its pieces are
+     free. *Void a keying mistake:*
+     `POST /api/v1/admin/payments/confirmations/{id}/void` with a `reason` of 10
+     or more characters (409 `confirmation-settled` once it has paid a sale).
+     *Read held money* (money that could not pay a sale, owed to the customer):
+     `GET /api/v1/admin/payments/held-money`, which needs `PAYMENT_ADMIN`, so only
+     `OWNER`. *Confirm money for an order whose hold ran out, or a customer who
+     never typed a reference:* find it at
+     `GET /api/v1/admin/orders/awaiting-payment?orderId=<id>`, then confirm as
+     above; a lapsed order is paid only if its pieces are still free.
+   - **Refusals to expect:** **409 `pricing-changed`** if a quantity, a price,
+     a promotion or the delivery price changed after the preview (preview again
+     and confirm with the new `quoteDigest`; nothing was placed);
+     **409 `insufficient-stock`** (with `shortages` naming each short line);
+     **409 `hold-limit-reached`** (3 live orders or 20 pieces);
+     **409 `town-not-offered`** or **`payer-not-offered`** from shipping; and, on
+     a retry after a lost reply, **409 `cart-empty`**: the cart is cleared the
+     moment the order is placed, so look in the shopper's orders; or **409
+     `order-no-longer-held`** if the repeated `Idempotency-Key` finds its order
+     already `EXPIRED` or `CANCELLED` (confirm again with a new key).
 
 The collection is **generated from the services' own API descriptions**, not
 written by hand, so it cannot drift. After an endpoint changes, with the apps
@@ -261,10 +373,26 @@ own port (`http://localhost:8086/...`) only to rule the gateway out.
 ## Debugging tips
 
 - **A breakpoint makes the caller give up.** While a service is paused, the
-  service that called it is still counting: order waits 5 s for catalog,
-  checkout 15 s overall. The caller then fails with 503 or 500 even though
-  nothing is wrong — expected. Put the breakpoint in the caller instead, or
-  answer quickly.
+  service that called it is still counting: order waits 3 s for catalog's answer
+  (1 s to connect) and 2 s each for customer, shipping and inventory, and checkout
+  waits 20 s for order's whole placement (15 s for its other calls). The caller
+  then fails with 503 or 500 even though nothing is wrong — expected. Put the
+  breakpoint in the caller instead, or answer quickly.
+- **A hold keeps counting while you debug.** A placed order's pieces are held for
+  10 minutes (stretched to at most 24 hours after the order was placed once a
+  payment reference is given); then inventory's
+  sweeper (every 30 s) lets them go and the order becomes `EXPIRED`. Staff money
+  confirmed for an `EXPIRED` order can still pay it if its pieces are still
+  free, otherwise the money is held for the customer.
+- **Money confirmed but the order is not `PAID` yet?** Settlement is
+  asynchronous: payment announces the confirmation, order settles it (calling
+  inventory) a moment later. If inventory does not answer, order tries again
+  (every 15 s, backing off to 5 minutes), and payment announces money that order
+  has not answered again after 5 minutes. See where it stands at
+  `GET /api/v1/admin/orders/settlements` (in flight, waiting for a box,
+  unsettled with its reason) and
+  `GET /api/v1/admin/payments/confirmations/pending` (money order has not
+  answered; stuck after 5 minutes).
 - **Follow one request across services:** every log line written while
   handling a request carries its `traceId`; search for it in each service's
   console. With `.\scripts\dev-stack.ps1 -Traces`

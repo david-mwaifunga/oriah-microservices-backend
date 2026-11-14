@@ -4,10 +4,10 @@
 #
 # Drives the full backend through the gateway. Each step is listed under the
 # banner it prints, so a failure on screen can be found here by its number.
-# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6i, 8b and 20b to 20f.
+# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20f.
 #
 # Phase 7 "Sell": the sale is placed, HELD, claimed, confirmed BY STAFF and settled
-# asynchronously (steps 2b-6i). Checkout never touches money: there is no card, and
+# asynchronously (steps 2b-6j). Checkout never touches money: there is no card, and
 # money reaches an order only when a member of staff confirms it. Everything this
 # script makes is made under random names and is kept (history is never deleted), so
 # it can run again and again against a live stack; counts are always relative to ids
@@ -91,6 +91,12 @@
 #      (town and payer are part of it), placed, paid in CASH by staff for exactly the
 #      total (goods after discount + K45.00); the same delivery with RECIPIENT_PAYS
 #      costs K0.00 on the order.
+#   [6j/20] Free delivery on one order (POST /admin/orders/{id}/delivery-waiver,
+#      DELIVERY_WAIVER): a shopper 403, no token 401, a short reason 400; the owner
+#      waives a waiting order, the total falls by the delivery, the shopper sees the
+#      lower total but not who or why, staff see both; a second waiver, an order with
+#      no delivery and a PAID order are 409; the same confirm repeated after the
+#      waiver answers the same order. Nothing is paid (step 20e counts the ring's lots).
 #   [7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED. maya drives the admin
 #      transitions.
 #   [8/20] Search index (Kafka-driven) finds product, via /search?q=aurelia
@@ -497,7 +503,7 @@ Write-Host "    all $($routeProbes.Count) services resolvable through the gatewa
 $sku = "AUR-18K-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
 # ---------------------------------------------------------------------------
-# SHARED HELPERS. The sale path (steps 2b-6i), the staff-money checks (20b) and the stock steps
+# SHARED HELPERS. The sale path (steps 2b-6j), the staff-money checks (20b) and the stock steps
 # (20c-20f) all need to read a refusal as a status and a problem body instead of an exception, to
 # poll an answer that Kafka brings (with a deadline, never a fixed sleep), and to read stock and cost
 # from inventory. They are defined once, here, before any step calls them.
@@ -1737,6 +1743,67 @@ $r2Cancel = Invoke-Api POST "$gw/orders/$r2Id/cancel" $aliceH $null
 Assert-Reply $r2Cancel "cancelling the recipient-pays order" 200
 Wait-Stock $saleVariantId 9 0 | Out-Null
 Write-Host "    OWN_DELIVERY to town ${townId}: preview K$dShip delivery, total K$dTotal, digest = this script's own (town and payer bound; no payer = Oriah collecting); recipient pays -> K0.00, total K90.00, another digest; Yango resolves to the recipient; the other quote's digest 409 pricing-changed; placed, paid in cash by staff for exactly K$dTotal -> PAID with a receipt, a second sale from the same oldest lot; the recipient-pays order placed at K90.00 and cancelled" -ForegroundColor Gray
+
+Write-Host "[6j/20] Free delivery on one order: the owner waives the delivery of a waiting order, the total falls by exactly that, who and why stay with staff..." -ForegroundColor Cyan
+# DELIVERY_WAIVER (the owner holds it; a shopper does not). The order is placed and held at goods + delivery, the delivery is made free, and the order then
+# says K0.00 delivery and the lower total. Checkout must still accept that order when a lost reply is retried with the same key: its quote says goods +
+# delivery, the order says goods, and the difference is exactly the delivery that was waived. The orders are cancelled at the end (nothing is paid here:
+# step 20e counts the sale ring's lots, and a third sale would move them).
+$wKey = New-Key "smoke-confirm-waiver"
+Clear-Cart
+Add-ToCart $saleVariantId 1
+$wPlaced = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = $wKey }) ($deliveryBody + @{ quoteDigest = $dPreview.quoteDigest })
+Assert-Reply $wPlaced "confirming the order whose delivery is to be waived" 200
+$wId = "$($wPlaced.Json.orderId)"
+Require (Same-Money $wPlaced.Json.total "$dTotal") "the order to waive was placed at $($wPlaced.Json.total), expected the quote's $dTotal"
+$wReason = "smoke test: a regular customer, free delivery as a thank-you"
+$wUri = "$gw/admin/orders/$wId/delivery-waiver"
+$wAlice = Invoke-Api POST $wUri $aliceH @{ reason = $wReason }
+Require ($wAlice.Status -eq 403) "a shopper waiving delivery gave $($wAlice.Status), expected 403 (only DELIVERY_WAIVER may)"
+$wNoToken = Invoke-Api POST $wUri $null @{ reason = $wReason }
+Require ($wNoToken.Status -eq 401) "waiving delivery with no token gave $($wNoToken.Status), expected 401"
+$wShortReason = Invoke-Api POST $wUri $mayaH @{ reason = "no" }
+Require ($wShortReason.Status -eq 400) "a waiver with a two-letter reason gave $($wShortReason.Status), expected 400"
+Require (Same-Money (Get-Order $wId).total "$dTotal") "a refused waiver changed the order's total to $((Get-Order $wId).total)"
+$waived = Invoke-Api POST $wUri $mayaH @{ reason = "  $wReason  " }
+Assert-Reply $waived "the owner waiving the delivery" 200
+Require ((Same-Money $waived.Json.shippingAmount "0.00") -and (Same-Money $waived.Json.total "$dGoods") -and (Same-Money $waived.Json.deliveryWaivedAmount "$dShip") -and
+         ("$($waived.Json.status)" -ceq "CREATED") -and ("$($waived.Json.deliveryWaiverReason)" -ceq $wReason) -and ("$($waived.Json.deliveryWaivedBy)" -like "user:*") -and $waived.Json.deliveryWaivedAt) "the waived order reads $($waived.Json | ConvertTo-Json -Depth 3 -Compress); expected CREATED, delivery 0.00, total $dGoods (was $dTotal), K$dShip waived, the trimmed reason, who (user:...) and when"
+# The shopper sees the lower total and the amount saved, and never who waived it or why; staff see all of it.
+$wMine = Get-Order $wId
+Require ((Same-Money $wMine.shippingAmount "0.00") -and (Same-Money $wMine.total "$dGoods") -and (Same-Money $wMine.deliveryWaivedAmount "$dShip")) "the shopper's own order reads delivery=$($wMine.shippingAmount) total=$($wMine.total) waived=$($wMine.deliveryWaivedAmount), expected 0.00, $dGoods, $dShip"
+Require (($null -eq $wMine.deliveryWaivedBy) -and ($null -eq $wMine.deliveryWaiverReason) -and ($null -eq $wMine.deliveryWaivedAt)) "the shopper's own order shows who or why delivery was waived: $($wMine | ConvertTo-Json -Depth 3 -Compress)"
+$wStaff = Invoke-Api GET "$gw/admin/orders/$wId" $mayaH $null
+Require (($wStaff.Status -eq 200) -and ("$($wStaff.Json.deliveryWaiverReason)" -ceq $wReason) -and ("$($wStaff.Json.deliveryWaivedBy)" -like "user:*")) "staff's read of the waived order gave $($wStaff.Status) with reason '$($wStaff.Json.deliveryWaiverReason)' by '$($wStaff.Json.deliveryWaivedBy)', expected the reason and the person"
+# One waiver only, of what there was.
+$wTwice = Invoke-Api POST $wUri $mayaH @{ reason = $wReason }
+Require (($wTwice.Status -eq 409) -and "$($wTwice.Json.type)".EndsWith("/delivery-already-waived")) "a second waiver gave $($wTwice.Status) '$($wTwice.Json.type)', expected 409 delivery-already-waived"
+Require (Same-Money (Get-Order $wId).total "$dGoods") "a second waiver changed the total to $((Get-Order $wId).total)"
+# A lost reply retried with the same key, after the waiver: the same order comes back (200) and checkout accepts its lower total.
+Clear-Cart
+Add-ToCart $saleVariantId 1
+$wRepeat = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = $wKey }) ($deliveryBody + @{ quoteDigest = $dPreview.quoteDigest })
+Assert-Reply $wRepeat "repeating the confirm of the waived order with the same key" 200
+Require (("$($wRepeat.Json.orderId)" -ceq $wId) -and (Same-Money $wRepeat.Json.total "$dGoods")) "the repeated confirm answered order '$($wRepeat.Json.orderId)' at $($wRepeat.Json.total), expected the same order $wId at $dGoods"
+# An order with no delivery to waive: the recipient pays the courier, so delivery is K0.00 already.
+Clear-Cart
+Add-ToCart $saleVariantId 1
+$nPlaced = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-nothing-to-waive") }) @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId; quoteDigest = $rPreview.quoteDigest }
+Assert-Reply $nPlaced "placing the recipient-pays order" 200
+$nId = "$($nPlaced.Json.orderId)"
+$nWaive = Invoke-Api POST "$gw/admin/orders/$nId/delivery-waiver" $mayaH @{ reason = $wReason }
+Require (($nWaive.Status -eq 409) -and "$($nWaive.Json.type)".EndsWith("/no-delivery-to-waive")) "waiving an order with no delivery gave $($nWaive.Status) '$($nWaive.Json.type)', expected 409 no-delivery-to-waive"
+$nUnknown = Invoke-Api POST "$gw/admin/orders/00000000-0000-4000-8000-00000000d00d/delivery-waiver" $mayaH @{ reason = $wReason }
+Require ($nUnknown.Status -eq 404) "waiving an order that does not exist gave $($nUnknown.Status), expected 404"
+# A paid order's delivery is never waived (the shopper has paid the old total): the delivered order of step 6i is PAID.
+$wPaid = Invoke-Api POST "$gw/admin/orders/$dOrderId/delivery-waiver" $mayaH @{ reason = $wReason }
+Require (($wPaid.Status -eq 409) -and "$($wPaid.Json.type)".EndsWith("/delivery-waiver-not-allowed")) "waiving the delivery of a PAID order gave $($wPaid.Status) '$($wPaid.Json.type)', expected 409 delivery-waiver-not-allowed"
+Require (Same-Money (Get-Order $dOrderId).total "$dTotal") "refusing a waiver on the paid order still changed its total to $((Get-Order $dOrderId).total)"
+foreach ($cancelId in @($wId, $nId)) {
+    Assert-Reply (Invoke-Api POST "$gw/orders/$cancelId/cancel" $aliceH $null) "cancelling order $cancelId after the waiver checks" 200
+}
+Wait-Stock $saleVariantId 9 0 | Out-Null
+Write-Host "    the owner waived K$dShip of delivery on a waiting order: K$dTotal became K$dGoods; a shopper 403, no token 401, a short reason 400; the shopper's own order shows the lower total and K$dShip saved but not who or why, staff's read shows both; a second waiver 409 delivery-already-waived; the same confirm repeated after the waiver answers the same order at K$dGoods; no delivery to waive 409, an unknown order 404, a PAID order 409 delivery-waiver-not-allowed with its total untouched" -ForegroundColor Gray
 
 Write-Host "[7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {

@@ -61,6 +61,27 @@
     "request": "POST /api/v1/admin/procurement/consignments  (as admin)",
     "status": 400
   },
+  "400-delivery-waiver-reason-too-short": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Request validation failed",
+      "instance": "/api/v1/admin/orders/<uuid>/delivery-waiver",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as admin)",
+    "status": 400
+  },
   "400-malformed-uuid-path": {
     "contentType": "application/problem+json",
     "problem": {
@@ -308,6 +329,25 @@
     "request": "GET /api/v1/admin/costs/lots  (as user)",
     "status": 403
   },
+  "403-delivery-waiver-by-a-shopper": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/orders/<uuid>/delivery-waiver",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as user)",
+    "status": 403
+  },
   "403-pricing-list-as-plain-user": {
     "contentType": "application/problem+json",
     "problem": {
@@ -441,6 +481,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/admin/orders/<uuid>/box-swaps  (as admin)",
+    "status": 404
+  },
+  "404-delivery-waiver-on-an-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/delivery-waiver",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as admin)",
     "status": 404
   },
   "404-payment-claim-for-an-unknown-order": {
