@@ -781,7 +781,7 @@
           }
         },
         {
-          "name": "The priced pieces that stand below cost (or with no cost known, or in the wrong currency), evaluated now",
+          "name": "The priced pieces that stand below cost (or with no cost known, or in the wrong currency), judged on what a customer pays",
           "request": {
             "method": "GET",
             "header": [],
@@ -815,11 +815,23 @@
                   "value": "",
                   "disabled": true,
                   "description": ""
+                },
+                {
+                  "key": "at",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "promotionId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
                 }
               ],
               "variable": []
             },
-            "description": "Every priced, active variant of a sellable product that has not been deleted, compared with the stock held NOW, so a dearer lot received, a corrected cost, a dear lot sold out of or a changed default box shows here the next time anyone looks. `status` filters (BELOW by default; NO_COST_KNOWN, CURRENCY_MISMATCH, OK, or ALL); `counts` gives every status whatever the filter. Biggest shortfall first."
+            "description": "Every priced, active variant of a sellable product that has not been deleted, compared with the stock held NOW, so a dearer lot received, a corrected cost, a dear lot sold out of or a changed default box shows here the next time anyone looks. The comparison is made on the NET price: the list price (`price`) less the promotion in force (`discountPerPiece`, `promotionId`, `netPrice`). `at` (now or later) applies the promotions that will be in force then, which is how an admin sees what a promotion that has not started yet will do; `promotionId` lists only the pieces that promotion discounts (and the counts are about those pieces). `status` filters (BELOW by default; NO_COST_KNOWN, CURRENCY_MISMATCH, OK, or ALL); `counts` gives every status whatever the status filter. Biggest shortfall first. A promotion never needs a reason and is never refused: it is warned about here."
           }
         },
         {
@@ -1366,6 +1378,38 @@
               }
             },
             "description": "**Not routed by the gateway** -- internal to the services, so this calls catalog directly on port 8081.\n\nInternal. Read-only despite being a POST. One entry per requested id, in request order: found = false for an id that is no variant. A deleted product's variant is found and flagged productDeleted. Identity only, never a price."
+          }
+        },
+        {
+          "name": "Price up to 100 variants at a past instant",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/admin/variants/pricing-as-of",
+              "host": [
+                "{{catalogUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "variants",
+                "pricing-as-of"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"at\": \"2026-11-08T10:00:00Z\",\n  \"variantIds\": [\n    \"00000000-0000-0000-0000-000000000000\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "**Not routed by the gateway** -- internal to the services, so this calls catalog directly on port 8081.\n\nInternal. Read-only despite being a POST. Each requested id is answered, in request order, with the list price in force at the instant, the promotion that applied then and the net price. A piece with no price yet at that instant is NO_PRICE_AT_DATE (never zero, never today's price); a packaging entry or an unknown id is UNKNOWN. Today's publication state is ignored: a piece withdrawn since was still sold at its price on the day."
           }
         },
         {
@@ -1945,6 +1989,38 @@
           }
         },
         {
+          "name": "Swap the box of a paid order: reverse the original box's sale and sell the replacement",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/box-swaps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "box-swaps"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amendmentId\": \"00000000-0000-0000-0000-000000000000\",\n  \"orderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"productId\": \"00000000-0000-0000-0000-000000000000\",\n  \"originalSaleLineId\": \"00000000-0000-0000-0000-000000000000\",\n  \"replacementSaleLineId\": \"00000000-0000-0000-0000-000000000000\",\n  \"replacementBoxVariantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "One transaction, keyed by the amendment id. Both rows are dated to the day of the sale and recorded now. Boxes go back to free. A repeat of the same swap answers it (replay: true) and changes nothing."
+          }
+        },
+        {
           "name": "Check every stock count against its cost lots, and every lot against its ledger",
           "request": {
             "method": "GET",
@@ -1972,6 +2048,179 @@
               "variable": []
             },
             "description": "One count, not three: on-hand must equal what the current lots hold. Counts only, no cost. A clean system reports no mismatches."
+          }
+        },
+        {
+          "name": "Hold an order's pieces and their boxes, all or nothing",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/reservations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "reservations"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reservationId\": \"00000000-0000-0000-0000-000000000000\",\n  \"orderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"lines\": [\n    {\n      \"saleLineId\": \"00000000-0000-0000-0000-000000000000\",\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"productId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 0.0,\n      \"boxLineId\": \"00000000-0000-0000-0000-000000000000\",\n      \"boxVariantId\": \"00000000-0000-0000-0000-000000000000\"\n    }\n  ],\n  \"holdSeconds\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A shortage on any line holds nothing and names every short line. Asking again with the same reservation id holds nothing more. An order holds one reservation at a time."
+          }
+        },
+        {
+          "name": "A reservation as it stands",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/reservations/:reservationId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "reservations",
+                ":reservationId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "reservationId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "The order has paid: sell every line, dated to the money",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/reservations/:reservationId/consume",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "reservations",
+                ":reservationId",
+                "consume"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "reservationId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"occurredAt\": \"2026-11-08T10:00:00Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Pieces and boxes drain their oldest lots in one transaction, each under the order's own sale-line id. Idempotent: consuming again answers the same sale. A hold that has lapsed cannot be sold, even before the sweep has ended it."
+          }
+        },
+        {
+          "name": "Stretch the hold (a payment reference was submitted)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/reservations/:reservationId/extend",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "reservations",
+                ":reservationId",
+                "extend"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "reservationId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"until\": \"2026-11-08T10:00:00Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Never beyond a day from when it was made, and never shorter than it is."
+          }
+        },
+        {
+          "name": "Let go of the hold",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/reservations/:reservationId/release",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "reservations",
+                ":reservationId",
+                "release"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "reservationId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Pieces and boxes go back where they came from. Releasing a reservation that is not held (sold, released, expired) changes nothing."
           }
         },
         {
@@ -2109,123 +2358,6 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"requestId\": \"00000000-0000-0000-0000-000000000000\",\n  \"qty\": 1,\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"note\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": ""
-          }
-        },
-        {
-          "name": "Consume reserved units for a sale: the oldest cost lots are drained and the cost recorded",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/inventory/:variantId/confirm",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "inventory",
-                ":variantId",
-                "confirm"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "variantId",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"qty\": 1,\n  \"saleLineId\": \"00000000-0000-0000-0000-000000000000\",\n  \"occurredAt\": \"2026-11-08T10:00:00Z\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": "The sale line makes a retry safe: the same sale line with the same quantity answers again and takes nothing; a sale line already used for a different request is a 409. A paid sale is never refused for its date, only for being in the future. This is the order system's call, not a person's button: the gateway does not route it."
-          }
-        },
-        {
-          "name": "Release units back from reserved",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/inventory/:variantId/release",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "inventory",
-                ":variantId",
-                "release"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "variantId",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"qty\": 1\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": ""
-          }
-        },
-        {
-          "name": "Reserve units against available stock",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/inventory/:variantId/reserve",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "inventory",
-                ":variantId",
-                "reserve"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "variantId",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"qty\": 1\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2755,6 +2887,269 @@
           }
         },
         {
+          "name": "Claims, newest first; optionally of one order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/claims",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "claims"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Each says whether money is already recorded for it (`moneyRecorded`) and whether its reference is used for another order (`usedElsewhere`)."
+          }
+        },
+        {
+          "name": "One claim",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/claims/:claimId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "claims",
+                ":claimId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "claimId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Reject a claim as false",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/claims/:claimId/reject",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "claims",
+                ":claimId",
+                "reject"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "claimId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"proofType\": \"\",\n  \"evidence\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "`NOT_FOUND_AT_PROVIDER` needs `evidence` (ten characters or more). `REFERENCE_ALREADY_USED` is checked by the service: the same reference must already be confirmed for another order (held money counts, a voided confirmation does not). A claim whose reference already has money recorded for its own order cannot be rejected. Posts nothing and does not use the reference."
+          }
+        },
+        {
+          "name": "Record money that reached Oriah",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/confirmations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "confirmations"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"method\": \"\",\n  \"reference\": \"\",\n  \"gross\": 0.0,\n  \"fee\": 0.0,\n  \"currency\": \"\",\n  \"arrivedAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\",\n  \"net\": 0.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Method, reference (cash needs none), gross, fee and the date the money ARRIVED. Net is gross less fee and is never accepted. A reference confirms money once. Money older than 72 hours needs BACKDATE_SALE and a backdateReason. `Idempotency-Key` is required: the same key and request answers the same confirmation (200)."
+          }
+        },
+        {
+          "name": "Confirmations order has not answered yet, oldest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/confirmations/pending",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "confirmations",
+                "pending"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Money recorded that nothing has acted on yet. `stuck` is true once one has waited longer than the settlement window (five minutes): someone should look. Settled, held and voided confirmations are not listed."
+          }
+        },
+        {
+          "name": "One confirmation, with what became of the money",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/confirmations/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "confirmations",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Take back a confirmation keyed wrongly",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/confirmations/:id/void",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "confirmations",
+                ":id",
+                "void"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Needs a reason of at least ten characters. Frees the reference so the corrected confirmation can use it, closes the money held for it and announces payment.voided. A confirmation that paid a sale is never voided."
+          }
+        },
+        {
+          "name": "Money owed back to customers, newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/held-money",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "held-money"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "`status` is OWED (the default), VOIDED (its confirmation was voided as keyed wrongly) or ALL."
+          }
+        },
+        {
           "name": "Exact ledger totals: counts by status and captured money per currency",
           "request": {
             "method": "GET",
@@ -2798,112 +3193,6 @@
             },
             "description": ""
           }
-        },
-        {
-          "name": "Create a payment intent for one of the caller's orders",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/payments/intents",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "payments",
-                "intents"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"orderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"amount\": 0.0,\n  \"currency\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": ""
-          }
-        },
-        {
-          "name": "One of the caller's own payment intents",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/payments/intents/:id",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "payments",
-                "intents",
-                ":id"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "id",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "description": ""
-          }
-        },
-        {
-          "name": "Charge the gateway and settle the intent",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Idempotency-Key",
-                "value": "{{$guid}}",
-                "disabled": false,
-                "description": ""
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/payments/intents/:id/confirm",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "payments",
-                "intents",
-                ":id",
-                "confirm"
-              ],
-              "query": [],
-              "variable": [
-                {
-                  "key": "id",
-                  "value": "",
-                  "description": ""
-                }
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"cardNumber\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": ""
-          }
         }
       ]
     },
@@ -2940,6 +3229,66 @@
           }
         },
         {
+          "name": "Orders whose shopper says they have paid, soonest to lapse first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/awaiting-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "awaiting-payment"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "Each carries the method and reference the shopper gave, for staff to find in the bank or the provider's records and confirm (or reject). With orderId: that one order if it can still take money (waiting for payment, claimed, or lapsed), so money can be confirmed for a customer who never typed a reference. At most 100."
+          }
+        },
+        {
+          "name": "Confirmed money that has not paid its sale",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/settlements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "settlements"
+              ],
+              "query": [
+                {
+                  "key": "state",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "In flight (stuck when it has waited more than five minutes), waiting for a box (the box is named), unsettled with the reason it could not pay the sale, or voided. Newest first, at most 100. state: IN_FLIGHT, BLOCKED_BOX, UNSETTLED or VOIDED."
+          }
+        },
+        {
           "name": "One order by id",
           "request": {
             "method": "GET",
@@ -2966,6 +3315,45 @@
               ]
             },
             "description": ""
+          }
+        },
+        {
+          "name": "Change the box of a paid order's line",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/box-swaps",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "box-swaps"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"lineId\": \"00000000-0000-0000-0000-000000000000\",\n  \"replacementBoxVariantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"reason\": \"\",\n  \"amendmentId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Inventory reverses the original box's sale and sells the replacement, both dated to the day of the SALE (a swap never moves it); the line then carries the new box. Only a PAID order that has not been fulfilled. Send the same amendmentId to retry after a lost reply: a repeat answers the same swap (replay: true). Without one, the id is worked out from the line as it stands and the box asked for, so a plain retry of the same request is just as safe. The reason is judged trimmed."
           }
         },
         {
@@ -3011,7 +3399,14 @@
           "name": "Place an order",
           "request": {
             "method": "POST",
-            "header": [],
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/v1/orders",
               "host": [
@@ -3027,7 +3422,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"currency\": \"\",\n  \"items\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"title\": \"\",\n      \"quantity\": 1,\n      \"unitPrice\": 0.0\n    }\n  ],\n  \"deliveryOption\": \"\",\n  \"quoteDigest\": \"\"\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"currency\": \"\",\n  \"items\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"title\": \"\",\n      \"quantity\": 1,\n      \"unitPrice\": 0.0\n    }\n  ],\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\",\n  \"quoteDigest\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3146,12 +3541,12 @@
           }
         },
         {
-          "name": "Attach a settled payment intent and transition to PAID",
+          "name": "Say how you paid: a mobile-money or bank-transfer reference",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/orders/:id/pay",
+              "raw": "{{baseUrl}}/api/v1/orders/:id/payment-claim",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -3160,7 +3555,7 @@
                 "v1",
                 "orders",
                 ":id",
-                "pay"
+                "payment-claim"
               ],
               "query": [],
               "variable": [
@@ -3173,14 +3568,14 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"paymentIntentId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "raw": "{\n  \"method\": \"\",\n  \"reference\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": ""
+            "description": "Not money: staff confirm the payment (or tell you they cannot find it). Giving a reference stretches the hold on your pieces to a day so they have time to look. Only an order waiting for payment can take one, and only once: the same reference again is the same claim, another is refused."
           }
         }
       ]
@@ -3189,12 +3584,12 @@
       "name": "promotion",
       "item": [
         {
-          "name": "All discount codes, paged",
+          "name": "Promotions, newest first; optionally of one scope or only those in force now (true) or not (false)",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/promotions?pageable=",
+              "raw": "{{baseUrl}}/api/v1/admin/promotions",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -3206,9 +3601,15 @@
               ],
               "query": [
                 {
-                  "key": "pageable",
+                  "key": "scopeType",
                   "value": "",
-                  "disabled": false,
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "inForce",
+                  "value": "",
+                  "disabled": true,
                   "description": ""
                 }
               ],
@@ -3218,7 +3619,7 @@
           }
         },
         {
-          "name": "Create a discount code",
+          "name": "Make a promotion; it may not start in the past",
           "request": {
             "method": "POST",
             "header": [],
@@ -3238,7 +3639,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"code\": \"\",\n  \"type\": \"FIXED\",\n  \"amount\": 0.0,\n  \"description\": \"\",\n  \"validUntil\": \"2026-11-08T10:00:00Z\",\n  \"maxRedemptions\": 1\n}",
+              "raw": "{\n  \"name\": \"\",\n  \"scopeType\": \"\",\n  \"scopeId\": \"00000000-0000-0000-0000-000000000000\",\n  \"discountType\": \"\",\n  \"amount\": 0.0,\n  \"startsOn\": \"2026-11-08\",\n  \"endsOn\": \"2026-11-08\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3249,12 +3650,12 @@
           }
         },
         {
-          "name": "Disable a discount code",
+          "name": "One promotion",
           "request": {
-            "method": "POST",
+            "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/promotions/:code/disable",
+              "raw": "{{baseUrl}}/api/v1/admin/promotions/:id",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -3263,13 +3664,81 @@
                 "v1",
                 "admin",
                 "promotions",
-                ":code",
-                "disable"
+                ":id"
               ],
               "query": [],
               "variable": [
                 {
-                  "key": "code",
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Change a promotion: the old one stops now and the new one says which it replaces",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/promotions/:id/replace",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "promotions",
+                ":id",
+                "replace"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"\",\n  \"scopeType\": \"\",\n  \"scopeId\": \"00000000-0000-0000-0000-000000000000\",\n  \"discountType\": \"\",\n  \"amount\": 0.0,\n  \"startsOn\": \"2026-11-08\",\n  \"endsOn\": \"2026-11-08\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "End a promotion from now: it applied before this moment and does not after",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/promotions/:id/stop",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "promotions",
+                ":id",
+                "stop"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
                   "value": "",
                   "description": ""
                 }
@@ -3299,51 +3768,84 @@
             },
             "description": ""
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "shipping",
+      "item": [
         {
-          "name": "Look up a discount code",
+          "name": "The options a parcel can go by",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/promotions/:code",
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/options",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "promotions",
-                ":code"
+                "admin",
+                "shipping",
+                "options"
               ],
               "query": [],
-              "variable": [
-                {
-                  "key": "code",
-                  "value": "",
-                  "description": ""
-                }
-              ]
+              "variable": []
             },
             "description": ""
           }
         },
         {
-          "name": "Compute the discount for a subtotal",
+          "name": "Add a courier or a bus company's parcel service",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/promotions/:code/apply",
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/options",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "promotions",
-                ":code",
-                "apply"
+                "admin",
+                "shipping",
+                "options"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"\",\n  \"kind\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Switch an option on or off",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/options/:code",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "options",
+                ":code"
               ],
               "query": [],
               "variable": [
@@ -3356,7 +3858,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"subtotal\": 0.0\n}",
+              "raw": "{\n  \"active\": false,\n  \"version\": 1\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3367,26 +3869,147 @@
           }
         },
         {
-          "name": "Increment the code's redemption count",
+          "name": "Prices, drafts and history, optionally of one town, option or status",
           "request": {
-            "method": "POST",
+            "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/promotions/:code/redeem",
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/prices",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "promotions",
-                ":code",
-                "redeem"
+                "admin",
+                "shipping",
+                "prices"
+              ],
+              "query": [
+                {
+                  "key": "townId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "optionCode",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Draft a price for a town and option (a customer sees nothing until it is published)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/prices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "prices"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"townId\": \"00000000-0000-0000-0000-000000000000\",\n  \"optionCode\": \"\",\n  \"amount\": 0.0,\n  \"allowsOriahCollects\": false,\n  \"allowsRecipientPays\": false,\n  \"etaDaysMin\": 1,\n  \"etaDaysMax\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Edit a draft price (a published price cannot be edited: draft a new one)",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/prices/:priceId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "prices",
+                ":priceId"
               ],
               "query": [],
               "variable": [
                 {
-                  "key": "code",
+                  "key": "priceId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 0.0,\n  \"allowsOriahCollects\": false,\n  \"allowsRecipientPays\": false,\n  \"etaDaysMin\": 1,\n  \"etaDaysMax\": 1,\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Discard a draft price (a published price is history and cannot be removed)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/prices/:priceId?version=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "prices",
+                ":priceId"
+              ],
+              "query": [
+                {
+                  "key": "version",
+                  "value": "",
+                  "disabled": false,
+                  "description": ""
+                }
+              ],
+              "variable": [
+                {
+                  "key": "priceId",
                   "value": "",
                   "description": ""
                 }
@@ -3394,12 +4017,256 @@
             },
             "description": ""
           }
-        }
-      ]
-    },
-    {
-      "name": "shipping",
-      "item": [
+        },
+        {
+          "name": "Publish a draft: it becomes the live price of its town and option, and the one it replaces becomes history",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/prices/:priceId/publish",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "prices",
+                ":priceId",
+                "publish"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "priceId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Zambia's ten provinces, each with how many towns it has",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/provinces",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "provinces"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "The free-delivery threshold (off until set)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "settings"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Set the free-delivery threshold, or switch it off with null; judged on the goods total after discount",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "settings"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"freeDeliveryThreshold\": 0.0,\n  \"version\": 1,\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Every change to the free-delivery threshold, newest first, with who and why",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/settings/changes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "settings",
+                "changes"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Towns, optionally of one province or only those switched on or off",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/towns",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "towns"
+              ],
+              "query": [
+                {
+                  "key": "provinceId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "active",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Add a town to a province",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/towns",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "towns"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provinceId\": \"00000000-0000-0000-0000-000000000000\",\n  \"name\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Switch a town on or off (a town is never deleted: orders point at it)",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/shipping/towns/:townId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "shipping",
+                "towns",
+                ":townId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "townId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"active\": false,\n  \"version\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
         {
           "name": "Who owns the shipping service, and how to reach them",
           "request": {
@@ -3423,12 +4290,12 @@
           }
         },
         {
-          "name": "Quote shipping options for a destination and subtotal",
+          "name": "The delivery price for one town and option, before paying",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/v1/shipping/rates",
+              "raw": "{{baseUrl}}/api/v1/shipping/quote",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -3436,21 +4303,43 @@
                 "api",
                 "v1",
                 "shipping",
-                "rates"
+                "quote"
               ],
               "query": [],
               "variable": []
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"destinationCountry\": \"\",\n  \"subtotal\": 0.0,\n  \"currency\": \"\",\n  \"deliveryOption\": \"\"\n}",
+              "raw": "{\n  \"townId\": \"00000000-0000-0000-0000-000000000000\",\n  \"optionCode\": \"\",\n  \"payer\": \"\",\n  \"goodsTotal\": 0.0,\n  \"currency\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": ""
+            "description": "The amount is what goes on the order. The recipient paying the courier means K0; the free-delivery threshold is judged on the goods after discount. A town not yet priced is `town-not-offered` (the shop prices it first), never `outside the delivery area`."
+          }
+        },
+        {
+          "name": "Where Oriah delivers and what it costs: provinces, their towns, and each town's options with a published price",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shipping/towns",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "shipping",
+                "towns"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Only a town that is switched on, with an option that is switched on and a PUBLISHED price, is listed. Self-collect is always offered at no charge. The free-delivery threshold is shown when it is on."
           }
         }
       ]
@@ -3459,7 +4348,7 @@
       "name": "checkout",
       "item": [
         {
-          "name": "Run the checkout saga: reserve, pay, place the order",
+          "name": "Place the order and hold its pieces for the shopper",
           "request": {
             "method": "POST",
             "header": [
@@ -3486,7 +4375,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\",\n  \"cardNumber\": \"\",\n  \"promotionCode\": \"\",\n  \"quoteDigest\": \"\"\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\",\n  \"quoteDigest\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3539,7 +4428,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"destinationCountry\": \"\",\n  \"promotionCode\": \"\",\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\"\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"

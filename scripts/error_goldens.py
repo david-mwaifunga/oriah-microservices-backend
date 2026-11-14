@@ -99,8 +99,6 @@ CASES = [
     # --- 404: the Tier 5 bodies, through the gateway ----------------------
     ("404-unknown-product", "GET", "/api/v1/products/" + MISSING, None, None),
     ("404-unknown-order", "GET", "/api/v1/orders/" + MISSING, "user", None),
-    ("404-unknown-payment-intent", "GET", "/api/v1/payments/intents/" + MISSING, "user", None),
-    ("404-unknown-promotion", "GET", "/api/v1/promotions/NOSUCHCODE", "user", None),
     # procurement: "admin" is maya (OWNER, so she holds PROCUREMENT_ADMIN). A
     # well-formed id that no supplier has is a 404, not the 400 a malformed id gets.
     ("404-unknown-supplier", "GET", "/api/v1/admin/procurement/suppliers/" + MISSING, "admin", None),
@@ -116,6 +114,19 @@ CASES = [
     # Phase 6: a variant nobody has (found before any cost is asked for), and a product nobody has.
     ("404-pricing-unknown-variant", "GET", "/api/v1/admin/pricing/variants/" + MISSING, "admin", None),
     ("404-unpublish-unknown-product", "POST", "/api/v1/admin/products/" + MISSING + "/unpublish", "admin", None),
+    # Phase 7: the doors the sale no longer has answer like any unmapped path (a clear 404 problem), never a stack trace and never a quiet success. These
+    # three replaced 404-unknown-payment-intent, 404-unknown-promotion and 422-outside-delivery-area, whose endpoints are gone.
+    ("404-payment-intent-door-retired", "GET", "/api/v1/payments/intents/" + MISSING, "user", None),
+    ("404-promotion-code-door-retired", "GET", "/api/v1/promotions/NOSUCHCODE", "user", None),
+    ("404-shipping-rates-retired", "POST", "/api/v1/shipping/rates", "user",
+     {"destinationCountry": "US", "subtotal": 100.00, "currency": "ZMW"}),
+    # Phase 7: an order nobody has, a town nobody has, and a box swap on an order nobody has; each is found before anything is written.
+    ("404-payment-claim-for-an-unknown-order", "POST", "/api/v1/orders/" + MISSING + "/payment-claim", "user",
+     {"method": "MTN", "reference": "MP261113"}),
+    ("404-quote-for-an-unknown-town", "POST", "/api/v1/shipping/quote", "user",
+     {"townId": MISSING, "optionCode": "OWN_DELIVERY", "goodsTotal": 100.00, "currency": "ZMW"}),
+    ("404-box-swap-on-an-unknown-order", "POST", "/api/v1/admin/orders/" + MISSING + "/box-swaps", "admin",
+     {"lineId": MISSING, "replacementBoxVariantId": MISSING, "reason": "golden: no such order to change"}),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------
@@ -133,6 +144,11 @@ CASES = [
     ("400-price-without-a-price", "PUT", "/api/v1/admin/pricing/variants/" + MISSING + "/price", "admin",
      {"expectedPriceId": None}),
     ("400-box-commitment-of-zero", "PUT", "/api/v1/admin/inventory/box-commitments/" + MISSING, "admin", {"quantity": 0}),
+    # Phase 7: cash is never claimed (staff key it), and a town goes only with a delivery that needs one; both are refused before anything is read or written.
+    ("400-payment-claim-in-cash", "POST", "/api/v1/orders/" + MISSING + "/payment-claim", "user",
+     {"method": "CASH", "reference": "MP261113"}),
+    ("400-preview-a-town-for-a-pickup", "POST", "/api/v1/checkout/preview", "user",
+     {"deliveryOption": "SELF_COLLECT", "deliveryTownId": MISSING}),
 
     # --- 405 / 415: framework errors, the Tier 0.5 class ------------------
     # Both need a token, or the gateway answers 401 before the service ever
@@ -141,9 +157,8 @@ CASES = [
     ("415-wrong-content-type", "POST", "/api/v1/admin/products", "admin", "RAW:not json"),
 
     # --- 422: well-formed, but something Oriah does not do ----------------
-    # Phase 0 item 1: shipping delivers within Zambia only. Creates no state.
-    ("422-outside-delivery-area", "POST", "/api/v1/shipping/rates", "user",
-     {"destinationCountry": "US", "subtotal": 100.00, "currency": "ZMW"}),
+    # Nothing answers 422 today. Phase 0's 422-outside-delivery-area went in Phase 7 with the country/zone quote: delivery is priced per TOWN, and a town
+    # nobody has priced is 409 town-not-offered, never "outside the delivery area" (see 404-shipping-rates-retired above).
 
     # --- 409 -----------------------------------------------------------------
     # Phase 6: inventory has not heard of this product, so nothing can be set aside for it. Refused before anything is written.

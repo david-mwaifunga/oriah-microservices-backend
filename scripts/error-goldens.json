@@ -82,6 +82,47 @@
     "request": "GET /api/v1/products/not-a-uuid",
     "status": 400
   },
+  "400-payment-claim-in-cash": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "method must be one of MTN, AIRTEL, ZAMTEL, BANK_TRANSFER (cash is paid in person, not claimed online), was 'CASH'",
+      "instance": "/api/v1/orders/<uuid>/payment-claim",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/bad-request"
+    },
+    "request": "POST /api/v1/orders/<uuid>/payment-claim  (as user)",
+    "status": 400
+  },
+  "400-preview-a-town-for-a-pickup": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Request validation failed",
+      "instance": "/api/v1/checkout/preview",
+      "keys": [
+        "detail",
+        "fieldErrors",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "POST /api/v1/checkout/preview  (as user)",
+    "status": 400
+  },
   "400-price-without-a-price": {
     "contentType": "application/problem+json",
     "problem": {
@@ -382,6 +423,66 @@
     "request": "POST /api/v1/admin/procurement/consignments/<uuid>/amendments  (as admin)",
     "status": 404
   },
+  "404-box-swap-on-an-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/box-swaps",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/box-swaps  (as admin)",
+    "status": 404
+  },
+  "404-payment-claim-for-an-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/orders/<uuid>/payment-claim",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/orders/<uuid>/payment-claim  (as user)",
+    "status": 404
+  },
+  "404-payment-intent-door-retired": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "No static resource api/v1/payments/intents/<uuid>.",
+      "instance": "/api/v1/payments/intents/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/payments/intents/<uuid>  (as user)",
+    "status": 404
+  },
   "404-pricing-unknown-variant": {
     "contentType": "application/problem+json",
     "problem": {
@@ -400,6 +501,66 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/admin/pricing/variants/<uuid>  (as admin)",
+    "status": 404
+  },
+  "404-promotion-code-door-retired": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "No static resource api/v1/promotions/NOSUCHCODE.",
+      "instance": "/api/v1/promotions/NOSUCHCODE",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/promotions/NOSUCHCODE  (as user)",
+    "status": 404
+  },
+  "404-quote-for-an-unknown-town": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "there is no town <uuid>",
+      "instance": "/api/v1/shipping/quote",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/town-not-found"
+    },
+    "request": "POST /api/v1/shipping/quote  (as user)",
+    "status": 404
+  },
+  "404-shipping-rates-retired": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "No static resource api/v1/shipping/rates.",
+      "instance": "/api/v1/shipping/rates",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/shipping/rates  (as user)",
     "status": 404
   },
   "404-unknown-consignment": {
@@ -442,26 +603,6 @@
     "request": "GET /api/v1/orders/<uuid>  (as user)",
     "status": 404
   },
-  "404-unknown-payment-intent": {
-    "contentType": "application/problem+json",
-    "problem": {
-      "detail": "PaymentIntent not found with the given input data id : '<uuid>'",
-      "instance": "/api/v1/payments/intents/<uuid>",
-      "keys": [
-        "detail",
-        "instance",
-        "status",
-        "title",
-        "traceId",
-        "type"
-      ],
-      "status": 404,
-      "title": "Not Found",
-      "type": "https://oriah.dev/problems/not-found"
-    },
-    "request": "GET /api/v1/payments/intents/<uuid>  (as user)",
-    "status": 404
-  },
   "404-unknown-procurement-document": {
     "contentType": "application/problem+json",
     "problem": {
@@ -500,26 +641,6 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/products/<uuid>",
-    "status": 404
-  },
-  "404-unknown-promotion": {
-    "contentType": "application/problem+json",
-    "problem": {
-      "detail": "Promotion not found with the given input data code : 'NOSUCHCODE'",
-      "instance": "/api/v1/promotions/NOSUCHCODE",
-      "keys": [
-        "detail",
-        "instance",
-        "status",
-        "title",
-        "traceId",
-        "type"
-      ],
-      "status": 404,
-      "title": "Not Found",
-      "type": "https://oriah.dev/problems/not-found"
-    },
-    "request": "GET /api/v1/promotions/NOSUCHCODE  (as user)",
     "status": 404
   },
   "404-unknown-purchase-order": {
@@ -681,25 +802,5 @@
     },
     "request": "POST /api/v1/admin/products  (as admin)",
     "status": 415
-  },
-  "422-outside-delivery-area": {
-    "contentType": "application/problem+json",
-    "problem": {
-      "detail": "We deliver within Zambia only.",
-      "instance": "/api/v1/shipping/rates",
-      "keys": [
-        "detail",
-        "instance",
-        "status",
-        "title",
-        "traceId",
-        "type"
-      ],
-      "status": 422,
-      "title": "Outside our delivery area",
-      "type": "https://oriah.dev/problems/outside-delivery-area"
-    },
-    "request": "POST /api/v1/shipping/rates  (as user)",
-    "status": 422
   }
 }
