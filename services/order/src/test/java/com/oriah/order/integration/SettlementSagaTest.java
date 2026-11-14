@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -235,16 +236,16 @@ class SettlementSagaTest extends SaleTestBase {
         assertThat(row(id).get("status")).isEqualTo("PAID");
     }
 
-    @Test
-    @DisplayName("a replacement hold that inventory already shows EXPIRED is replaced by a fresh id, not asked for again for ever")
-    void aDeadReplacementHoldIsReplacedByAFreshId() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest(name = "a replacement hold that inventory already shows {0} is replaced by a fresh id, not asked for again for ever")
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"EXPIRED", "RELEASED"})
+    void aDeadReplacementHoldIsReplacedByAFreshId(String deadStatus) throws Exception {
         UUID id = heldOrder();
         UUID oldReservation = (UUID) row(id).get("reservation_id");
         doThrow(SaleStubs.feign(409, LAPSED)).when(inventory).consume(eq(oldReservation), any());
         // inventory answers a reserve of an id it already knows with whatever that hold is: here it ran out while the sale could not be applied
         doAnswer(call -> {
             InventoryClient.ReserveAsk ask = call.getArgument(0);
-            return new InventoryClient.Reservation(ask.reservationId(), ask.orderId(), "EXPIRED", Instant.now().minusSeconds(900),
+            return new InventoryClient.Reservation(ask.reservationId(), ask.orderId(), deadStatus, Instant.now().minusSeconds(900),
                     Instant.now().minusSeconds(300), Instant.now().minusSeconds(300), List.of());
         }).when(inventory).reserve(any());
 
@@ -269,6 +270,23 @@ class SettlementSagaTest extends SaleTestBase {
         assertThat(all.getAllValues().get(2).reservationId()).isEqualTo(fresh);
         verify(inventory).consume(eq(fresh), any());
         assertThat(row(id).get("status")).isEqualTo("PAID");
+    }
+
+    @Test
+    @DisplayName("a replacement hold inventory answers as already CONSUMED (an earlier sale whose reply was lost) is not replaced: it is sold again, which inventory answers once, and the order is PAID")
+    void aReplacementHoldThatIsAlreadySoldIsTheSale() throws Exception {
+        UUID id = heldOrder();
+        UUID oldReservation = (UUID) row(id).get("reservation_id");
+        doThrow(SaleStubs.feign(409, LAPSED)).when(inventory).consume(eq(oldReservation), any());
+        doAnswer(call -> {
+            InventoryClient.ReserveAsk ask = call.getArgument(0);
+            return new InventoryClient.Reservation(ask.reservationId(), ask.orderId(), "CONSUMED", Instant.now(), Instant.now(), Instant.now(), List.of());
+        }).when(inventory).reserve(any());
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+        assertThat(settlement(confirmation).get("state")).isEqualTo("DONE");
     }
 
     @Test
@@ -392,7 +410,8 @@ class SettlementSagaTest extends SaleTestBase {
         doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
         UUID confirmation = confirmed(id, "4500.00");
         // the state a crash between "recorded" and "asked inventory" leaves: no attempt made, nothing scheduled, only just received
-        jdbc.update("UPDATE order_settlement SET next_attempt_at = NULL, attempts = 0, received_at = now() WHERE confirmation_id = ?", confirmation);
+        jdbc.update("UPDATE order_settlement SET next_attempt_at = NULL, attempts = 0, received_at = ? WHERE confirmation_id = ?",
+                java.sql.Timestamp.from(Instant.now()), confirmation);
         SaleStubs.inventorySells(inventory);
 
         job.run();
@@ -400,7 +419,7 @@ class SettlementSagaTest extends SaleTestBase {
         assertThat(settlement(confirmation).get("state")).as("just received: the consumer may still be about to drive it").isEqualTo("CONSUMING");
         verify(inventory, times(1)).consume(any(), any());
 
-        jdbc.update("UPDATE order_settlement SET received_at = now() - interval '1 minute' WHERE confirmation_id = ?", confirmation);
+        jdbc.update("UPDATE order_settlement SET received_at = ? WHERE confirmation_id = ?", java.sql.Timestamp.from(Instant.now().minusSeconds(60)), confirmation);
         job.run();
 
         assertThat(row(id).get("status")).isEqualTo("PAID");
@@ -510,9 +529,13 @@ class SettlementSagaTest extends SaleTestBase {
     @DisplayName("money voided BEFORE it is applied is never applied: the settlement ends unsettled VOIDED with nothing sold and nothing announced")
     void voidedBeforeItIsApplied() throws Exception {
         UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
         doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
         UUID confirmation = confirmed(id, "4500.00");
         SaleStubs.inventorySells(inventory);
+        // an attempt was made, so the void asks inventory whether it sold anything: it did not, the hold is still HELD
+        doReturn(new InventoryClient.Reservation(reservation, id, "HELD", Instant.now(), Instant.now().plusSeconds(600), null, List.of()))
+                .when(inventory).reservation(reservation);
 
         voided(confirmation, id);
         dueNow(confirmation);
@@ -527,6 +550,65 @@ class SettlementSagaTest extends SaleTestBase {
         verify(inventory, times(1)).consume(any(), any());
         assertThat(events(id, "order.paid")).isEmpty();
         assertThat(events(id, "order.payment_unsettled")).as("payment voided the money itself: it needs no answer").isEmpty();
+    }
+
+    @Test
+    @DisplayName("a void that arrives after the sale WAS made and its reply was lost does not undo it: inventory says CONSUMED, so the order is PAID and the void is left flagged for staff")
+    void aVoidAfterALostSaleReplyDoesNotUndoTheSale() throws Exception {
+        UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
+        // inventory sold the pieces, but its reply never came back
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        doReturn(new InventoryClient.Reservation(reservation, id, "CONSUMED", Instant.now(), Instant.now(), Instant.now(), List.of()))
+                .when(inventory).reservation(reservation);
+        SaleStubs.inventorySells(inventory);
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        assertThat(row(id).get("status")).as("the pieces are sold: unselling them is not possible, so the order is paid").isEqualTo("PAID");
+        Map<String, Object> settlement = settlement(confirmation);
+        assertThat(settlement.get("state")).isEqualTo("DONE");
+        assertThat(settlement.get("voided_at")).as("flagged for staff: a paid sale whose money was voided").isNotNull();
+    }
+
+    @Test
+    @DisplayName("a void is not decided blind: when inventory cannot say whether the pieces were sold, the settlement waits and asks again")
+    void aVoidIsNotDecidedBlind() throws Exception {
+        UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        doThrow(SaleStubs.feign(503, null)).when(inventory).reservation(reservation);
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        Map<String, Object> waiting = settlement(confirmation);
+        assertThat(waiting.get("state")).as("neither paid nor voided yet").isEqualTo("CONSUMING");
+        assertThat(((Number) waiting.get("attempts")).intValue()).isEqualTo(2);
+        assertThat(row(id).get("status")).isEqualTo("CREATED");
+    }
+
+    @Test
+    @DisplayName("a void that arrives before any attempt reached inventory is honoured without asking it anything")
+    void aVoidBeforeAnyAttemptIsHonouredWithoutAsking() throws Exception {
+        UUID id = heldOrder();
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        // the state a crash between "recorded" and "asked inventory" leaves: nothing was attempted
+        jdbc.update("UPDATE order_settlement SET attempts = 0 WHERE confirmation_id = ?", confirmation);
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        assertThat(settlement(confirmation).get("reason")).isEqualTo("VOIDED");
+        verify(inventory, never()).reservation(any());
+        verify(inventory, times(1)).consume(any(), any());
     }
 
     @Test

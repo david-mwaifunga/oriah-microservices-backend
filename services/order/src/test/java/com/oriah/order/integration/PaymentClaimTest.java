@@ -448,10 +448,25 @@ class PaymentClaimTest {
     }
 
     @Test
+    @DisplayName("an order whose claim stretched its hold to a day, and whose day ran out with the expiry event lost, is ended by the clock too (PAYMENT_SUBMITTED, not only CREATED)")
+    void aLostLapseOfAClaimedOrderIsEndedByTheJob() throws Exception {
+        UUID id = heldOrder();
+        assertThat(claim(alice(), id, "MTN", "MP261113").getResponse().getStatus()).isEqualTo(200);
+        assertThat(orderRow(id).get("status")).isEqualTo("PAYMENT_SUBMITTED");
+        jdbc.update("UPDATE orders SET hold_expires_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.now().minusSeconds(600)), id);
+
+        holdJob.run();
+
+        assertThat(orderRow(id).get("status")).isEqualTo("EXPIRED");
+        assertThat(events(id, "order.expired")).hasSize(1);
+    }
+
+    @Test
     @DisplayName("a hold that has only just run out is left to inventory's own event: the job waits a grace before it steps in")
     void aHoldThatJustRanOutIsLeftToInventoryEvent() throws Exception {
         UUID id = heldOrder();
-        jdbc.update("UPDATE orders SET hold_expires_at = now() - interval '20 seconds' WHERE id = ?", id);
+        // the JVM's clock, not the database's: the grace is measured on the JVM's, and a database clock that lags must not make this test flaky
+        jdbc.update("UPDATE orders SET hold_expires_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.now().minusSeconds(20)), id);
 
         holdJob.run();
 

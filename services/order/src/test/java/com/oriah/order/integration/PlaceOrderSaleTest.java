@@ -469,8 +469,25 @@ class PlaceOrderSaleTest {
         JsonNode problem = json.readTree(second.getResponse().getContentAsString());
         assertThat(problem.get("type").asText()).endsWith("/live-order-has-another-address");
         assertThat(problem.get("orderId").asText()).isEqualTo(first.toString());
+        assertThat(problem.get("orderStatus").asText()).as("so the storefront can tell whether the shopper may cancel it").isEqualTo("CREATED");
+        assertThat(problem.get("detail").asText()).as("what the shopper can do about it").contains("cancel");
         assertThat(repository.count()).isEqualTo(1);
         verify(inventory, times(1)).reserve(any());
+    }
+
+    @Test
+    @DisplayName("a live order the shopper cannot cancel (still being placed here) is not offered 'cancel it first': the refusal says to wait, and carries its status")
+    void anotherAddressIsNotToldToCancelWhatCannotBeCancelled() throws Exception {
+        theShopperHasTwoAddresses();
+        UUID first = placed(deliveredTo(ADDRESS));
+        jdbc.update("UPDATE orders SET hold_state = 'PENDING' WHERE id = ?", first);
+
+        MvcResult second = place(alice(), deliveredTo(OTHER_ADDRESS), null);
+
+        assertThat(second.getResponse().getStatus()).isEqualTo(409);
+        JsonNode problem = json.readTree(second.getResponse().getContentAsString());
+        assertThat(problem.get("type").asText()).endsWith("/live-order-has-another-address");
+        assertThat(problem.get("detail").asText()).contains("no longer cancel").doesNotContain("cancel it first");
     }
 
     @Test

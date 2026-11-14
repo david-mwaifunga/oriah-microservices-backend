@@ -68,9 +68,26 @@ public class SettlementDriver {
             return;
         }
         if (s.voidedAt() != null) {
-            // Voided before inventory was asked: never applied. (A void that lands after inventory has been asked cannot be undone: see SettlementService.paid.)
-            settlements.unsettled(confirmationId, "VOIDED", false);
-            return;
+            boolean honoured = true;
+            if (s.attempts() > 0) {
+                // An earlier attempt may have reached inventory and SOLD the pieces, with the reply lost: a retry cannot tell from the failure alone. A sale
+                // that happened cannot be undone, so it is carried on to PAID (SettlementService.paid flags the voided money for staff); a hold that was not
+                // sold lets the void stand. Not knowing is no reason to decide: ask again later.
+                try {
+                    InventoryClient.Reservation hold = holds.find(s.reservationId());
+                    honoured = hold == null || !"CONSUMED".equals(hold.status());
+                } catch (RuntimeException unknown) {
+                    log.warn("Confirmation {} is voided, but inventory could not say whether its pieces were sold: asking again later", confirmationId);
+                    settlements.retryLater(confirmationId, backoff(s.attempts()));
+                    return;
+                }
+            }
+            if (honoured) {
+                // Voided before the pieces were sold: never applied.
+                settlements.unsettled(confirmationId, "VOIDED", false);
+                return;
+            }
+            log.error("Confirmation {} was voided AFTER its pieces were sold (the reply was lost): the sale stands and staff must look at it", confirmationId);
         }
         Order order = repository.findById(s.orderId()).orElse(null);
         if (order == null) {

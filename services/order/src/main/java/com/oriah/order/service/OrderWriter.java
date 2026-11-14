@@ -105,9 +105,13 @@ public class OrderWriter {
             if (!sameAddress(priced, shippingAddressId, live)) {
                 // The fingerprint prices the goods and the delivery, not WHERE it goes: two addresses in one town price alike. Answering the earlier order as
                 // though it were this one would tell the shopper it succeeded and send the parcel to the first address.
+                boolean mayCancel = live.status() == OrderStatus.CREATED && live.holdState() == HoldState.HELD;
                 throw new SalesProblem(HttpStatus.CONFLICT, "live-order-has-another-address",
-                        "you already hold an order for this same bag, to another delivery address: cancel it first, or place it again to that address")
-                        .with("orderId", live.id());
+                        mayCancel
+                                ? "you already hold an order for this same bag, to another delivery address: cancel it first, or place it again to that address"
+                                : "you already hold an order for this same bag, to another delivery address, and you can no longer cancel it (its payment has been "
+                                        + "claimed, or it is still being placed): wait for it to be paid, or to lapse")
+                        .with("orderId", live.id()).with("orderStatus", live.status().name());
             }
             return standing(live);
         }

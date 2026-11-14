@@ -130,6 +130,49 @@ class OrderHoldsClassificationTest {
         assertThat(holds.holdAgain(order, RESERVATION).status()).isEqualTo("EXPIRED");
     }
 
+    // ------------------------------------------------------------------ the first hold
+
+    @Test
+    @DisplayName("a first hold answered as RELEASED or EXPIRED (a repeat whose hold the hold job just gave back) is asked again later (503), not a server error")
+    void aHoldThatIsAlreadyOverIsAskedAgain() {
+        for (String over : List.of("RELEASED", "EXPIRED")) {
+            doReturn(new InventoryClient.Reservation(RESERVATION, UUID.randomUUID(), over, Instant.now(), Instant.now(), Instant.now(), List.of()))
+                    .when(inventory).reserve(any());
+
+            assertThatThrownBy(() -> holds.hold(order)).as(over).isInstanceOf(UpstreamUnavailableException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("a first hold answered with nothing, or with a status that makes no sense, is order's own problem to see (500), not a retry")
+    void anAnswerThatMakesNoSenseIsNotRetried() {
+        doReturn(null).when(inventory).reserve(any());
+        assertThatThrownBy(() -> holds.hold(order)).isInstanceOf(com.oriah.order.exception.UpstreamRejectedException.class);
+
+        doReturn(new InventoryClient.Reservation(RESERVATION, UUID.randomUUID(), "SOMETHING-ELSE", Instant.now(), Instant.now(), null, List.of()))
+                .when(inventory).reserve(any());
+        assertThatThrownBy(() -> holds.hold(order)).isInstanceOf(com.oriah.order.exception.UpstreamRejectedException.class);
+    }
+
+    // ------------------------------------------------------------------ asking what a hold is now
+
+    @Test
+    @DisplayName("asking what a hold is: its state; none by that id (404) is null; anything else is not an answer, so it is asked again later")
+    void whatAHoldIs() {
+        InventoryClient.Reservation consumed = new InventoryClient.Reservation(RESERVATION, UUID.randomUUID(), "CONSUMED", Instant.now(), Instant.now(), Instant.now(), List.of());
+        doReturn(consumed).when(inventory).reservation(RESERVATION);
+        assertThat(holds.find(RESERVATION)).isSameAs(consumed);
+
+        doThrow(SaleStubs.feign(404, null)).when(inventory).reservation(RESERVATION);
+        assertThat(holds.find(RESERVATION)).isNull();
+
+        doThrow(SaleStubs.feign(503, null)).when(inventory).reservation(RESERVATION);
+        assertThatThrownBy(() -> holds.find(RESERVATION)).isInstanceOf(UpstreamUnavailableException.class);
+
+        doThrow(SaleStubs.feign(403, null)).when(inventory).reservation(RESERVATION);
+        assertThatThrownBy(() -> holds.find(RESERVATION)).isInstanceOf(UpstreamUnavailableException.class);
+    }
+
     // ------------------------------------------------------------------ the sale itself
 
     @Test

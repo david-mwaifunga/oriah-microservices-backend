@@ -77,6 +77,12 @@ public class OrderEnds {
             log.info("Reservation {} lapsed for order {}, which is {}: nothing to end", lapse.reservationId(), order.id(), order.status());
             return;
         }
+        if (order.holdState() == com.oriah.order.model.HoldState.PENDING) {
+            // Written but never announced (the placement stopped before it was recorded): ending it would announce an expiry for an order nobody was told
+            // about. The hold job removes the row without announcing anything.
+            log.info("Reservation {} lapsed for order {}, which was never announced: left for the hold job", lapse.reservationId(), order.id());
+            return;
+        }
         if (order.settlingConfirmationId() != null) {
             defer(order, "EXPIRED");
             return;

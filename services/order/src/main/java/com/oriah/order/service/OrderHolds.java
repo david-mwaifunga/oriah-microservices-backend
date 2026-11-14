@@ -162,6 +162,12 @@ public class OrderHolds {
     public InventoryClient.Reservation hold(Order order) {
         try {
             InventoryClient.Reservation held = inventory.reserve(askFor(order));
+            if (held != null && ("RELEASED".equals(held.status()) || "EXPIRED".equals(held.status()))) {
+                // Asking again under an id inventory knows answers THAT hold, whatever became of it: a repeat of a placement whose hold the hold job has just
+                // given back (or that ran out) finds it over. The shopper asks again, and the second time it is a fresh order: not a server error.
+                log.info("inventory answered order {}'s hold with a hold that is already {}: ask again", order.id(), held.status());
+                throw new UpstreamUnavailableException("inventory");
+            }
             if (held == null || held.expiresAt() == null || !"HELD".equals(held.status())) {
                 log.error("inventory answered a hold for order {} with {}", order.id(), held);
                 throw new UpstreamRejectedException("inventory answered the hold with no HELD reservation");
@@ -169,6 +175,23 @@ public class OrderHolds {
             return held;
         } catch (FeignException e) {
             throw refusal(order, e);
+        }
+    }
+
+    /**
+     * What inventory says one hold is now; null when it has none by that id (404). Used to learn whether a sale whose reply was lost actually happened.
+     *
+     * @throws UpstreamUnavailableException inventory did not give an answer (a settlement must not decide on a guess)
+     */
+    public InventoryClient.Reservation find(java.util.UUID reservationId) {
+        try {
+            return inventory.reservation(reservationId);
+        } catch (FeignException e) {
+            if (e.status() == 404) {
+                return null;
+            }
+            log.warn("inventory could not say what hold {} is: status={}", reservationId, e.status());
+            throw new UpstreamUnavailableException("inventory");
         }
     }
 

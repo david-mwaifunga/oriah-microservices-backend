@@ -182,6 +182,21 @@ class OrderEndsTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("an expiry event for an order still PENDING (written, never announced) is a logged no-op: nothing is announced for an order nobody was told about")
+    void aPendingOrderIsNotEndedByAnEvent() throws Exception {
+        UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
+        // the state of a placement that stopped before it was announced
+        jdbc.update("UPDATE orders SET hold_state = 'PENDING' WHERE id = ?", id);
+
+        reservationExpired(reservation, id);
+
+        assertThat(row(id).get("status")).isEqualTo("CREATED");
+        assertThat(row(id).get("hold_state")).as("left for the hold job to remove").isEqualTo("PENDING");
+        assertThat(expiredEvents(id)).isEmpty();
+    }
+
+    @Test
     @DisplayName("an order that is no longer waiting for money (paid) is never ended from the clock, whatever its hold says")
     void aPaidOrderIsNotEndedByTheClock() throws Exception {
         UUID id = heldOrder();

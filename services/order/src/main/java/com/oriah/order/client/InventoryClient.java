@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.UUID;
 
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -34,6 +35,10 @@ public interface InventoryClient {
      * Stretches the hold (a payment reference was submitted): never beyond a day from when the hold was made, never shorter than it is, and
      * asking again changes nothing. 409 {@code reservation-expired} / {@code reservation-not-held} when the hold is already gone.
      */
+    /** What inventory says one hold is now (404 when it has none by that id). Used to learn whether a sale whose reply was lost actually happened. */
+    @GetMapping("/api/v1/admin/inventory/reservations/{reservationId}")
+    Reservation reservation(@PathVariable("reservationId") UUID reservationId);
+
     @PostMapping("/api/v1/admin/inventory/reservations/{reservationId}/extend")
     Reservation extend(@PathVariable("reservationId") UUID reservationId, @RequestBody ExtendAsk body);
 
