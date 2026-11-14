@@ -1,41 +1,96 @@
-# smoke-test.ps1 - end-to-end full-stack check.
+# smoke-test.ps1 - end-to-end full-stack check (Phase 7 "Sell" edition).
 #
 # Run AFTER `docker compose up -d` and after every container is healthy.
 #
 # Drives the full backend through the gateway. Each step is listed under the
-# banner it prints, so a failure on screen can be found here by its number:
+# banner it prints, so a failure on screen can be found here by its number.
+# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6i, 8b and 20b to 20f.
+#
+# Phase 7 "Sell": the sale is placed, HELD, claimed, confirmed BY STAFF and settled
+# asynchronously (steps 2b-6i). Checkout never touches money: there is no card, and
+# money reaches an order only when a member of staff confirms it. Everything this
+# script makes is made under random names and is kept (history is never deleted), so
+# it can run again and again against a live stack; counts are always relative to ids
+# THIS run made, never to an empty table.
 #   [1/20] JWTs. maya (staff, job role OWNER) and alice (a customer) sign in.
 #   [2/20] Admin: product + variant. maya creates a product, gives it a
 #      variant priced K100 and publishes it. It is NOT stocked here: since
 #      Phase 5 stock only arrives through a received consignment (step 20d),
-#      and step 20e follows it. (No promo code: codes
-#      are retired until Phase 7's scoped promotions, and refused with 422 --
-#      steps 5b and 6b check that.)
+#      and step 20e follows it. This "original" ring carries the search, review,
+#      public-read and procurement/cost/pricing steps (8, 9, 11, 14, 20c-20f);
+#      the SALE below uses a ring of its own, so those steps' arithmetic stays put.
+#   [2b/20] Sale setup (Phase 7). Placing an order now HOLDS its pieces, so the
+#      sale needs what a real one needs: stock (only a received consignment makes
+#      any), a default box (one box per piece), a price, a published product and a
+#      promotion. maya makes a second ring and two boxes (small, large); buys 12 + 12
+#      + 12 from one supplier on one purchase order; keys the courier's K36.00;
+#      checks the allocation to the ngwee (ring 4 x K9.34 + 8 x K9.33, small K2.00,
+#      large K3.00); receives it; waits for inventory's cost lots; chooses the small
+#      box as the ring's default; prices it K100 (OK against its cost); publishes it;
+#      and starts a K10-off-each-piece promotion on it, which the public pricing read
+#      and the pricing view both show.
 #   [3/20] Customer: profile + address. alice self-provisions a profile and a
-#      Lusaka address. Oriah delivers within Zambia only, and until Phase 7
-#      offers one option: self-collect at K0 (MVP_PLAN Phase 0, item 1).
-#   [4/20] Customer: add 2 units to cart. The first add sends a stale
-#      unitPrice of 0.01, which must be ignored: the line is priced from
+#      Lusaka address.
+#   [4/20] Customer: add 2 units of the sale ring to cart. The first add sends a
+#      stale unitPrice of 0.01, which must be ignored: the line is priced from
 #      catalog, so the one-cent hole stays shut.
 #   [4b/20] Order refuses a price the caller invented. POST /orders directly,
 #      bypassing cart and checkout: a false unit price is refused 409
-#      pricing-changed; the truthful one is accepted, with the order's total =
-#      subtotal + delivery - discount; a quantity the digest does not describe
-#      is refused 409 pricing-changed.
+#      pricing-changed; the truthful one is accepted and HELD (CREATED, a hold time,
+#      the promotion on its line, the default box recorded), with the order's total
+#      = subtotal + delivery - discount; a quantity the digest does not describe is
+#      refused 409 pricing-changed. That order is then cancelled.
 #   [5/20] Customer: /checkout/preview -- quote, then commit. With no option
-#      chosen: the options, but no total and no digest. For self-collect: the
-#      total and the quoteDigest of that whole quote, which must equal the
-#      digest this script works out on its own in PowerShell.
-#   [5b/20] Zambia only, and the ADDRESS decides the destination. A US address
-#      is refused 422 outside-delivery-area and a Lusaka one is quoted
-#      self-collect at K0, whatever country the body names; an address that
-#      belongs to nobody is refused 400; shipping itself offers Zambia exactly
-#      SELF_COLLECT; a promotion code is refused 422.
-#   [6/20] Customer: /checkout/confirm (test card 4242...), sending the digest
-#      back -> SUCCESS: order placed + paid in one call at exactly the quoted
-#      total, cart cleared.
+#      chosen: the priced bag (discount shown per line), but no total and no
+#      digest. For self-collect: the total and the quoteDigest of that whole quote
+#      (oriah-quote/2: the promotion on each line is part of it), which must equal
+#      the digest this script works out on its own in PowerShell.
+#   [5b/20] Delivery is priced per TOWN, by admin, and never seeded. maya adds two
+#      towns (one priced, one not), publishes OWN_DELIVERY (K45.00, either party may
+#      pay) and YANGO (K60.00, the recipient pays) for the first; shipping's public
+#      list shows exactly that; a quote names the published price it used; a town
+#      nobody priced, a priced town with an unpriced option, and a payer a price does
+#      not offer are each 409 (town-not-offered, payer-not-offered); a delivered
+#      option with no town, and self-collect with one, are 400; an address that
+#      belongs to nobody is 400.
+#   [6/20] Customer: /checkout/confirm, sending the digest back (and an
+#      Idempotency-Key) -> the order is PLACED and its pieces HELD: CREATED, not
+#      paid, with a holdExpiresAt, the cart cleared; the same key again, and the
+#      same bag under a new key, answer the same order.
 #   [6b/20] A quantity changed after preview is refused 409 pricing-changed,
-#      and no order is placed. A promotion code at confirm is refused 422.
+#      and no order is placed.
+#   [6c/20] The shopper says how they paid (POST /orders/{id}/payment-claim): the
+#      order becomes PAYMENT_SUBMITTED and its hold is stretched (to a day); cash,
+#      a bad reference and another customer's claim are refused; a different
+#      reference after the first is 409; staff see it in order's awaiting-payment
+#      queue and in payment's claim list.
+#   [6d/20] Staff confirm the exact total (POST /admin/payments/confirmations, with
+#      an Idempotency-Key; the same key again is the same confirmation, 200). The
+#      settlement is asynchronous, so the order is polled until PAID; it has a
+#      receipt number, its two rings and two boxes were SOLD from the oldest lot
+#      (ledger row -2 @ K9.34 FIFO, dated to the day the money ARRIVED, recorded
+#      now) and a claim whose reference holds money can no longer be rejected. A
+#      second confirmation for the same order is HELD (ALREADY_PAID): not a second sale.
+#   [6e/20] A second order, a WRONG-amount confirmation: the money is HELD
+#      (WRONG_AMOUNT, in the owner's held-money list and order's settlements list)
+#      and the order is NOT paid; staff reject its claim -> EXPIRED, and its pieces
+#      are available again (reserved goes back down).
+#   [6f/20] The caps and the stock: three live orders is the limit (the 4th is 409
+#      hold-limit-reached), and asking for more than is there is 409
+#      insufficient-stock with shortages that name the variant, through order and
+#      through checkout alike.
+#   [6g/20] Who may do what: alice gets 403 and no token 401 on confirmations, held
+#      money, the awaiting-payment and settlements lists, box swaps and a claim
+#      rejection; maya passes; the retired /orders/{id}/pay is 404; no person moves
+#      an order to PAID; a paid order cannot be cancelled.
+#   [6h/20] Box swap on the paid order (POST /admin/orders/{id}/box-swaps, ORDER_ADMIN):
+#      200, the line now shows the new box, the ledger reverses the small box's sale
+#      and sells the large one, both dated to the day of the SALE; the same amendmentId
+#      is a replay, and a swap on an order that is not paid is 409.
+#   [6i/20] A delivered order: OWN_DELIVERY to the priced town, quoted, digest-bound
+#      (town and payer are part of it), placed, paid in CASH by staff for exactly the
+#      total (goods after discount + K45.00); the same delivery with RECIPIENT_PAYS
+#      costs K0.00 on the order.
 #   [7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED. maya drives the admin
 #      transitions.
 #   [8/20] Search index (Kafka-driven) finds product, via /search?q=aurelia
@@ -48,12 +103,15 @@
 #      has seen (in search's own database) that the index READ both and kept them
 #      unlisted, so the absence is not just "not consumed yet".
 #   [9/20] Customer review; public listing + aggregate.
-#   [10/20] /notifications/me shows order.* events -- at least five
-#      (created, paid, fulfilled, shipped, delivered).
+#   [10/20] /notifications/me shows the sale's order.* events -- tied to the
+#      order ids this run made (the log keeps every earlier run's too): created,
+#      paid, fulfilled, shipped and delivered for the sale order, expired for the
+#      order whose claim was rejected, cancelled for the one the shopper cancelled.
 #   [11/20] Kafka product_index + 401 without token. The product_index row in
 #      inventory was filled from Kafka, and a call with no token gets 401.
-#   [12/20] Tempo has the saga trace spanning the chain. Distributed
-#      tracing: at least cart + checkout + order + payment on one traceId.
+#   [12/20] Tempo has the placement trace spanning the chain. Distributed
+#      tracing: checkout + cart + catalog + shipping + order + inventory on one
+#      traceId (placing an order no longer touches payment: money is staff's).
 #      The trace id is GENERATED by this script and sent as a W3C traceparent
 #      on the confirm call, so the assertion is deterministic and also proves
 #      context extraction at the edge -- rather than scraping the backend
@@ -103,22 +161,26 @@
 #      watermark" lines in the last 90 s, and the Kafka lag metric the
 #      Grafana panel plots still exists.
 #   [20/20] Money-path authorization holds (live exploit attempts), each
-#      checked on the state it leaves behind: (a) a made-up intent id,
-#      (b) another order's settled intent, (c) a second confirm of a settled
-#      intent, (d) another customer confirming alice's intent and (e) the
-#      same Idempotency-Key from another customer must all be refused, with
-#      no order paid and no extra charge; (f) the owner's own replay must
-#      still be served; (g) an order naming another customer's delivery
-#      address is refused 400, and no order is written.
-#   [20b/20] Payment's intents: unambiguous, the owner's, one at a time. No
-#      currency, a lower-case "zmw" and an amount past the column are each
-#      400; a well-formed ZMW intent is still created, and the same create
-#      again is answered 200 with the same intent (what checkout relies on
-#      when a reply is lost); another customer's create for that order is
-#      404; an order whose intent has already been charged takes no second
-#      intent (409, one live intent per order); and an order checkout has
-#      already paid takes none either (409, it is no longer waiting for
-#      payment).
+#      checked on the state it leaves behind: (a) no person moves an unpaid order to
+#      PAID, EXPIRED or PAYMENT_SUBMITTED (the admin transition is 409, the order is
+#      unchanged); (b) another customer can neither read, claim for nor cancel
+#      alice's order (404, the order unchanged); (c) an Idempotency-Key is scoped to
+#      its customer: maya sending alice's key places HER OWN order, and alice's own
+#      replay still answers her first one; (d) the retired /orders/{id}/pay is 404;
+#      (g) an order naming another customer's delivery address is refused 400, and no
+#      order is written. It ends the sale's promotion and sees the discount go.
+#   [20b/20] Payment's staff-money invariants (the card path is switched off: its
+#      /payments/intents are 404). Everything refused is 400 (no Idempotency-Key, a gross
+#      of zero or below, a fee above the gross, a net sent, an unknown method, no
+#      reference for a mobile-money method, another currency, an arrival in the future, an
+#      arrival over 72 hours old with no reason); the same key and request is the same
+#      confirmation (200), the same key with another request 409; ONE (method, reference)
+#      confirms money once, whatever its spelling, for any order (409 reference-already-used),
+#      while another method may use the same text; money for an order nobody has is HELD
+#      (ORDER_UNKNOWN); a void needs ten characters, frees the reference, closes the held
+#      money, cannot be repeated (409) and cannot touch a confirmation that paid a sale (409).
+#      Not asserted live: the 403 for back-dating without BACKDATE_SALE -- no dev user holds
+#      SALES_AGENT without it (maya and admin are OWNER).
 #   [20d/20] Procurement: purchase orders, a consignment, receiving it, and its
 #      invoices (Phase 4) -- the worked example of MVP_PLAN Part 4, live and through the
 #      gateway. Two suppliers, two orders (7 rings K10,500.00; 200 boxes K10,000.00), an
@@ -135,14 +197,18 @@
 #      on purpose (history is never deleted); see the comment at the step.
 #   [20e/20] Cost-bearing stock (Phase 5), following the 7 rings and 200 boxes that
 #      20d received: one cost lot per slice (ring 4 x K1,528.99 + 3 x K1,528.98) read by
-#      maya, 403 to alice, 401 with no token; a sale keyed through the gateway 403, the
-#      order system's own call costing the oldest lot at K1,528.99 FIFO, the same sale
-#      line again taking nothing; a write-off 201 (alice 403, a retry 200) taken back;
-#      the courier's bill corrected from K6,000 to K600 (revision 2, K21,100.00; stale
-#      409, nothing-changed 400, alice 403) and the stock re-costed over what is left
-#      (ring 5 x K1,502.90 + 1 x K1,502.89, the sold unit K1,502.90), every count
-#      agreeing with its lots. It leaves rows behind too (the ledger is never edited).
-#   [20f/20] Price and publish (Phase 6), following the ring (K100 since step 4, before any
+#      maya, 403 to alice, 401 with no token. Stock leaves by a sale only through the
+#      order saga now: the sale's own assertions (the oldest lot drained, costed FIFO,
+#      dated to the money's arrival) were made on the SALE ring at 6d, and the bare
+#      sale/reserve doors are gone (403 at the gateway for the order system's own paths,
+#      403 for a person's token on inventory's own port). A write-off 201 (alice 403, a
+#      retry 200) taken back; the courier's bill corrected from K6,000 to K600 (revision 2,
+#      K21,100.00; stale 409, nothing-changed 400, alice 403) and the stock re-costed (ring
+#      6 x K1,502.90 + 1 x K1,502.89, the write-off's row re-cut), every count agreeing
+#      with its lots; then the SALE consignment's courier bill corrected too (K36 -> K72):
+#      the rings orders A and D sold are re-costed to K10.34, each at its own date. It
+#      leaves rows behind too (the ledger is never edited).
+#   [20f/20] Price and publish (Phase 6), following the ring (K100 since step 2, before any
 #      stock existed): the pricing view reads it BELOW the K1,502.90 cost with its history,
 #      the list of prices below cost finds it, alice 403, no token 401; K1,400 with no
 #      reason 409 below-landed-cost (with the floor), with a reason and the floor 200 and
@@ -224,22 +290,26 @@ function Get-Jwt($Username) {
 
 # The quote digest, computed HERE, independently of the Java that serves it
 # (MVP_PLAN Phase 0, item 4.4): SHA-256 over
-#   "oriah-quote/1" RS currency RS option US delivery RS total RS
-#   then each line "variant US qty US price US discount RS", sorted ordinally,
-# with every amount trailing-zero-stripped. Checked against the golden vector
-# shared/oriah-quote pins (532785fb...), so a match at the edge proves the
+#   "oriah-quote/2" RS currency RS option US town US payer US delivery RS total RS
+#   then each line "variant US qty US price US discount US promotion RS", sorted ordinally,
+# with every amount trailing-zero-stripped, and an absent town, payer or promotion
+# the empty string (Phase 7: the digest binds the delivery town, who pays the courier
+# and the promotion behind each line's discount). Checked against the two golden vectors
+# shared/oriah-quote pins (aec7f876... and 25873b34...), so a match at the edge proves the
 # storefront, checkout and order agree on one rule -- not merely on each other.
-function Get-QuoteDigest($Currency, $Option, $Delivery, $Lines) {
+# A line may carry Discount (per piece) and Promotion (its id); $Town and $Payer are optional.
+function Get-QuoteDigest($Currency, $Option, $Delivery, $Lines, $Town = $null, $Payer = $null) {
     $inv = [Globalization.CultureInfo]::InvariantCulture
     $US = [string][char]0x1f; $RS = [string][char]0x1e
     $n = { param($x) ([decimal]$x).ToString("0.##########", $inv) }
     $total = [decimal]$Delivery
     $records = [string[]]@(foreach ($l in $Lines) {
-        $total += [decimal]$l.Quantity * [decimal]$l.Price
-        "$($l.VariantId)$US$($l.Quantity)$US$(& $n $l.Price)$US$(& $n 0)$RS"
+        $discount = [decimal]$l.Discount
+        $total += [decimal]$l.Quantity * ([decimal]$l.Price - $discount)
+        "$($l.VariantId)$US$($l.Quantity)$US$(& $n $l.Price)$US$(& $n $discount)$US$($l.Promotion)$RS"
     })
     [Array]::Sort($records, [StringComparer]::Ordinal)
-    $canonical = "oriah-quote/1$RS$Currency$RS$Option$US$(& $n $Delivery)$RS$(& $n $total)$RS" + ($records -join "")
+    $canonical = "oriah-quote/2$RS$Currency$RS$Option$US$Town$US$Payer$US$(& $n $Delivery)$RS$(& $n $total)$RS" + ($records -join "")
     $bytes = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical))
     return -join ($bytes | ForEach-Object { $_.ToString("x2") })
 }
@@ -293,8 +363,14 @@ function Expect-Refusal($Uri, $Body, $Status, $TypeSuffix, $What) {
 }
 
 $golden = Get-QuoteDigest "ZMW" "SELF_COLLECT" 0 @(@{ VariantId="00000000-0000-0000-0000-00000000000a"; Quantity=1; Price=100.00 })
-if ($golden -ne "532785fb7c7c7c121f8ffd3528d7dffae0db3163403314bc51216c38ca96802c") {
+if ($golden -cne "aec7f876488fe689849ec2234df2c58030c1ff404eba191a25d1f3d561ee9f4a") {
     Write-Error "Get-QuoteDigest disagrees with the pinned golden vector: $golden"
+    exit 1
+}
+# The second vector: a town, a payer and a promotion, every field the second version added.
+$golden2 = Get-QuoteDigest "ZMW" "OWN_DELIVERY" 125.00 @(@{ VariantId="00000000-0000-0000-0000-00000000000a"; Quantity=2; Price=100.00; Discount=10.00; Promotion="44444444-4444-4444-8444-444444444444" }) "33333333-3333-4333-8333-333333333333" "ORIAH_COLLECTS"
+if ($golden2 -cne "25873b34c8bfc2245067d652cfcd773db6a98afd2f7854f98b82569670eb5097") {
+    Write-Error "Get-QuoteDigest disagrees with the second pinned golden vector: $golden2"
     exit 1
 }
 
@@ -336,10 +412,10 @@ $routeProbes = [ordered]@{
     inventory    = '/api/v1/admin/inventory'
     customer     = '/api/v1/customers/me'
     cart         = '/api/v1/carts/me'
-    payment      = '/api/v1/payments/intents'
+    payment      = '/api/v1/admin/payments/held-money'
     order        = '/api/v1/orders/me'
     promotion    = '/api/v1/promotions/__preflight__'
-    shipping     = '/api/v1/shipping/rates'
+    shipping     = '/api/v1/shipping/towns'
     checkout     = '/api/v1/checkout/preview'
     notification = '/api/v1/notifications/me'
     review       = '/api/v1/reviews/me'
@@ -420,9 +496,326 @@ Write-Host "    all $($routeProbes.Count) services resolvable through the gatewa
 # created.
 $sku = "AUR-18K-" + ([guid]::NewGuid().ToString().Substring(0,8).ToUpper())
 
+# ---------------------------------------------------------------------------
+# SHARED HELPERS. The sale path (steps 2b-6i), the staff-money checks (20b) and the stock steps
+# (20c-20f) all need to read a refusal as a status and a problem body instead of an exception, to
+# poll an answer that Kafka brings (with a deadline, never a fixed sleep), and to read stock and cost
+# from inventory. They are defined once, here, before any step calls them.
+#
+# The Windows PowerShell 5.1 traps they are written around: a chunked error body leaves ErrorDetails
+# EMPTY (Read-Problem reads the stream); a JSON array can arrive as ONE object, so every list is
+# wrapped in @(...) and filtered with Where-Object { $_ } (@($null).Count is 1); -eq and -ne ignore
+# letter case, so ids, digests and codes are compared with -ceq and -cne; and "$name:" inside a
+# double-quoted string reads as a drive-qualified variable, so it is written "${name}:".
+# ---------------------------------------------------------------------------
+$gw = "http://localhost:8080/api/v1"
+
+function Fail([string]$Message) {
+    Write-Error $Message
+    exit 1
+}
+function Require($Condition, [string]$Message) {
+    if (-not $Condition) { Fail $Message }
+}
+function Probe-Status($err) {
+    $c = $err.Exception.Response.StatusCode.value__
+    if (-not $c) { $c = [int]$err.Exception.Response.StatusCode }
+    return $c
+}
+
+# One request, answered as @{ Status; Json; Location } whatever the status: with $ErrorActionPreference = "Stop"
+# a raw WebException would end the script before it could say which check failed. Read-Problem reads the
+# chunked error body that 5.1 leaves out of ErrorDetails. $Body is a hashtable, sent as JSON; $Headers may carry
+# an Idempotency-Key or a traceparent (merge them with +).
+function Invoke-Api($Method, $Uri, $Headers, $Body) {
+    $p = @{ Method = $Method; Uri = $Uri; UseBasicParsing = $true }
+    if ($Headers) { $p.Headers = $Headers }
+    if ($null -ne $Body) { $p.ContentType = "application/json"; $p.Body = (ConvertTo-Json $Body -Depth 6) }
+    try {
+        $r = Invoke-WebRequest @p
+        $content = $r.Content
+        if ($content -is [byte[]]) { $content = [Text.Encoding]::UTF8.GetString($content) }
+        $json = $null
+        if ($content) { try { $json = $content | ConvertFrom-Json } catch { $json = $null } }
+        # ContainsKey first: asking a dictionary for a header that is not there
+        # must not be able to throw into the catch below and look like a refusal.
+        $location = $null
+        if ($r.Headers.ContainsKey("Location")) { $location = "$($r.Headers['Location'])" }
+        return @{ Status = [int]$r.StatusCode; Json = $json; Location = $location }
+    }
+    catch {
+        return @{ Status = [int](Probe-Status $_); Json = (Read-Problem $_); Location = $null }
+    }
+}
+# The name this helper had when only the supplier steps used it.
+function Invoke-Supplier($Method, $Uri, $Headers, $Body) { return (Invoke-Api $Method $Uri $Headers $Body) }
+
+# A fail-fast check on a reply: the status must be one of $Want (a number or a list), and the message names
+# the problem type and detail when the service gave them.
+function Assert-Reply($Reply, [string]$What, $Want) {
+    if (@($Want) -notcontains $Reply.Status) {
+        $why = ""
+        if ($Reply.Json -and $Reply.Json.type) {
+            $kind = ("$($Reply.Json.type)" -split "/")[-1]
+            $why = " [$kind] $($Reply.Json.detail)"
+        }
+        Fail "$What gave $($Reply.Status), expected $(@($Want) -join ' or ')$why"
+    }
+}
+
+# docker and psql write to stderr freely, which 5.1 turns into a terminating error under "Stop".
+function Invoke-DockerText([string[]]$DockerArguments) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { return @(& docker @DockerArguments 2>&1 | ForEach-Object { "$_" }) }
+    finally { $ErrorActionPreference = $previous }
+}
+
+# A money amount from the JSON, compared as a decimal so that 1528.98 is not 1528.9800000001.
+function Same-Money($Actual, [string]$Expected) {
+    if ($null -eq $Actual) { return $false }
+    return ([decimal]$Actual) -eq ([decimal]::Parse($Expected, [Globalization.CultureInfo]::InvariantCulture))
+}
+
+# Re-reads an answer until it is what is wanted (inventory, order and payment learn of things from Kafka), for at most
+# $Seconds, every $IntervalSeconds. Returns what the probe returned, or $null at the deadline.
+function Wait-Until([scriptblock]$Probe, [int]$Seconds, [int]$IntervalSeconds = 2) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while ($true) {
+        $answer = & $Probe
+        if ($answer) { return $answer }
+        if ((Get-Date) -gt $deadline) { return $null }
+        Start-Sleep -Seconds $IntervalSeconds
+    }
+}
+
+# "on_hand:reserved" of a variant from inventory's own database, or "" while it has no row.
+function Get-StockCounts($Variant) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-inventory", "psql", "-U", "inventory", "-d", "inventory", "-t", "-A", "-F", ":", "-c",
+        "SELECT on_hand, reserved FROM inventory WHERE variant_id = '$Variant'")
+    return (@($rows | Where-Object { $_ -match "^\d+:\d+$" }) -join "").Trim()
+}
+function Get-Stock($Variant) {
+    $text = Get-StockCounts $Variant
+    if ($text -match '^(\d+):(\d+)$') {
+        return [pscustomobject]@{ OnHand = [int]$Matches[1]; Reserved = [int]$Matches[2] }
+    }
+    return $null
+}
+# Waits until the variant holds exactly $OnHand with $Reserved of them held, or fails naming what it holds.
+function Wait-Stock($Variant, [int]$OnHand, [int]$Reserved, [int]$Seconds = 90) {
+    $got = Wait-Until { $s = Get-Stock $Variant; if ($s -and $s.OnHand -eq $OnHand -and $s.Reserved -eq $Reserved) { $s } } $Seconds 2
+    if (-not $got) {
+        Fail "inventory holds '$(Get-StockCounts $Variant)' (on hand:reserved) of $Variant after $Seconds s, expected ${OnHand}:${Reserved}"
+    }
+    return $got
+}
+# The open lots of a variant, oldest slice first.
+function Get-OpenLots($Variant) {
+    $reply = Invoke-Supplier "GET" "http://localhost:8080/api/v1/admin/costs/lots?variantId=$Variant&open=true" $mayaH $null
+    if ($reply.Status -ne 200 -or $null -eq $reply.Json) { return @() }
+    return @($reply.Json.content | Sort-Object { [int]$_.slicePosition })
+}
+function Lots-Say($Lots, [string[]]$Wanted) {
+    # $Wanted is "remaining@cost" per lot, e.g. "4@1528.99".
+    if (@($Lots).Count -ne $Wanted.Count) { return $false }
+    for ($i = 0; $i -lt $Wanted.Count; $i++) {
+        $qty, $cost = $Wanted[$i] -split "@"
+        if ([int]$Lots[$i].qtyRemaining -ne [int]$qty -or -not (Same-Money $Lots[$i].unitCost $cost)) { return $false }
+    }
+    return $true
+}
+function Describe-Lots($Lots) {
+    return (@($Lots | ForEach-Object { "$($_.qtyRemaining)@$($_.unitCost)" }) -join " + ")
+}
+# The ledger rows of a variant for one reason (SALE, WRITE_OFF_BROKEN, BOX_SWAPPED ...): only the live ones unless asked.
+# Callers wrap the call in @(...): one row comes back as one object.
+function Get-LedgerRows($Variant, [string]$Reason, [bool]$LiveOnly = $true) {
+    $r = Invoke-Api GET "$gw/admin/costs/movements?variantId=$Variant&reason=$Reason&size=200" $mayaH $null
+    Require ($r.Status -eq 200) "reading the $Reason ledger rows of $Variant gave $($r.Status)"
+    $rows = @(@($r.Json.content) | Where-Object { $_ })
+    if ($LiveOnly) { $rows = @($rows | Where-Object { $_.live -eq $true }) }
+    return $rows
+}
+# No stock count may disagree with its lots, no lot with its ledger, no set-aside or held count with its records.
+function Assert-Reconciled($Variant, [string]$Name) {
+    $r = Invoke-Api GET "$gw/admin/inventory/reconciliation?variantId=$Variant" $mayaH $null
+    Require ($r.Status -eq 200) "the reconciliation of $Name gave $($r.Status)"
+    $bad = @(@($r.Json.countMismatches) | Where-Object { $_ }).Count + @(@($r.Json.ledgerMismatches) | Where-Object { $_ }).Count +
+           @(@($r.Json.commitmentMismatches) | Where-Object { $_ }).Count + @(@($r.Json.reservedMismatches) | Where-Object { $_ }).Count
+    Require ($bad -eq 0) "the reconciliation of $Name found a mismatch: $($r.Json | ConvertTo-Json -Depth 4 -Compress)"
+}
+
+# An instant from the JSON: Windows PowerShell 5.1 leaves an ISO-8601 string a string, newer versions make it a [datetime].
+function ConvertTo-UtcInstant($Value) {
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return $Value.ToUniversalTime() }
+    $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+    return [datetime]::Parse("$Value", [Globalization.CultureInfo]::InvariantCulture, $styles)
+}
+function Format-Instant([datetime]$When) {
+    return $When.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+}
+function Near-Instant($Actual, [datetime]$Expected, [int]$Seconds = 2) {
+    $a = ConvertTo-UtcInstant $Actual
+    if ($null -eq $a) { return $false }
+    return ([math]::Abs(($a - $Expected.ToUniversalTime()).TotalSeconds) -le $Seconds)
+}
+function New-Key([string]$Prefix) {
+    return $Prefix + "-" + [guid]::NewGuid().ToString()
+}
+
+# The realm's access tokens last 30 minutes; a step late in the run takes fresh ones. Sets the tokens and the
+# two header tables (script scope, which is where every step and Expect-Refusal read them).
+function Refresh-Tokens {
+    $script:maya   = Get-Jwt "maya"
+    $script:alice  = Get-Jwt "alice"
+    $script:mayaH  = @{ Authorization = "Bearer $($script:maya)" }
+    $script:aliceH = @{ Authorization = "Bearer $($script:alice)" }
+}
+
+# ---- the sale's own helpers (the variables they read are made in 2b) ----------------------------------------
+# The quote digest of $Quantity pieces of the sale ring, worked out by THIS script (Get-QuoteDigest), with the
+# promotion's per-piece discount and its id on the line while it is in force.
+function Get-SaleDigest($Quantity, $Option = "SELF_COLLECT", $Delivery = 0, $Town = $null, $Payer = $null) {
+    return (Get-QuoteDigest "ZMW" $Option $Delivery @(@{ VariantId = $saleVariantId; Quantity = $Quantity; Price = 100.00; Discount = $saleDiscount; Promotion = $salePromotionId }) $Town $Payer)
+}
+# POST /orders, the direct door of the sale: $Quantity pieces of the sale ring, self-collect, with the true digest.
+# It answers the refusals too. Inventory learns a product's default box from catalog over Kafka, so a placement right
+# after the box was chosen may be answered 409 no-default-box (or product-state-not-received): those two, and only
+# those, are tried again, for up to 90 s.
+function Place-SaleOrder($Headers, $Quantity, $Address = $null, $Key = $null, $Title = "Smoke sale ring") {
+    $body = @{
+        currency = "ZMW"; deliveryOption = "SELF_COLLECT"; quoteDigest = (Get-SaleDigest $Quantity)
+        items = @(@{ variantId = $saleVariantId; title = $Title; quantity = $Quantity; unitPrice = 100.00 })
+    }
+    if ($Address) { $body.shippingAddressId = $Address }
+    $h = $Headers
+    if ($Key) { $h = $Headers + @{ "Idempotency-Key" = $Key } }
+    $deadline = (Get-Date).AddSeconds(90)
+    while ($true) {
+        $reply = Invoke-Api POST "$gw/orders" $h $body
+        $type = "$($reply.Json.type)"
+        $notKnownYet = ($reply.Status -eq 409) -and ($type.EndsWith("/no-default-box") -or $type.EndsWith("/product-state-not-received"))
+        if (-not $notKnownYet -or (Get-Date) -gt $deadline) { return $reply }
+        Start-Sleep -Seconds 2
+    }
+}
+function Add-ToCart($Variant, $Quantity) {
+    $r = Invoke-Api POST "$gw/carts/me/items" $aliceH @{ variantId = "$Variant"; quantity = $Quantity }
+    Assert-Reply $r "adding $Quantity x $Variant to alice's bag" @(200, 201)
+}
+function Clear-Cart {
+    $r = Invoke-Api DELETE "$gw/carts/me" $aliceH $null
+    # 404: there is no bag to clear, which is the end state wanted.
+    if ($r.Status -ne 404 -and ($r.Status -lt 200 -or $r.Status -ge 300)) { Fail "clearing alice's bag gave $($r.Status)" }
+}
+function Get-Order($OrderId, $Headers = $null) {
+    if (-not $Headers) { $Headers = $aliceH }
+    $r = Invoke-Api GET "$gw/orders/$OrderId" $Headers $null
+    if ($r.Status -ne 200) { return $null }
+    return $r.Json
+}
+function Count-Orders($Headers) {
+    $r = Invoke-Api GET "$gw/orders/me?size=1" $Headers $null
+    Require ($r.Status -eq 200) "listing the caller's orders gave $($r.Status)"
+    return [int]$r.Json.totalElements
+}
+# The caller's orders that still wait for payment (CREATED or PAYMENT_SUBMITTED), every page of them. Callers wrap the call in @(...).
+function Get-LiveOrders($Headers) {
+    $found = @()
+    for ($page = 0; $page -lt 20; $page++) {
+        $r = Invoke-Api GET "$gw/orders/me?size=100&page=$page" $Headers $null
+        if ($r.Status -ne 200) { break }
+        $rows = @(@($r.Json.content) | Where-Object { $_ })
+        $found += @($rows | Where-Object { "$($_.status)" -ceq "CREATED" -or "$($_.status)" -ceq "PAYMENT_SUBMITTED" })
+        if ($r.Json.last -eq $true -or $rows.Count -eq 0) { break }
+    }
+    return $found
+}
+# Orders alice left waiting for payment hold her pieces and count against her limit of three live orders. A stack that keeps history carries
+# some: from a run that died part-way, and every order an earlier (pre-Phase 7) run left CREATED, which holds nothing but is counted all the same.
+# So each run starts by letting them go: a CREATED order is cancelled by its shopper, a PAYMENT_SUBMITTED one by staff rejecting its claim.
+# Best effort: what cannot be cleared is left, and the run goes on (step 6f says so if the limit gets in its way).
+function Clear-LiveOrders {
+    $live = @(Get-LiveOrders $aliceH)
+    foreach ($o in $live) {
+        if ("$($o.status)" -ceq "CREATED") {
+            Invoke-Api POST "$gw/orders/$($o.id)/cancel" $aliceH $null | Out-Null
+        }
+        else {
+            $theirClaims = Invoke-Api GET "$gw/admin/payments/claims?orderId=$($o.id)" $mayaH $null
+            foreach ($theirClaim in @(@($theirClaims.Json) | Where-Object { $_ -and $_.rejected -eq $false })) {
+                Invoke-Api POST "$gw/admin/payments/claims/$($theirClaim.id)/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: left over from an earlier run" } | Out-Null
+            }
+        }
+    }
+    if ($live.Count -gt 0) {
+        $cleanDeadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $cleanDeadline) {
+            if (@(Get-LiveOrders $aliceH).Count -eq 0) { break }
+            Start-Sleep -Seconds 2
+        }
+        Write-Host "    $($live.Count) order(s) of alice's left waiting for payment by an earlier run were let go; $(@(Get-LiveOrders $aliceH).Count) still wait" -ForegroundColor Gray
+    }
+}
+# What the people who confirm money would look at when a sale does not settle: order's settlement rows for it, and
+# whether payment is still waiting for order to answer.
+function Get-SalesNote($OrderId) {
+    $s = Invoke-Api GET "$gw/admin/orders/settlements" $mayaH $null
+    $mine = @(@($s.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq "$OrderId" })
+    $rows = @($mine | ForEach-Object { "$($_.state)/$($_.reason)" }) -join ", "
+    $p = Invoke-Api GET "$gw/admin/payments/confirmations/pending" $mayaH $null
+    $waiting = @(@($p.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq "$OrderId" }).Count
+    return "order's settlement rows for it: [$rows]; confirmations payment still waits on order to answer: $waiting"
+}
+# Polls the shopper's own read of the order until it has the status, or fails saying what it saw (settlement is Kafka-driven).
+function Wait-OrderStatus($OrderId, [string]$Status, [int]$Seconds = 90) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    $last = "no answer"
+    while ($true) {
+        $r = Invoke-Api GET "$gw/orders/$OrderId" $aliceH $null
+        if ($r.Status -eq 200) {
+            $last = "$($r.Json.status)"
+            if ($last -ceq $Status) { return $r.Json }
+        }
+        else { $last = "HTTP $($r.Status)" }
+        if ((Get-Date) -gt $deadline) { break }
+        Start-Sleep -Seconds 1
+    }
+    Fail "order $OrderId is '$last' $Seconds s later, expected '$Status'. $(Get-SalesNote $OrderId)"
+}
+# Polls payment's own read of a confirmation until its outcome is the one wanted (PENDING, SETTLED or HELD).
+function Wait-Confirmation($ConfirmationId, [string]$Outcome, [int]$Seconds = 90) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    $last = "no answer"
+    while ($true) {
+        $r = Invoke-Api GET "$gw/admin/payments/confirmations/$ConfirmationId" $mayaH $null
+        if ($r.Status -eq 200) {
+            $last = "$($r.Json.outcome) $($r.Json.outcomeReason)"
+            if ("$($r.Json.outcome)" -ceq $Outcome) { return $r.Json }
+        }
+        else { $last = "HTTP $($r.Status)" }
+        if ((Get-Date) -gt $deadline) { break }
+        Start-Sleep -Seconds 1
+    }
+    Fail "confirmation $ConfirmationId is '$last' $Seconds s later, expected outcome '$Outcome'"
+}
+# Staff recording money (SALES_AGENT: maya is the OWNER). The Idempotency-Key is REQUIRED by payment; null sends none.
+function Confirm-Money($Body, $Key) {
+    $h = $mayaH
+    if ($Key) { $h = $mayaH + @{ "Idempotency-Key" = $Key } }
+    return (Invoke-Api POST "$gw/admin/payments/confirmations" $h $Body)
+}
+# The receipt number of a paid order is internal (the order's reply does not carry it yet): read from order's own database.
+function Get-OrderReceipt($OrderId) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-order", "psql", "-U", "orders", "-d", "orders", "-t", "-A", "-c",
+        "SELECT coalesce(receipt_number, '') FROM orders WHERE id = '$OrderId'")
+    return (@($rows | Where-Object { $_ -match "\S" }) -join "").Trim()
+}
+
 Write-Host "[1/20] JWTs..." -ForegroundColor Cyan
-$maya  = Get-Jwt "maya"
-$alice = Get-Jwt "alice"
+Refresh-Tokens
 
 Write-Host "[2/20] Admin: product + variant (priced, published)..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
@@ -477,6 +870,119 @@ Invoke-RestMethod -Method POST `
 # step 20e then follows that stock: lots, a sale, a write-off, a correction of the courier's bill.
 Write-Host "    product=$productId, variant=$variantId, published (stock comes from a received consignment, step 20d)" -ForegroundColor Gray
 
+Write-Host "[2b/20] Sale setup: a piece with stock, a price, a box and a running promotion..." -ForegroundColor Cyan
+# Placing an order HOLDS its pieces now (Phase 7), so the sale of steps 4-6i needs what a real sale needs: stock must EXIST (the only
+# thing that makes any is a received consignment), the product needs a default box (a hold takes one box per piece), a price, to be
+# published, and -- to show the Phase 7 arithmetic -- a promotion. It is a SEPARATE product from the ring of step 2, whose stock arrives
+# at step 20d and whose cost arithmetic steps 20d-20f pin to the ngwee. Everything here is made under random names, so a run never
+# collides with an earlier one on a live stack, and everything is kept (history is never deleted).
+#
+#   sale ring    12 pieces, K100.00 for the 12 (not an even split: two cost slices)
+#   small box    12, K12.00;  large box 12, K24.00 (the large one is what the box swap of step 6h changes to)
+#   courier      K36.00 for the whole consignment, shared by UNITS: 36 units, K1.00 each, in whole ngwee
+# so the allocator lands each line's whole total (goods + its share) on its units: ring K112.00 / 12 = 4 x K9.34 + 8 x K9.33 (dearer
+# slice first), small K24.00 / 12 = K2.00, large K36.00 / 12 = K3.00, K172.00 landed in all.
+$saleTag = [guid]::NewGuid().ToString("N").Substring(0, 8).ToUpper()
+$procBase = "http://localhost:8080/api/v1/admin/procurement"
+
+$p = Invoke-Api POST "$gw/admin/products" $mayaH @{ title = "Smoke sale ring $saleTag"; description = "The piece the Phase 7 sale sells"; tags = @("smoke") }
+Assert-Reply $p "creating the sale product" 201
+$saleProductId = "$($p.Json.id)"
+$v = Invoke-Api POST "$gw/admin/products/$saleProductId/variants" $mayaH @{ sku = "SALE-RING-$saleTag"; currency = "ZMW"; options = @{} }
+Assert-Reply $v "creating the sale ring's variant" 201
+$saleVariantId = "$(@($v.Json.variants)[0].id)"
+Require ($saleVariantId.Length -gt 0) "the sale ring's variant was not created: $($v.Json | ConvertTo-Json -Depth 4 -Compress)"
+
+# The boxes: a PACKAGING entry with two sizes (as step 8b makes one), never published, priced 0.00.
+$bp = Invoke-Api POST "$gw/admin/products" $mayaH @{ title = "Smoke sale box $saleTag"; kind = "PACKAGING"; optionNames = @("Size") }
+Assert-Reply $bp "creating the sale packaging entry" 201
+$saleBoxProductId = "$($bp.Json.id)"
+$saleBoxIds = @{}
+foreach ($size in @("Small", "Large")) {
+    $boxSku = "SALE-BOX-$saleTag-$size"
+    $bv = Invoke-Api POST "$gw/admin/products/$saleBoxProductId/variants" $mayaH @{ sku = $boxSku; unitPrice = 0.00; options = @{ Size = $size } }
+    Assert-Reply $bv "creating the $size sale box" 201
+    $made = @(@($bv.Json.variants) | Where-Object { "$($_.sku)" -ceq $boxSku })
+    Require ($made.Count -eq 1) "the $size sale box's variant is not in the reply: $($bv.Json | ConvertTo-Json -Depth 4 -Compress)"
+    $saleBoxIds[$size] = "$($made[0].id)"
+}
+$saleSmallBoxId = $saleBoxIds["Small"]
+$saleLargeBoxId = $saleBoxIds["Large"]
+
+# One supplier, one purchase order of three lines, one consignment, the courier's charge keyed, the allocation read to the ngwee, received.
+$sup = Invoke-Api POST "$procBase/suppliers" $mayaH @{ name = "Smoke Sale Supplier $saleTag"; country = "ae" }
+Assert-Reply $sup "creating the sale's supplier" 201
+$po = Invoke-Api POST "$procBase/purchase-orders" $mayaH @{
+    supplierId = $sup.Json.id; note = "smoke: the sale's stock"
+    lines = @(
+        @{ variantId = $saleVariantId;  quantity = 12; totalPaid = 100.00 },
+        @{ variantId = $saleSmallBoxId; quantity = 12; totalPaid = 12.00 },
+        @{ variantId = $saleLargeBoxId; quantity = 12; totalPaid = 24.00 }) }
+Assert-Reply $po "placing the sale's purchase order" 201
+$sc = Invoke-Api POST "$procBase/consignments" $mayaH @{ purchaseOrders = @(@{ id = $po.Json.id; version = $po.Json.version }) }
+Assert-Reply $sc "starting the sale's consignment" 201
+$saleConsignmentId = "$($sc.Json.id)"
+$sk = Invoke-Api PUT "$procBase/consignments/$saleConsignmentId/cost-lines" $mayaH @{ version = [long]$sc.Json.version; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 36.00 }) }
+Assert-Reply $sk "keying the sale consignment's courier charge" 200
+$spv = Invoke-Api GET "$procBase/consignments/$saleConsignmentId/allocation" $mayaH $null
+Assert-Reply $spv "reading the sale consignment's allocation" 200
+$ringSlices = @($spv.Json.lines[0].slices)
+$smallSlices = @($spv.Json.lines[1].slices)
+$largeSlices = @($spv.Json.lines[2].slices)
+$previewSaysSo = ($spv.Json.ready -eq $true) -and ($ringSlices.Count -eq 2) -and ($smallSlices.Count -eq 1) -and ($largeSlices.Count -eq 1) -and
+    ([int]$ringSlices[0].quantity -eq 4) -and (Same-Money $ringSlices[0].unitCost "9.34") -and
+    ([int]$ringSlices[1].quantity -eq 8) -and (Same-Money $ringSlices[1].unitCost "9.33") -and
+    ([int]$smallSlices[0].quantity -eq 12) -and (Same-Money $smallSlices[0].unitCost "2.00") -and
+    ([int]$largeSlices[0].quantity -eq 12) -and (Same-Money $largeSlices[0].unitCost "3.00") -and
+    (Same-Money $spv.Json.landedTotal "172.00")
+Require $previewSaysSo "the sale consignment's allocation is not the one worked out by hand (ring 4 x 9.34 + 8 x 9.33, small 12 x 2.00, large 12 x 3.00, landed 172.00): $($spv.Json | ConvertTo-Json -Depth 6 -Compress)"
+$beforeReceive = Invoke-Api GET "$procBase/consignments/$saleConsignmentId" $mayaH $null
+$sr = Invoke-Api POST "$procBase/consignments/$saleConsignmentId/receive" $mayaH @{ version = [long]$beforeReceive.Json.version }
+Assert-Reply $sr "receiving the sale consignment" 200
+Require ("$($sr.Json.status)" -ceq "RECEIVED") "the sale consignment is '$($sr.Json.status)' after receiving, expected RECEIVED"
+
+# Inventory learns of the receipt from Kafka (the first consumer after a cold start can be slow): poll, never sleep a fixed time.
+$arrived = Wait-Until { if ((Get-StockCounts $saleVariantId) -ceq "12:0" -and (Get-StockCounts $saleSmallBoxId) -ceq "12:0" -and (Get-StockCounts $saleLargeBoxId) -ceq "12:0") { "yes" } } 120
+Require $arrived "inventory holds ring '$(Get-StockCounts $saleVariantId)', small box '$(Get-StockCounts $saleSmallBoxId)', large box '$(Get-StockCounts $saleLargeBoxId)' (on hand:reserved) after 120 s, expected 12:0 for each: the sale consignment's receipt was not applied (Kafka, procurement to inventory)"
+$saleRingLots = Get-OpenLots $saleVariantId
+$saleSmallLots = Get-OpenLots $saleSmallBoxId
+$saleLargeLots = Get-OpenLots $saleLargeBoxId
+Require (Lots-Say $saleRingLots @("4@9.34", "8@9.33")) "the sale ring's open lots are [$(Describe-Lots $saleRingLots)], expected 4@9.34 + 8@9.33"
+Require (Lots-Say $saleSmallLots @("12@2.00")) "the small box's open lots are [$(Describe-Lots $saleSmallLots)], expected 12@2.00"
+Require (Lots-Say $saleLargeLots @("12@3.00")) "the large box's open lots are [$(Describe-Lots $saleLargeLots)], expected 12@3.00"
+
+# The default box, the price (now compared with what the stock cost: K100 covers ring + box, so OK), publication.
+$db = Invoke-Api PUT "$gw/admin/products/$saleProductId/default-packaging" $mayaH @{ packagingVariantId = $saleSmallBoxId }
+Assert-Reply $db "choosing the small box as the sale ring's default" 200
+Require ("$($db.Json.defaultPackagingVariantId)" -ceq $saleSmallBoxId) "the default box reads '$($db.Json.defaultPackagingVariantId)', expected the small box $saleSmallBoxId"
+$pr = Invoke-Api PUT "$gw/admin/pricing/variants/$saleVariantId/price" $mayaH @{ unitPrice = 100.00; expectedPriceId = $null }
+Assert-Reply $pr "pricing the sale ring at K100" 200
+Require ("$($pr.Json.assessment)" -ceq "OK") "K100 against a cost near K9.34 + K2.00 box should read OK; got '$($pr.Json.assessment)'"
+$pub = Invoke-Api POST "$gw/admin/products/$saleProductId/publish" $mayaH $null
+Assert-Reply $pub "publishing the sale ring" 200
+
+# A promotion on the product: K10 off each piece, from today (Lusaka's calendar day: UTC+2, no daylight saving) to tomorrow. It may not start
+# in the past, and it ends from now when stopped (step 20). Catalog asks promotion at every read, so it applies at once.
+$lusakaNow = [DateTime]::UtcNow.AddHours(2)
+$promo = Invoke-Api POST "$gw/admin/promotions" $mayaH @{
+    name = "Smoke K10 off $saleTag"; scopeType = "PRODUCT"; scopeId = $saleProductId; discountType = "FIXED"; amount = 10.00
+    startsOn = $lusakaNow.ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture)
+    endsOn = $lusakaNow.AddDays(1).ToString("yyyy-MM-dd", [Globalization.CultureInfo]::InvariantCulture) }
+Assert-Reply $promo "making the sale ring's promotion" 201
+$promotionId = "$($promo.Json.id)"
+$saleDiscount = [decimal]10.00        # what the promotion takes off one piece NOW; Get-SaleDigest and the totals below read it
+$salePromotionId = $promotionId       # the promotion in force on the line (null once it is stopped)
+$shown = Invoke-Api POST "$gw/variants/pricing" $null @{ variantIds = @($saleVariantId) }
+Assert-Reply $shown "the public pricing of the sale ring" 200
+$shownEntry = @($shown.Json.results)[0]
+Require (("$($shownEntry.status)" -ceq "PRICED") -and (Same-Money $shownEntry.unitPrice "100.00") -and (Same-Money $shownEntry.discountPerPiece "10.00") -and
+        ("$($shownEntry.promotionId)" -ceq $promotionId) -and (Same-Money $shownEntry.netUnitPrice "90.00")) "the public pricing of the sale ring reads $($shownEntry | ConvertTo-Json -Compress), expected PRICED at 100.00 with 10.00 off from promotion $promotionId (net 90.00): another promotion in force (a shop-wide one?) may be taking more off"
+$pricingView = Invoke-Api GET "$gw/admin/pricing/variants/$saleVariantId" $mayaH $null
+Assert-Reply $pricingView "the pricing view of the sale ring" 200
+Require (("$($pricingView.Json.assessment)" -ceq "OK") -and (Same-Money $pricingView.Json.netPrice "90.00") -and (Same-Money $pricingView.Json.discountPerPiece "10.00") -and
+        ("$($pricingView.Json.promotionId)" -ceq $promotionId)) "the pricing view reads assessment '$($pricingView.Json.assessment)' net '$($pricingView.Json.netPrice)' discount '$($pricingView.Json.discountPerPiece)' promotion '$($pricingView.Json.promotionId)', expected OK, 90.00, 10.00 and $promotionId"
+Write-Host "    sale ring $saleVariantId (product $saleProductId): 12 on hand in two lots (4 x K9.34 + 8 x K9.33), small box K2.00 and large box K3.00 in stock, default box = small, K100 reads OK, K10 off each piece from promotion $promotionId" -ForegroundColor Gray
+
 Write-Host "[3/20] Customer: profile + address..." -ForegroundColor Cyan
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/customers/me" `
@@ -487,8 +993,10 @@ $addr = Invoke-RestMethod -Method POST `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ label="Home"; line1="Plot 1, Cairo Road"; city="Lusaka"; postalCode="10101"; country="ZM"; isDefault=$true })
 $addrId = $addr.id
+# Housekeeping for a stack that keeps history (see Clear-LiveOrders): alice starts with no order waiting for payment.
+Clear-LiveOrders
 
-Write-Host "[4/20] Customer: add 2 units to cart..." -ForegroundColor Cyan
+Write-Host "[4/20] Customer: add 2 units of the sale ring to cart..." -ForegroundColor Cyan
 # Clear first, so the run is idempotent. Step 6 (/checkout/confirm) empties the
 # cart on success, but a run that dies anywhere between step 4 and step 6 leaves
 # items behind -- and because each run creates a NEW product, the next run's
@@ -529,7 +1037,7 @@ Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1; unitPrice=0.01; title="Free ring please" }) | Out-Null
+    -Body (ConvertTo-Json @{ variantId=$saleVariantId; quantity=1; unitPrice=0.01; title="Free ring please" }) | Out-Null
 
 $afterStale = Invoke-RestMethod -Method GET `
     -Uri "http://localhost:8080/api/v1/carts/me" `
@@ -549,12 +1057,13 @@ Write-Host "    a stale unitPrice=0.01 was ignored; line priced at $stalePrice f
 # Add #2 uses the body the API actually declares now -- no price, no title, just
 # which variant and how many. It also exercises the bump branch, which refreshes
 # the line from the fresh pricing entry instead of keeping the first snapshot.
-# The two adds leave exactly 2 units, which is what step 5's totals assume.
+# The two adds leave exactly 2 units, which is what step 5's totals assume. (The cart shows
+# LIST prices: the promotion's discount is catalog's to apply at preview, confirm and order.)
 Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/carts/me/items" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
+    -Body (ConvertTo-Json @{ variantId=$saleVariantId; quantity=1 }) | Out-Null
 
 # Assert the cart holds exactly what we just put in it, so a totals mismatch in
 # step 5 points at the pricing logic rather than at leftover state.
@@ -589,163 +1098,191 @@ Write-Host "[4b/20] Order refuses a price the caller invented..." -ForegroundCol
 # recorded total exceeded what the card paid -- an invisible under-charge on
 # the cart path, worse than the hole being closed.
 # Both bodies carry the digest of the TRUE quote -- one ring at catalog's
-# K100, self-collected -- so the false price claim is the only fault in the
-# first, and the second is exactly what order prices for itself.
+# list price K100 less the running promotion's K10 a piece, self-collected --
+# so the false price claim is the only fault in the first, and the second is
+# exactly what order prices for itself.
 $orderProbe = @{
     shippingAddressId = $addrId
     currency = "ZMW"
     deliveryOption = "SELF_COLLECT"
-    quoteDigest = (Get-QuoteDigest "ZMW" "SELF_COLLECT" 0 @(@{ VariantId=$variantId; Quantity=1; Price=100.00 }))
-    items = @(@{ variantId=$variantId; title="Free ring please"
-                 quantity=1; unitPrice=0.01 })
+    quoteDigest = (Get-SaleDigest 1)
+    items = @(@{ variantId = $saleVariantId; title = "Free ring please"
+                 quantity = 1; unitPrice = 0.01 })
 }
 # A false price claim is refused as pricing-changed: the ONE-CENT ORDER HOLE
 # would show here as "ACCEPTED".
-Expect-Refusal "http://localhost:8080/api/v1/orders" $orderProbe 409 "pricing-changed" `
+Expect-Refusal "$gw/orders" $orderProbe 409 "pricing-changed" `
     "POST /orders claiming unitPrice=0.01 for a K100 piece"
 # And the truthful claim still works -- the bound must narrow the input, not
 # the feature. The TITLE is overwritten with catalog's rather than refused,
 # because an admin renaming a product must not refuse a sale.
-$orderProbe.items[0].unitPrice = 100.00
-$honest = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
-    -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
-    -Body (ConvertTo-Json $orderProbe)
-if ($honest.subtotal -ne 100.00 -or $honest.currency -ne "ZMW") {
-    Write-Error "Truthful order came back subtotal=$($honest.subtotal) currency=$($honest.currency), want 100.00 ZMW"
-    exit 1
-}
-# The order's own total is authoritative now (V4): subtotal + delivery -
-# discount, with each part on the record -- it used to be the subtotal alone.
-if ($honest.total -ne 100.00 -or $honest.shippingAmount -ne 0 -or $honest.discountAmount -ne 0 -or
-    $honest.deliveryOption -ne "SELF_COLLECT") {
-    Write-Error ("Order should record total=100 = 100 + delivery 0 - discount 0 for SELF_COLLECT; got " +
-                 "total=$($honest.total) shipping=$($honest.shippingAmount) discount=$($honest.discountAmount) " +
-                 "option=$($honest.deliveryOption)")
-    exit 1
-}
-# And a quote the shopper did not see is refused before anything is saved:
+#
+# Since Phase 7 placing an order is HOLDING it: this order takes one ring and one
+# box at inventory (so it is also the first proof that step 2b's stock and default
+# box are really there; Place-SaleOrder tries again for up to 90 s while inventory
+# has not yet heard of the default box from catalog) and comes back CREATED with a
+# time the hold lapses at. It is cancelled at the end of the step, so it holds
+# nothing against alice's three-order limit (step 6f).
+$honestReply = Place-SaleOrder $aliceH 1 $addrId $null "Free ring please"
+Assert-Reply $honestReply "A truthful one-ring order" 201
+$honest = $honestReply.Json
+Require ((Same-Money $honest.subtotal "100.00") -and ("$($honest.currency)" -ceq "ZMW")) "Truthful order came back subtotal=$($honest.subtotal) currency=$($honest.currency), want 100.00 ZMW"
+# The order's own total is authoritative (V4): subtotal + delivery - discount, with each
+# part on the record. The discount is the promotion's K10 on the one piece.
+Require ((Same-Money $honest.total "90.00") -and (Same-Money $honest.shippingAmount "0.00") -and (Same-Money $honest.discountAmount "10.00") -and
+         ("$($honest.deliveryOption)" -ceq "SELF_COLLECT") -and ("$($honest.status)" -ceq "CREATED")) ("Order should record total=90 = 100 + delivery 0 - discount 10 for SELF_COLLECT, CREATED; got " +
+         "total=$($honest.total) shipping=$($honest.shippingAmount) discount=$($honest.discountAmount) option=$($honest.deliveryOption) status=$($honest.status)")
+$honestLine = @($honest.items)[0]
+Require ((Same-Money $honestLine.discountPerPiece "10.00") -and ("$($honestLine.promotionId)" -ceq $promotionId) -and ("$($honestLine.variantId)" -ceq $saleVariantId) -and
+         ("$($honestLine.boxVariantId)" -ceq $saleSmallBoxId)) "the order's line reads discount '$($honestLine.discountPerPiece)' promotion '$($honestLine.promotionId)' box '$($honestLine.boxVariantId)', expected 10.00, $promotionId and the small box $saleSmallBoxId (the product's default box, held with the piece)"
+$holdEnds = ConvertTo-UtcInstant $honest.holdExpiresAt
+Require (($null -ne $holdEnds) -and ($holdEnds -gt [DateTime]::UtcNow) -and ($holdEnds -lt [DateTime]::UtcNow.AddMinutes(15))) "the held order's holdExpiresAt is '$($honest.holdExpiresAt)', expected a time in the next few minutes (the ten-minute payment hold)"
+# And a quote the shopper did not see is refused before anything is saved or held:
 # the same body with TWO rings against the one-ring digest.
+$orderProbe.items[0].unitPrice = 100.00
 $orderProbe.items[0].quantity = 2
-Expect-Refusal "http://localhost:8080/api/v1/orders" $orderProbe 409 "pricing-changed" `
+Expect-Refusal "$gw/orders" $orderProbe 409 "pricing-changed" `
     "order placing TWO rings against the ONE-ring digest"
-$orderProbe.items[0].quantity = 1
-$storedTitle = @($honest.items)[0].title
-if ($storedTitle -eq "Free ring please") {
-    Write-Error "order stored the caller's title verbatim; it must store catalog's variantTitle"
-    exit 1
-}
-Write-Host "    unitPrice=0.01 refused 409; truthful 100.00 ZMW accepted (total 100 = 100 + 0 - 0); a changed quantity refused 409 pricing-changed; title stored as '$storedTitle'" -ForegroundColor Gray
+$storedTitle = $honestLine.title
+Require ("$storedTitle" -cne "Free ring please") "order stored the caller's title verbatim; it must store catalog's variantTitle"
+$cancelledReply = Invoke-Api POST "$gw/orders/$($honest.id)/cancel" $aliceH $null
+Assert-Reply $cancelledReply "Cancelling the one-ring order" 200
+Require ("$($cancelledReply.Json.status)" -ceq "CANCELLED") "the cancelled order reads '$($cancelledReply.Json.status)', expected CANCELLED"
+$cancelledOrderId = "$($honest.id)"
+Write-Host "    unitPrice=0.01 refused 409; truthful order accepted and HELD (CREATED until $($honest.holdExpiresAt), total 90 = 100 + 0 - 10, the promotion and the small box on its line); a changed quantity refused 409 pricing-changed; title stored as '$storedTitle'; the order cancelled" -ForegroundColor Gray
 
 Write-Host "[5/20] Customer: /checkout/preview -- quote, then commit..." -ForegroundColor Cyan
-# No option chosen yet: the options, but no total and no digest -- there is
-# nothing to agree to until the shopper has chosen how the piece reaches them.
+# No option chosen yet: the priced bag -- each line's list price and what the
+# promotion takes off it -- but no delivery cost, no total and no digest: there
+# is nothing to agree to until the shopper has chosen how the piece reaches them.
 $options = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" -Body "{}"
-if ($null -ne $options.total -or $null -ne $options.quoteDigest -or @($options.shippingOptions).Count -lt 1) {
-    Write-Error "A preview with no option should list options with no total and no digest; got total=$($options.total) digest=$($options.quoteDigest)"
+if ($null -ne $options.total -or $null -ne $options.quoteDigest -or $null -ne $options.shippingCost) {
+    Write-Error "A preview with no option should price the bag with no delivery cost, no total and no digest; got ship=$($options.shippingCost) total=$($options.total) digest=$($options.quoteDigest)"
     exit 1
 }
+Require ((Same-Money $options.subtotal "200.00") -and (Same-Money $options.discount "20.00") -and (@($options.lines).Count -eq 1) -and
+         (Same-Money (@($options.lines)[0].discountPerPiece) "10.00")) "A preview with no option should price the bag at subtotal 200.00 less discount 20.00 on one line with 10.00 off each piece; got subtotal=$($options.subtotal) discount=$($options.discount) lines=$(@($options.lines).Count)"
 $preview = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" `
     -Body (ConvertTo-Json @{ deliveryOption="SELF_COLLECT" })
-# 2 x K100 = K200, plus self-collect at K0, and no discount until Phase 7's
-# scoped promotions.
-#
-# Until Phase 7 prices delivery per town, the only option is self-collect at
-# no charge (MVP_PLAN Phase 0, item 1); the old K125 came from a USD card
-# multiplied by 25 whose "domestic" zone was Nigeria. A shipping outage no
-# longer degrades to zero either -- it is a 503 -- so a zero here is the
-# quoted option, not a failure in disguise; the option code below proves it.
-if ($preview.subtotal -ne 200.00 -or $preview.discount -ne 0 -or
-    $preview.shippingCost -ne 0 -or $preview.total -ne 200.00 -or $preview.deliveryOption -ne "SELF_COLLECT") {
-    Write-Error "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total) option=$($preview.deliveryOption)"
-    exit 1
-}
-if ($preview.currency -ne "ZMW") {
-    Write-Error "Preview currency should be the bag's ZMW, got $($preview.currency)"
-    exit 1
-}
+# 2 x K100 = K200 at list; the promotion takes K10 off EACH piece (K20, worked out
+# per piece and shown per line, never split across the order); self-collect is K0:
+# total K180 = 200 + 0 - 20. A shipping outage never degrades to zero (it is a
+# 503), so the zero here is the quoted option, not a failure in disguise.
+Require ((Same-Money $preview.subtotal "200.00") -and (Same-Money $preview.discount "20.00") -and (Same-Money $preview.shippingCost "0.00") -and
+         (Same-Money $preview.total "180.00") -and ("$($preview.deliveryOption)" -ceq "SELF_COLLECT")) "Preview totals wrong: subtotal=$($preview.subtotal) discount=$($preview.discount) ship=$($preview.shippingCost) total=$($preview.total) option=$($preview.deliveryOption); expected 200.00, 20.00, 0.00, 180.00, SELF_COLLECT"
+Require ("$($preview.currency)" -ceq "ZMW") "Preview currency should be the bag's ZMW, got $($preview.currency)"
+Require (($null -eq $preview.deliveryTownId) -and ($null -eq $preview.payer)) "A self-collect quote names no town and no payer; got town=$($preview.deliveryTownId) payer=$($preview.payer)"
+# The line: the variant, the quantity, the LIST price, what the promotion took off one piece, which promotion, and the net price.
+$previewLine = @($preview.lines)[0]
+Require (("$($previewLine.variantId)" -ceq $saleVariantId) -and ([int]$previewLine.quantity -eq 2) -and (Same-Money $previewLine.unitPrice "100.00") -and
+         (Same-Money $previewLine.discountPerPiece "10.00") -and ("$($previewLine.promotionId)" -ceq $promotionId) -and (Same-Money $previewLine.netUnitPrice "90.00")) "The preview's line reads $($previewLine | ConvertTo-Json -Compress); expected 2 x variant $saleVariantId at 100.00 with 10.00 off from promotion $promotionId (net 90.00)"
 # The digest the server hands out must be the one this script computes on its
-# own from the same quote -- two implementations, one rule.
-$expectedDigest = Get-QuoteDigest "ZMW" "SELF_COLLECT" 0 @(@{ VariantId=$variantId; Quantity=2; Price=100.00 })
-if ($preview.quoteDigest -ne $expectedDigest) {
-    Write-Error "Preview quoteDigest $($preview.quoteDigest) is not the digest of 2 x 100 ZMW self-collect ($expectedDigest)"
+# own from the same quote -- two implementations, one rule (oriah-quote/2: the
+# promotion behind each line's discount is part of it). Compared with -cne: -ne
+# ignores letter case, and a digest is a hex string.
+$expectedDigest = Get-SaleDigest 2
+if ($preview.quoteDigest -cne $expectedDigest) {
+    Write-Error "Preview quoteDigest $($preview.quoteDigest) is not the digest of 2 x 100 ZMW less 10 each (promotion $promotionId), self-collect ($expectedDigest)"
     exit 1
 }
-if (@($preview.shippingOptions).Count -ne 1 -or $preview.shippingOptions[0].code -ne "SELF_COLLECT") {
-    Write-Error "Zambia should be offered exactly SELF_COLLECT, got $(@($preview.shippingOptions | ForEach-Object { $_.code }) -join ',')"
-    exit 1
+# What the retired preview used to carry is gone: the options are shipping's to list (GET /shipping/towns), and zones were removed in Phase 0.
+foreach ($retired in @("shippingOptions", "shippingZone")) {
+    Require (-not ($preview.PSObject.Properties.Name -contains $retired)) "Preview still carries $retired; it was retired (the options are shipping's, read by the storefront from /shipping/towns)"
 }
-if ($preview.PSObject.Properties.Name -contains "shippingZone") {
-    Write-Error "Preview still carries shippingZone; zones were removed in Phase 0 item 1"
-    exit 1
+Write-Host "    no option -> the priced bag (subtotal 200, discount 20), no total, no digest; SELF_COLLECT -> subtotal=200, discount=20 (K10 a piece, promotion named on the line), ship=0, total=180 ZMW, digest=$($preview.quoteDigest.Substring(0,12))... (matches this script's own)" -ForegroundColor Gray
+
+Write-Host "[5b/20] Delivery is priced per TOWN, by admin; a town nobody priced is a typed refusal..." -ForegroundColor Cyan
+# Phase 7: Oriah delivers where the shop has PUBLISHED a price for the town and the option. A price is admin's own
+# figure and is never seeded (nothing transactional is), so this step makes its own: two towns of the Lusaka province
+# under a random name (a town is switched off, never deleted, so a run leaves them behind) -- one priced, one not -- and
+# two published prices for the first, each made the way admin makes one (a draft, then published against its version):
+#   OWN_DELIVERY  K45.00, Oriah may collect it with the order or the recipient may pay the courier on arrival
+#   YANGO         K60.00, the recipient pays only (Oriah never collects it)
+# A published price is history and is never edited, so these prices stay as they are; a later run has towns of its own.
+$shipBase = "$gw/admin/shipping"
+$provinces = Invoke-Api GET "$shipBase/provinces" $mayaH $null
+Assert-Reply $provinces "listing the provinces" 200
+$lusakaProvince = @(@($provinces.Json) | Where-Object { $_ -and "$($_.code)" -ceq "LUSAKA" })
+Require ($lusakaProvince.Count -eq 1) "shipping's provinces should hold LUSAKA exactly once; found $($lusakaProvince.Count) of [$((@(@($provinces.Json) | Where-Object { $_ } | ForEach-Object { $_.code })) -join ', ')]"
+$pricedTown = Invoke-Api POST "$shipBase/towns" $mayaH @{ provinceId = $lusakaProvince[0].id; name = "Smoke Town $saleTag" }
+Assert-Reply $pricedTown "adding the town that will be priced" 201
+$bareTown = Invoke-Api POST "$shipBase/towns" $mayaH @{ provinceId = $lusakaProvince[0].id; name = "Smoke Bare Town $saleTag" }
+Assert-Reply $bareTown "adding the town nobody will price" 201
+$townId = "$($pricedTown.Json.id)"
+$bareTownId = "$($bareTown.Json.id)"
+
+function Publish-DeliveryPrice($TownId, [string]$Option, [decimal]$Amount, [bool]$Oriah, [bool]$Recipient, [int]$EtaMin, [int]$EtaMax) {
+    $draft = Invoke-Api POST "$gw/admin/shipping/prices" $mayaH @{ townId = $TownId; optionCode = $Option; amount = $Amount; allowsOriahCollects = $Oriah
+                                                                    allowsRecipientPays = $Recipient; etaDaysMin = $EtaMin; etaDaysMax = $EtaMax }
+    Assert-Reply $draft "drafting the $Option delivery price" 201
+    $published = Invoke-Api POST "$gw/admin/shipping/prices/$($draft.Json.id)/publish" $mayaH @{ version = $draft.Json.version }
+    Assert-Reply $published "publishing the $Option delivery price" 200
+    Require ("$($published.Json.status)" -ceq "PUBLISHED") "the $Option delivery price reads '$($published.Json.status)' after publishing, expected PUBLISHED"
+    return $published.Json
 }
-Write-Host "    no option -> no total, no digest; SELF_COLLECT -> subtotal=200, ship=0, total=200 ZMW, digest=$($preview.quoteDigest.Substring(0,12))... (matches this script's own)" -ForegroundColor Gray
+$ownPrice = Publish-DeliveryPrice $townId "OWN_DELIVERY" 45.00 $true $true 1 2
+$yangoPrice = Publish-DeliveryPrice $townId "YANGO" 60.00 $false $true 0 1
 
-Write-Host "[5b/20] Zambia only, and the ADDRESS decides the destination..." -ForegroundColor Cyan
-# Oriah delivers within Zambia only (MVP_PLAN Phase 0, item 1). The destination
-# is taken from the ADDRESS being delivered to, never from the request body --
-# a caller once declared "NG" while shipping to America, and only the address
-# reached the order. Two crossed probes pin both halves:
-#   - body ZM + a US address    -> 422 outside-delivery-area: the address
-#     decides, and abroad is refused -- never quoted, never charged zero;
-#   - body US + the Lusaka one  -> 200, self-collect at K0: the body is ignored.
-# If the body decided, the first would pass and the second would be refused.
-$usAddr = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/customers/me/addresses" `
-    -Headers @{ Authorization="Bearer $alice" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ label="Overseas"; line1="1 Fifth Avenue"; city="New York"; postalCode="10003"; country="US"; isDefault=$false })
+# What the shop now offers, as the storefront reads it (a shopper's token: every other call here is public to signed-in users).
+$offered = Invoke-Api GET "$gw/shipping/towns" $aliceH $null
+Assert-Reply $offered "shipping's list of delivery towns" 200
+Require (("$($offered.Json.currency)" -ceq "ZMW") -and ("$($offered.Json.selfCollect.code)" -ceq "SELF_COLLECT") -and (Same-Money $offered.Json.selfCollect.amount "0.00")) "shipping should offer ZMW with self-collect always on at 0.00; got $($offered.Json | ConvertTo-Json -Depth 3 -Compress)"
+$freeThreshold = $offered.Json.freeDeliveryThreshold      # null until admin sets one; when it is set, goods that reach it ride free
+$offeredTowns = @(@($offered.Json.provinces) | ForEach-Object { @($_.towns) } | Where-Object { $_ })
+$offeredHere = @($offeredTowns | Where-Object { "$($_.id)" -ceq $townId })
+Require ($offeredHere.Count -eq 1) "the priced town $townId should be offered exactly once; it is offered $($offeredHere.Count) time(s)"
+Require (@($offeredTowns | Where-Object { "$($_.id)" -ceq $bareTownId }).Count -eq 0) "the town nobody priced ($bareTownId) is listed as a delivery town: only a PUBLISHED price makes a town offered"
+$ownOffer = @(@($offeredHere[0].options) | Where-Object { "$($_.code)" -ceq "OWN_DELIVERY" })
+$yangoOffer = @(@($offeredHere[0].options) | Where-Object { "$($_.code)" -ceq "YANGO" })
+Require (($ownOffer.Count -eq 1) -and ($yangoOffer.Count -eq 1) -and (@($offeredHere[0].options).Count -eq 2) -and
+         (Same-Money $ownOffer[0].amount "45.00") -and ($ownOffer[0].allowsOriahCollects -eq $true) -and ($ownOffer[0].allowsRecipientPays -eq $true) -and
+         (Same-Money $yangoOffer[0].amount "60.00") -and ($yangoOffer[0].allowsOriahCollects -eq $false) -and ($yangoOffer[0].allowsRecipientPays -eq $true)) "the priced town's offer reads $($offeredHere[0] | ConvertTo-Json -Depth 4 -Compress), expected OWN_DELIVERY 45.00 (either may pay) and YANGO 60.00 (the recipient pays) and nothing else"
 
-Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
-    @{ destinationCountry="ZM"; shippingAddressId=$usAddr.id } 422 "outside-delivery-area" `
-    "A preview to a US address (body claiming ZM)"
-
-$crossed = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/checkout/preview" `
-    -Headers @{ Authorization="Bearer $alice" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="US"; shippingAddressId=$addrId; deliveryOption="SELF_COLLECT" })
-if ($crossed.shippingCost -ne 0.00 -or $crossed.shippingOptions[0].code -ne "SELF_COLLECT") {
-    Write-Error ("Crossed probe: body US + Lusaka address should quote SELF_COLLECT at 0.00, " +
-                 "got $($crossed.shippingOptions[0].code) $($crossed.shippingCost). Together with " +
-                 "the probe above this pins the destination to the address in both directions.")
-    exit 1
+# What delivery costs on goods worth $Goods when Oriah collects it: the published price, unless admin has set a free-delivery threshold the goods reach.
+function Get-ExpectedShip([decimal]$Goods, [decimal]$Amount) {
+    if ($null -ne $freeThreshold -and $Goods -ge [decimal]$freeThreshold) { return [decimal]0.00 }
+    return $Amount
 }
 
-# An address that is not the caller's is refused outright, and the refusal
-# names neither "not yours" nor "does not exist" -- customer-service lists only
-# the caller's own, so checkout genuinely cannot tell which it was.
-Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
-    @{ destinationCountry="ZM"; shippingAddressId="11111111-2222-3333-4444-555555555555" } 400 $null `
-    "A preview to an address belonging to nobody"
+# A quote names the published price it used; the recipient paying the courier means K0 on the order; self-collect needs no town.
+$wantShip = Get-ExpectedShip 180.00 45.00
+$quote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "OWN_DELIVERY"; goodsTotal = [decimal]180.00; currency = "ZMW" }
+Assert-Reply $quote "shipping's quote for OWN_DELIVERY to the priced town" 200
+Require ((Same-Money $quote.Json.amount "$wantShip") -and (Same-Money $quote.Json.listAmount "45.00") -and ("$($quote.Json.payer)" -ceq "ORIAH_COLLECTS") -and
+         ("$($quote.Json.priceId)" -ceq "$($ownPrice.id)") -and ("$($quote.Json.currency)" -ceq "ZMW")) "the OWN_DELIVERY quote reads $($quote.Json | ConvertTo-Json -Compress), expected amount $wantShip (list 45.00), payer ORIAH_COLLECTS (the default: Oriah collecting is offered), from price $($ownPrice.id)"
+$recipientQuote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "OWN_DELIVERY"; payer = "RECIPIENT_PAYS"; goodsTotal = [decimal]180.00 }
+Assert-Reply $recipientQuote "shipping's quote with the recipient paying the courier" 200
+Require ((Same-Money $recipientQuote.Json.amount "0.00") -and (Same-Money $recipientQuote.Json.listAmount "45.00") -and ("$($recipientQuote.Json.payer)" -ceq "RECIPIENT_PAYS")) "the RECIPIENT_PAYS quote reads $($recipientQuote.Json | ConvertTo-Json -Compress), expected amount 0.00 (the fare is still shown as list 45.00) and payer RECIPIENT_PAYS"
+$selfQuote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ optionCode = "SELF_COLLECT"; goodsTotal = [decimal]180.00 }
+Assert-Reply $selfQuote "shipping's quote for self-collect" 200
+Require (Same-Money $selfQuote.Json.amount "0.00") "self-collect should quote 0.00; got $($selfQuote.Json.amount)"
 
-# Shipping itself, through the gateway: abroad is a 422 of the shared type,
-# Zambia is exactly one option.
-Expect-Refusal "http://localhost:8080/api/v1/shipping/rates" `
-    @{ destinationCountry="US"; subtotal=100.00; currency="ZMW" } 422 "outside-delivery-area" `
-    "A shipping quote for the US"
-$rates = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/shipping/rates" `
-    -Headers @{ Authorization="Bearer $alice" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ destinationCountry="ZM"; subtotal=100.00; currency="ZMW" })
-if (@($rates.options).Count -ne 1 -or $rates.options[0].code -ne "SELF_COLLECT" -or $rates.options[0].cost -ne 0) {
-    Write-Error "Shipping should offer Zambia exactly SELF_COLLECT at 0, got $(ConvertTo-Json $rates.options -Compress)"
-    exit 1
-}
-# Promotion codes are retired until Phase 7's scoped promotions -- refused out
-# loud, never silently dropped, so nobody believes a discount was applied.
-Expect-Refusal "http://localhost:8080/api/v1/checkout/preview" `
-    @{ deliveryOption="SELF_COLLECT"; promotionCode="WELCOME-10" } 422 "promotion-codes-not-accepted" `
-    "A preview with a promotion code"
-Write-Host "    US address -> 422 outside-delivery-area; US body + Lusaka address -> SELF_COLLECT K0; foreign address 400; rates ZM -> SELF_COLLECT only; promo code -> 422" -ForegroundColor Gray
-Write-Host "[6/20] Customer: /checkout/confirm (test card 4242...)..." -ForegroundColor Cyan
-# Drive the saga under a traceparent WE generate, so the trace id is known up
+# The refusals are typed, so the storefront can tell the shopper what to do: a town the shop has not priced, a priced town with an option nobody
+# priced (PLATINUM), and a payer a price does not offer (Yango is the recipient's to pay) are each 409; none of them is "outside the delivery area".
+$unpricedTown = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $bareTownId; optionCode = "OWN_DELIVERY"; goodsTotal = [decimal]180.00 }
+Require (($unpricedTown.Status -eq 409) -and "$($unpricedTown.Json.type)".EndsWith("/town-not-offered")) "a quote for a town nobody priced gave $($unpricedTown.Status) '$($unpricedTown.Json.type)', expected 409 town-not-offered"
+$unpricedOption = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "PLATINUM"; goodsTotal = [decimal]180.00 }
+Require (($unpricedOption.Status -eq 409) -and "$($unpricedOption.Json.type)".EndsWith("/town-not-offered")) "a quote for an option nobody priced in a priced town gave $($unpricedOption.Status) '$($unpricedOption.Json.type)', expected 409 town-not-offered"
+$wrongPayer = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "YANGO"; payer = "ORIAH_COLLECTS"; goodsTotal = [decimal]180.00 }
+Require (($wrongPayer.Status -eq 409) -and "$($wrongPayer.Json.type)".EndsWith("/payer-not-offered") -and (@($wrongPayer.Json.offered) -ccontains "RECIPIENT_PAYS")) "Yango with Oriah collecting gave $($wrongPayer.Status) '$($wrongPayer.Json.type)' offered [$(@($wrongPayer.Json.offered) -join ',')], expected 409 payer-not-offered offering RECIPIENT_PAYS"
+
+# The same refusals through checkout's preview (the bag holds the two rings, so preview gets as far as delivery). A delivered option needs its
+# town, and self-collect forbids one: both are 400. An address that is not the caller's is refused outright, and the refusal names neither "not
+# yours" nor "does not exist" -- customer lists only the caller's own, so checkout genuinely cannot tell which it was.
+Expect-Refusal "$gw/checkout/preview" @{ deliveryOption = "OWN_DELIVERY"; shippingAddressId = $addrId } 400 $null "A delivered preview with no town"
+Expect-Refusal "$gw/checkout/preview" @{ deliveryOption = "SELF_COLLECT"; deliveryTownId = $townId } 400 $null "A self-collect preview naming a town"
+Expect-Refusal "$gw/checkout/preview" @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $bareTownId; shippingAddressId = $addrId } 409 "town-not-offered" "A preview to a town nobody priced"
+Expect-Refusal "$gw/checkout/preview" @{ deliveryOption = "YANGO"; deliveryTownId = $townId; payer = "ORIAH_COLLECTS"; shippingAddressId = $addrId } 409 "payer-not-offered" "A Yango preview with Oriah collecting"
+Expect-Refusal "$gw/checkout/preview" @{ shippingAddressId = "11111111-2222-3333-4444-555555555555"; deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId } 400 $null "A preview to an address belonging to nobody"
+Write-Host "    two towns added; OWN_DELIVERY K45.00 and YANGO K60.00 (recipient pays) published for one; shipping offers exactly those, quotes name the published price, RECIPIENT_PAYS is K0.00; an unpriced town and an unpriced option are 409 town-not-offered, Yango with Oriah collecting 409 payer-not-offered; no town for a delivered option 400, a town for self-collect 400, an address of nobody's 400" -ForegroundColor Gray
+Write-Host "[6/20] Customer: /checkout/confirm -- the order is PLACED and its pieces HELD (nothing is paid)..." -ForegroundColor Cyan
+# Drive the placement under a traceparent WE generate, so the trace id is known up
 # front instead of being recovered afterwards by scraping the backend for
 # "the most recent trace that looks like a saga". Deterministic, and it also
 # proves W3C context extraction at the edge: every downstream span has to join
@@ -755,77 +1292,451 @@ $sagaTraceId = [guid]::NewGuid().ToString('N')
 $sagaParentSpanId = [guid]::NewGuid().ToString('N').Substring(0, 16)
 $sagaTraceparent = "00-$sagaTraceId-$sagaParentSpanId-01"
 
-$confirm = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/checkout/confirm" `
-    -Headers @{ Authorization="Bearer $alice"; traceparent=$sagaTraceparent } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{
-        # Self-collect: no address, as the storefront sends it.
-        deliveryOption = "SELF_COLLECT"
-        cardNumber = "4242424242424242"
-        # Echoed from step 5, which is the whole mechanism: checkout -- and
-        # order after it -- recompute this digest and refuse with a 409 if
-        # anything moved since the shopper read the quote. Required, so a
-        # client that forgets it cannot check out at all -- which is exactly
-        # what would happen if the storefront's Zod schema silently stripped it.
-        quoteDigest = $preview.quoteDigest
-    })
-if ($confirm.orderStatus -ne "PAID") {
-    Write-Error "Expected order PAID after confirm, got $($confirm.orderStatus); msg=$($confirm.message)"
-    exit 1
+# Checkout never touches money (Phase 7): no card, no promotion code. A 200 means exactly "placed and held": order priced everything again,
+# checked the digest, and took a HOLD on the two rings and their two boxes at inventory for ten minutes. The shopper then pays outside the
+# system (mobile money or a bank transfer), tells us how (6c), and staff confirm the money (6d).
+$confirmKey = New-Key "smoke-confirm"
+$placed = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ traceparent = $sagaTraceparent; "Idempotency-Key" = $confirmKey }) @{
+    # Self-collect: no address, as the storefront sends it.
+    deliveryOption = "SELF_COLLECT"
+    # Echoed from step 5, which is the whole mechanism: checkout -- and
+    # order after it -- recompute this digest and refuse with a 409 if
+    # anything moved since the shopper read the quote. Required, so a
+    # client that forgets it cannot check out at all -- which is exactly
+    # what would happen if the storefront's Zod schema silently stripped it.
+    quoteDigest = $preview.quoteDigest
 }
-if ($confirm.total -ne 200.00) {
-    Write-Error "Confirm should charge exactly the quote the shopper saw (200.00), got $($confirm.total)"
-    exit 1
+Assert-Reply $placed "checkout confirm" 200
+$confirm = $placed.Json
+Require ("$($confirm.orderStatus)" -ceq "CREATED") "Expected the order PLACED (CREATED: held, NOT paid) after confirm, got $($confirm.orderStatus); msg=$($confirm.message)"
+Require (Same-Money $confirm.total "180.00") "Confirm should place exactly the quote the shopper saw (180.00), got $($confirm.total)"
+Require ("$($confirm.currency)" -ceq "ZMW") "Confirm should answer in the bag's ZMW, got $($confirm.currency)"
+$orderId = "$($confirm.orderId)"
+Require ($orderId.Length -gt 0) "Confirm answered no order id: $($confirm | ConvertTo-Json -Compress)"
+$confirmHoldEnds = ConvertTo-UtcInstant $confirm.holdExpiresAt
+Require (($null -ne $confirmHoldEnds) -and ($confirmHoldEnds -gt [DateTime]::UtcNow) -and ($confirmHoldEnds -lt [DateTime]::UtcNow.AddMinutes(15))) "Confirm answered holdExpiresAt '$($confirm.holdExpiresAt)', expected a time in the next few minutes (the ten-minute payment hold)"
+# The order as the shopper reads it: held, priced exactly as quoted, the promotion and the default box on its line.
+$placedOrder = Get-Order $orderId
+Require ($null -ne $placedOrder) "alice cannot read the order she just placed ($orderId)"
+Require (("$($placedOrder.status)" -ceq "CREATED") -and (Same-Money $placedOrder.subtotal "200.00") -and (Same-Money $placedOrder.discountAmount "20.00") -and
+         (Same-Money $placedOrder.shippingAmount "0.00") -and (Same-Money $placedOrder.total "180.00") -and ("$($placedOrder.deliveryOption)" -ceq "SELF_COLLECT")) "The placed order reads status=$($placedOrder.status) subtotal=$($placedOrder.subtotal) discount=$($placedOrder.discountAmount) ship=$($placedOrder.shippingAmount) total=$($placedOrder.total); expected CREATED 200.00 - 20.00 + 0.00 = 180.00"
+$placedLine = @($placedOrder.items)[0]
+Require (("$($placedLine.variantId)" -ceq $saleVariantId) -and ([int]$placedLine.quantity -eq 2) -and (Same-Money $placedLine.unitPrice "100.00") -and (Same-Money $placedLine.discountPerPiece "10.00") -and
+         ("$($placedLine.promotionId)" -ceq $promotionId) -and ("$($placedLine.boxVariantId)" -ceq $saleSmallBoxId)) "The placed order's line reads $($placedLine | ConvertTo-Json -Compress); expected 2 x the sale ring at 100.00 with 10.00 off from $promotionId, in the small box $saleSmallBoxId"
+# The hold is the commitment, so the bag is cleared.
+$cartAfter = Invoke-Api GET "$gw/carts/me" $aliceH $null
+Assert-Reply $cartAfter "reading alice's bag after the order was placed" 200
+Require (@(@($cartAfter.Json.items) | Where-Object { $_ }).Count -eq 0) "alice's bag should be empty once the order is placed; it holds $(@(@($cartAfter.Json.items) | Where-Object { $_ }).Count) line(s)"
+Write-Host "    order=$orderId PLACED and HELD until $($confirm.holdExpiresAt): CREATED, not paid; total 180.00 = 200 - 20 + 0; cart cleared" -ForegroundColor Gray
+
+# Safe to repeat. The browser's Idempotency-Key is forwarded to order, which places the same order for a key it has seen; and a reloaded page,
+# which sends a NEW key with the same bag, finds the live order by the quote's digest instead of placing a second one. The bag was cleared by
+# the confirm, so it is filled again with the same two rings each time.
+$ordersWhilePlaced = Count-Orders $aliceH
+foreach ($replay in @(
+        @{ Name = "the same Idempotency-Key"; IdemKey = $confirmKey },
+        @{ Name = "a new Idempotency-Key for the same bag"; IdemKey = (New-Key "smoke-confirm-reload") })) {
+    Clear-Cart
+    Add-ToCart $saleVariantId 2
+    $again = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = $replay.IdemKey }) @{ deliveryOption = "SELF_COLLECT"; quoteDigest = $preview.quoteDigest }
+    Assert-Reply $again "checkout confirm with $($replay.Name)" 200
+    Require ("$($again.Json.orderId)" -ceq $orderId) "confirm with $($replay.Name) answered order $($again.Json.orderId), expected the SAME order $orderId"
+    Require ((Count-Orders $aliceH) -eq $ordersWhilePlaced) "confirm with $($replay.Name) made a second order ($ordersWhilePlaced -> $(Count-Orders $aliceH))"
 }
-$orderId = $confirm.orderId
-Write-Host "    order=$orderId PAID" -ForegroundColor Gray
+Write-Host "    the same Idempotency-Key, and the same bag under a new key, answered the same order; no second order" -ForegroundColor Gray
 
 # Quote, then commit, against the live stack: a bag edited AFTER its preview
 # -- another tab, say -- must be refused with a TYPED 409 before anything is
-# ordered or charged, never charged at a total the shopper did not see. The
-# old pricingVersion left quantity out on purpose and would have charged this.
+# ordered or held, never placed at a total the shopper did not see. The
+# old pricingVersion left quantity out on purpose and would have placed this.
 Write-Host "[6b/20] A quantity changed after preview is refused 409 pricing-changed..." -ForegroundColor Cyan
-Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/carts/me/items" `
-    -Headers @{ Authorization="Bearer $alice" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
+Clear-Cart
+Add-ToCart $saleVariantId 1
 $sawOne = Invoke-RestMethod -Method POST `
     -Uri "http://localhost:8080/api/v1/checkout/preview" `
     -Headers @{ Authorization="Bearer $alice" } `
     -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption="SELF_COLLECT" })
-Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/carts/me/items" `
-    -Headers @{ Authorization="Bearer $alice" } `
-    -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ variantId=$variantId; quantity=1 }) | Out-Null
-$ordersBefore = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
-    -Headers @{ Authorization="Bearer $alice" }).totalElements
-Expect-Refusal "http://localhost:8080/api/v1/checkout/confirm" `
-    @{ deliveryOption="SELF_COLLECT"; cardNumber="4242424242424242"; quoteDigest=$sawOne.quoteDigest } `
+Add-ToCart $saleVariantId 1
+$ordersBefore = Count-Orders $aliceH
+Expect-Refusal "$gw/checkout/confirm" `
+    @{ deliveryOption="SELF_COLLECT"; quoteDigest=$sawOne.quoteDigest } `
     409 "pricing-changed" "A confirm for 2 rings with the digest of 1"
-$ordersAfter = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
-    -Headers @{ Authorization="Bearer $alice" }).totalElements
+$ordersAfter = Count-Orders $aliceH
 if ($ordersAfter -ne $ordersBefore) {
     Write-Error "A refused quote still placed an order ($ordersBefore -> $ordersAfter)"
     exit 1
 }
-# And a promotion code at confirm: 422, nothing placed.
-Expect-Refusal "http://localhost:8080/api/v1/checkout/confirm" `
-    @{ deliveryOption="SELF_COLLECT"; cardNumber="4242424242424242"; quoteDigest=$sawOne.quoteDigest; promotionCode="WELCOME-10" } `
-    422 "promotion-codes-not-accepted" "A confirm with a promotion code"
-Write-Host "    1 ring previewed, 2 in the bag -> 409 pricing-changed, no order placed; promo code -> 422" -ForegroundColor Gray
+Write-Host "    1 ring previewed, 2 in the bag -> 409 pricing-changed, no order placed" -ForegroundColor Gray
 # Leave the bag as the rest of the script expects: empty.
-try {
-    Invoke-RestMethod -Method DELETE `
-        -Uri "http://localhost:8080/api/v1/carts/me" `
-        -Headers @{ Authorization="Bearer $alice" } | Out-Null
-} catch {
-    $code = $_.Exception.Response.StatusCode.value__
-    if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
-    if ($code -ne 404) { throw }
+Clear-Cart
+
+Write-Host "[6c/20] The shopper says how they paid; staff see it..." -ForegroundColor Cyan
+# Paying happens outside the system: the shopper sends mobile money or a bank transfer and tells order how (POST /orders/{id}/payment-claim: the
+# method and the reference the provider showed). That is not money -- staff confirm money, or reject a false claim -- but it stretches the hold from
+# ten minutes to a day so they have time to look, and it announces order.payment_submitted, which payment keeps as a claim (what a rejection is
+# bound to: staff reject a claim by its id, never by typing an order and a reference).
+$claimRef = "MTN" + $saleTag + "A"
+$claimUri = "$gw/orders/$orderId/payment-claim"
+# Refused: cash is paid in person and never claimed online; a reference must be a reference; another customer's claim is 404 (not yours = not there).
+Expect-Refusal $claimUri @{ method = "CASH"; reference = "PAIDINCASH$saleTag" } 400 $null "Claiming a CASH payment online"
+Expect-Refusal $claimUri @{ method = "MTN"; reference = "ab" } 400 $null "Claiming a payment with a two-character reference"
+$strangerClaim = Invoke-Api POST $claimUri $mayaH @{ method = "MTN"; reference = "MTNSTRANGER$saleTag" }
+Require ($strangerClaim.Status -eq 404) "another customer's claim on alice's order gave $($strangerClaim.Status), expected 404"
+$claimed = Invoke-Api POST $claimUri $aliceH @{ method = "MTN"; reference = $claimRef }
+Assert-Reply $claimed "alice's payment claim" 200
+Require ("$($claimed.Json.status)" -ceq "PAYMENT_SUBMITTED") "the order reads '$($claimed.Json.status)' after the claim, expected PAYMENT_SUBMITTED"
+# The same claim again is the same claim -- however it is spelled: the method and the reference are read in one spelling (spaces and letter case do
+# not matter) -- and a different reference after the first is refused.
+$respelled = Invoke-Api POST $claimUri $aliceH @{ method = "mtn"; reference = ($claimRef.Substring(0, 3).ToLower() + " " + $claimRef.Substring(3).ToLower()) }
+Require (($respelled.Status -eq 200) -and ("$($respelled.Json.status)" -ceq "PAYMENT_SUBMITTED")) "the same claim spelled in lower case with a space gave $($respelled.Status) '$($respelled.Json.status)', expected 200 PAYMENT_SUBMITTED"
+$otherRef = Invoke-Api POST $claimUri $aliceH @{ method = "MTN"; reference = "MTN${saleTag}OTHER" }
+Require (($otherRef.Status -eq 409) -and "$($otherRef.Json.type)".EndsWith("/payment-already-submitted")) "a second, different reference gave $($otherRef.Status) '$($otherRef.Json.type)', expected 409 payment-already-submitted"
+# The hold now runs for a day (inventory caps it at a day from when the hold was made): a claim gives staff time to look.
+$stretched = Wait-Until { $o = Get-Order $orderId; $e = ConvertTo-UtcInstant $o.holdExpiresAt; if ($e -and $e -gt [DateTime]::UtcNow.AddHours(20)) { $e } } 60 1
+Require $stretched "order $orderId's hold ends at '$((Get-Order $orderId).holdExpiresAt)' 60 s after the claim, expected about a day from now (the hold is stretched while staff look)"
+# Staff see it in order's awaiting-payment queue (SALES_AGENT): the method and the reference to look for in the provider's records.
+$queue = Invoke-Api GET "$gw/admin/orders/awaiting-payment" $mayaH $null
+Assert-Reply $queue "order's awaiting-payment queue" 200
+$inQueue = @(@($queue.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $orderId })
+Require ($inQueue.Count -eq 1) "the awaiting-payment queue lists order $orderId $($inQueue.Count) time(s), expected once"
+Require (("$($inQueue[0].status)" -ceq "PAYMENT_SUBMITTED") -and ("$($inQueue[0].claimMethod)" -ceq "MTN") -and ("$($inQueue[0].claimReference)" -ceq $claimRef) -and
+         (Same-Money $inQueue[0].total "180.00") -and ("$($inQueue[0].currency)" -ceq "ZMW")) "the queue row reads $($inQueue[0] | ConvertTo-Json -Compress), expected PAYMENT_SUBMITTED, MTN, $claimRef, 180.00 ZMW"
+$byId = Invoke-Api GET "$gw/admin/orders/awaiting-payment?orderId=$orderId" $mayaH $null
+Require (($byId.Status -eq 200) -and (@(@($byId.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $orderId }).Count -eq 1)) "the awaiting-payment lookup by order id gave $($byId.Status) with $(@(@($byId.Json) | Where-Object { $_ }).Count) row(s), expected 200 and the one order"
+# And payment keeps the claim (it arrives over Kafka): the id staff reject by, and whether money is already recorded for it.
+$claimA = Wait-Until { $r = Invoke-Api GET "$gw/admin/payments/claims?orderId=$orderId" $mayaH $null; $rows = @(@($r.Json) | Where-Object { $_ }); if ($r.Status -eq 200 -and $rows.Count -ge 1) { $rows[0] } } 90 1
+Require $claimA "payment has no claim for order $orderId 90 s after the shopper's claim: order.payment_submitted did not reach payment (Kafka, order to payment)"
+Require (("$($claimA.method)" -ceq "MTN") -and ("$($claimA.reference)" -ceq $claimRef) -and ($claimA.rejected -eq $false) -and ($claimA.moneyRecorded -eq $false) -and ($claimA.usedElsewhere -eq $false)) "payment's claim reads $($claimA | ConvertTo-Json -Compress), expected MTN $claimRef, not rejected, no money recorded, not used for another order"
+$claimIdA = "$($claimA.id)"
+Write-Host "    cash 400, a 2-character reference 400, another customer's claim 404; PAYMENT_SUBMITTED, the same claim in another spelling 200, another reference 409 payment-already-submitted; the hold stretched to a day; in the awaiting-payment queue and payment's claim list (claim $claimIdA)" -ForegroundColor Gray
+
+Write-Host "[6d/20] Staff confirm the money: the order is PAID, its pieces SOLD from the oldest lot, dated to the day the money arrived..." -ForegroundColor Cyan
+# The hold is real at inventory: 2 rings and 2 small boxes reserved (the cancelled order of step 4b has let go of its own).
+Wait-Stock $saleVariantId 12 2 | Out-Null
+Wait-Stock $saleSmallBoxId 12 2 | Out-Null
+# The money arrived 26 hours ago (a weekend, a day the shop was shut): anyone who may confirm can date it up to 72 hours back, and the sale is booked
+# at that TRUE date. gross is exactly the order's total; the fee is what the provider took; net is gross less fee and is never sent.
+$arrivedAt = [DateTime]::UtcNow.AddHours(-26)
+$moneyKey = New-Key "smoke-money"
+$moneyBody = @{ orderId = $orderId; method = "MTN"; reference = $claimRef; gross = [decimal]180.00; fee = [decimal]2.70; arrivedAt = (Format-Instant $arrivedAt) }
+$money = Confirm-Money $moneyBody $moneyKey
+Assert-Reply $money "staff confirming the order's exact total" 201
+$conf = $money.Json
+$confirmationId = "$($conf.id)"
+Require (("$($conf.orderId)" -ceq $orderId) -and ("$($conf.method)" -ceq "MTN") -and ("$($conf.reference)" -ceq $claimRef) -and ("$($conf.currency)" -ceq "ZMW")) "the confirmation reads $($conf | ConvertTo-Json -Compress), expected order $orderId, MTN, $claimRef, ZMW"
+Require ((Same-Money $conf.gross "180.00") -and (Same-Money $conf.fee "2.70") -and (Same-Money $conf.net "177.30")) "the confirmation reads gross $($conf.gross) fee $($conf.fee) net $($conf.net), expected 180.00, 2.70 and 177.30 (net is worked out, never sent)"
+Require (Near-Instant $conf.arrivedAt $arrivedAt) "the confirmation's arrivedAt reads '$($conf.arrivedAt)', expected the $(Format-Instant $arrivedAt) that was sent"
+Require ("$($conf.confirmedBy)".StartsWith("user:")) "the confirmation says it was confirmed by '$($conf.confirmedBy)', expected user:<the member of staff>"
+# A repeat: the same Idempotency-Key with the same request is the same confirmation (200, not a second 201), never a second payment.
+$moneyAgain = Confirm-Money $moneyBody $moneyKey
+Assert-Reply $moneyAgain "the same confirmation sent again with the same Idempotency-Key" 200
+Require ("$($moneyAgain.Json.id)" -ceq $confirmationId) "the same key again answered confirmation $($moneyAgain.Json.id), expected the same $confirmationId"
+# Settlement is ASYNCHRONOUS (payment announces payment.confirmed; order asks inventory to sell the pieces; order announces order.paid): poll.
+$paid = Wait-OrderStatus $orderId "PAID" 90
+$receipt = Get-OrderReceipt $orderId
+Require ($receipt -match '^OR-\d{6}$') "order $orderId is PAID but its receipt number reads '$receipt', expected OR- and six digits (read from order's database: the order's reply does not carry it yet)"
+Wait-Confirmation $confirmationId "SETTLED" 60 | Out-Null
+# A claim whose reference holds money is not false: it cannot be rejected any more.
+$lateReject = Invoke-Api POST "$gw/admin/payments/claims/$claimIdA/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: looked in the statement and found nothing" }
+Require (($lateReject.Status -eq 409) -and "$($lateReject.Json.type)".EndsWith("/money-recorded-for-claim")) "rejecting a claim whose reference holds money gave $($lateReject.Status) '$($lateReject.Json.type)', expected 409 money-recorded-for-claim"
+$queueAfter = Invoke-Api GET "$gw/admin/orders/awaiting-payment" $mayaH $null
+Require (@(@($queueAfter.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $orderId }).Count -eq 0) "the awaiting-payment queue still lists the paid order $orderId"
+# The pieces were SOLD: two rings and two boxes left stock, drawn from the OLDEST lot (the K9.34 slice), and the cost is on the ledger.
+Wait-Stock $saleVariantId 10 0 | Out-Null
+Wait-Stock $saleSmallBoxId 10 0 | Out-Null
+$ringLotsNow = Get-OpenLots $saleVariantId
+Require (Lots-Say $ringLotsNow @("2@9.34", "8@9.33")) "after the sale the sale ring's open lots are [$(Describe-Lots $ringLotsNow)], expected 2@9.34 + 8@9.33: the two rings must leave the OLDEST lot first (FIFO)"
+$smallLotsNow = Get-OpenLots $saleSmallBoxId
+Require (Lots-Say $smallLotsNow @("10@2.00")) "after the sale the small box's open lots are [$(Describe-Lots $smallLotsNow)], expected 10@2.00"
+$saleRows = @(Get-LedgerRows $saleVariantId "SALE")
+Require ($saleRows.Count -eq 1) "the sale ring has $($saleRows.Count) live SALE ledger row(s), expected one for the one sale"
+$saleRow = $saleRows[0]
+Require (([int]$saleRow.qtyDelta -eq -2) -and (Same-Money $saleRow.unitCost "9.34") -and ("$($saleRow.costMethod)" -ceq "FIFO")) "the sale's ledger row reads $($saleRow | ConvertTo-Json -Compress), expected -2 @ 9.34 FIFO"
+Require ("$($saleRow.actionId)" -ceq "$(@($paid.items)[0].id)") "the sale's ledger row is under action $($saleRow.actionId), expected the order line's own id $(@($paid.items)[0].id): a line can never be sold twice"
+# The date of the sale is the day the money ARRIVED; when it was RECORDED is now.
+Require (Near-Instant $saleRow.occurredAt $arrivedAt) "the sale's ledger row is dated '$($saleRow.occurredAt)', expected the day the money arrived ($(Format-Instant $arrivedAt))"
+Require ((ConvertTo-UtcInstant $saleRow.recordedAt) -gt $arrivedAt.AddHours(20)) "the sale's ledger row says it was recorded at '$($saleRow.recordedAt)', expected now (the sale is dated $(Format-Instant $arrivedAt), 26 hours earlier)"
+$boxRows = @(Get-LedgerRows $saleSmallBoxId "SALE")
+Require (($boxRows.Count -eq 1) -and ([int]$boxRows[0].qtyDelta -eq -2) -and (Same-Money $boxRows[0].unitCost "2.00") -and (Near-Instant $boxRows[0].occurredAt $arrivedAt)) "the small box's SALE ledger rows read $($boxRows | ConvertTo-Json -Compress), expected one row -2 @ 2.00 dated to the day the money arrived"
+Assert-Reconciled $saleVariantId "the sale ring"
+Assert-Reconciled $saleSmallBoxId "the small box"
+# A SECOND confirmation for the same order (a customer who paid twice, or staff keying one payment under another reference) is HELD for the
+# customer -- money in, owed back, never revenue -- and is NOT a second sale: the order stays PAID, nothing more leaves stock.
+$dupRef = "AIRTEL" + $saleTag + "DUP"
+$dup = Confirm-Money @{ orderId = $orderId; method = "AIRTEL"; reference = $dupRef; gross = [decimal]180.00; arrivedAt = (Format-Instant $arrivedAt) } (New-Key "smoke-money-dup")
+Assert-Reply $dup "a second confirmation for the paid order" 201
+$dupId = "$($dup.Json.id)"
+$dupHeld = Wait-Confirmation $dupId "HELD" 90
+Require ("$($dupHeld.outcomeReason)" -ceq "ALREADY_PAID") "the second confirmation's outcome reason is '$($dupHeld.outcomeReason)', expected ALREADY_PAID"
+Require ("$((Get-Order $orderId).status)" -ceq "PAID") "the order is '$((Get-Order $orderId).status)' after a second confirmation, expected it to stay PAID"
+Wait-Stock $saleVariantId 10 0 | Out-Null
+Require (@(Get-LedgerRows $saleVariantId "SALE").Count -eq 1) "a second confirmation made a second sale: the sale ring has $(@(Get-LedgerRows $saleVariantId "SALE").Count) live SALE rows, expected 1"
+$heldList = Invoke-Api GET "$gw/admin/payments/held-money" $mayaH $null
+Assert-Reply $heldList "the owner's held-money list" 200
+$heldRow = @(@($heldList.Json) | Where-Object { $_ -and "$($_.confirmationId)" -ceq $dupId })
+Require (($heldRow.Count -eq 1) -and ("$($heldRow[0].reason)" -ceq "ALREADY_PAID") -and ("$($heldRow[0].status)" -ceq "OWED") -and (Same-Money $heldRow[0].owedGross "180.00") -and ("$($heldRow[0].orderId)" -ceq $orderId)) "the held-money list reads $($heldRow | ConvertTo-Json -Compress) for the duplicate, expected one OWED row of 180.00, ALREADY_PAID, for order $orderId"
+# It was keyed twice by mistake in this test, so it is voided (the reason must be ten characters or more): the owner's list is not left owing nobody.
+$voidDup = Invoke-Api POST "$gw/admin/payments/confirmations/$dupId/void" $mayaH @{ reason = "smoke: the same payment keyed twice, it paid nothing" }
+Assert-Reply $voidDup "voiding the duplicate confirmation" 200
+Require ($voidDup.Json.voided -eq $true) "the voided confirmation reads voided=$($voidDup.Json.voided)"
+Write-Host "    confirmed K180.00 (fee 2.70, net 177.30, arrived $(Format-Instant $arrivedAt)) -> 201, the same key again 200; order PAID with receipt $receipt, confirmation SETTLED; 2 rings + 2 small boxes SOLD from the oldest lot (ledger -2 @ 9.34 FIFO, dated to the day the money arrived, recorded now); a claim holding money cannot be rejected 409; a second confirmation HELD (ALREADY_PAID, 180.00 owed), no second sale, then voided" -ForegroundColor Gray
+
+Write-Host "[6e/20] A WRONG amount is held, never paid; a rejected claim lets the pieces go..." -ForegroundColor Cyan
+# Another order: one ring (K90 after the promotion). Its shopper claims an MTN payment, but the money staff find is K85.00. The amount must
+# equal the total exactly, so the money is HELD for the customer (WRONG_AMOUNT) and the order is NOT paid: it keeps its state and its hold.
+# Then the claim itself is judged false -- nothing is found at the provider -- and rejecting it expires the order and lets its pieces go.
+Wait-Stock $saleVariantId 10 0 | Out-Null       # the cancelled order of 4b and the paid one hold nothing now
+$orderBReply = Place-SaleOrder $aliceH 1
+Assert-Reply $orderBReply "placing the second order" 201
+$orderBId = "$($orderBReply.Json.id)"
+$orderBLineId = "$(@($orderBReply.Json.items)[0].id)"
+Wait-Stock $saleVariantId 10 1 | Out-Null       # one piece held
+$refB = "MTN" + $saleTag + "B"
+$claimBReply = Invoke-Api POST "$gw/orders/$orderBId/payment-claim" $aliceH @{ method = "MTN"; reference = $refB }
+Assert-Reply $claimBReply "the second order's payment claim" 200
+$claimB = Wait-Until { $r = Invoke-Api GET "$gw/admin/payments/claims?orderId=$orderBId" $mayaH $null; $rows = @(@($r.Json) | Where-Object { $_ }); if ($r.Status -eq 200 -and $rows.Count -ge 1) { $rows[0] } } 90 1
+Require $claimB "payment has no claim for order $orderBId 90 s after the shopper's claim (Kafka, order to payment)"
+$claimIdB = "$($claimB.id)"
+# A claim not found at the provider needs the evidence, written for the person who reads the books (ten characters or more).
+$shortEvidence = Invoke-Api POST "$gw/admin/payments/claims/$claimIdB/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "short" }
+Require ($shortEvidence.Status -eq 400) "rejecting a claim with five characters of evidence gave $($shortEvidence.Status), expected 400"
+# K85.00 under a different reference (money recorded under the CLAIMED reference would make the claim true, and it could no longer be rejected).
+$shortRef = "MTN" + $saleTag + "SHORT"
+$wrong = Confirm-Money @{ orderId = $orderBId; method = "MTN"; reference = $shortRef; gross = [decimal]85.00 } (New-Key "smoke-money-short")
+Assert-Reply $wrong "staff confirming K85.00 against a K90.00 order" 201
+$wrongId = "$($wrong.Json.id)"
+$wrongHeld = Wait-Confirmation $wrongId "HELD" 90
+Require ("$($wrongHeld.outcomeReason)" -ceq "WRONG_AMOUNT") "the K85.00 confirmation's outcome reason is '$($wrongHeld.outcomeReason)', expected WRONG_AMOUNT"
+$stillB = Get-Order $orderBId
+Require ("$($stillB.status)" -ceq "PAYMENT_SUBMITTED") "the order reads '$($stillB.status)' after wrong money, expected it to stay PAYMENT_SUBMITTED (not paid)"
+Wait-Stock $saleVariantId 10 1 | Out-Null       # still held: wrong money neither pays the sale nor frees the piece
+$heldB = Invoke-Api GET "$gw/admin/payments/held-money" $mayaH $null
+Assert-Reply $heldB "the owner's held-money list" 200
+$heldBRow = @(@($heldB.Json) | Where-Object { $_ -and "$($_.confirmationId)" -ceq $wrongId })
+Require (($heldBRow.Count -eq 1) -and ("$($heldBRow[0].reason)" -ceq "WRONG_AMOUNT") -and ("$($heldBRow[0].status)" -ceq "OWED") -and (Same-Money $heldBRow[0].owedGross "85.00") -and ("$($heldBRow[0].orderId)" -ceq $orderBId)) "the held-money list reads $($heldBRow | ConvertTo-Json -Compress) for the wrong money, expected one OWED row of 85.00, WRONG_AMOUNT, for order $orderBId"
+$unsettled = Invoke-Api GET "$gw/admin/orders/settlements?state=UNSETTLED" $mayaH $null
+Assert-Reply $unsettled "order's unsettled-money list" 200
+$unsettledRow = @(@($unsettled.Json) | Where-Object { $_ -and "$($_.confirmationId)" -ceq $wrongId })
+Require (($unsettledRow.Count -eq 1) -and ("$($unsettledRow[0].reason)" -ceq "WRONG_AMOUNT") -and ("$($unsettledRow[0].orderId)" -ceq $orderBId) -and (Same-Money $unsettledRow[0].gross "85.00")) "order's settlements list reads $($unsettledRow | ConvertTo-Json -Compress), expected one UNSETTLED row, WRONG_AMOUNT, 85.00, for order $orderBId"
+$stillQueued = Invoke-Api GET "$gw/admin/orders/awaiting-payment" $mayaH $null
+Require (@(@($stillQueued.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $orderBId }).Count -eq 1) "the order with wrong money should still be in the awaiting-payment queue"
+# Reject the claim: payment announces payment.rejected, order expires the order, its hold is let go by RESERVATION id, inventory frees the pieces.
+$rejected = Invoke-Api POST "$gw/admin/payments/claims/$claimIdB/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: looked in the MTN statement for $refB, nothing found" }
+Assert-Reply $rejected "rejecting the false claim" 201
+Require (("$($rejected.Json.claimId)" -ceq $claimIdB) -and ("$($rejected.Json.orderId)" -ceq $orderBId) -and ("$($rejected.Json.reference)" -ceq $refB)) "the rejection reads $($rejected.Json | ConvertTo-Json -Compress), expected claim $claimIdB, order $orderBId, reference $refB copied from the claim"
+$rejectedAgain = Invoke-Api POST "$gw/admin/payments/claims/$claimIdB/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: looked in the MTN statement again" }
+Require (($rejectedAgain.Status -eq 409) -and "$($rejectedAgain.Json.type)".EndsWith("/already-rejected")) "rejecting the same claim twice gave $($rejectedAgain.Status) '$($rejectedAgain.Json.type)', expected 409 already-rejected"
+Wait-OrderStatus $orderBId "EXPIRED" 90 | Out-Null
+# The pieces are available again: reserved goes back down to nothing, on hand is untouched.
+Wait-Stock $saleVariantId 10 0 | Out-Null
+Wait-Stock $saleSmallBoxId 10 0 | Out-Null
+$queueEnd = Invoke-Api GET "$gw/admin/orders/awaiting-payment" $mayaH $null
+Require (@(@($queueEnd.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $orderBId }).Count -eq 0) "the awaiting-payment queue still lists the expired order $orderBId"
+# The wrong money was keyed against the wrong total; it is taken back so the owner's list is not left owing nobody.
+$voidWrong = Invoke-Api POST "$gw/admin/payments/confirmations/$wrongId/void" $mayaH @{ reason = "smoke: keyed K85.00 for a K90.00 order, nothing was paid" }
+Assert-Reply $voidWrong "voiding the wrong-amount confirmation" 200
+Write-Host "    K85.00 against K90.00: confirmation HELD (WRONG_AMOUNT) in the owner's held-money list and order's settlements list, the order stayed PAYMENT_SUBMITTED with its piece held; five characters of evidence 400; claim rejected 201 (a second time 409) -> order EXPIRED, reserved back to 0 (on hand 10); wrong money voided" -ForegroundColor Gray
+
+Write-Host "[6f/20] The caps and the stock: three live orders at most; more than is there is 409 insufficient-stock..." -ForegroundColor Cyan
+# A hold is stock nobody else can buy and costs the shopper nothing, so it is bounded: three live orders (and 20 pieces) per shopper
+# (oriah.sales.max-live-orders, max-held-pieces). alice holds none now (A is paid, B expired, 4b cancelled). Three orders of 1, 2 and 3 rings take
+# three holds -- different bags, because the SAME bag still waiting for payment is the same order -- and the 4th is refused 409 hold-limit-reached
+# with nothing written. (The 20-piece cap is not asserted live: it needs more than 20 pieces of stock.) They are cancelled afterwards.
+$liveIds = @()
+foreach ($q in 1, 2, 3) {
+    $live = Place-SaleOrder $aliceH $q
+    Assert-Reply $live "placing live order $q of 3" 201
+    $liveIds += "$($live.Json.id)"
 }
+$ordersBeforeCap = Count-Orders $aliceH
+$fourth = Place-SaleOrder $aliceH 4
+Require (($fourth.Status -eq 409) -and "$($fourth.Json.type)".EndsWith("/hold-limit-reached")) "a 4th live order gave $($fourth.Status) '$($fourth.Json.type)', expected 409 hold-limit-reached"
+Require ([int]$fourth.Json.heldOrders -eq 3) "the hold-limit refusal says alice holds '$($fourth.Json.heldOrders)' orders, expected 3: $($fourth.Json | ConvertTo-Json -Compress)"
+Require ((Count-Orders $aliceH) -eq $ordersBeforeCap) "a refused 4th order still left an order ($ordersBeforeCap -> $(Count-Orders $aliceH))"
+foreach ($liveId in $liveIds) {
+    $cancelLive = Invoke-Api POST "$gw/orders/$liveId/cancel" $aliceH $null
+    Assert-Reply $cancelLive "cancelling live order $liveId" 200
+    Require ("$($cancelLive.Json.status)" -ceq "CANCELLED") "the cancelled order reads '$($cancelLive.Json.status)', expected CANCELLED"
+}
+Wait-Stock $saleVariantId 10 0 | Out-Null        # the three holds are let go (order.cancelled releases by reservation id)
+Wait-Stock $saleSmallBoxId 10 0 | Out-Null
+# Out of stock: ask for more than is there (20 is within the piece cap). All or nothing: 409 insufficient-stock, every short line named, nothing held,
+# no order left behind -- the never-announced row is deleted.
+$freeRings = 10
+$freeSmall = 10
+$ordersBeforeShort = Count-Orders $aliceH
+$short = Place-SaleOrder $aliceH 20
+Require (($short.Status -eq 409) -and "$($short.Json.type)".EndsWith("/insufficient-stock")) "asking for 20 rings with $freeRings free gave $($short.Status) '$($short.Json.type)', expected 409 insufficient-stock"
+$shortages = @(@($short.Json.shortages) | Where-Object { $_ })
+$ringShort = @($shortages | Where-Object { "$($_.variantId)" -ceq $saleVariantId })
+Require (($ringShort.Count -eq 1) -and ("$($ringShort[0].kind)" -ceq "GOODS") -and ([int]$ringShort[0].requested -eq 20) -and ([int]$ringShort[0].available -eq $freeRings)) "the shortages read $($shortages | ConvertTo-Json -Compress), expected the sale ring ($saleVariantId) as GOODS, 20 requested, $freeRings available"
+Require (@($shortages | Where-Object { "$($_.variantId)" -ceq $saleSmallBoxId -and "$($_.kind)" -ceq "BOX" }).Count -eq 1) "the shortages do not name the small box as BOX (20 boxes wanted, $freeSmall free): $($shortages | ConvertTo-Json -Compress)"
+Require ((Count-Orders $aliceH) -eq $ordersBeforeShort) "a refused hold still left an order ($ordersBeforeShort -> $(Count-Orders $aliceH))"
+Wait-Stock $saleVariantId 10 0 | Out-Null        # nothing was held
+# The same through checkout: a bag of 20, previewed, confirmed -> 409 insufficient-stock under order's own name, with the shortages.
+Clear-Cart
+Add-ToCart $saleVariantId 20
+$previewShort = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "SELF_COLLECT" })
+$shortViaCheckout = Invoke-Api POST "$gw/checkout/confirm" $aliceH @{ deliveryOption = "SELF_COLLECT"; quoteDigest = $previewShort.quoteDigest }
+Require (($shortViaCheckout.Status -eq 409) -and "$($shortViaCheckout.Json.type)".EndsWith("/insufficient-stock")) "checkout confirm for 20 rings gave $($shortViaCheckout.Status) '$($shortViaCheckout.Json.type)', expected 409 insufficient-stock passed on from order"
+Require (@(@($shortViaCheckout.Json.shortages) | Where-Object { $_ -and "$($_.variantId)" -ceq $saleVariantId }).Count -eq 1) "checkout's refusal does not carry the shortage naming the sale ring: $($shortViaCheckout.Json | ConvertTo-Json -Compress)"
+Clear-Cart
+Write-Host "    3 live orders (1, 2, 3 rings) held, the 4th 409 hold-limit-reached (3 held), cancelled -> reserved back to 0; 20 rings of $freeRings free -> 409 insufficient-stock naming the ring (GOODS, 20 wanted, $freeRings available) and the small box, no order left; the same through checkout" -ForegroundColor Gray
+
+Write-Host "[6g/20] Who may do what: staff-only doors refuse a shopper and a stranger; no person makes an order PAID..." -ForegroundColor Cyan
+# Everything money touches is SALES_AGENT (confirm, the queues, rejecting a claim), PAYMENT_ADMIN (the held-money list, the owner's) or ORDER_ADMIN (a box swap).
+# alice holds only USER: 403 at the gateway, before the service is asked; no token: 401. None of it may act: a refusal here recorded nothing.
+$ghostClaim = [guid]::NewGuid().ToString()
+$doors = @(
+    @{ Name = "confirming money"; Method = "POST"; Uri = "$gw/admin/payments/confirmations"; Body = @{ orderId = $orderId; method = "CASH"; gross = [decimal]1.00 }; NeedsKey = $true },
+    @{ Name = "the held-money list"; Method = "GET"; Uri = "$gw/admin/payments/held-money"; Body = $null; NeedsKey = $false },
+    @{ Name = "the awaiting-payment queue"; Method = "GET"; Uri = "$gw/admin/orders/awaiting-payment"; Body = $null; NeedsKey = $false },
+    @{ Name = "the settlements list"; Method = "GET"; Uri = "$gw/admin/orders/settlements"; Body = $null; NeedsKey = $false },
+    @{ Name = "a box swap"; Method = "POST"; Uri = "$gw/admin/orders/$orderId/box-swaps"; Body = @{ lineId = "$($placedLine.id)"; replacementBoxVariantId = $saleLargeBoxId; reason = "smoke: a shopper must not do this" }; NeedsKey = $false },
+    @{ Name = "rejecting a claim"; Method = "POST"; Uri = "$gw/admin/payments/claims/$ghostClaim/reject"; Body = @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: a shopper must not do this" }; NeedsKey = $false })
+foreach ($door in $doors) {
+    $asAlice = $aliceH
+    if ($door.NeedsKey) { $asAlice = $aliceH + @{ "Idempotency-Key" = (New-Key "smoke-authz") } }
+    $viaAlice = Invoke-Api $door.Method $door.Uri $asAlice $door.Body
+    Require ($viaAlice.Status -eq 403) "alice (a shopper) on $($door.Name) gave $($viaAlice.Status), expected 403"
+    $viaNobody = Invoke-Api $door.Method $door.Uri $null $door.Body
+    Require ($viaNobody.Status -eq 401) "no token on $($door.Name) gave $($viaNobody.Status), expected 401"
+}
+# maya (OWNER: every capability) passes: the lists answer, and an unknown claim or order is a 404 from the service, not a refusal at the door.
+foreach ($path in @("admin/orders/awaiting-payment", "admin/orders/settlements", "admin/payments/held-money", "admin/payments/claims", "admin/payments/confirmations/pending")) {
+    $open = Invoke-Api GET "$gw/$path" $mayaH $null
+    Require ($open.Status -eq 200) "maya on GET /$path gave $($open.Status), expected 200"
+}
+$ghostReject = Invoke-Api POST "$gw/admin/payments/claims/$ghostClaim/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: there is no such claim" }
+Require (($ghostReject.Status -eq 404) -and "$($ghostReject.Json.type)".EndsWith("/claim-not-found")) "maya rejecting an unknown claim gave $($ghostReject.Status) '$($ghostReject.Json.type)', expected 404 claim-not-found"
+$ghostSwap = Invoke-Api POST "$gw/admin/orders/$([guid]::NewGuid().ToString())/box-swaps" $mayaH @{ lineId = "$($placedLine.id)"; replacementBoxVariantId = $saleLargeBoxId; reason = "smoke: there is no such order" }
+Require ($ghostSwap.Status -eq 404) "maya swapping the box of an unknown order gave $($ghostSwap.Status), expected 404"
+# The old ways to PAID are gone. The retired POST /orders/{id}/pay is not there (404: money reaches an order only by a person confirming it); no
+# person moves an unpaid order to PAID (an administrator asking is refused 409 and the order is unchanged); a paid order is never undone by a cancel.
+$retiredPay = Invoke-Api POST "$gw/orders/$orderId/pay" $aliceH @{ paymentIntentId = [guid]::NewGuid().ToString() }
+Require ($retiredPay.Status -eq 404) "the retired POST /orders/{id}/pay gave $($retiredPay.Status), expected 404"
+$toPaid = Invoke-Api POST "$gw/admin/orders/$orderBId/transition" $mayaH @{ targetStatus = "PAID" }
+Require ($toPaid.Status -eq 409) "an administrator moving an unpaid order to PAID gave $($toPaid.Status), expected 409"
+Require ("$((Get-Order $orderBId).status)" -ceq "EXPIRED") "the unpaid order reads '$((Get-Order $orderBId).status)' after an administrator tried to make it PAID, expected it unchanged (EXPIRED)"
+$cancelPaid = Invoke-Api POST "$gw/orders/$orderId/cancel" $aliceH $null
+Require ($cancelPaid.Status -eq 409) "cancelling a PAID order gave $($cancelPaid.Status), expected 409: a sale is never undone by a status change"
+Require ("$((Get-Order $orderId).status)" -ceq "PAID") "the paid order reads '$((Get-Order $orderId).status)' after a cancel was refused, expected PAID"
+Write-Host "    alice 403 and no token 401 on confirming money, the held-money list, the awaiting-payment and settlements lists, a box swap and a claim rejection; maya 200 on the lists, 404 on an unknown claim and order; the retired /pay 404; no person makes an order PAID (409, unchanged); a paid order cannot be cancelled (409)" -ForegroundColor Gray
+
+Write-Host "[6h/20] Box swap on the paid order: the line shows the new box, the ledger moves, the sale's date does not..." -ForegroundColor Cyan
+# A customer asks for the larger box after paying (or the box set aside is damaged): ORDER_ADMIN (the owner and a manager, not a sales person) swaps it,
+# with a reason of 10 to 200 characters, while the order is PAID and not yet fulfilled. Inventory reverses the small boxes' sale (they go back to the lots
+# they came out of, at the cost they left at) and sells the large ones, both dated to the day of the SALE -- a swap never moves it -- and recorded now.
+$swapUri = "$gw/admin/orders/$orderId/box-swaps"
+$swapReason = "smoke: the customer asked for the larger box"
+$amendmentId = [guid]::NewGuid().ToString()
+$swapBody = @{ lineId = "$($placedLine.id)"; replacementBoxVariantId = $saleLargeBoxId; reason = $swapReason; amendmentId = $amendmentId }
+# An order that is not paid cannot change its box: B is EXPIRED.
+$unpaidSwap = Invoke-Api POST "$gw/admin/orders/$orderBId/box-swaps" $mayaH @{ lineId = $orderBLineId; replacementBoxVariantId = $saleLargeBoxId; reason = $swapReason }
+Require (($unpaidSwap.Status -eq 409) -and "$($unpaidSwap.Json.type)".EndsWith("/box-swap-not-allowed")) "a box swap on an order that is not paid gave $($unpaidSwap.Status) '$($unpaidSwap.Json.type)', expected 409 box-swap-not-allowed"
+$tooShort = Invoke-Api POST $swapUri $mayaH @{ lineId = "$($placedLine.id)"; replacementBoxVariantId = $saleLargeBoxId; reason = "too short" }
+Require ($tooShort.Status -eq 400) "a box swap with a nine-character reason gave $($tooShort.Status), expected 400"
+$swap = Invoke-Api POST $swapUri $mayaH $swapBody
+Assert-Reply $swap "the box swap" 200
+$swapped = $swap.Json
+Require ((("$($swapped.amendmentId)" -ceq $amendmentId)) -and ("$($swapped.orderId)" -ceq $orderId) -and ("$($swapped.lineId)" -ceq "$($placedLine.id)") -and ("$($swapped.oldBoxVariantId)" -ceq $saleSmallBoxId) -and
+         ("$($swapped.newBoxVariantId)" -ceq $saleLargeBoxId) -and ([int]$swapped.quantity -eq 2) -and ($swapped.replay -eq $false)) "the swap reads $($swapped | ConvertTo-Json -Compress), expected small -> large, 2 boxes, not a replay"
+Require (Near-Instant $swapped.occurredAt $arrivedAt) "the swap says it happened at '$($swapped.occurredAt)': a swap never moves the sale's date, expected the day the money arrived ($(Format-Instant $arrivedAt))"
+Require ("$($swapped.amendedBy)".StartsWith("user:")) "the swap says it was made by '$($swapped.amendedBy)', expected user:<the member of staff>"
+$afterSwap = Get-Order $orderId
+Require ("$(@($afterSwap.items)[0].boxVariantId)" -ceq $saleLargeBoxId) "after the swap the order's line shows box '$(@($afterSwap.items)[0].boxVariantId)', expected the large box $saleLargeBoxId"
+Require ("$($afterSwap.status)" -ceq "PAID") "the order reads '$($afterSwap.status)' after the swap, expected PAID"
+# The same amendment id with the same request is a replay (200, replay: true) that changes nothing; with another reason it is refused; swapping to the box
+# it already has is refused.
+$replayed = Invoke-Api POST $swapUri $mayaH $swapBody
+Require (($replayed.Status -eq 200) -and ($replayed.Json.replay -eq $true)) "the same amendment sent again gave $($replayed.Status) replay=$($replayed.Json.replay), expected 200 replay=true"
+$otherReason = Invoke-Api POST $swapUri $mayaH @{ lineId = "$($placedLine.id)"; replacementBoxVariantId = $saleLargeBoxId; reason = "smoke: a different reason entirely"; amendmentId = $amendmentId }
+Require (($otherReason.Status -eq 409) -and "$($otherReason.Json.type)".EndsWith("/amendment-id-used")) "the same amendment id for another request gave $($otherReason.Status) '$($otherReason.Json.type)', expected 409 amendment-id-used"
+$sameBox = Invoke-Api POST $swapUri $mayaH @{ lineId = "$($placedLine.id)"; replacementBoxVariantId = $saleLargeBoxId; reason = $swapReason }
+Require (($sameBox.Status -eq 409) -and "$($sameBox.Json.type)".EndsWith("/same-box")) "a swap to the box the line already has gave $($sameBox.Status) '$($sameBox.Json.type)', expected 409 same-box"
+# Stock and ledger: the two small boxes are back (12), the two large ones are sold (10); the ledger shows the reversal and the new sale, both dated to the sale.
+Wait-Stock $saleSmallBoxId 12 0 | Out-Null
+Wait-Stock $saleLargeBoxId 10 0 | Out-Null
+$smallAfter = Get-OpenLots $saleSmallBoxId
+Require (Lots-Say $smallAfter @("12@2.00")) "after the swap the small box's open lots are [$(Describe-Lots $smallAfter)], expected 12@2.00 (the two boxes came back at the cost they left at)"
+$largeAfter = Get-OpenLots $saleLargeBoxId
+Require (Lots-Say $largeAfter @("10@3.00")) "after the swap the large box's open lots are [$(Describe-Lots $largeAfter)], expected 10@3.00"
+$reversed = @(Get-LedgerRows $saleSmallBoxId "BOX_SWAPPED")
+Require (($reversed.Count -eq 1) -and ([int]$reversed[0].qtyDelta -eq 2) -and (Same-Money $reversed[0].unitCost "2.00") -and (Near-Instant $reversed[0].occurredAt $arrivedAt)) "the small box's BOX_SWAPPED ledger rows read $($reversed | ConvertTo-Json -Compress), expected one row +2 @ 2.00 dated to the day the money arrived"
+$resold = @(Get-LedgerRows $saleLargeBoxId "SALE")
+Require (($resold.Count -eq 1) -and ([int]$resold[0].qtyDelta -eq -2) -and (Same-Money $resold[0].unitCost "3.00") -and (Near-Instant $resold[0].occurredAt $arrivedAt)) "the large box's SALE ledger rows read $($resold | ConvertTo-Json -Compress), expected one row -2 @ 3.00 dated to the day the money arrived"
+Require ((ConvertTo-UtcInstant $resold[0].recordedAt) -gt $arrivedAt.AddHours(20)) "the swap's sale row says it was recorded at '$($resold[0].recordedAt)', expected now: the date of the sale stays, the record is of today"
+Assert-Reconciled $saleSmallBoxId "the small box"
+Assert-Reconciled $saleLargeBoxId "the large box"
+Assert-Reconciled $saleVariantId "the sale ring"
+Write-Host "    unpaid order 409 box-swap-not-allowed, a short reason 400; swapped small -> large 200 (the line shows the large box, dated to the sale, by staff); the same amendment a replay (200), another request 409 amendment-id-used, the same box 409 same-box; small boxes back to 12 @ K2.00, large 10 @ K3.00; ledger +2 BOX_SWAPPED and -2 SALE, both dated to the day the money arrived" -ForegroundColor Gray
+
+Write-Host "[6i/20] A delivered order: OWN_DELIVERY to the priced town, bound to its town and payer, paid in cash by staff..." -ForegroundColor Cyan
+# Delivered options need the town and (for a courier) say who pays it. The digest binds both -- the town it is priced for and the payer -- so a quote for
+# Oriah collecting cannot be placed as one for the recipient paying. Shipping is the one place that works the amount out: ORIAH_COLLECTS is the published
+# price (unless the free-delivery threshold is reached), RECIPIENT_PAYS is K0.00 on the order. The goods are K90 (one ring, K10 off).
+Clear-Cart
+Add-ToCart $saleVariantId 1
+$dGoods = [decimal]90.00
+$dShip = Get-ExpectedShip $dGoods 45.00
+$dTotal = $dGoods + $dShip
+$deliveryBody = @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "ORIAH_COLLECTS"; shippingAddressId = $addrId }
+$dPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json $deliveryBody)
+Require ((Same-Money $dPreview.subtotal "100.00") -and (Same-Money $dPreview.discount "10.00") -and (Same-Money $dPreview.shippingCost "$dShip") -and (Same-Money $dPreview.total "$dTotal")) "the delivered preview reads subtotal=$($dPreview.subtotal) discount=$($dPreview.discount) ship=$($dPreview.shippingCost) total=$($dPreview.total); expected 100.00, 10.00, $dShip (the published price: shipping's alone to work out), $dTotal"
+Require (("$($dPreview.deliveryOption)" -ceq "OWN_DELIVERY") -and ("$($dPreview.deliveryTownId)" -ceq $townId) -and ("$($dPreview.payer)" -ceq "ORIAH_COLLECTS")) "the delivered preview names option '$($dPreview.deliveryOption)' town '$($dPreview.deliveryTownId)' payer '$($dPreview.payer)', expected OWN_DELIVERY, $townId, ORIAH_COLLECTS"
+$dDigest = Get-SaleDigest 1 "OWN_DELIVERY" $dShip $townId "ORIAH_COLLECTS"
+Require ($dPreview.quoteDigest -ceq $dDigest) "the delivered preview's quoteDigest $($dPreview.quoteDigest) is not the digest this script works out for the town and payer ($dDigest)"
+Require ($dDigest -cne (Get-SaleDigest 1 "OWN_DELIVERY" $dShip)) "the digest does not change with the town and the payer: it must bind them"
+# The payer left out takes the one the price offers (Oriah collecting): the same quote, the same digest.
+$dNoPayer = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; shippingAddressId = $addrId })
+Require (("$($dNoPayer.payer)" -ceq "ORIAH_COLLECTS") -and ($dNoPayer.quoteDigest -ceq $dDigest)) "a delivered preview with no payer resolved to '$($dNoPayer.payer)' with digest $($dNoPayer.quoteDigest), expected ORIAH_COLLECTS and the same digest as above"
+# The recipient paying the courier: K0.00 on the order, the total is the goods alone, and the digest is another one.
+$rPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId })
+Require ((Same-Money $rPreview.shippingCost "0.00") -and (Same-Money $rPreview.total "90.00") -and ("$($rPreview.payer)" -ceq "RECIPIENT_PAYS")) "the RECIPIENT_PAYS preview reads ship=$($rPreview.shippingCost) total=$($rPreview.total) payer=$($rPreview.payer), expected 0.00, 90.00, RECIPIENT_PAYS"
+$rDigest = Get-SaleDigest 1 "OWN_DELIVERY" 0 $townId "RECIPIENT_PAYS"
+Require (($rPreview.quoteDigest -ceq $rDigest) -and ($rDigest -cne $dDigest)) "the RECIPIENT_PAYS preview's digest $($rPreview.quoteDigest) is not the one this script works out ($rDigest), or it equals the Oriah-collects digest"
+# Yango is the recipient's to pay: with no payer named it resolves to that, at K0.00.
+$yPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "YANGO"; deliveryTownId = $townId; shippingAddressId = $addrId })
+Require (("$($yPreview.payer)" -ceq "RECIPIENT_PAYS") -and (Same-Money $yPreview.shippingCost "0.00") -and (Same-Money $yPreview.total "90.00")) "the Yango preview reads payer=$($yPreview.payer) ship=$($yPreview.shippingCost) total=$($yPreview.total), expected RECIPIENT_PAYS, 0.00, 90.00"
+# The digest binds the payer: confirming with the OTHER quote's digest is refused, and nothing is placed.
+$ordersBeforeBind = Count-Orders $aliceH
+Expect-Refusal "$gw/checkout/confirm" ($deliveryBody + @{ quoteDigest = $rPreview.quoteDigest }) 409 "pricing-changed" "A confirm naming Oriah collecting with the digest of the recipient-pays quote"
+Require ((Count-Orders $aliceH) -eq $ordersBeforeBind) "a refused delivered confirm still placed an order"
+# Place it: held, CREATED, with its town, its payer and the delivery charge on the record.
+$dPlaced = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-delivered") }) ($deliveryBody + @{ quoteDigest = $dPreview.quoteDigest })
+Assert-Reply $dPlaced "confirming the delivered order" 200
+$dOrderId = "$($dPlaced.Json.orderId)"
+Require (Same-Money $dPlaced.Json.total "$dTotal") "the delivered order was placed at $($dPlaced.Json.total), expected the quote's $dTotal"
+$dOrder = Get-Order $dOrderId
+Require (("$($dOrder.status)" -ceq "CREATED") -and (Same-Money $dOrder.shippingAmount "$dShip") -and (Same-Money $dOrder.total "$dTotal") -and (Same-Money $dOrder.discountAmount "10.00") -and
+         ("$($dOrder.deliveryOption)" -ceq "OWN_DELIVERY") -and ("$($dOrder.deliveryTownId)" -ceq $townId) -and ("$($dOrder.deliveryPayer)" -ceq "ORIAH_COLLECTS") -and ("$($dOrder.shippingAddressId)" -ceq "$addrId")) "the delivered order reads $($dOrder | ConvertTo-Json -Depth 3 -Compress); expected CREATED, delivery $dShip, discount 10.00, total $dTotal, OWN_DELIVERY to town $townId, ORIAH_COLLECTS, to address $addrId"
+# Staff can confirm money for a customer who never typed a reference: the queue's lookup by order id finds an order that can still take money (CREATED
+# here). Cash needs no reference. The money must equal the total exactly -- the goods after discount plus the delivery Oriah collects.
+$lookup = Invoke-Api GET "$gw/admin/orders/awaiting-payment?orderId=$dOrderId" $mayaH $null
+Require (($lookup.Status -eq 200) -and (@(@($lookup.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $dOrderId -and "$($_.status)" -ceq "CREATED" }).Count -eq 1)) "the awaiting-payment lookup for the unclaimed order gave $($lookup.Status) with $(@(@($lookup.Json) | Where-Object { $_ }).Count) row(s), expected the one CREATED order"
+$cash = Confirm-Money @{ orderId = $dOrderId; method = "CASH"; gross = $dTotal } (New-Key "smoke-money-cash")
+Assert-Reply $cash "staff confirming cash for the delivered order" 201
+Wait-OrderStatus $dOrderId "PAID" 90 | Out-Null
+Require ((Get-OrderReceipt $dOrderId) -match '^OR-\d{6}$') "the delivered order is PAID but its receipt number reads '$(Get-OrderReceipt $dOrderId)', expected OR- and six digits"
+# A second sale of the same ring: it left the same oldest lot (now 1@9.34 + 8@9.33).
+Wait-Stock $saleVariantId 9 0 | Out-Null
+$ringLotsD = Get-OpenLots $saleVariantId
+Require (Lots-Say $ringLotsD @("1@9.34", "8@9.33")) "after the second sale the sale ring's open lots are [$(Describe-Lots $ringLotsD)], expected 1@9.34 + 8@9.33"
+$ringSales = @(Get-LedgerRows $saleVariantId "SALE")
+Require (($ringSales.Count -eq 2) -and (($ringSales | Measure-Object -Property qtyDelta -Sum).Sum -eq -3) -and (@($ringSales | Where-Object { Same-Money $_.unitCost "9.34" }).Count -eq 2)) "the sale ring's SALE ledger rows read $($ringSales | ConvertTo-Json -Compress), expected two live rows, -3 pieces in all, every one @ 9.34 (the oldest lot)"
+# The same delivery with the recipient paying the courier: placed, K0.00 delivery on the order, the total is the goods alone; then cancelled.
+Clear-Cart
+Add-ToCart $saleVariantId 1
+$r2 = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-recipient") }) @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId; quoteDigest = $rPreview.quoteDigest }
+Assert-Reply $r2 "confirming the recipient-pays order" 200
+$r2Id = "$($r2.Json.orderId)"
+$r2Order = Get-Order $r2Id
+Require ((Same-Money $r2.Json.total "90.00") -and (Same-Money $r2Order.shippingAmount "0.00") -and (Same-Money $r2Order.total "90.00") -and ("$($r2Order.deliveryPayer)" -ceq "RECIPIENT_PAYS") -and
+         ("$($r2Order.deliveryTownId)" -ceq $townId) -and ("$($r2Order.status)" -ceq "CREATED")) "the recipient-pays order reads $($r2Order | ConvertTo-Json -Depth 3 -Compress); expected CREATED, delivery 0.00, total 90.00 (the goods alone), RECIPIENT_PAYS, town $townId"
+$r2Cancel = Invoke-Api POST "$gw/orders/$r2Id/cancel" $aliceH $null
+Assert-Reply $r2Cancel "cancelling the recipient-pays order" 200
+Wait-Stock $saleVariantId 9 0 | Out-Null
+Write-Host "    OWN_DELIVERY to town ${townId}: preview K$dShip delivery, total K$dTotal, digest = this script's own (town and payer bound; no payer = Oriah collecting); recipient pays -> K0.00, total K90.00, another digest; Yango resolves to the recipient; the other quote's digest 409 pricing-changed; placed, paid in cash by staff for exactly K$dTotal -> PAID with a receipt, a second sale from the same oldest lot; the recipient-pays order placed at K90.00 and cancelled" -ForegroundColor Gray
 
 Write-Host "[7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
 foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
@@ -980,17 +1891,36 @@ if ($publicReviews.content.Count -ne 1 -or $agg.average -ne 5.0 -or $agg.count -
 }
 Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
 
-Write-Host "[10/20] /notifications/me shows order.* events..." -ForegroundColor Cyan
+Write-Host "[10/20] /notifications/me shows the sale's order.* events..." -ForegroundColor Cyan
+# alice's notification log keeps every earlier run's too, so a count proves nothing: each check below is tied to an order id THIS run made. The
+# sale order was placed (order.created), paid (order.paid: the customer is told the payment was applied), then fulfilled, shipped and delivered
+# at step 7; the order whose claim was rejected lapsed (order.expired); the one-ring order of step 4b was cancelled (order.cancelled).
+# order.payment_submitted and order.payment_unsettled are facts for staff, not messages: notification declares and ignores them.
+Refresh-Tokens
+$wantForSale = @("order.created", "order.paid", "order.fulfilled", "order.shipped", "order.delivered")
+$missing = $wantForSale
+$expiredSeen = 0
+$cancelledSeen = 0
 $notifsFound = $false
-for ($i = 0; $i -lt 30; $i++) {
-    $n = Invoke-RestMethod -Method GET `
-        -Uri "http://localhost:8080/api/v1/notifications/me" `
-        -Headers @{ Authorization="Bearer $alice" }
-    if ($n.content.Count -ge 5) { $notifsFound = $true; break }
-    Start-Sleep -Milliseconds 500
+$notifDeadline = (Get-Date).AddSeconds(90)
+while ($true) {
+    $n = Invoke-Api GET "$gw/notifications/me?size=100" $aliceH $null
+    if ($n.Status -eq 200) {
+        $notifRows = @(@($n.Json.content) | Where-Object { $_ })
+        $saleTypes = @($notifRows | Where-Object { "$($_.orderId)" -ceq $orderId } | ForEach-Object { "$($_.eventType)" })
+        $missing = @($wantForSale | Where-Object { $saleTypes -cnotcontains $_ })
+        $expiredSeen = @($notifRows | Where-Object { "$($_.orderId)" -ceq $orderBId -and "$($_.eventType)" -ceq "order.expired" }).Count
+        $cancelledSeen = @($notifRows | Where-Object { "$($_.orderId)" -ceq $cancelledOrderId -and "$($_.eventType)" -ceq "order.cancelled" }).Count
+        if ($missing.Count -eq 0 -and $expiredSeen -gt 0 -and $cancelledSeen -gt 0) { $notifsFound = $true; break }
+    }
+    if ((Get-Date) -gt $notifDeadline) { break }
+    Start-Sleep -Seconds 1
 }
-if (-not $notifsFound) { Write-Error "Expected >=5 notifications, never reached that count"; exit 1 }
-Write-Host "    >=5 notifications received (created+paid+fulfilled+shipped+delivered)" -ForegroundColor Gray
+if (-not $notifsFound) {
+    Write-Error "After 90 s alice's notifications for the sale order $orderId lack [$($missing -join ', ')]; order.expired seen for the rejected order ${orderBId}: $expiredSeen, order.cancelled seen for the cancelled order ${cancelledOrderId}: $cancelledSeen (Kafka, order to notification)"
+    exit 1
+}
+Write-Host "    order.created, order.paid, order.fulfilled, order.shipped and order.delivered for the sale order; order.expired for the rejected one; order.cancelled for the cancelled one" -ForegroundColor Gray
 
 Write-Host "[11/20] Kafka product_index + 401 without token..." -ForegroundColor Cyan
 $rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
@@ -999,7 +1929,7 @@ if (-not $rows -or $rows.Trim() -ne "Aurelia 18k") { Write-Error "product_index 
 try {
     Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/checkout/preview" `
         -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ destinationCountry="ZM" }) | Out-Null
+        -Body (ConvertTo-Json @{ deliveryOption="SELF_COLLECT" }) | Out-Null
     Write-Error "Expected 401 without JWT"
     exit 1
 } catch {
@@ -1021,7 +1951,7 @@ Write-Host "[12/20] Tempo has the saga trace spanning the chain..." -ForegroundC
 # 2. A trace ASSEMBLES over time. Every service batches its spans before
 #    exporting over OTLP, so the saga's spans land in Tempo across several
 #    seconds. A version of this check that broke out of the loop on the first
-#    non-empty response, and only then asserted all four saga services, failed
+#    non-empty response, and only then asserted all the chain's services, failed
 #    intermittently: at ~10s the trace legitimately held just cart + checkout,
 #    the loop exited, and the completeness assertion fired while the remaining
 #    spans were still in flight. The required-service check therefore has to BE
@@ -1033,7 +1963,10 @@ Write-Host "[12/20] Tempo has the saga trace spanning the chain..." -ForegroundC
 # independently by each service needs materially longer. The window is generous
 # on purpose -- it is not masking a broken pipeline, because a failure here now
 # means the trace never completed at all, not that we were impatient.
-$REQUIRED_SAGA_SERVICES = @("checkout", "cart", "order", "payment")
+# The placement chain of step 6: checkout reads the bag (cart), prices it (catalog) and the delivery (shipping), and places it with order, which
+# prices it again (catalog, shipping) and takes the hold at inventory. Payment is NOT in it any more: placing an order never touches money (staff
+# confirm money, step 6d, a separate flow under its own traces). customer joins only when an address is named, and the confirm of step 6 names none.
+$REQUIRED_SAGA_SERVICES = @("checkout", "cart", "catalog", "shipping", "order", "inventory")
 $sagaServices = @()
 $sagaSpanCount = 0
 $sagaComplete = $false
@@ -1363,240 +2296,106 @@ if ($hygieneProblems.Count -gt 0) {
 Write-Host "    0 OTLP publish failures, 0 Kafka watermark warnings, lag metric intact" -ForegroundColor Gray
 
 # ---------------------------------------------------------------------------
-# Money-path authorization. Every attempt below produced a PAID order or a
-# real charge before the authorization sweep, and each is asserted on the
-# STATE it leaves behind rather than on the status code alone -- the whole
-# shape of these bugs was that the refusal looked correct while the money had
-# already moved.
+# Money-path authorization. Since Phase 7 money reaches an order in ONE way: staff confirm it
+# (step 6d), and the order settles asynchronously. The card path (a payment intent, and the
+# order's own /pay) is gone, so what these live attempts defend is that no other road to PAID
+# exists and that nobody can act on an order that is not theirs. Each is asserted on the STATE it
+# leaves behind rather than on the status code alone -- the whole shape of these bugs was that the
+# refusal looked correct while the order had already changed.
 #
-# The unit and integration suites cover the same rules against a real
-# Postgres, but with a mocked JwtDecoder and (in order's case) a mocked
-# payment client. Only here are Eureka discovery, the forwarded JWT and the
-# real gateway in the loop, which is where a config regression would hide:
-# order falling back instead of throwing, or the circuit breaker losing the
-# Authorization header, would both leave these green in Maven and broken here.
+# The unit and integration suites cover the same rules against a real Postgres, but with a mocked
+# JwtDecoder. Only here are Eureka discovery, the forwarded JWT and the real gateway in the loop,
+# which is where a config regression would hide.
 # ---------------------------------------------------------------------------
 Write-Host "[20/20] Money-path authorization holds (live exploit attempts)..." -ForegroundColor Cyan
-
-# The probe order's value is QUANTITY x catalog's price, because the price is
-# no longer the caller's to choose.
-#
-# order-service prices every line from catalog and refuses a stated price or
-# currency that disagrees, so this used to post currency="USD" with
-# unitPrice=$Amount against a ZMW variant and now gets a 409. Worse than
-# breaking: had only the currency been fixed, probe (a) below would have gone
-# green for the CURRENCY mismatch instead of for the authorization property it
-# exists to check -- a passing test measuring the wrong thing.
-#
-# So the claim it sends is the true one ($probePrice / $probeCurrency, read
-# from the variant this run created), and the amount is varied through
-# quantity. Distinct quantities give distinct totals, which the gateway
-# charge-count below needs in order to attribute a charge to one probe.
-$probePrice = 100.00
-$probeCurrency = "ZMW"
-
-function New-ProbeOrder($Headers, $Quantity) {
-    # Self-collect, with the digest of exactly this quote: order refuses any
-    # placement whose digest differs from its own pricing (quote, then commit).
-    return Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders" `
-        -Headers $Headers -ContentType "application/json" `
-        -Body (ConvertTo-Json @{
-            shippingAddressId = $addrId
-            currency = $probeCurrency
-            deliveryOption = "SELF_COLLECT"
-            quoteDigest = (Get-QuoteDigest $probeCurrency "SELF_COLLECT" 0 `
-                @(@{ VariantId=$variantId; Quantity=$Quantity; Price=$probePrice }))
-            items = @(@{ variantId=$variantId; title="Authz probe"
-                         quantity=$Quantity; unitPrice=$probePrice })
-        })
-}
-function Probe-Status($err) {
-    $c = $err.Exception.Response.StatusCode.value__
-    if (-not $c) { $c = [int]$err.Exception.Response.StatusCode }
-    return $c
-}
-function Charge-Count($Amount) {
-    # The gateway logs one line per charge. Counting them is the only way to
-    # tell "refused" from "charged, then refused" -- which is the entire
-    # distinction these checks exist for.
-    #
-    # Routed through cmd with 2>nul, matching the idle-log step's idiom below.
-    # In PowerShell 5.1 a native command's stderr arrives as an ErrorRecord,
-    # and with $ErrorActionPreference="Stop" the container's "Picked up
-    # JAVA_TOOL_OPTIONS" banner on stderr is enough to abort the script.
-    # Discarding stderr inside cmd keeps it out of PowerShell altogether.
-    $logs = cmd /c "docker logs oriah-payment 2>nul"
-    # The gateway logs the amount at scale 2 ("amount=700.00 ZMW"), so the
-    # pattern is formatted the same way. Interpolating $Amount as it stood made
-    # "amount=700 " -- a [double] loses its trailing zeros -- which matched
-    # nothing, so the checks counting it compared zero with zero and passed
-    # whatever the gateway did (D10).
-    $scaled = ([decimal]$Amount).ToString("F2", [Globalization.CultureInfo]::InvariantCulture)
-    $hits = @($logs | Select-String -SimpleMatch "FakePaymentGateway.charge amount=$scaled ")
-    # $Amount here is the ORDER's total, which is now catalog's figure rather
-    # than one the probe named. Still distinctive because each probe uses a
-    # different quantity.
-    return $hits.Count
-}
-
-$aliceH = @{ Authorization = "Bearer $alice" }
-$mayaH  = @{ Authorization = "Bearer $maya" }
+# Fresh tokens: the realm's access tokens last 30 minutes and this is a late step.
+Refresh-Tokens
 $authzFailures = @()
 
-# (a) A fabricated payment intent id must not pay an order.
-$probe = New-ProbeOrder $aliceH 45      # 45 x 100.00 = 4500.00
-try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders/$($probe.id)/pay" `
-        -Headers $aliceH -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ paymentIntentId=[guid]::NewGuid().ToString() }) | Out-Null
-    $authzFailures += "a made-up paymentIntentId was accepted"
-} catch {
-    $code = Probe-Status $_
-    $after = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/$($probe.id)" -Headers $aliceH).status
-    if ($code -ne 409 -or $after -ne "CREATED") {
-        $authzFailures += "fabricated intent: code=$code status=$after (want 409/CREATED)"
-    }
+# The victim: one live order of alice's, placed WITH an Idempotency-Key (the key is what (c) is about). maya holds OWNER + USER
+# (keycloak/dev/oriah-users-0.json), so she is also a second real customer here.
+$sharedKey = New-Key "smoke-authz"
+$victimReply = Place-SaleOrder $aliceH 1 $null $sharedKey
+Assert-Reply $victimReply "placing the victim order" 201
+$victimId = "$($victimReply.Json.id)"
+$victimOwner = "$($victimReply.Json.keycloakId)"
+
+# (a) No person makes an unpaid order PAID, EXPIRED or PAYMENT_SUBMITTED: only money does (6d), only a lapsed hold or a rejected claim does
+#     (6e), only the shopper's claim does (6c). An administrator asking is refused 409 -- and, the point, the order is unchanged.
+foreach ($target in @("PAID", "EXPIRED", "PAYMENT_SUBMITTED")) {
+    $move = Invoke-Api POST "$gw/admin/orders/$victimId/transition" $mayaH @{ targetStatus = $target }
+    if ($move.Status -ne 409) { $authzFailures += "an administrator moving an unpaid order to $target gave $($move.Status), expected 409" }
+}
+if ("$((Get-Order $victimId).status)" -cne "CREATED") { $authzFailures += "after refused moves the unpaid order reads '$((Get-Order $victimId).status)', expected CREATED" }
+
+# (b) Another customer cannot read, claim for or cancel alice's order. "Not yours" and "does not exist" are indistinguishable: 404 for all three,
+#     and the order is unchanged (a hijacked claim would have stretched its hold and put it in the staff's queue under someone else's reference).
+$strangerRead = Invoke-Api GET "$gw/orders/$victimId" $mayaH $null
+if ($strangerRead.Status -ne 404) { $authzFailures += "another customer reading alice's order gave $($strangerRead.Status), expected 404" }
+$strangerClaim = Invoke-Api POST "$gw/orders/$victimId/payment-claim" $mayaH @{ method = "MTN"; reference = "MTNHIJACK$saleTag" }
+if ($strangerClaim.Status -ne 404) { $authzFailures += "another customer's payment claim on alice's order gave $($strangerClaim.Status), expected 404" }
+$strangerCancel = Invoke-Api POST "$gw/orders/$victimId/cancel" $mayaH $null
+if ($strangerCancel.Status -ne 404) { $authzFailures += "another customer cancelling alice's order gave $($strangerCancel.Status), expected 404" }
+if ("$((Get-Order $victimId).status)" -cne "CREATED") { $authzFailures += "after another customer's attempts alice's order reads '$((Get-Order $victimId).status)', expected CREATED" }
+
+# (c) An Idempotency-Key is scoped to its customer: it must not replay one customer's order to another. maya sends alice's key for the same bag and
+#     gets HER OWN new order (201, another id, another owner). And (f) the owner's own replay must still be served -- the mechanism has to keep
+#     working, or the scoping has simply broken idempotency -- while the same key for another bag is refused 409.
+$mayaSameKey = Place-SaleOrder $mayaH 1 $null $sharedKey
+$mayaOrderId = $null
+if ($mayaSameKey.Status -ne 201) {
+    $authzFailures += "maya sending alice's Idempotency-Key gave $($mayaSameKey.Status), expected 201 (her own new order)"
+}
+else {
+    $mayaOrderId = "$($mayaSameKey.Json.id)"
+    if ($mayaOrderId -ceq $victimId) { $authzFailures += "an Idempotency-Key replayed alice's order to another customer" }
+    if ("$($mayaSameKey.Json.keycloakId)" -ceq $victimOwner) { $authzFailures += "maya's order is recorded under alice's account" }
+}
+$aliceReplay = Place-SaleOrder $aliceH 1 $null $sharedKey
+if (($aliceReplay.Status -ne 200) -or ("$($aliceReplay.Json.id)" -cne $victimId)) {
+    $authzFailures += "the owner's own replay of her key gave $($aliceReplay.Status) order '$($aliceReplay.Json.id)', expected 200 and the same order $victimId"
+}
+$aliceOtherBag = Place-SaleOrder $aliceH 2 $null $sharedKey
+if (($aliceOtherBag.Status -ne 409) -or -not "$($aliceOtherBag.Json.type)".EndsWith("/idempotency-key-reused")) {
+    $authzFailures += "alice's key for another bag gave $($aliceOtherBag.Status) '$($aliceOtherBag.Json.type)', expected 409 idempotency-key-reused"
 }
 
-# (b) A genuinely settled intent belonging to ANOTHER order must not pay this
-#     one. Without this check, settling one cheap order would pay every order
-#     the shopper owns.
-$victim = New-ProbeOrder $aliceH 45     # 4500.00
-# A quantity of 2 rather than a 1.00 unit price: the decoy only has to be
-# CHEAP AND DISTINCT from the victim, and 1.00 is no longer namable.
-$decoy  = New-ProbeOrder $aliceH 2      # 200.00
-$decoyIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-    -Headers $aliceH -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ orderId=$decoy.id; amount=$decoy.total; currency=$decoy.currency })
-$settledDecoy = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/payments/intents/$($decoyIntent.id)/confirm" `
-    -Headers $aliceH -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
-if ($settledDecoy.status -ne "SUCCEEDED") {
-    $authzFailures += "probe setup: decoy intent did not settle ($($settledDecoy.status))"
-}
-try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/orders/$($victim.id)/pay" `
-        -Headers $aliceH -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ paymentIntentId=$settledDecoy.id }) | Out-Null
-    $authzFailures += "one order's settled intent paid a DIFFERENT order"
-} catch {
-    $code = Probe-Status $_
-    $after = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/$($victim.id)" -Headers $aliceH).status
-    if ($code -ne 409 -or $after -ne "CREATED") {
-        $authzFailures += "wrong-order intent: code=$code status=$after (want 409/CREATED)"
-    }
-}
+# (d) The old way to pay an order is gone: POST /orders/{id}/pay is not there (404), for the owner too.
+$retiredPay = Invoke-Api POST "$gw/orders/$victimId/pay" $aliceH @{ paymentIntentId = [guid]::NewGuid().ToString() }
+if ($retiredPay.Status -ne 404) { $authzFailures += "the retired POST /orders/{id}/pay gave $($retiredPay.Status), expected 404" }
+if ("$((Get-Order $victimId).status)" -cne "CREATED") { $authzFailures += "after the retired /pay the order reads '$((Get-Order $victimId).status)', expected CREATED" }
 
-# (c) Re-confirming a settled intent must not reach the gateway a second time.
-#     The guard existed but ran AFTER the charge, so this used to be a second
-#     real charge that the caller was told had failed.
-# Counted at the DECOY's own total. This counted "1.00" -- the decoy's price
-# before prices stopped being namable -- so it matched nothing and the check
-# could not fail (D10).
-$before = Charge-Count $decoy.total
-if ($before -lt 1) {
-    $authzFailures += "probe setup: the decoy's own charge ($($decoy.total)) is not in the gateway log, so (c) would check nothing"
-}
-try {
-    Invoke-RestMethod -Method POST `
-        -Uri "http://localhost:8080/api/v1/payments/intents/$($decoyIntent.id)/confirm" `
-        -Headers $aliceH -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ cardNumber="4242424242424242" }) | Out-Null
-    $authzFailures += "a SUCCEEDED intent was confirmed a second time"
-} catch {
-    $code = Probe-Status $_
-    if ($code -ne 409) { $authzFailures += "double confirm: code=$code (want 409)" }
-}
-if ((Charge-Count $decoy.total) -ne $before) {
-    $authzFailures += "double confirm reached the gateway (charge count moved)"
-}
-
-# (d) Another customer must not settle, or replay a key against, someone
-#     else's intent. maya holds OWNER + USER (keycloak/dev/oriah-users-0.json),
-#     so she is a second real customer here. The amount is distinctive so the
-#     gateway's charge count is unambiguous.
-# 7 x 100.00. It used to be 77.77 -- "distinctive so the charge count can be
-# attributed" -- but a unit price is not namable any more, so distinctiveness
-# comes from a quantity no other probe here uses.
-$crossQuantity = 7
-$crossAmount = 700.00
-$aliceOrder = New-ProbeOrder $aliceH $crossQuantity
-$aliceIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-    -Headers $aliceH -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ orderId=$aliceOrder.id; amount=$aliceOrder.total; currency=$aliceOrder.currency })
-$chargesBefore = Charge-Count $crossAmount
-try {
-    Invoke-RestMethod -Method POST `
-        -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
-        -Headers $mayaH -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ cardNumber="4242424242424242" }) | Out-Null
-    $authzFailures += "another customer settled Alice's intent"
-} catch {
-    $code = Probe-Status $_
-    $still = (Invoke-RestMethod -Method GET `
-        -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)" -Headers $aliceH).status
-    if ($code -ne 404 -or $still -ne "PENDING") {
-        $authzFailures += "foreign confirm: code=$code intent=$still (want 404/PENDING)"
-    }
-}
-# THE assertion for (d): a 404 was always returned. What was broken is whether
-# the card was charged before it.
-if ((Charge-Count $crossAmount) -ne $chargesBefore) {
-    $authzFailures += "foreign confirm CHARGED the card before refusing"
-}
-
-# (e) An Idempotency-Key must not replay one customer's stored response to
-#     another. Alice confirms with her own key first, which must still work.
-$sharedKey = "smoke-authz-" + [guid]::NewGuid().ToString()
-$aliceOwn = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
-    -Headers ($aliceH + @{ "Idempotency-Key" = $sharedKey }) -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
-if ($aliceOwn.status -ne "SUCCEEDED") {
-    $authzFailures += "the owner's own keyed confirm broke ($($aliceOwn.status))"
-}
-try {
-    $leaked = Invoke-RestMethod -Method POST `
-        -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
-        -Headers ($mayaH + @{ "Idempotency-Key" = $sharedKey }) -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
-    $authzFailures += "an Idempotency-Key replayed another customer's payment body"
-} catch {
-    $code = Probe-Status $_
-    if ($code -ne 404) { $authzFailures += "cross-customer replay: code=$code (want 404)" }
-}
-
-# (f) The owner's own replay must still be served -- the mechanism has to keep
-#     working, or the scoping above has simply broken idempotency.
-$aliceReplay = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/payments/intents/$($aliceIntent.id)/confirm" `
-    -Headers ($aliceH + @{ "Idempotency-Key" = $sharedKey }) -ContentType "application/json" `
-    -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
-if ($aliceReplay.id -ne $aliceOwn.id -or $aliceReplay.status -ne $aliceOwn.status) {
-    $authzFailures += "the owner's replay no longer returns the stored response"
-}
-
-# (g) An order must not name somebody else's delivery address. Checkout checks
-#     this itself, but order's own POST /orders is reachable directly, and it
-#     stored any address id it was given -- from Phase 7 that is where the
-#     parcel goes. maya names alice's address: 400, and maya has no new order.
-$mayaOrdersBefore = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
-    -Headers $mayaH).totalElements
-$foreignAddressCode = $null
-try {
-    New-ProbeOrder $mayaH 3 | Out-Null    # carries alice's $addrId
-    $authzFailures += "an order naming another customer's address was accepted"
-} catch {
-    $foreignAddressCode = Probe-Status $_
-}
-$mayaOrdersAfter = (Invoke-RestMethod -Method GET -Uri "http://localhost:8080/api/v1/orders/me?size=1" `
-    -Headers $mayaH).totalElements
-if ($null -ne $foreignAddressCode -and $foreignAddressCode -ne 400) {
-    $authzFailures += "foreign address: code=$foreignAddressCode (want 400)"
-}
+# (g) An order must not name somebody else's delivery address. Checkout checks this itself, but order's own POST /orders is reachable directly,
+#     and it stored any address id it was given -- from Phase 7 that is where the parcel goes. maya names alice's address: 400, and maya has
+#     no new order.
+$mayaOrdersBefore = Count-Orders $mayaH
+$foreignAddress = Place-SaleOrder $mayaH 3 $addrId
+if ($foreignAddress.Status -ne 400) { $authzFailures += "an order naming another customer's address gave $($foreignAddress.Status), expected 400" }
+$mayaOrdersAfter = Count-Orders $mayaH
 if ($mayaOrdersAfter -ne $mayaOrdersBefore) {
     $authzFailures += "foreign address: an order was written ($mayaOrdersBefore -> $mayaOrdersAfter)"
+}
+
+# Clean up: both probe orders are cancelled (their holds are let go), so nothing stays held against either customer's limit.
+$cleanAlice = Invoke-Api POST "$gw/orders/$victimId/cancel" $aliceH $null
+if ($cleanAlice.Status -ne 200) { $authzFailures += "cancelling alice's probe order gave $($cleanAlice.Status), expected 200" }
+if ($mayaOrderId) {
+    $cleanMaya = Invoke-Api POST "$gw/orders/$mayaOrderId/cancel" $mayaH $null
+    if ($cleanMaya.Status -ne 200) { $authzFailures += "cancelling maya's probe order gave $($cleanMaya.Status), expected 200" }
+}
+
+# The sale's promotion ends from now (a stopped promotion applied before this instant and does not after it), and catalog stops discounting at once.
+# Nothing below places an order for the sale ring, so Get-SaleDigest's discount is switched off with it.
+$stopPromo = Invoke-Api POST "$gw/admin/promotions/$promotionId/stop" $mayaH $null
+if (($stopPromo.Status -ne 200) -or -not $stopPromo.Json.stoppedAt) { $authzFailures += "stopping the sale's promotion gave $($stopPromo.Status) stoppedAt '$($stopPromo.Json.stoppedAt)', expected 200 and a time" }
+$stopAgain = Invoke-Api POST "$gw/admin/promotions/$promotionId/stop" $mayaH $null
+if (($stopAgain.Status -ne 409) -or -not "$($stopAgain.Json.type)".EndsWith("/already-stopped")) { $authzFailures += "stopping the promotion twice gave $($stopAgain.Status) '$($stopAgain.Json.type)', expected 409 already-stopped" }
+$saleDiscount = [decimal]0.00
+$salePromotionId = $null
+$afterStop = Invoke-Api POST "$gw/variants/pricing" $null @{ variantIds = @($saleVariantId) }
+$stoppedEntry = @($afterStop.Json.results)[0]
+if (($afterStop.Status -ne 200) -or (($null -ne $stoppedEntry.discountPerPiece) -and -not (Same-Money $stoppedEntry.discountPerPiece "0.00")) -or $stoppedEntry.promotionId) {
+    $authzFailures += "after the promotion was stopped the sale ring's pricing reads $($stoppedEntry | ConvertTo-Json -Compress), expected no discount and no promotion"
 }
 
 if ($authzFailures.Count -gt 0) {
@@ -1605,145 +2404,135 @@ if ($authzFailures.Count -gt 0) {
     Write-Error "money-path authorization regressed on $($authzFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    6 exploit attempts refused (a-e, g); no order paid, no extra charge, no foreign address stored; owner replay (f) intact" -ForegroundColor Gray
+Write-Host "    no administrator makes an unpaid order PAID, EXPIRED or PAYMENT_SUBMITTED (409, unchanged); another customer's read, claim and cancel 404 and the order unchanged; an Idempotency-Key does not replay across customers (maya got her own order), the owner's replay is served, another bag under the key 409; the retired /pay 404; an order naming another customer's address 400 and none written; the promotion stopped (twice 409) and the discount gone" -ForegroundColor Gray
 
-Write-Host "[20b/20] Payment's intents: unambiguous, the owner's, one at a time..." -ForegroundColor Cyan
-# POST /intents took amount @DecimalMin("0.01") and a currency that was
-# @Size(3) and nothing else. Three gaps, all verified live before the fix:
-#
-#   currency omitted   -> 201, stored as "USD". A hardcoded default on a
-#                         platform priced in Kwacha, written in TWO places
-#                         (PaymentService and the PaymentIntent constructor).
-#   currency "zmw"     -> 201, stored as-is. PaymentIntentVerifier compares
-#                         currencies with equals(), so a lower-case intent can
-#                         never settle an upper-case order; and the admin
-#                         payment summary groups totals BY currency, so "zmw"
-#                         and "ZMW" split one figure into two rows that each
-#                         read as the whole.
-#   amount 1e11        -> 500. It exceeded NUMERIC(12,2), reached Postgres and
-#                         came back as "An unexpected error occurred" -- an
-#                         ordinary bad request recorded as the server fault an
-#                         operator pages on.
-#
-# Each must now be a 400 naming the field. A 201 here means a default came
-# back; a 500 means the column is deciding again.
-$intentProbes = @(
-    @{ Name = "no currency";        Body = @{ orderId=$orderId; amount=100.00 } },
-    @{ Name = "lower-case ZMW";     Body = @{ orderId=$orderId; amount=100.00; currency="zmw" } },
-    @{ Name = "amount past the column"; Body = @{ orderId=$orderId; amount=100000000000.00; currency="ZMW" } }
-)
-$intentFailures = @()
-foreach ($probe in $intentProbes) {
-    try {
-        Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-            -Headers @{ Authorization="Bearer $alice" } -ContentType "application/json" `
-            -Body (ConvertTo-Json $probe.Body) | Out-Null
-        $intentFailures += "$($probe.Name) was ACCEPTED"
+Write-Host "[20b/20] Payment's staff-money invariants: one reference, one payment; a key makes a repeat harmless; a keying mistake is voided..." -ForegroundColor Cyan
+# Everything here is staff recording money (SALES_AGENT), through the gateway. Money for an order that nobody has is recorded all the same and HELD
+# (ORDER_UNKNOWN: payment never reads an order, so nothing a customer paid is lost to a keying mistake), which is what lets these checks use made-up
+# order ids and leave nothing in the owner's held-money list: every confirmation made here is voided at the end. The checks:
+#   * what is refused, 400: no Idempotency-Key; a gross of zero or below; a fee above the gross; a net sent (it is worked out, never accepted); an
+#     unknown method; a mobile-money method with no reference; another currency; an arrival in the future; an arrival more than 72 hours old with no
+#     reason (maya holds BACKDATE_SALE as OWNER, so she passes the 403 and meets the reason rule; the 403 itself, for a member of staff without
+#     BACKDATE_SALE, cannot be asserted live: no dev user holds SALES_AGENT without it);
+#   * the same Idempotency-Key and request is the same confirmation (200), the same key for another request is 409;
+#   * ONE (method, reference) confirms money once -- whatever its spelling, for any order, even one already paid -- while another METHOD may use the
+#     same text; a void frees the reference;
+#   * a void needs ten characters, cannot be repeated, and cannot touch a confirmation that paid a sale.
+$moneyFailures = @()
+$moneyTag = [guid]::NewGuid().ToString("N").Substring(0, 8).ToUpper()
+$ghost1 = [guid]::NewGuid().ToString()
+$ghost2 = [guid]::NewGuid().ToString()
+$refM = "MTN" + $moneyTag + "M"
+$baseMoney = @{ orderId = $ghost1; method = "CASH"; gross = [decimal]1.00 }
+$refusals = @(
+    @{ Name = "no Idempotency-Key"; UseKey = $false; Body = $baseMoney; Type = $null },
+    @{ Name = "a gross of zero"; UseKey = $true; Body = @{ orderId = $ghost1; method = "CASH"; gross = [decimal]0.00 }; Type = $null },
+    @{ Name = "a negative gross"; UseKey = $true; Body = @{ orderId = $ghost1; method = "CASH"; gross = [decimal]-5.00 }; Type = $null },
+    @{ Name = "a fee above the gross"; UseKey = $true; Body = ($baseMoney + @{ fee = [decimal]2.00 }); Type = $null },
+    @{ Name = "a net sent by the caller"; UseKey = $true; Body = ($baseMoney + @{ net = [decimal]1.00 }); Type = $null },
+    @{ Name = "an unknown method"; UseKey = $true; Body = @{ orderId = $ghost1; method = "BITCOIN"; gross = [decimal]1.00 }; Type = $null },
+    @{ Name = "a mobile-money method with no reference"; UseKey = $true; Body = @{ orderId = $ghost1; method = "MTN"; gross = [decimal]1.00 }; Type = $null },
+    @{ Name = "another currency"; UseKey = $true; Body = ($baseMoney + @{ currency = "USD" }); Type = "/unsupported-currency" },
+    @{ Name = "an arrival in the future"; UseKey = $true; Body = ($baseMoney + @{ arrivedAt = (Format-Instant ([DateTime]::UtcNow.AddDays(2))) }); Type = $null },
+    @{ Name = "an arrival 5 days ago with no reason"; UseKey = $true; Body = ($baseMoney + @{ arrivedAt = (Format-Instant ([DateTime]::UtcNow.AddDays(-5))) }); Type = $null })
+foreach ($probe in $refusals) {
+    $probeKey = $null
+    if ($probe.UseKey) { $probeKey = New-Key "smoke-money-bad" }
+    $refused = Confirm-Money $probe.Body $probeKey
+    if ($refused.Status -ne 400) { $moneyFailures += "$($probe.Name) gave $($refused.Status), expected 400" }
+    elseif ($probe.Type -and -not "$($refused.Json.type)".EndsWith($probe.Type)) { $moneyFailures += "$($probe.Name) was 400 but carried problem type '$($refused.Json.type)', expected one ending $($probe.Type)" }
+}
+
+# A confirmation made against an order nobody has. The first one, and its repeats.
+$k1 = New-Key "smoke-money-ref"
+$c1 = Confirm-Money @{ orderId = $ghost1; method = "MTN"; reference = $refM; gross = [decimal]10.00 } $k1
+$c1Id = $null
+if ($c1.Status -ne 201) { $moneyFailures += "a confirmation for an order nobody has gave $($c1.Status), expected 201 (money is recorded and held, never lost)" } else { $c1Id = "$($c1.Json.id)" }
+$c1Replay = Confirm-Money @{ orderId = $ghost1; method = "MTN"; reference = $refM; gross = [decimal]10.00 } $k1
+if (($c1Replay.Status -ne 200) -or ("$($c1Replay.Json.id)" -cne "$c1Id")) { $moneyFailures += "the same key and request again gave $($c1Replay.Status) confirmation '$($c1Replay.Json.id)', expected 200 and $c1Id" }
+$c1Other = Confirm-Money @{ orderId = $ghost1; method = "MTN"; reference = $refM; gross = [decimal]11.00 } $k1
+if (($c1Other.Status -ne 409) -or -not "$($c1Other.Json.type)".EndsWith("/idempotency-key-reused")) { $moneyFailures += "the same key for another request gave $($c1Other.Status) '$($c1Other.Json.type)', expected 409 idempotency-key-reused" }
+
+# One (method, reference) confirms money once, in any spelling (spaces and letter case do not matter), for any order.
+$spelled = "  " + $refM.Substring(0, 3).ToLower() + " " + $refM.Substring(3).ToLower() + " "
+$sameRef = Confirm-Money @{ orderId = $ghost2; method = "MTN"; reference = $spelled; gross = [decimal]10.00 } (New-Key "smoke-money-dupref")
+if (($sameRef.Status -ne 409) -or -not "$($sameRef.Json.type)".EndsWith("/reference-already-used") -or ("$($sameRef.Json.confirmationId)" -cne "$c1Id")) {
+    $moneyFailures += "the same reference in another spelling for another order gave $($sameRef.Status) '$($sameRef.Json.type)' naming '$($sameRef.Json.confirmationId)', expected 409 reference-already-used naming $c1Id"
+}
+# ... even the reference that paid the sale of step 6d: the same payment is never counted twice.
+$paidRef = Confirm-Money @{ orderId = $ghost2; method = "MTN"; reference = $claimRef; gross = [decimal]180.00 } (New-Key "smoke-money-paidref")
+if (($paidRef.Status -ne 409) -or ("$($paidRef.Json.confirmationId)" -cne $confirmationId)) {
+    $moneyFailures += "the reference that paid the sale, used again, gave $($paidRef.Status) naming '$($paidRef.Json.confirmationId)', expected 409 reference-already-used naming the sale's confirmation $confirmationId"
+}
+# ... but the key is the method AND the reference: another method may use the same text.
+$c2 = Confirm-Money @{ orderId = $ghost2; method = "AIRTEL"; reference = $refM; gross = [decimal]10.00 } (New-Key "smoke-money-airtel")
+$c2Id = $null
+if ($c2.Status -ne 201) { $moneyFailures += "the same reference under another method gave $($c2.Status), expected 201" } else { $c2Id = "$($c2.Json.id)" }
+# Money more than 72 hours old: maya may (BACKDATE_SALE, as OWNER) with a reason of her own; the confirmation keeps the reason and the true date.
+$oldDate = [DateTime]::UtcNow.AddDays(-5)
+$c3 = Confirm-Money @{ orderId = $ghost1; method = "MTN"; reference = ($refM + "OLD"); gross = [decimal]2.00; arrivedAt = (Format-Instant $oldDate); backdateReason = "smoke: the weekend before last" } (New-Key "smoke-money-old")
+$c3Id = $null
+if ($c3.Status -ne 201) { $moneyFailures += "money 5 days old with a reason, keyed by the owner, gave $($c3.Status) '$($c3.Json.type)', expected 201" }
+else {
+    $c3Id = "$($c3.Json.id)"
+    if (("$($c3.Json.backdateReason)" -cne "smoke: the weekend before last") -or -not (Near-Instant $c3.Json.arrivedAt $oldDate)) {
+        $moneyFailures += "the back-dated confirmation reads reason '$($c3.Json.backdateReason)' arrived '$($c3.Json.arrivedAt)', expected the reason and $(Format-Instant $oldDate)"
     }
-    catch {
-        $code = $_.Exception.Response.StatusCode.value__
-        if (-not $code) { $code = [int]$_.Exception.Response.StatusCode }
-        if ($code -ne 400) {
-            $intentFailures += "$($probe.Name) gave $code, expected 400"
-        }
-    }
-}
-# And the shape must still narrow the input rather than the feature: a
-# well-formed intent is created, in the currency it was asked for. On an
-# order of its own: an order has at most one live intent (payment V5), and
-# $orderId was paid by checkout, so a second intent for it is 409 by design.
-$goodOrder = New-ProbeOrder $aliceH 11      # 11 x 100.00 = 1100.00
-$goodBody = ConvertTo-Json @{ orderId=$goodOrder.id; amount=$goodOrder.total; currency="ZMW" }
-$goodIntent = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/payments/intents" `
-    -Headers $aliceH -ContentType "application/json" -Body $goodBody
-if ($goodIntent.currency -ne "ZMW" -or $goodIntent.status -ne "PENDING") {
-    $intentFailures += "a well-formed intent came back currency=$($goodIntent.currency) status=$($goodIntent.status)"
 }
 
-# The same create again -- what checkout sends when the reply to its first
-# attempt was lost -- is answered 200 with the SAME intent: not a 409, and not
-# a second intent. Invoke-WebRequest rather than Invoke-RestMethod, because
-# only it shows whether the answer was 200 (handed back) or 201 (made anew).
-# Inside try/catch: the regression this check exists to catch is a 409 or a
-# 503, which Invoke-WebRequest throws -- and with $ErrorActionPreference =
-# "Stop" that would end the script on a raw WebException instead of saying
-# what went wrong.
-try {
-    $repeat = Invoke-WebRequest -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-        -Headers $aliceH -ContentType "application/json" -Body $goodBody -UseBasicParsing
-    $repeatIntent = $repeat.Content | ConvertFrom-Json
-    if ($repeat.StatusCode -ne 200 -or $repeatIntent.id -ne $goodIntent.id) {
-        $intentFailures += "the same create again gave $($repeat.StatusCode) with intent $($repeatIntent.id), expected 200 with $($goodIntent.id)"
-    }
-} catch {
-    $code = Probe-Status $_
-    $intentFailures += "the same create again gave $code, expected 200 with $($goodIntent.id)"
+# Each is held for an order nobody has (payment learns it from order, over Kafka), in the owner's list, and not in the pending list once answered.
+foreach ($heldId in @($c1Id, $c2Id, $c3Id)) {
+    if (-not $heldId) { continue }
+    $heldConfirmation = Wait-Confirmation $heldId "HELD" 90
+    if ("$($heldConfirmation.outcomeReason)" -cne "ORDER_UNKNOWN") { $moneyFailures += "confirmation $heldId is held for '$($heldConfirmation.outcomeReason)', expected ORDER_UNKNOWN" }
+}
+$heldNow = Invoke-Api GET "$gw/admin/payments/held-money" $mayaH $null
+$heldMine = @(@($heldNow.Json) | Where-Object { $_ -and "$($_.confirmationId)" -ceq "$c1Id" })
+if (($heldNow.Status -ne 200) -or ($heldMine.Count -ne 1) -or ("$($heldMine[0].reason)" -cne "ORDER_UNKNOWN") -or ("$($heldMine[0].status)" -cne "OWED")) {
+    $moneyFailures += "the held-money list reads $($heldMine | ConvertTo-Json -Compress) for the unknown order's money, expected one OWED row, ORDER_UNKNOWN"
+}
+$pendingNow = Invoke-Api GET "$gw/admin/payments/confirmations/pending" $mayaH $null
+if (($pendingNow.Status -ne 200) -or (@(@($pendingNow.Json) | Where-Object { $_ -and "$($_.id)" -ceq "$c1Id" }).Count -ne 0)) {
+    $moneyFailures += "the pending list gave $($pendingNow.Status) and still lists the answered confirmation $c1Id"
 }
 
-# Another customer cannot make an intent for alice's order. Payment asks order
-# with the caller's own token; order shows maya no such order, so payment
-# answers 404 in the shared words. maya holds OWNER + USER
-# (keycloak/dev/oriah-users-0.json), so she is a second real customer here, as
-# in step 20 (d).
-try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-        -Headers $mayaH -ContentType "application/json" -Body $goodBody | Out-Null
-    $intentFailures += "another customer made an intent for alice's order"
-} catch {
-    $code = Probe-Status $_
-    if ($code -ne 404) { $intentFailures += "another customer's create for alice's order gave $code, expected 404" }
+# A void: ten characters of reason or more, once only, and it frees the reference so the corrected confirmation can use it.
+$voidShort = Invoke-Api POST "$gw/admin/payments/confirmations/$c1Id/void" $mayaH @{ reason = "too short" }
+if ($voidShort.Status -ne 400) { $moneyFailures += "a void with a nine-character reason gave $($voidShort.Status), expected 400" }
+$void1 = Invoke-Api POST "$gw/admin/payments/confirmations/$c1Id/void" $mayaH @{ reason = "smoke: keyed against an order that does not exist" }
+if (($void1.Status -ne 200) -or ($void1.Json.voided -ne $true)) { $moneyFailures += "voiding the confirmation gave $($void1.Status) voided=$($void1.Json.voided), expected 200 true" }
+$void1Again = Invoke-Api POST "$gw/admin/payments/confirmations/$c1Id/void" $mayaH @{ reason = "smoke: keyed against an order that does not exist" }
+if (($void1Again.Status -ne 409) -or -not "$($void1Again.Json.type)".EndsWith("/already-voided")) { $moneyFailures += "voiding twice gave $($void1Again.Status) '$($void1Again.Json.type)', expected 409 already-voided" }
+$voidedList = Invoke-Api GET "$gw/admin/payments/held-money?status=VOIDED" $mayaH $null
+if (@(@($voidedList.Json) | Where-Object { $_ -and "$($_.confirmationId)" -ceq "$c1Id" -and "$($_.status)" -ceq "VOIDED" }).Count -ne 1) { $moneyFailures += "the voided confirmation's held money is not VOIDED in the owner's list" }
+$c4 = Confirm-Money @{ orderId = $ghost2; method = "MTN"; reference = $refM; gross = [decimal]10.00 } (New-Key "smoke-money-again")
+$c4Id = $null
+if ($c4.Status -ne 201) { $moneyFailures += "the reference freed by the void, confirmed again, gave $($c4.Status), expected 201" } else { $c4Id = "$($c4.Json.id)" }
+# A confirmation that paid a sale is the record that sale stands on: it is never voided (correcting it is a later phase's).
+$voidPaid = Invoke-Api POST "$gw/admin/payments/confirmations/$confirmationId/void" $mayaH @{ reason = "smoke: this paid a sale and must stay" }
+if (($voidPaid.Status -ne 409) -or -not "$($voidPaid.Json.type)".EndsWith("/confirmation-settled")) { $moneyFailures += "voiding the confirmation that paid the sale gave $($voidPaid.Status) '$($voidPaid.Json.type)', expected 409 confirmation-settled" }
+
+# Clean up: everything made here that is still held is voided, so the owner's list owes nobody anything because of this step.
+if ($c4Id) { Wait-Confirmation $c4Id "HELD" 90 | Out-Null }
+foreach ($cleanId in @($c2Id, $c3Id, $c4Id)) {
+    if (-not $cleanId) { continue }
+    $cleaned = Invoke-Api POST "$gw/admin/payments/confirmations/$cleanId/void" $mayaH @{ reason = "smoke: keyed against an order that does not exist" }
+    if ($cleaned.Status -ne 200) { $moneyFailures += "voiding the test confirmation $cleanId gave $($cleaned.Status), expected 200" }
 }
 
-# One live intent per order. A further probe order's intent is confirmed
-# straight through payment: the card is charged, but nobody tells order, so
-# the order stays CREATED -- still waiting for payment. A create for it then
-# passes payment's ownership, status and amount checks, and is refused by the
-# one-live-intent rule alone: 409, so the same order is never charged twice.
-# The Idempotency-Key is the storefront's habit, not a requirement of confirm.
-$chargedOrder = New-ProbeOrder $aliceH 13   # 13 x 100.00 = 1300.00
-$chargedBody = ConvertTo-Json @{ orderId=$chargedOrder.id; amount=$chargedOrder.total; currency="ZMW" }
-$chargedIntent = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-    -Headers $aliceH -ContentType "application/json" -Body $chargedBody
-$charged = Invoke-RestMethod -Method POST `
-    -Uri "http://localhost:8080/api/v1/payments/intents/$($chargedIntent.id)/confirm" `
-    -Headers ($aliceH + @{ "Idempotency-Key" = "smoke-20b-" + [guid]::NewGuid().ToString() }) `
-    -ContentType "application/json" -Body (ConvertTo-Json @{ cardNumber="4242424242424242" })
-$chargedOrderStatus = (Invoke-RestMethod -Method GET `
-    -Uri "http://localhost:8080/api/v1/orders/$($chargedOrder.id)" -Headers $aliceH).status
-if ($charged.status -ne "SUCCEEDED" -or $chargedOrderStatus -ne "CREATED") {
-    $intentFailures += "probe setup: the confirmed intent is $($charged.status) and its order $chargedOrderStatus (want SUCCEEDED and CREATED), so the next check would not test the one-live-intent rule"
-}
-try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-        -Headers $aliceH -ContentType "application/json" -Body $chargedBody | Out-Null
-    $intentFailures += "a second intent beside a SUCCEEDED one was ACCEPTED"
-} catch {
-    $code = Probe-Status $_
-    if ($code -ne 409) { $intentFailures += "a second intent beside a SUCCEEDED one gave $code, expected 409" }
-}
+# The card path is switched off (oriah.payment.card.enabled is false in this stack): payment's /payments/intents are not there. Money reaches an
+# order only by a person confirming it.
+$cardIntent = Invoke-Api POST "$gw/payments/intents" $aliceH @{ orderId = $orderId; amount = [decimal]1.00; currency = "ZMW" }
+if ($cardIntent.Status -ne 404) { $moneyFailures += "POST /payments/intents gave $($cardIntent.Status), expected 404 (the card path is off)" }
+$cardRead = Invoke-Api GET "$gw/payments/intents/$([guid]::NewGuid().ToString())" $aliceH $null
+if ($cardRead.Status -ne 404) { $moneyFailures += "GET /payments/intents/{id} gave $($cardRead.Status), expected 404 (the card path is off)" }
 
-# Checkout paid $orderId, and step 7 took it on to DELIVERED. A create for it
-# -- for exactly its total, $confirm.total, in its currency -- is refused 409
-# by payment's check that the order is still waiting for payment: a DELIVERED
-# order is not (only CREATED is), and that check comes before the amount and
-# before the one-live-intent rule. (This used to send 4500.00 against a 200.00
-# order, so the check that refused it was whichever ran first.)
-try {
-    Invoke-RestMethod -Method POST -Uri "http://localhost:8080/api/v1/payments/intents" `
-        -Headers $aliceH -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ orderId=$orderId; amount=$confirm.total; currency="ZMW" }) | Out-Null
-    $intentFailures += "an intent for an order already paid was ACCEPTED"
-} catch {
-    $code = Probe-Status $_
-    if ($code -ne 409) { $intentFailures += "an intent for a paid order gave $code, expected 409" }
-}
-if ($intentFailures.Count -gt 0) {
-    $intentFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
-    Write-Error "payment intent surface regressed on $($intentFailures.Count) check(s)"
+if ($moneyFailures.Count -gt 0) {
+    $moneyFailures | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+    Write-Error "payment's staff-money surface regressed on $($moneyFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    3 unbounded intents refused 400; a well-formed ZMW intent created, and the same create again handed it back (200); another customer's create 404; a second intent beside a charged one 409; an intent for a paid order 409" -ForegroundColor Gray
+Write-Host "    10 malformed confirmations refused 400 (no key, gross 0 and below, fee over gross, net sent, unknown method, no reference, USD, future, 5 days old with no reason); the same key and request 200, the same key for another request 409; one (method, reference) confirms once (another spelling 409, the reference that paid the sale 409, another method 201); a 5-day-old payment with a reason 201; money for an order nobody has HELD (ORDER_UNKNOWN); a void needs ten characters, frees the reference, cannot repeat (409) and cannot touch the confirmation that paid a sale (409); every test confirmation voided; the card path 404" -ForegroundColor Gray
 
 Write-Host "[20c/20] Procurement: suppliers..." -ForegroundColor Cyan
 # Fresh tokens first. $maya and $alice were taken at step 1 and the realm's access
@@ -1761,30 +2550,8 @@ $aliceH = @{ Authorization = "Bearer $alice" }
 # script a 409, the same reason $sku is randomised. The row this step adds is
 # deleted again by the step itself.
 #
-# One helper, so a refusal comes back as a status and a problem body instead of
-# an exception: with $ErrorActionPreference = "Stop" a raw WebException would end
-# the script before it could say which check failed. Read-Problem reads the
-# chunked error body that 5.1 leaves out of ErrorDetails.
-function Invoke-Supplier($Method, $Uri, $Headers, $Body) {
-    $p = @{ Method = $Method; Uri = $Uri; UseBasicParsing = $true }
-    if ($Headers) { $p.Headers = $Headers }
-    if ($null -ne $Body) { $p.ContentType = "application/json"; $p.Body = (ConvertTo-Json $Body -Depth 6) }
-    try {
-        $r = Invoke-WebRequest @p
-        $content = $r.Content
-        if ($content -is [byte[]]) { $content = [Text.Encoding]::UTF8.GetString($content) }
-        $json = $null
-        if ($content) { try { $json = $content | ConvertFrom-Json } catch { $json = $null } }
-        # ContainsKey first: asking a dictionary for a header that is not there
-        # must not be able to throw into the catch below and look like a refusal.
-        $location = $null
-        if ($r.Headers.ContainsKey("Location")) { $location = "$($r.Headers['Location'])" }
-        return @{ Status = [int]$r.StatusCode; Json = $json; Location = $location }
-    }
-    catch {
-        return @{ Status = [int](Probe-Status $_); Json = (Read-Problem $_); Location = $null }
-    }
-}
+# Invoke-Supplier (a refusal comes back as a status and a problem body instead of
+# an exception) is one of the shared helpers defined before step 1.
 
 # The "version" a supplier reply carries, as a number; $null when it carries none.
 function Get-SupplierVersion($Json) {
@@ -2031,19 +2798,7 @@ function Invoke-Upload($Uri, $Token, [byte[]]$Bytes, $FileName, $Kind) {
     finally { $client.Dispose() }
 }
 
-# docker and psql write to stderr freely, which 5.1 turns into a terminating error under "Stop".
-function Invoke-DockerText([string[]]$DockerArguments) {
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try { return @(& docker @DockerArguments 2>&1 | ForEach-Object { "$_" }) }
-    finally { $ErrorActionPreference = $previous }
-}
-
-# A money amount from the JSON, compared as a decimal so that 1528.98 is not 1528.9800000001.
-function Same-Money($Actual, [string]$Expected) {
-    if ($null -eq $Actual) { return $false }
-    return ([decimal]$Actual) -eq ([decimal]::Parse($Expected, [Globalization.CultureInfo]::InvariantCulture))
-}
+# Invoke-DockerText and Same-Money are among the shared helpers defined before step 1.
 function Sha256Hex([byte[]]$Bytes) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace "-", "").ToLowerInvariant() }
@@ -2249,70 +3004,43 @@ if ($procFailures.Count -gt 0) {
 }
 Write-Host "    two orders placed 201 (PO- references, a relative Location), an unknown variant 400 naming the line, a supplier with an order not deletable 409; a consignment from both orders 201 (C- reference, goods K20,500.00) with its orders frozen 409; a bank charge refused 400 naming the field, the courier's K6,000.00 keyed; the preview is the worked example to the ngwee (ring 4 x K1,528.99 + 3 x K1,528.98, box 110 x K78.99 + 90 x K78.98); a courier invoice stored (fingerprint, type, relative Location), downloaded byte for byte as a nosniff attachment, the same file again 409, a program named .pdf 400; received 200 (consignment and both orders RECEIVED, revision 1 recorded, a second receive 409, a late cost change 409); two consignment.received rows in the outbox and on the oriah.procurement topic; a stopped supplier takes no new order 409; alice 403 and anonymous 401" -ForegroundColor Gray
 
-Write-Host "[20e/20] Cost-bearing stock (Phase 5): lots, a sale, a write-off, a corrected courier bill..." -ForegroundColor Cyan
+Write-Host "[20e/20] Cost-bearing stock (Phase 5): lots, the doors a sale no longer has, a write-off, a corrected courier bill..." -ForegroundColor Cyan
 # Follows the 7 rings and 200 boxes that step 20d received, through inventory, live and through the
-# gateway (a sale is the one call made on inventory's own port: the gateway does not route it).
-# Inventory learns of the receipt from Kafka, so every read of its answer is a short poll.
+# gateway. Inventory learns of the receipt from Kafka, so every read of its answer is a short poll.
 #
 #   1. the stock arrives: 7 rings and 200 boxes on hand, one cost lot per slice
 #      (ring 4 x K1,528.99 + 3 x K1,528.98), found by maya (COST_VIEWER) and refused to alice 403 and
 #      to a request with no token 401;
-#   2. a sale cannot be keyed from the gateway (403 for everyone); the order system's call, made on
-#      inventory's own port, takes the OLDEST lot and costs the unit K1,528.99, and the same sale
-#      line again takes nothing;
-#   3. a write-off (STOCK_WRITE_OFF: maya yes, alice 403) costs the next unit K1,528.99; a retry is
+#   2. a sale is never a person's button, and the order system's doors are not the gateway's: since
+#      Phase 7 stock leaves by a sale ONLY through the order saga (steps 6d-6i sold the SALE ring from its
+#      oldest lot, costed FIFO and dated to the day the money arrived; part 5 below re-costs those sales).
+#      The bare confirm/reserve calls this step used to make on inventory's own port are RETIRED, so the
+#      original ring is not sold here: a sale needs the product's default box, which step 20f is the one
+#      to choose, and its arithmetic is pinned to a ring that has not been sold. What is asserted instead:
+#      the order system's own paths answer 403 for everyone through the gateway, and a person's token
+#      (maya's) is refused 403 on inventory's own port too -- those calls need the service account;
+#   3. a write-off (STOCK_WRITE_OFF: maya yes, alice 403) costs the oldest unit K1,528.99; a retry is
 #      the same write-off; it is taken back and the stock is whole again;
 #   4. the courier's bill was K600, not K6,000: a correction made from revision 1 is 201 (revision 2,
 #      the consignment at K21,100.00), a stale one is 409, one that changes nothing 400, alice 403;
-#      inventory re-lays the new unit costs over the stock (ring 6 x K1,502.90 + 1 x K1,502.89, so the
-#      one sold now cost K1,502.90 and 5 + 1 remain; box 171 x K52.90 + 29 x K52.89), with no
-#      mismatch between any count and its lots.
-# Like 20d, this leaves rows behind (a sale, a write-off, a revision): the ledger is never edited.
+#      inventory re-lays the new unit costs over the stock (ring 6 x K1,502.90 + 1 x K1,502.89, the
+#      write-off's row re-cut to K1,502.90; box 171 x K52.90 + 29 x K52.89), with no mismatch between
+#      any count and its lots;
+#   5. the SALE consignment's courier bill is corrected too (K36 -> K72, revision 2, K208.00): the
+#      rings orders A and D sold are re-costed (their ledger rows now K10.34, each at its own date) and
+#      the lots re-laid over what is left, with no mismatch.
+# Like 20d, this leaves rows behind (a write-off, a revision): the ledger is never edited.
 $maya  = Get-Jwt "maya"
 $alice = Get-Jwt "alice"
 $mayaH  = @{ Authorization = "Bearer $maya" }
 $aliceH = @{ Authorization = "Bearer $alice" }
 $costFailures = @()
 
-# Re-reads an answer until it is what is wanted (inventory learns of things from Kafka), for at most $Seconds.
-function Wait-Until([scriptblock]$Probe, [int]$Seconds) {
-    $deadline = (Get-Date).AddSeconds($Seconds)
-    while ($true) {
-        $answer = & $Probe
-        if ($answer) { return $answer }
-        if ((Get-Date) -gt $deadline) { return $null }
-        Start-Sleep -Seconds 2
-    }
-}
-# "on_hand:reserved" of a variant from inventory's own database, or "" while it has no row.
-function Get-StockCounts($Variant) {
-    $rows = Invoke-DockerText @("exec", "oriah-postgres-inventory", "psql", "-U", "inventory", "-d", "inventory", "-t", "-A", "-F", ":", "-c",
-        "SELECT on_hand, reserved FROM inventory WHERE variant_id = '$Variant'")
-    return (@($rows | Where-Object { $_ -match "^\d+:\d+$" }) -join "").Trim()
-}
-# The open lots of a variant, oldest slice first.
-function Get-OpenLots($Variant) {
-    $reply = Invoke-Supplier "GET" "http://localhost:8080/api/v1/admin/costs/lots?variantId=$Variant&open=true" $mayaH $null
-    if ($reply.Status -ne 200 -or $null -eq $reply.Json) { return @() }
-    return @($reply.Json.content | Sort-Object { [int]$_.slicePosition })
-}
-function Lots-Say($Lots, [string[]]$Wanted) {
-    # $Wanted is "remaining@cost" per lot, e.g. "4@1528.99".
-    if (@($Lots).Count -ne $Wanted.Count) { return $false }
-    for ($i = 0; $i -lt $Wanted.Count; $i++) {
-        $qty, $cost = $Wanted[$i] -split "@"
-        if ([int]$Lots[$i].qtyRemaining -ne [int]$qty -or -not (Same-Money $Lots[$i].unitCost $cost)) { return $false }
-    }
-    return $true
-}
-function Describe-Lots($Lots) {
-    return (@($Lots | ForEach-Object { "$($_.qtyRemaining)@$($_.unitCost)" }) -join " + ")
-}
 
 try {
     if (-not $cid -or -not $received -or -not $boxVariantId) { throw "step 20d left no received consignment to follow" }
+    if (-not $saleConsignmentId -or -not $saleVariantId -or -not $saleSmallBoxId -or -not $saleLargeBoxId) { throw "step 2b left no sale consignment to follow" }
     $costBase = "http://localhost:8080/api/v1/admin"
-    $inventoryOwn = "http://localhost:8082/api/v1/admin/inventory"
     $ringVariant = $variantId
     $ringLineId = "$($received.Json.lines[0].id)"
 
@@ -2333,36 +3061,38 @@ try {
     if ($aliceLots.Status -ne 403) { $costFailures += "alice (no COST_VIEWER) reading the cost lots gave $($aliceLots.Status), expected 403" }
     if ($anonLots.Status -ne 401) { $costFailures += "the cost lots with no token gave $($anonLots.Status), expected 401" }
 
-    # --- 2. a sale: never a person's button; the oldest lot is drained and costed --------------
-    $byHand = Invoke-Supplier "POST" "$costBase/inventory/$ringVariant/confirm" $mayaH @{ qty = 1; saleLineId = [guid]::NewGuid().ToString() }
-    if ($byHand.Status -ne 403) { $costFailures += "selling stock through the gateway gave $($byHand.Status), expected 403: nobody keys a sale by hand" }
-    $reserve = Invoke-Supplier "POST" "$costBase/inventory/$ringVariant/reserve" $mayaH @{ qty = 1 }
-    if ($reserve.Status -ne 200) { throw "reserving one ring gave $($reserve.Status), expected 200: $($reserve.Json.detail)" }
-    $saleLine = [guid]::NewGuid().ToString()
-    $sale = Invoke-Supplier "POST" "$inventoryOwn/$ringVariant/confirm" $mayaH @{ qty = 1; saleLineId = $saleLine }
-    if ($sale.Status -ne 200 -or [int]$sale.Json.onHand -ne 6) {
-        $costFailures += "the sale gave $($sale.Status) with on hand '$($sale.Json.onHand)', expected 200 and 6"
+    # --- 2. no door to a sale but the order saga -------------------------------------------------
+    # Selling stock drains cost lots and books cost of goods, so it is the ORDER SYSTEM's act and never a person's button (a manager holds
+    # INVENTORY_ADMIN and could otherwise fabricate a sale and sidestep the owner-only write-off rule). Through the gateway the order
+    # system's own paths are routed to no one: maya, who holds every capability, gets 403 on each.
+    $retiredDoors = @(
+        @{ Name = "selling a variant by hand"; Uri = "$costBase/inventory/$ringVariant/confirm"; Body = @{ qty = 1; saleLineId = [guid]::NewGuid().ToString() } },
+        @{ Name = "holding pieces for an order"; Uri = "$costBase/inventory/reservations"; Body = @{ reservationId = [guid]::NewGuid().ToString(); orderId = [guid]::NewGuid().ToString()
+              lines = @(@{ saleLineId = [guid]::NewGuid().ToString(); variantId = $ringVariant; productId = $productId; quantity = 1; boxLineId = [guid]::NewGuid().ToString() }) } },
+        @{ Name = "swapping a box"; Uri = "$costBase/inventory/box-swaps"; Body = @{ amendmentId = [guid]::NewGuid().ToString(); orderId = [guid]::NewGuid().ToString(); productId = $productId
+              originalSaleLineId = [guid]::NewGuid().ToString(); replacementSaleLineId = [guid]::NewGuid().ToString(); replacementBoxVariantId = $boxVariantId; reason = "smoke: a person must not do this" } })
+    foreach ($door in $retiredDoors) {
+        $viaGateway = Invoke-Supplier "POST" $door.Uri $mayaH $door.Body
+        if ($viaGateway.Status -ne 403) { $costFailures += "$($door.Name) through the gateway gave $($viaGateway.Status), expected 403: the order system's own paths are not routed" }
     }
-    $saleAgain = Invoke-Supplier "POST" "$inventoryOwn/$ringVariant/confirm" $mayaH @{ qty = 1; saleLineId = $saleLine }
-    if ($saleAgain.Status -ne 200 -or [int]$saleAgain.Json.onHand -ne 6) {
-        $costFailures += "the same sale line again gave $($saleAgain.Status) with on hand '$($saleAgain.Json.onHand)', expected 200 and nothing taken (6)"
-    }
-    $saleRows = Invoke-Supplier "GET" "$costBase/costs/movements?variantId=$ringVariant&reason=SALE" $mayaH $null
-    $saleMoves = @($saleRows.Json.content | Where-Object { $_.live -eq $true })
-    if ($saleRows.Status -ne 200 -or $saleMoves.Count -ne 1 -or [int]$saleMoves[0].qtyDelta -ne -1 -or -not (Same-Money $saleMoves[0].unitCost "1528.99") -or
-        "$($saleMoves[0].costMethod)" -cne "FIFO") {
-        $costFailures += "the sale's ledger rows are [$((@($saleMoves | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost) $($_.costMethod)" })) -join ' | ')] (status $($saleRows.Status)), expected one live row -1@1528.99 FIFO"
-    }
+    # Inventory's own port (the services are reachable on the host): the same doors want the service account, not a person. maya's token --
+    # INVENTORY_ADMIN and all -- is refused 403, and no token at all 401.
+    $ownPortRead = Invoke-Supplier "GET" "http://localhost:8082/api/v1/admin/inventory/reservations/$([guid]::NewGuid().ToString())" $mayaH $null
+    if ($ownPortRead.Status -ne 403) { $costFailures += "maya's token reading a reservation on inventory's own port gave $($ownPortRead.Status), expected 403 (the order system's service account only)" }
+    $ownPortSwap = Invoke-Supplier "POST" "http://localhost:8082/api/v1/admin/inventory/box-swaps" $mayaH $retiredDoors[2].Body
+    if ($ownPortSwap.Status -ne 403) { $costFailures += "maya's token swapping a box on inventory's own port gave $($ownPortSwap.Status), expected 403 (the order system's service account only)" }
+    $ownPortAnon = Invoke-Supplier "GET" "http://localhost:8082/api/v1/admin/inventory/reservations/$([guid]::NewGuid().ToString())" $null $null
+    if ($ownPortAnon.Status -ne 401) { $costFailures += "no token on inventory's own port gave $($ownPortAnon.Status), expected 401" }
 
     # --- 3. a write-off, a retry, and taking it back ------------------------------------------
     $writeOffId = [guid]::NewGuid().ToString()
     $writeOff = Invoke-Supplier "POST" "$costBase/inventory/write-offs" $mayaH @{ requestId = $writeOffId; variantId = $ringVariant; qty = 1; reason = "WRITE_OFF_BROKEN"; note = "smoke: dropped" }
-    if ($writeOff.Status -ne 201 -or [int]$writeOff.Json.onHand -ne 5) {
-        $costFailures += "the write-off gave $($writeOff.Status) with on hand '$($writeOff.Json.onHand)', expected 201 and 5"
+    if ($writeOff.Status -ne 201 -or [int]$writeOff.Json.onHand -ne 6) {
+        $costFailures += "the write-off gave $($writeOff.Status) with on hand '$($writeOff.Json.onHand)', expected 201 and 6 (7 rings, one written off)"
     }
     $writeOffAgain = Invoke-Supplier "POST" "$costBase/inventory/write-offs" $mayaH @{ requestId = $writeOffId; variantId = $ringVariant; qty = 1; reason = "WRITE_OFF_BROKEN"; note = "smoke: dropped" }
-    if ($writeOffAgain.Status -ne 200 -or [int]$writeOffAgain.Json.onHand -ne 5) {
-        $costFailures += "the same write-off again gave $($writeOffAgain.Status) with on hand '$($writeOffAgain.Json.onHand)', expected 200 and nothing more taken (5)"
+    if ($writeOffAgain.Status -ne 200 -or [int]$writeOffAgain.Json.onHand -ne 6) {
+        $costFailures += "the same write-off again gave $($writeOffAgain.Status) with on hand '$($writeOffAgain.Json.onHand)', expected 200 and nothing more taken (6)"
     }
     $aliceWriteOff = Invoke-Supplier "POST" "$costBase/inventory/write-offs" $aliceH @{ requestId = [guid]::NewGuid().ToString(); variantId = $ringVariant; qty = 1; reason = "WRITE_OFF_LOST" }
     if ($aliceWriteOff.Status -ne 403) { $costFailures += "alice (no STOCK_WRITE_OFF) writing stock off gave $($aliceWriteOff.Status), expected 403" }
@@ -2372,8 +3102,8 @@ try {
         $costFailures += "the write-off's ledger rows are [$((@($writeOffMoves | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost)" })) -join ' | ')] (status $($writeOffRows.Status)), expected one live row at 1528.99"
     }
     $takeBack = Invoke-Supplier "POST" "$costBase/inventory/write-offs/$($writeOff.Json.actionId)/take-back" $mayaH @{ requestId = [guid]::NewGuid().ToString(); qty = 1; note = "smoke: found it" }
-    if ($takeBack.Status -ne 201 -or [int]$takeBack.Json.onHand -ne 6) {
-        $costFailures += "taking the write-off back gave $($takeBack.Status) with on hand '$($takeBack.Json.onHand)', expected 201 and 6"
+    if ($takeBack.Status -ne 201 -or [int]$takeBack.Json.onHand -ne 7) {
+        $costFailures += "taking the write-off back gave $($takeBack.Status) with on hand '$($takeBack.Json.onHand)', expected 201 and 7 (the stock is whole again)"
     }
     $reconBefore = Invoke-Supplier "GET" "$costBase/inventory/reconciliation?variantId=$ringVariant" $mayaH $null
     if ($reconBefore.Status -ne 200 -or @($reconBefore.Json.countMismatches).Count -ne 0 -or @($reconBefore.Json.ledgerMismatches).Count -ne 0) {
@@ -2400,20 +3130,47 @@ try {
         $costFailures += "the revisions read [$($revisions.Json | ConvertTo-Json -Depth 4 -Compress)] (status $($revisions.Status)), expected the receipt at 26500.00 and the correction at 21100.00 with its reason"
     }
 
-    # inventory re-lays the new unit costs over the stock (one ring was sold, so 5 + 1 remain)
-    $recut = Wait-Until { $lots = Get-OpenLots $ringVariant; if (Lots-Say $lots @("5@1502.90", "1@1502.89")) { $lots } } 120
-    if (-not $recut) { $costFailures += "after the correction the ring's open lots are [$(Describe-Lots (Get-OpenLots $ringVariant))] after 120 s, expected 5@1502.90 + 1@1502.89" }
+    # inventory re-lays the new unit costs over the stock (no ring was sold from this consignment: all 7 remain, 6 + 1)
+    $recut = Wait-Until { $lots = Get-OpenLots $ringVariant; if (Lots-Say $lots @("6@1502.90", "1@1502.89")) { $lots } } 120
+    if (-not $recut) { $costFailures += "after the correction the ring's open lots are [$(Describe-Lots (Get-OpenLots $ringVariant))] after 120 s, expected 6@1502.90 + 1@1502.89" }
     $boxRecut = Wait-Until { $lots = Get-OpenLots $boxVariantId; if (Lots-Say $lots @("171@52.90", "29@52.89")) { $lots } } 120
     if (-not $boxRecut) { $costFailures += "after the correction the box's open lots are [$(Describe-Lots (Get-OpenLots $boxVariantId))] after 120 s, expected 171@52.90 + 29@52.89" }
-    $saleNow = Invoke-Supplier "GET" "$costBase/costs/movements?variantId=$ringVariant&reason=SALE" $mayaH $null
-    $saleNowLive = @($saleNow.Json.content | Where-Object { $_.live -eq $true })
-    if ($saleNow.Status -ne 200 -or $saleNowLive.Count -ne 1 -or -not (Same-Money $saleNowLive[0].unitCost "1502.90")) {
-        $costFailures += "after the correction the sale's live ledger rows are [$((@($saleNowLive | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost) $($_.role)" })) -join ' | ')], expected one live row costing 1502.90: the sold unit is re-costed, its old row stays on record"
+    # The write-off drew the oldest unit at K1,528.99; the correction re-cuts every action that drew on the old lots, so its live row now costs K1,502.90
+    # (the old row stays on record, no longer live).
+    $writeOffNow = Invoke-Supplier "GET" "$costBase/costs/movements?variantId=$ringVariant&reason=WRITE_OFF_BROKEN" $mayaH $null
+    $writeOffNowLive = @($writeOffNow.Json.content | Where-Object { $_.live -eq $true })
+    if ($writeOffNow.Status -ne 200 -or $writeOffNowLive.Count -ne 1 -or -not (Same-Money $writeOffNowLive[0].unitCost "1502.90")) {
+        $costFailures += "after the correction the write-off's live ledger rows are [$((@($writeOffNowLive | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost)" })) -join ' | ')], expected one live row costing 1502.90: what already left stock is re-costed, its old row stays on record"
     }
     $reconAfter = Invoke-Supplier "GET" "$costBase/inventory/reconciliation" $mayaH $null
     if ($reconAfter.Status -ne 200 -or @($reconAfter.Json.countMismatches).Count -ne 0 -or @($reconAfter.Json.ledgerMismatches).Count -ne 0) {
         $costFailures += "the reconciliation after the correction found a mismatch (status $($reconAfter.Status)): $($reconAfter.Json | ConvertTo-Json -Depth 4 -Compress)"
     }
+
+    # --- 5. the sale consignment's courier bill is corrected too: what the saga SOLD is re-costed ---------------
+    # Step 2b's consignment (courier K36.00 shared by units, K1.00 a unit) is corrected to K72.00 (K2.00 a unit): the ring lands at K124.00 / 12 =
+    # 4 x K10.34 + 8 x K10.33, the small box at K36.00 / 12 = K3.00, the large box at K48.00 / 12 = K4.00, K208.00 in all. The three rings that orders A
+    # and D sold left the oldest slice, so they are re-costed to K10.34 (each at its own date); the lots are re-laid over what is left: ring 1 x K10.34 +
+    # 8 x K10.33, small box 11 x K3.00 (A's two came back at the swap, D's one is sold), large box 10 x K4.00 (A's two are sold).
+    $saleFix = @{ fromRevision = 1; reason = "smoke: the sale consignment's courier bill was K72, not K36"; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 72.00 }) }
+    $saleAmended = Invoke-Supplier "POST" "$procBase/consignments/$saleConsignmentId/amendments" $mayaH $saleFix
+    if ($saleAmended.Status -ne 201 -or [int]$saleAmended.Json.revision -ne 2 -or -not (Same-Money $saleAmended.Json.allocation.landedTotal "208.00") -or @($saleAmended.Json.recutLines).Count -ne 3) {
+        throw "correcting the sale consignment's courier bill gave $($saleAmended.Status), revision '$($saleAmended.Json.revision)', landed '$($saleAmended.Json.allocation.landedTotal)', $(@($saleAmended.Json.recutLines).Count) lines changed: expected 201, 2, 208.00 and 3: $($saleAmended.Json.detail)"
+    }
+    $saleRingRecut = Wait-Until { $lots = Get-OpenLots $saleVariantId; if (Lots-Say $lots @("1@10.34", "8@10.33")) { $lots } } 120
+    if (-not $saleRingRecut) { $costFailures += "after the sale consignment's correction the sale ring's open lots are [$(Describe-Lots (Get-OpenLots $saleVariantId))] after 120 s, expected 1@10.34 + 8@10.33" }
+    $saleSmallRecut = Wait-Until { $lots = Get-OpenLots $saleSmallBoxId; if (Lots-Say $lots @("11@3.00")) { $lots } } 120
+    if (-not $saleSmallRecut) { $costFailures += "after the sale consignment's correction the small box's open lots are [$(Describe-Lots (Get-OpenLots $saleSmallBoxId))] after 120 s, expected 11@3.00" }
+    $saleLargeRecut = Wait-Until { $lots = Get-OpenLots $saleLargeBoxId; if (Lots-Say $lots @("10@4.00")) { $lots } } 120
+    if (-not $saleLargeRecut) { $costFailures += "after the sale consignment's correction the large box's open lots are [$(Describe-Lots (Get-OpenLots $saleLargeBoxId))] after 120 s, expected 10@4.00" }
+    $soldNow = @(Get-LedgerRows $saleVariantId "SALE")
+    $soldWrong = @($soldNow | Where-Object { -not (Same-Money $_.unitCost "10.34") })
+    if ($soldNow.Count -ne 2 -or $soldWrong.Count -ne 0 -or (($soldNow | Measure-Object -Property qtyDelta -Sum).Sum -ne -3)) {
+        $costFailures += "after the correction the sale ring's live SALE ledger rows are [$((@($soldNow | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost)" })) -join ' | ')], expected two live rows, -3 pieces in all, every one re-costed to 10.34: what the saga sold is re-costed, the old rows stay on record"
+    }
+    Assert-Reconciled $saleVariantId "the sale ring"
+    Assert-Reconciled $saleSmallBoxId "the small box"
+    Assert-Reconciled $saleLargeBoxId "the large box"
 }
 catch {
     $costFailures += "the step stopped early: $($_.Exception.Message)"
@@ -2424,11 +3181,11 @@ if ($costFailures.Count -gt 0) {
     Write-Error "cost-bearing stock regressed on $($costFailures.Count) check(s)"
     exit 1
 }
-Write-Host "    7 rings and 200 boxes on hand with a lot per slice (ring 4 x K1,528.99 + 3 x K1,528.98), the lots 403 to alice and 401 with no token; a sale keyed through the gateway 403, the order system's own call 200 costing K1,528.99 FIFO and the same sale line again taking nothing; a write-off 201 at K1,528.99 (alice 403, a retry 200), taken back; the courier's bill corrected to K600 (alice 403, nothing-changed 400, stale 409, revision 2 at K21,100.00 with its reason) and the stock re-costed (ring 5 x K1,502.90 + 1 x K1,502.89 remaining, the sold unit now K1,502.90, box 171 x K52.90 + 29 x K52.89), every count agreeing with its lots" -ForegroundColor Gray
+Write-Host "    7 rings and 200 boxes on hand with a lot per slice (ring 4 x K1,528.99 + 3 x K1,528.98), the lots 403 to alice and 401 with no token; no door to a sale but the order saga (the order system's own paths 403 through the gateway, a person's token 403 and no token 401 on inventory's own port); a write-off 201 at K1,528.99 (alice 403, a retry 200), taken back; the courier's bill corrected to K600 (alice 403, nothing-changed 400, stale 409, revision 2 at K21,100.00 with its reason) and the stock re-costed (ring 6 x K1,502.90 + 1 x K1,502.89, the write-off's row now K1,502.90, box 171 x K52.90 + 29 x K52.89); the sale consignment's bill corrected to K72 (revision 2, K208.00) and the 3 rings the saga sold re-costed to K10.34 (ring 1 x K10.34 + 8 x K10.33, small box 11 x K3.00, large box 10 x K4.00); every count agreeing with its lots" -ForegroundColor Gray
 
 Write-Host "[20f/20] Price and publish (Phase 6): the warning, dated prices, the default box, boxes set aside, unpublish..." -ForegroundColor Cyan
-# Follows the ring of steps 4 and 20d-20e, which now holds stock at cost (ring 5 x K1,502.90 + 1 x K1,502.89 after the
-# correction, box 171 x K52.90 + 29 x K52.89) and is priced K100 (set in step 4, before any stock existed).
+# Follows the ring of steps 2 and 20d-20e, which now holds stock at cost (ring 6 x K1,502.90 + 1 x K1,502.89 after the
+# correction, none sold from this consignment; box 171 x K52.90 + 29 x K52.89) and is priced K100 (set in step 2, before any stock existed).
 #
 #   1. the pricing view says so: the price in force is BELOW the cost now held (floor K1,502.90) and the history has its
 #      first row; the list of prices below cost finds it; alice 403, no token 401;
@@ -2453,16 +3210,16 @@ $adminBase = "http://localhost:8080/api/v1/admin"
 function Get-PricingView($Variant) { return (Invoke-Supplier "GET" "$pricingBase/variants/$Variant" $mayaH $null) }
 
 try {
-    if (-not $ringVariant -or -not $productId -or -not $boxVariantId -or -not $cid -or -not $box) { throw "steps 4, 20d and 20e left no ring, box or consignment to price" }
+    if (-not $ringVariant -or -not $productId -or -not $boxVariantId -or -not $cid -or -not $box) { throw "steps 2, 20d and 20e left no ring, box or consignment to price" }
     # --- 1. where the price stands --------------------------------------------------------------
     $view = Get-PricingView $ringVariant
     if ($view.Status -ne 200 -or "$($view.Json.assessment)" -cne "BELOW" -or -not (Same-Money $view.Json.cost.floor "1502.90") -or -not (Same-Money $view.Json.currentPrice.unitPrice "100.00")) {
         $priceFailures += "the pricing view of the ring says status $($view.Status), assessment '$($view.Json.assessment)', floor '$($view.Json.cost.floor)', price '$($view.Json.currentPrice.unitPrice)', expected 200, BELOW, 1502.90 and 100.00"
     }
     if (@($view.Json.history).Count -lt 1 -or "$($view.Json.history[-1].source)" -cne "SET") {
-        $priceFailures += "the ring's price history is [$(@($view.Json.history) | ForEach-Object { "$($_.unitPrice) $($_.source) $($_.assessment)" })], expected at least the K100 set in step 4"
+        $priceFailures += "the ring's price history is [$(@($view.Json.history) | ForEach-Object { "$($_.unitPrice) $($_.source) $($_.assessment)" })], expected at least the K100 set in step 2"
     }
-    if (@($view.Json.cost.goods.lots).Count -ne 2) { $priceFailures += "the pricing view shows $(@($view.Json.cost.goods.lots).Count) held lots, expected 2 (5 + 1)" }
+    if (@($view.Json.cost.goods.lots).Count -ne 2) { $priceFailures += "the pricing view shows $(@($view.Json.cost.goods.lots).Count) held lots, expected 2 (6 + 1)" }
     $listed = Invoke-Supplier "GET" "$pricingBase/below-cost?size=100" $mayaH $null
     $ringItem = @($listed.Json.items | Where-Object { "$($_.variantId)" -ceq "$ringVariant" })
     if ($listed.Status -ne 200 -or $ringItem.Count -ne 1 -or "$($ringItem[0].assessment)" -cne "BELOW" -or [int]$listed.Json.counts.BELOW -lt 1) {
