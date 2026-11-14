@@ -287,7 +287,7 @@ both dated to the sale, and order keeps an append-only record (V7). It is for a
 `PAID` order not yet fulfilled; `amendmentId` makes a retry safe.
 
 **Delivery waiver.** Free delivery on one order is `POST /api/v1/admin/orders/{id}/delivery-waiver`
-(`DELIVERY_WAIVER`, the owner): only while the order waits for a payment reference
+(`DELIVERY_WAIVER`, held by the owner and the manager): only while the order waits for a payment reference
 (`CREATED` and held), so a total the shopper may already have paid never moves. It
 sets delivery to K0.00 and recomputes the total (the V4 check, total = goods +
 delivery - discount, still holds), and keeps who, why, when and the amount given

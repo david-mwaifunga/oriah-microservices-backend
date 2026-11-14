@@ -1862,7 +1862,7 @@ Two additions the client asked for at this exact screen:
 >   stretches the hold. Settlement is a saga: record the money, sell at inventory (a lapsed hold is replaced, a sold piece holds the money, a missing box only waits),
 >   mark PAID with receipt `OR-nnnnnn` (ours, never a tax invoice) and publish `order.paid` **v2**. New states PAYMENT_SUBMITTED and EXPIRED (not final: money for an
 >   expired order still pays it while its pieces are free). Staff queues for SALES_AGENT, a box swap for ORDER_ADMIN, and the card `/pay` path is gone. **Free delivery for
->   one order** (`POST /api/v1/admin/orders/{id}/delivery-waiver`, `DELIVERY_WAIVER`, so the owner): only while the order waits for a payment reference, with a reason, and
+>   one order** (`POST /api/v1/admin/orders/{id}/delivery-waiver`, `DELIVERY_WAIVER`, held by the owner and the manager): only while the order waits for a payment reference, with a reason, and
 >   the order keeps who, why, when and the amount given up (Flyway V8); the total falls by exactly the delivery and staff then confirm the lower amount. A shopper's own
 >   reads show the amount only, never who or why; no event is published for it, and `order.paid` does not carry the amount (Phase 10, below).
 > - **Checkout (7.5) touches no money.** It prices at catalog, checks the address is the shopper's, asks shipping for the town's price, checks the quote's fingerprint

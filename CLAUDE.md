@@ -373,7 +373,7 @@ money** in `payment` → `order` settles it: the stock is sold and the order is 
   has not been fulfilled can be swapped, `reason` is 10 to 200 characters, and a repeat with the
   same `amendmentId` answers the same swap. The card `POST /orders/{id}/pay` is **removed**.
   **Delivery waiver:** `POST /api/v1/admin/orders/{id}/delivery-waiver {reason}` (`DELIVERY_WAIVER`,
-  so `OWNER` only; reason 5 to 200 characters) makes delivery free on **one order that is still
+  held by `OWNER` and `MANAGER`, like every capability but four; reason 5 to 200 characters) makes delivery free on **one order that is still
   waiting** (CREATED, its pieces held): delivery goes to K0.00, the total falls by exactly it, and
   the order records what was waived (`delivery_waived_amount`, who, why, when; Flyway V8, all four
   set together or none, a CHECK holds it). It never touches a claimed, settling or paid order

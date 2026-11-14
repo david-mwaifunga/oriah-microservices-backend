@@ -58,7 +58,7 @@ panels did the reviewing meanwhile, and they found real defects (below).
   whose **piece** was sold to someone else becomes held money for the customer. A confirmation staff keyed wrongly is voided (never once it has paid a sale).
 - **Delivery is priced per town.** Provinces and main towns are seeded; prices are never seeded: admin publishes a dated price per town and option, and a town nobody has
   priced is a clear "not offered yet", never a guess. If the recipient pays the courier, the order carries K0 for delivery.
-- **Free delivery on one order, by the owner.** While an order is still waiting for a payment reference, the owner (`DELIVERY_WAIVER`) can make its delivery free
+- **Free delivery on one order.** While an order is still waiting for a payment reference, the owner or a manager (`DELIVERY_WAIVER`) can make its delivery free
   (`POST /api/v1/admin/orders/{id}/delivery-waiver`, with a reason): delivery goes to K0.00, the total falls by exactly that, and the order keeps who, why, when and how
   much was given up (Flyway V8). Staff then confirm the lower amount; the old amount, if already sent, is held for the customer as a wrong amount. It never touches an
   order whose payment is claimed, being applied or paid, one with no delivery charge, or one already waived. The shopper sees the lower total and the amount saved,
@@ -101,7 +101,7 @@ panels did the reviewing meanwhile, and they found real defects (below).
 - **Hand-offs found by the requirement audit:** `order.paid` does not say how much delivery was waived (Phase 10 adds it as a compatible field when finance needs it); the
   72-hour limit on keying a late sale is payment's `oriah.payment.backdate-window`, which Phase 9 must read rather than copy.
 - **Owner questions**: how long a lapsed order may still be settled at its old price (Q14); whether DISPATCH may swap a box; who may waive delivery and whether a waiver
-  needs a limit (as built: the owner only); the walk-in sale channel; the wording of two
+  needs a limit (as built: the owner and the manager); the walk-in sale channel; the wording of two
   shopper notices; whether staff need a list of unclaimed orders and of what each promotion covers. They are in `docs/FRONTEND_WORK.md`.
 - **The frontend** still talks to the old contract and will break at runtime until it is rebuilt after the backend (decided 2026-11-09): `docs/FRONTEND_WORK.md` lists every
   endpoint, field, order state and problem type, the screens and specs that break, and what the shop's own people must supply (delivery prices per town, retail prices).

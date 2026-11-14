@@ -1745,7 +1745,7 @@ Wait-Stock $saleVariantId 9 0 | Out-Null
 Write-Host "    OWN_DELIVERY to town ${townId}: preview K$dShip delivery, total K$dTotal, digest = this script's own (town and payer bound; no payer = Oriah collecting); recipient pays -> K0.00, total K90.00, another digest; Yango resolves to the recipient; the other quote's digest 409 pricing-changed; placed, paid in cash by staff for exactly K$dTotal -> PAID with a receipt, a second sale from the same oldest lot; the recipient-pays order placed at K90.00 and cancelled" -ForegroundColor Gray
 
 Write-Host "[6j/20] Free delivery on one order: the owner waives the delivery of a waiting order, the total falls by exactly that, who and why stay with staff..." -ForegroundColor Cyan
-# DELIVERY_WAIVER (the owner holds it; a shopper does not). The order is placed and held at goods + delivery, the delivery is made free, and the order then
+# DELIVERY_WAIVER (the owner and the manager hold it; a shopper does not). The order is placed and held at goods + delivery, the delivery is made free, and the order then
 # says K0.00 delivery and the lower total. Checkout must still accept that order when a lost reply is retried with the same key: its quote says goods +
 # delivery, the order says goods, and the difference is exactly the delivery that was waived. The orders are cancelled at the end (nothing is paid here:
 # step 20e counts the sale ring's lots, and a third sale would move them).

@@ -27,8 +27,8 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 /**
- * Free delivery on one order, for a chosen customer (Phase 7; CLIENT_DECISIONS Q2). {@code DELIVERY_WAIVER} only -- held by the owner, not by a manager or a
- * sales person -- and always with a reason. The gateway's {@code /api/v1/admin/orders/&#42;/delivery-waiver/**} matcher guards this path; the capability is
+ * Free delivery on one order, for a chosen customer (Phase 7; CLIENT_DECISIONS Q2). {@code DELIVERY_WAIVER} only -- held by the owner and the manager (every capability
+ * but four, CLIENT_DECISIONS 1.3), not by a sales person or a packer -- and always with a reason. The gateway's {@code /api/v1/admin/orders/&#42;/delivery-waiver/**} matcher guards this path; the capability is
  * checked here as well, so the edge is not the only thing standing in front of it.
  */
 @RestController

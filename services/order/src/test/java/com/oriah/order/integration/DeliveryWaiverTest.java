@@ -145,7 +145,7 @@ class DeliveryWaiverTest extends SaleTestBase {
     // ------------------------------------------------------------------ who may
 
     @Test
-    @DisplayName("only DELIVERY_WAIVER may: a shopper and a manager without it are refused (403) and nothing changes")
+    @DisplayName("only DELIVERY_WAIVER may: a shopper and staff without it (sales, order administration) are refused (403) and nothing changes")
     void whoMayWaive() throws Exception {
         UUID id = deliveredOrder();
 
