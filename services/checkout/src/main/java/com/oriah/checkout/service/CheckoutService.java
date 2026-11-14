@@ -78,7 +78,8 @@ public class CheckoutService {
      * not something checkout knows how to explain.
      */
     private static final Set<String> ORDER_REFUSALS_FOR_THE_SHOPPER = Set.of(
-            "insufficient-stock", "hold-limit-reached", "idempotency-key-reused", "no-default-box", "not-a-sellable-product", "product-state-not-received");
+            "insufficient-stock", "hold-limit-reached", "idempotency-key-reused", "live-order-has-another-address", "no-default-box", "not-a-sellable-product",
+            "product-state-not-received");
 
     /** The refusals of SHIPPING the shopper can act on: choose another town, option or payer. */
     private static final Set<String> SHIPPING_REFUSALS_FOR_THE_SHOPPER = Set.of("town-not-offered", "payer-not-offered", "town-not-found");
@@ -378,6 +379,7 @@ public class CheckoutService {
         OrderClient.OrderResponse placed = place(req, priced, idempotencyKey);
         log.info("Order placed orderId={} status={} total={} held until {}", placed.id(), placed.status(), placed.total(), placed.holdExpiresAt());
         requireOrderAgrees(placed, quote);
+        requireOrderStillHeld(placed);
 
         // 6) Clear the cart -- best-effort: the order is placed and its pieces held, and the shopper owns it, so a stale cart is drift to reconcile, not a failure.
         safeCall(() -> { cart.clearMyCart(); return null; }, "cart");
@@ -438,6 +440,22 @@ public class CheckoutService {
             throw new DownstreamRejectedException("order");
         }
         return placed;
+    }
+
+    /**
+     * Order answers a REPEATED Idempotency-Key with the order it made the first time, whatever has become of it since. After a lost reply the shopper
+     * retries with the same key; if the hold ran out meanwhile (or they cancelled it from their orders), the order that comes back is EXPIRED or CANCELLED,
+     * and telling them it is "placed and held" -- and clearing their cart -- would be false. Refused as a 409 the storefront can act on: confirm again,
+     * with a NEW key, because that order is over.
+     */
+    private static void requireOrderStillHeld(OrderClient.OrderResponse placed) {
+        boolean waitingForMoney = "CREATED".equals(placed.status()) || "PAYMENT_SUBMITTED".equals(placed.status());
+        if (!waitingForMoney) {
+            log.info("409 order {} came back {}: it is no longer held, so it is not placed", placed.id(), placed.status());
+            throw new RefusalPassedOnException(HttpStatus.CONFLICT, "order-no-longer-held",
+                    "That order is " + placed.status().toLowerCase() + ", so its pieces are no longer held for you: confirm again to place a new one.",
+                    java.util.Map.of("orderId", placed.id(), "orderStatus", placed.status()));
+        }
     }
 
     /**

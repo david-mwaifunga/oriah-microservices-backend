@@ -305,7 +305,8 @@ class DownstreamProblemPassThroughTest {
     @ParameterizedTest(name = "{0}")
     @DisplayName("the other refusals order gives the shopper keep their own type too")
     @ValueSource(strings = {
-            "hold-limit-reached", "idempotency-key-reused", "no-default-box", "not-a-sellable-product", "product-state-not-received"})
+            "hold-limit-reached", "idempotency-key-reused", "no-default-box", "not-a-sellable-product", "product-state-not-received",
+            "live-order-has-another-address"})
     void anotherRefusalOfOrdersReachesTheShopperUnderItsOwnName(String code) throws Exception {
         String digest = digestOfAPreview();
         doThrow(orderRefuses(409, problem(code, 409, "order says no: " + code))).when(order).place(any(), any());

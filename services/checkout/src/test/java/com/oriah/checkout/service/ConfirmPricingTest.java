@@ -356,12 +356,21 @@ class ConfirmPricingTest {
     }
 
     @Test
-    @DisplayName("the currency comes from catalog, not from a hardcoded USD")
-    void theCurrencyIsCatalogsNotHardcoded() {
-        ConfirmResponse response = service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-4");
+    @DisplayName("the currency comes from catalog, not from a constant: a bag priced in another currency end to end is asked of shipping, digested and placed in that currency")
+    void theCurrencyIsCatalogsNotAConstant() {
+        // Every other fixture is ZMW, so a hardcoded "ZMW" would pass them all. Here catalog prices in USD, shipping answers in USD, and the shopper's
+        // digest is the USD quote's: only a currency read from catalog can make this confirm.
+        catalogSays("PRICED", REAL_PRICE, "USD");
+        shippingQuotes(quoted(null, "SELF_COLLECT", null, "0.00", "USD"));
+        String usdDigest = QuoteDigest.of(new Quote(List.of(line(VARIANT, 1, "4500.00")), "USD", "SELF_COLLECT", ZERO));
+        doReturn(new OrderClient.OrderResponse(ORDER_ID, "kc-alice", "CREATED", REAL_PRICE, ZERO, ZERO, REAL_PRICE, "USD", null, null, HOLD_EXPIRES))
+                .when(order).place(any(), any());
 
-        assertThat(placement().currency()).as("a ZMW bag must not be placed as a USD order").isEqualTo("ZMW");
-        assertThat(response.currency()).isEqualTo("ZMW");
+        ConfirmResponse response = service.confirm(confirm("SELF_COLLECT", usdDigest), "key-4");
+
+        assertThat(asked().currency()).as("what shipping was asked in").isEqualTo("USD");
+        assertThat(placement().currency()).as("what order was told").isEqualTo("USD");
+        assertThat(response.currency()).isEqualTo("USD");
     }
 
     // --------------------------------------------- preview: the quote it shows
@@ -983,7 +992,7 @@ class ConfirmPricingTest {
     }
 
     @ParameterizedTest(name = "order refusing with {0} is passed on under its own name as a 409")
-    @CsvSource({"insufficient-stock", "hold-limit-reached"})
+    @CsvSource({"insufficient-stock", "hold-limit-reached", "live-order-has-another-address"})
     void ordersRefusalsTheShopperCanActOnArePassedOnUnderTheirOwnName(String code) {
         doThrow(feignProblem("OrderClient#place(String,PlaceOrderRequest)", 409,
                 "https://oriah.dev/problems/" + code)).when(order).place(any(), any());
@@ -1032,6 +1041,38 @@ class ConfirmPricingTest {
         ConfirmResponse response = service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k");
 
         assertThat(response.orderId()).isEqualTo(ORDER_ID);
+        verify(cart).clearMyCart();
+    }
+
+    private OrderClient.OrderResponse anOrderAs(String status) {
+        return new OrderClient.OrderResponse(ORDER_ID, "kc-alice", status, REAL_PRICE, ZERO, ZERO, REAL_PRICE, "ZMW", null, null, HOLD_EXPIRES);
+    }
+
+    @ParameterizedTest(name = "a replayed key that gets back an order that is {0} is not placed and held: the cart is kept, and the shopper is told to confirm again")
+    @CsvSource({"EXPIRED", "CANCELLED"})
+    void aReplayedKeyThatReturnsAnEndedOrderIsNotPlacedAndHeld(String ended) {
+        // Order answers a repeated key with the order it made, whatever has become of it since. An order whose hold lapsed (or that the shopper cancelled
+        // in the meantime) is not "placed and held", and the cart must not be cleared for it.
+        doReturn(anOrderAs(ended)).when(order).place(any(), any());
+
+        assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k"))
+                .isInstanceOfSatisfying(RefusalPassedOnException.class, refusal -> {
+                    assertThat(refusal.status()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(refusal.code()).isEqualTo("order-no-longer-held");
+                    assertThat(refusal.extras()).containsEntry("orderId", ORDER_ID).containsEntry("orderStatus", ended);
+                });
+        verify(cart, never()).clearMyCart();
+    }
+
+    @ParameterizedTest(name = "a replayed key that gets back an order that is {0} IS that order: answered as placed, and the cart is cleared")
+    @CsvSource({"CREATED", "PAYMENT_SUBMITTED"})
+    void aReplayedKeyThatReturnsALiveOrderIsTheSameOrder(String live) {
+        doReturn(anOrderAs(live)).when(order).place(any(), any());
+
+        ConfirmResponse response = service.confirm(confirm("SELF_COLLECT", sawOneRing()), "k");
+
+        assertThat(response.orderId()).isEqualTo(ORDER_ID);
+        assertThat(response.orderStatus()).isEqualTo(live);
         verify(cart).clearMyCart();
     }
 
@@ -1270,7 +1311,8 @@ class ConfirmPricingTest {
         doThrow(new IllegalStateException("catalog is down")).when(catalog).price(any());
 
         assertThatThrownBy(() -> service.confirm(confirm("SELF_COLLECT", sawOneRing()), "key-8"))
-                .isInstanceOf(RuntimeException.class);
+                .as("an outage the shopper can retry (503), not an unnamed failure")
+                .isInstanceOf(com.oriah.checkout.exception.DownstreamUnavailableException.class);
         nothingWasOrdered();
     }
 }

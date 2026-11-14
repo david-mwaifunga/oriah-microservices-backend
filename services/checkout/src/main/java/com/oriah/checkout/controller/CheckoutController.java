@@ -41,6 +41,9 @@ import jakarta.validation.Valid;
 @PreAuthorize("hasRole('USER')")
 public class CheckoutController {
 
+    /** The longest key order will take (its column is VARCHAR(128)). */
+    private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
+
     private final CheckoutService service;
 
     public CheckoutController(CheckoutService service) {
@@ -91,6 +94,11 @@ public class CheckoutController {
     public ResponseEntity<ConfirmResponse> confirm(
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody ConfirmRequest body) {
+        if (idempotencyKey != null && idempotencyKey.length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            // Order keeps the key in a column this long and refuses a longer one with a 400 of its own, which would come back as a 500 only after four or
+            // five calls downstream: judge it here, at the edge, where nothing has been done yet.
+            throw new IllegalArgumentException("The Idempotency-Key may be at most " + MAX_IDEMPOTENCY_KEY_LENGTH + " characters.");
+        }
         return ResponseEntity.ok(service.confirm(body, idempotencyKey));
     }
 }

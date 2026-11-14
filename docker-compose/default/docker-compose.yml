@@ -44,8 +44,9 @@
 #   ┌─── domain tier (waits: configserver, eurekaserver, keycloak, ───┐
 #   │    plus its own postgres, plus kafka where it is an event       │
 #   │    producer/consumer) ×13                                       │
-#   │  checkout additionally waits on the 6 services it calls: cart,  │
-#   │  catalog, customer, order, payment and shipping                 │
+#   │  checkout additionally waits on the 5 services it calls: cart,  │
+#   │  catalog, customer, order and shipping (not payment: since      │
+#   │  Phase 7 it places an order and takes no money)                 │
 #   └──────────────────────────────────────────────────────────────────┘
 #                                      │
 #                                      ▼
@@ -1173,9 +1174,11 @@ services:
       start_period: 90s
 
   checkout:
-    # The saga orchestrator: stateless (no Postgres of its own) but it must
-    # wait for every service it calls, or the first checkout preview after a
-    # cold start fails on a connection refused rather than a clean fallback.
+    # Prices the bag and places the order: stateless (no Postgres of its own)
+    # but it must wait for every service it calls (cart, catalog, customer,
+    # shipping and order; payment is none of them), or the first checkout
+    # preview after a cold start fails on a connection refused rather than a
+    # clean fallback.
     extends:
       file: ../common-config.yml
       service: microservice-keycloak-config
@@ -1189,8 +1192,6 @@ services:
       catalog:
         condition: service_healthy
       customer:
-        condition: service_healthy
-      payment:
         condition: service_healthy
       order:
         condition: service_healthy

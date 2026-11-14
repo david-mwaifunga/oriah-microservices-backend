@@ -347,14 +347,18 @@ class ConfirmOverRealFeignTest {
                 .andExpect(jsonPath("$.currency").value("ZMW"))
                 .andExpect(jsonPath("$.holdExpiresAt").isNotEmpty());
 
+        // The shopper's OWN token goes to every downstream call that acts for them (order scopes the key, the caps and ownership by its subject, customer
+        // scopes "whose address" by it): the Feign interceptor must carry it, or each of them answers 401.
         DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/shipping/quote"))
+                .withHeader("Authorization", equalTo("Bearer token"))
                 .withRequestBody(matchingJsonPath("$.optionCode", equalTo("SELF_COLLECT")))
                 .withRequestBody(matchingJsonPath("$.currency", equalTo("ZMW"))));
         DOWNSTREAM.verify(1, postRequestedFor(urlEqualTo("/api/v1/orders"))
+                .withHeader("Authorization", equalTo("Bearer token"))
                 // The browser's key goes to order verbatim: it is what makes the shopper's own repeat safe.
                 .withHeader("Idempotency-Key", equalTo("idem-the-happy-path"))
                 .withRequestBody(matchingJsonPath("$.quoteDigest", equalTo(selfCollectDigest()))));
-        DOWNSTREAM.verify(1, deleteRequestedFor(urlEqualTo("/api/v1/carts/me")));
+        DOWNSTREAM.verify(1, deleteRequestedFor(urlEqualTo("/api/v1/carts/me")).withHeader("Authorization", equalTo("Bearer token")));
     }
 
     @Test

@@ -75,14 +75,16 @@ class RealFeignFailuresTest {
     }
 
     @Test
-    @DisplayName("the read timeout itself still gives up quickly: under a second")
+    @DisplayName("the read timeout itself still gives up quickly: in seconds, not the minute Feign waits by default")
     void theReadTimeoutStillGivesUpQuickly() {
         long began = System.nanoTime();
         RuntimeException readTimeout = failures.readTimeout();
         long tookMs = (System.nanoTime() - began) / 1_000_000;
 
         assertThat(RealFeignFailures.rootCause(readTimeout)).isInstanceOf(SocketTimeoutException.class);
+        // A bound well under Feign's own default of 60 s but generous enough for a cold first call on a loaded machine (the client build, the first
+        // connection and the stub's dispatch are all inside the timed region).
         assertThat(tookMs).as("a read timeout that waits long makes every test that uses it slow")
-                .isLessThan(1_000);
+                .isLessThan(5_000);
     }
 }

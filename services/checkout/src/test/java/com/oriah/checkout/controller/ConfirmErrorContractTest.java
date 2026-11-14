@@ -392,7 +392,7 @@ class ConfirmErrorContractTest {
                         Matchers.allOf(
                                 Matchers.containsString("Idempotency-Key"),
                                 Matchers.containsString("Retry-After"),
-                                Matchers.not(Matchers.containsString("nothing was ordered")))));
+                                Matchers.not(Matchers.containsStringIgnoringCase("nothing was ordered")))));
     }
 
     @Test
@@ -426,6 +426,78 @@ class ConfirmErrorContractTest {
         confirm();
 
         org.mockito.Mockito.verify(service).confirm(any(), org.mockito.ArgumentMatchers.isNull());
+    }
+
+    // ------------------------------------------- the Idempotency-Key is judged at the edge
+
+    private org.springframework.test.web.servlet.ResultActions confirmWithKey(String key) throws Exception {
+        return mvc.perform(post("/api/v1/checkout/confirm")
+                .with(authenticated())
+                .header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(VALID_BODY));
+    }
+
+    @Test
+    @DisplayName("an Idempotency-Key longer than order's limit of 128 characters is a 400 at the edge, before any downstream call: not a 500 after four or five of them")
+    void anOverlongIdempotencyKeyIsRefusedAtTheEdge() throws Exception {
+        confirmWithKey("k".repeat(129))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(Matchers.containsString("Idempotency-Key")));
+
+        org.mockito.Mockito.verify(service, org.mockito.Mockito.never()).confirm(any(), any());
+    }
+
+    @Test
+    @DisplayName("a key of exactly 128 characters is accepted and reaches the service whole")
+    void aKeyOfTheLimitIsAccepted() throws Exception {
+        when(service.confirm(any(), any())).thenThrow(new CartEmptyException());
+        String key = "k".repeat(128);
+
+        confirmWithKey(key);
+
+        org.mockito.Mockito.verify(service).confirm(any(), org.mockito.ArgumentMatchers.eq(key));
+    }
+
+    // ------------------------------------------- who may call, and the typed 409s
+
+    @Test
+    @DisplayName("preview and confirm need a token (401) and the USER role (403): the edge is not the only thing standing in front of them")
+    void preview_and_confirm_demandTheUserRole() throws Exception {
+        for (String path : List.of("/api/v1/checkout/preview", "/api/v1/checkout/confirm")) {
+            mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(VALID_BODY)).andExpect(status().isUnauthorized());
+            mvc.perform(post(path).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT")))
+                    .contentType(MediaType.APPLICATION_JSON).content(VALID_BODY)).andExpect(status().isForbidden());
+        }
+        org.mockito.Mockito.verifyNoInteractions(service);
+    }
+
+    @Test
+    @DisplayName("a mixed-currency bag is a 409 under its own type, not an untyped conflict the storefront would read as 'your bag is empty'")
+    void aMixedCurrencyBagHasItsOwnType() throws Exception {
+        when(service.confirm(any(), any())).thenThrow(new com.oriah.checkout.exception.MixedCurrencyException("ZMW", "USD"));
+
+        confirm().andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "mixed-currency"));
+    }
+
+    @Test
+    @DisplayName("pricing-changed names the lines it concerns, and bag-not-purchasable the lines that cannot be sold: the storefront marks those rows")
+    void theTypedConflictsNameTheirLines() throws Exception {
+        UUID one = UUID.fromString("22222222-2222-2222-2222-222222222222");
+        UUID two = UUID.fromString("33333333-3333-3333-3333-333333333333");
+
+        when(service.confirm(any(), any())).thenThrow(new com.oriah.checkout.exception.PricingChangedException(List.of(one, two)));
+        confirm().andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "pricing-changed"))
+                .andExpect(jsonPath("$.changedLines[0]").value(one.toString()))
+                .andExpect(jsonPath("$.changedLines[1]").value(two.toString()));
+
+        // doThrow, not when(...): the first stub already throws, and when(service.confirm(...)) would CALL it while setting up the second.
+        org.mockito.Mockito.doThrow(new com.oriah.checkout.exception.BagNotPurchasableException(List.of(two))).when(service).confirm(any(), any());
+        confirm().andExpect(status().isConflict())
+                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "bag-not-purchasable"))
+                .andExpect(jsonPath("$.unavailableLines[0]").value(two.toString()));
     }
 
     private org.springframework.test.web.servlet.ResultActions confirm() throws Exception {
