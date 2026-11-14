@@ -150,6 +150,38 @@ public class OrderService {
     }
 
     /**
+     * Free delivery for one order (Phase 7, design 3.4): delivery becomes K0, the total falls by exactly what delivery would have cost, and who, why, when and
+     * how much are kept. Only an order still waiting for a payment reference and whose pieces are held, with no money being applied. No event is appended:
+     * the design lists none, and what changed is on the order itself ({@code order.paid} announces the sale at the total it was paid).
+     *
+     * @param actor {@code user:<keycloak subject>} of the member of staff holding DELIVERY_WAIVER
+     * @throws com.oriah.observability.ResourceNotFoundException no such order (404)
+     * @throws SalesProblem 409 {@code delivery-waiver-not-allowed}, {@code payment-being-applied}, {@code delivery-already-waived} or {@code no-delivery-to-waive}
+     */
+    @Transactional
+    public Order waiveDelivery(UUID orderId, String reason, String actor) {
+        Order order = repository.findById(orderId)
+                .orElseThrow(() -> new com.oriah.observability.ResourceNotFoundException("Order", "id", orderId.toString()));
+        try {
+            order.waiveDelivery(actor, reason, java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+        } catch (IllegalStateException refused) {
+            throw switch (refused.getMessage()) {
+                case "being-applied" -> new SalesProblem(HttpStatus.CONFLICT, "payment-being-applied",
+                        "a confirmed payment is being applied to this order right now: look at it again in a moment");
+                case "already-waived" -> new SalesProblem(HttpStatus.CONFLICT, "delivery-already-waived",
+                        "this order's delivery was already made free: " + order.deliveryWaivedBy() + " did it");
+                case "nothing-to-waive" -> new SalesProblem(HttpStatus.CONFLICT, "no-delivery-to-waive",
+                        "this order has no delivery charge to waive (a pickup, a courier the recipient pays, or free already)");
+                default -> new SalesProblem(HttpStatus.CONFLICT, "delivery-waiver-not-allowed",
+                        "delivery can be waived only on an order still waiting for a payment reference whose pieces are held; this one is "
+                                + order.status() + (order.holdState() == HoldState.PENDING ? " and still being placed" : ""));
+            };
+        }
+        log.info("Order id={} delivery waived ({}) by {}: {}", order.id(), order.deliveryWaivedAmount(), actor, reason);
+        return order;
+    }
+
+    /**
      * While confirmed money is being applied to an order, nothing else may change it: a cancel in the middle would race the sale. The money is
      * recorded and the sale settles or fails in moments; look again then.
      */

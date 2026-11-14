@@ -130,6 +130,73 @@ class SettlementReceiveTest extends SaleTestBase {
         assertThat(row(id).get("status")).isEqualTo("PAID");
     }
 
+    // ------------------------------------------------------------------ money after an END: the plan's four cells (lapse or rejection, piece free or sold)
+
+    @Test
+    @DisplayName("lapse, piece still free: money for an order whose hold LAPSED (the real expiry event, not a row edit) pays it on a new hold")
+    void moneyAfterALapseWithThePieceFree() throws Exception {
+        UUID id = heldOrder();
+        reservationExpired((UUID) row(id).get("reservation_id"), id);
+        assertThat(row(id).get("status")).isEqualTo("EXPIRED");
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+        assertThat(settlement(confirmation).get("state")).isEqualTo("DONE");
+        assertThat(events(id, "order.paid")).hasSize(1);
+        assertThat(events(id, "order.payment_unsettled")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("lapse, piece SOLD meanwhile: the money is held for the customer (PIECE_SOLD), the order stays EXPIRED and nothing is sold")
+    void moneyAfterALapseWithThePieceSold() throws Exception {
+        UUID id = heldOrder();
+        reservationExpired((UUID) row(id).get("reservation_id"), id);
+        doThrow(SaleStubs.feign(409, SaleStubs.shortage(RING, "GOODS", 1, 0))).when(inventory).reserve(any());
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        Map<String, Object> settlement = settlement(confirmation);
+        assertThat(settlement.get("state")).isEqualTo("UNSETTLED");
+        assertThat(settlement.get("reason")).isEqualTo("PIECE_SOLD");
+        assertThat(row(id).get("status")).isEqualTo("EXPIRED");
+        assertThat(events(id, "order.paid")).isEmpty();
+        assertThat(events(id, "order.payment_unsettled")).hasSize(1);
+        assertThat(payloadOf(events(id, "order.payment_unsettled").get(0)).get("reason").asText()).isEqualTo("PIECE_SOLD");
+        verify(inventory, never()).consume(any(), any());
+    }
+
+    @Test
+    @DisplayName("rejection, piece still free: money for an order whose claim staff REJECTED pays it all the same (a rejected claim is not a rejected sale)")
+    void moneyAfterARejectionWithThePieceFree() throws Exception {
+        UUID id = claimedOrder();
+        rejected((UUID) row(id).get("claim_id"), id);
+        assertThat(row(id).get("status")).isEqualTo("EXPIRED");
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+        assertThat(settlement(confirmation).get("state")).isEqualTo("DONE");
+        assertThat(events(id, "order.paid")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("rejection, piece SOLD meanwhile: the money is held for the customer (PIECE_SOLD) and the order stays EXPIRED")
+    void moneyAfterARejectionWithThePieceSold() throws Exception {
+        UUID id = claimedOrder();
+        rejected((UUID) row(id).get("claim_id"), id);
+        doThrow(SaleStubs.feign(409, SaleStubs.shortage(RING, "GOODS", 1, 0))).when(inventory).reserve(any());
+
+        UUID confirmation = confirmed(id, "4500.00");
+
+        Map<String, Object> settlement = settlement(confirmation);
+        assertThat(settlement.get("state")).isEqualTo("UNSETTLED");
+        assertThat(settlement.get("reason")).isEqualTo("PIECE_SOLD");
+        assertThat(row(id).get("status")).isEqualTo("EXPIRED");
+        assertThat(events(id, "order.paid")).isEmpty();
+        verify(inventory, never()).consume(any(), any());
+    }
+
     // ------------------------------------------------------------------ the money cannot pay the sale: held for the customer
 
     @Test

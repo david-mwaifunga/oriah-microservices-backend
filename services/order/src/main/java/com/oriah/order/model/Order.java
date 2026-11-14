@@ -82,6 +82,20 @@ public class Order extends BaseEntity {
     @Column(name = "totals_authoritative", nullable = false)
     private boolean totalsAuthoritative;
 
+    /** What delivery WOULD have cost when staff waived it (the delivery revenue given up); null when it was not waived. Set with the next three, or not at all. */
+    @Column(name = "delivery_waived_amount")
+    private BigDecimal deliveryWaivedAmount;
+
+    /** Who waived the delivery, {@code user:<keycloak subject>}. */
+    @Column(name = "delivery_waived_by", length = 128)
+    private String deliveryWaivedBy;
+
+    @Column(name = "delivery_waiver_reason", length = 200)
+    private String deliveryWaiverReason;
+
+    @Column(name = "delivery_waived_at")
+    private Instant deliveryWaivedAt;
+
     /** The town the delivery was priced for; null for self-collect and for an order placed before Phase 7. */
     @Column(name = "delivery_town_id")
     private UUID deliveryTownId;
@@ -250,6 +264,10 @@ public class Order extends BaseEntity {
     }
 
     public BigDecimal shippingAmount() { return shippingAmount; }
+    public BigDecimal deliveryWaivedAmount() { return deliveryWaivedAmount; }
+    public String deliveryWaivedBy() { return deliveryWaivedBy; }
+    public String deliveryWaiverReason() { return deliveryWaiverReason; }
+    public Instant deliveryWaivedAt() { return deliveryWaivedAt; }
     public BigDecimal discountAmount() { return discountAmount; }
     public String deliveryOption() { return deliveryOption; }
     public boolean totalsAuthoritative() { return totalsAuthoritative; }
@@ -447,6 +465,36 @@ public class Order extends BaseEntity {
      * order built by the old constructor carries no shipping or discount
      * (unknown, not zero) and is not marked, so its total stays its subtotal.
      */
+    /**
+     * Makes this order's delivery free (Phase 7, design 3.4): delivery becomes K0.00, the total falls by exactly what delivery would have cost, and who, why,
+     * when and how much are kept. Only an order still waiting for a payment reference, whose pieces are held and on which no money is being applied: a total
+     * the shopper may already have paid cannot move.
+     *
+     * @throws IllegalStateException the order is not in a state in which its total may change, or has no delivery to waive, or was already waived; the
+     *                               message says which, and the service turns it into the shopper-facing refusal
+     */
+    public void waiveDelivery(String by, String reason, Instant at) {
+        if (status != OrderStatus.CREATED || holdState != HoldState.HELD) {
+            throw new IllegalStateException("not-allowed");
+        }
+        if (settlingConfirmationId != null) {
+            throw new IllegalStateException("being-applied");
+        }
+        if (deliveryWaivedAmount != null) {
+            throw new IllegalStateException("already-waived");
+        }
+        if (!totalsAuthoritative || shippingAmount == null || shippingAmount.signum() == 0) {
+            throw new IllegalStateException("nothing-to-waive");
+        }
+        this.deliveryWaivedAmount = shippingAmount;
+        this.deliveryWaivedBy = by;
+        this.deliveryWaiverReason = reason;
+        this.deliveryWaivedAt = at;
+        this.shippingAmount = new BigDecimal("0.00");
+        recomputeTotals();
+        this.updatedAt = at;
+    }
+
     private void recomputeTotals() {
         BigDecimal sub = items.stream()
                 .map(i -> i.unitPrice().multiply(BigDecimal.valueOf(i.quantity())))

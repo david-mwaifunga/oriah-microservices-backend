@@ -61,7 +61,7 @@ public class AdminOrderController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping
     public ResponseEntity<Page<OrderResponse>> list(@PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(service.findAll(pageable).map(OrderResponse::from));
+        return ResponseEntity.ok(service.findAll(pageable).map(OrderResponse::forStaff));
     }
 
     /**
@@ -96,7 +96,7 @@ public class AdminOrderController {
     @GetMapping("/{id}")
     public OrderResponse get(@PathVariable("id") UUID id) {
         return service.findById(id)
-                .map(OrderResponse::from)
+                .map(OrderResponse::forStaff)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
 
@@ -130,7 +130,7 @@ public class AdminOrderController {
             @Valid @RequestBody TransitionRequest body) {
         // The member of staff is the actor the event log records.
         return service.transition(id, body.targetStatus(), Actor.of(jwt))
-                .map(OrderResponse::from)
+                .map(OrderResponse::forStaff)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
 }
