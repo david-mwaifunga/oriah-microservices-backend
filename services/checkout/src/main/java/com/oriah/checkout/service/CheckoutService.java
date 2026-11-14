@@ -463,8 +463,12 @@ public class CheckoutService {
      * anyway would be a mistake nobody notices. 500, and the order is left for staff: it is HELD and will lapse.
      */
     private static void requireOrderAgrees(OrderClient.OrderResponse placed, Quote quote) {
-        if (placed.total() == null || placed.total().compareTo(quote.total()) != 0) {
-            log.error("order {} recorded total {} but the agreed quote totals {} -- refusing to go on", placed.id(), placed.total(), quote.total());
+        // A repeat of a confirm answers the order that was made, and staff may have made its delivery free in the meantime (DELIVERY_WAIVER): the order's
+        // total is then the quote's LESS exactly the delivery it says it waived. Anything else lower or higher is still not what the shopper agreed to.
+        BigDecimal waived = placed.deliveryWaivedAmount() == null ? BigDecimal.ZERO : placed.deliveryWaivedAmount();
+        BigDecimal agreed = quote.total().subtract(waived);
+        if (placed.total() == null || placed.total().compareTo(agreed) != 0) {
+            log.error("order {} recorded total {} but the agreed quote totals {} (less {} waived) -- refusing to go on", placed.id(), placed.total(), quote.total(), waived);
             throw new DownstreamRejectedException("order");
         }
     }

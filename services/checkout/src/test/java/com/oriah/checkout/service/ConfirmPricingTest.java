@@ -1076,6 +1076,37 @@ class ConfirmPricingTest {
         verify(cart).clearMyCart();
     }
 
+    // --------------------------------------------- staff waived the delivery after the shopper's quote
+
+    @Test
+    @DisplayName("a replayed confirm after staff made the delivery free is placed: the order's total is the quote's less exactly the delivery it waived")
+    void aWaivedDeliveryIsTheQuoteLessWhatWasWaived() {
+        shippingQuotes(delivered("OWN_DELIVERY", "125.00"));
+        String digest = sawDelivered("OWN_DELIVERY", ORIAH_COLLECTS, "125.00", line(VARIANT, 1, "4500.00"));
+        // the shopper's quote was K4,625.00; staff waived the K125.00, so order's total is K4,500.00 and it says what it waived
+        doReturn(new OrderClient.OrderResponse(ORDER_ID, "kc-alice", "CREATED", REAL_PRICE, ZERO, ZERO, REAL_PRICE, "ZMW", TOWN, ORIAH_COLLECTS, HOLD_EXPIRES,
+                new BigDecimal("125.00"))).when(order).place(any(), any());
+
+        ConfirmResponse response = service.confirm(confirmTo("OWN_DELIVERY", ORIAH_COLLECTS, digest), "k");
+
+        assertThat(response.total()).isEqualByComparingTo("4500.00");
+        verify(cart).clearMyCart();
+    }
+
+    @Test
+    @DisplayName("a lower total that is NOT explained by the waiver is still refused: the check that the order is for what the shopper agreed to stays")
+    void aLowerTotalTheWaiverDoesNotExplainIsRefused() {
+        shippingQuotes(delivered("OWN_DELIVERY", "125.00"));
+        String digest = sawDelivered("OWN_DELIVERY", ORIAH_COLLECTS, "125.00", line(VARIANT, 1, "4500.00"));
+        // order says it waived K100.00, but its total is K125.00 lower than the quote: K25.00 is unexplained
+        doReturn(new OrderClient.OrderResponse(ORDER_ID, "kc-alice", "CREATED", REAL_PRICE, ZERO, ZERO, REAL_PRICE, "ZMW", TOWN, ORIAH_COLLECTS, HOLD_EXPIRES,
+                new BigDecimal("100.00"))).when(order).place(any(), any());
+
+        assertThatThrownBy(() -> service.confirm(confirmTo("OWN_DELIVERY", ORIAH_COLLECTS, digest), "k"))
+                .isInstanceOf(com.oriah.checkout.exception.DownstreamRejectedException.class);
+        verify(cart, never()).clearMyCart();
+    }
+
     // --------------------------------------------- the Idempotency-Key (h)
 
     @Test

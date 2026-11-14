@@ -38,6 +38,14 @@ public interface OrderClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record OrderResponse(UUID id, String keycloakId, String status, BigDecimal subtotal, BigDecimal shippingAmount, BigDecimal discountAmount,
-                         BigDecimal total, String currency, UUID deliveryTownId, String deliveryPayer, Instant holdExpiresAt) {
+                         BigDecimal total, String currency, UUID deliveryTownId, String deliveryPayer, Instant holdExpiresAt,
+                         /** What delivery would have cost, when staff made it free on this order after the shopper's quote; null when not waived. */
+                         BigDecimal deliveryWaivedAmount) {
+
+        /** An answer with no waiver, which is nearly every answer. */
+        public OrderResponse(UUID id, String keycloakId, String status, BigDecimal subtotal, BigDecimal shippingAmount, BigDecimal discountAmount,
+                             BigDecimal total, String currency, UUID deliveryTownId, String deliveryPayer, Instant holdExpiresAt) {
+            this(id, keycloakId, status, subtotal, shippingAmount, discountAmount, total, currency, deliveryTownId, deliveryPayer, holdExpiresAt, null);
+        }
     }
 }
