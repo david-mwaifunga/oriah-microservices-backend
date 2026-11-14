@@ -57,6 +57,7 @@ public class AdminPromotionController {
     }
 
     @Operation(operationId = "listPromotions", summary = "Promotions, newest first; optionally of one scope or only those in force now (true) or not (false)")
+    @ApiResponse(responseCode = "200", description = "The promotions, newest first")
     @GetMapping
     public List<PromotionView> list(@RequestParam(name = "scopeType", required = false) String scopeType,
                                     @RequestParam(name = "inForce", required = false) Boolean inForce) {
@@ -65,6 +66,7 @@ public class AdminPromotionController {
 
     @Operation(operationId = "getPromotion", summary = "One promotion")
     @ApiResponse(responseCode = "404", description = "promotion-not-found", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The promotion")
     @GetMapping("/{id}")
     public PromotionView get(@PathVariable("id") UUID id) {
         return promotions.get(id);
@@ -92,6 +94,7 @@ public class AdminPromotionController {
     @Operation(operationId = "stopPromotion", summary = "End a promotion from now: it applied before this moment and does not after")
     @ApiResponse(responseCode = "404", description = "promotion-not-found", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "already-stopped", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The promotion, stopped from now")
     @PostMapping("/{id}/stop")
     public PromotionView stop(@PathVariable("id") UUID id, @AuthenticationPrincipal Jwt jwt) {
         return promotions.stop(id, actor(jwt));

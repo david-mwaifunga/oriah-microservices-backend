@@ -72,12 +72,14 @@ public class AdminShippingController {
     }
 
     @Operation(operationId = "listProvinces", summary = "Zambia's ten provinces, each with how many towns it has")
+    @ApiResponse(responseCode = "200", description = "The provinces, each with how many towns it has")
     @GetMapping("/provinces")
     public List<ProvinceView> provinces() {
         return admin.provinces();
     }
 
     @Operation(operationId = "listTowns", summary = "Towns, optionally of one province or only those switched on or off")
+    @ApiResponse(responseCode = "200", description = "The towns")
     @GetMapping("/towns")
     public List<TownView> towns(@RequestParam(name = "provinceId", required = false) UUID provinceId,
                                 @RequestParam(name = "active", required = false) Boolean active) {
@@ -96,12 +98,14 @@ public class AdminShippingController {
     @Operation(operationId = "switchTown", summary = "Switch a town on or off (a town is never deleted: orders point at it)")
     @ApiResponse(responseCode = "404", description = "town-not-found", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "stale-version (names currentVersion)", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The town, as switched")
     @PatchMapping("/towns/{townId}")
     public TownView switchTown(@PathVariable("townId") UUID townId, @Valid @RequestBody SwitchRequest request, @AuthenticationPrincipal Jwt jwt) {
         return admin.switchTown(townId, request.active(), request.version(), actor(jwt));
     }
 
     @Operation(operationId = "listOptions", summary = "The options a parcel can go by")
+    @ApiResponse(responseCode = "200", description = "The options")
     @GetMapping("/options")
     public List<OptionView> options() {
         return admin.options();
@@ -118,12 +122,14 @@ public class AdminShippingController {
     @Operation(operationId = "switchOption", summary = "Switch an option on or off")
     @ApiResponse(responseCode = "404", description = "option-not-found", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "stale-version", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The option, as switched")
     @PatchMapping("/options/{code}")
     public OptionView switchOption(@PathVariable("code") String code, @Valid @RequestBody SwitchRequest request, @AuthenticationPrincipal Jwt jwt) {
         return admin.switchOption(code, request.active(), request.version(), actor(jwt));
     }
 
     @Operation(operationId = "listPrices", summary = "Prices, drafts and history, optionally of one town, option or status")
+    @ApiResponse(responseCode = "200", description = "The prices, drafts and history")
     @GetMapping("/prices")
     public List<PriceView> prices(@RequestParam(name = "townId", required = false) UUID townId,
                                   @RequestParam(name = "optionCode", required = false) String optionCode,
@@ -144,6 +150,7 @@ public class AdminShippingController {
 
     @Operation(operationId = "editDraftPrice", summary = "Edit a draft price (a published price cannot be edited: draft a new one)")
     @ApiResponse(responseCode = "409", description = "price-published, stale-version", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The edited draft")
     @PutMapping("/prices/{priceId}")
     public PriceView editDraft(@PathVariable("priceId") UUID priceId, @Valid @RequestBody EditPriceRequest request, @AuthenticationPrincipal Jwt jwt) {
         return admin.editDraft(priceId, request.amount(), !Boolean.FALSE.equals(request.allowsOriahCollects()), Boolean.TRUE.equals(request.allowsRecipientPays()),
@@ -152,6 +159,7 @@ public class AdminShippingController {
 
     @Operation(operationId = "publishPrice", summary = "Publish a draft: it becomes the live price of its town and option, and the one it replaces becomes history")
     @ApiResponse(responseCode = "409", description = "price-published, stale-version", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The published price")
     @PostMapping("/prices/{priceId}/publish")
     public PriceView publish(@PathVariable("priceId") UUID priceId, @Valid @RequestBody PublishRequest request, @AuthenticationPrincipal Jwt jwt) {
         return admin.publish(priceId, request.version(), actor(jwt));
@@ -167,6 +175,7 @@ public class AdminShippingController {
     }
 
     @Operation(operationId = "getDeliverySettings", summary = "The free-delivery threshold (off until set)")
+    @ApiResponse(responseCode = "200", description = "The free-delivery threshold")
     @GetMapping("/settings")
     public SettingsView settings() {
         return admin.settings();
@@ -174,12 +183,14 @@ public class AdminShippingController {
 
     @Operation(operationId = "setFreeDeliveryThreshold", summary = "Set the free-delivery threshold, or switch it off with null; judged on the goods total after discount")
     @ApiResponse(responseCode = "409", description = "stale-version", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The threshold as set")
     @PutMapping("/settings")
     public SettingsView setThreshold(@Valid @RequestBody ThresholdRequest request, @AuthenticationPrincipal Jwt jwt) {
         return admin.setThreshold(request.freeDeliveryThreshold(), request.version(), request.reason(), actor(jwt));
     }
 
     @Operation(operationId = "listThresholdChanges", summary = "Every change to the free-delivery threshold, newest first, with who and why")
+    @ApiResponse(responseCode = "200", description = "Every change to the threshold, newest first")
     @GetMapping("/settings/changes")
     public List<SettingsChange> changes() {
         return admin.settingsHistory();

@@ -48,6 +48,7 @@ public class HeldMoneyController {
             description = "`status` is OWED (the default), VOIDED (its confirmation was voided as keyed wrongly) or ALL.")
     @ApiResponse(responseCode = "400", description = "A status that does not exist",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The held money, newest first")
     @GetMapping
     @Transactional(readOnly = true)
     public List<HeldMoneyView> list(@RequestParam(name = "status", defaultValue = "OWED") String status) {

@@ -447,3 +447,108 @@ inventory|schema removed|InventoryCreateRequest
 
 catalog|schema property removed|VariantCreateRequest.unitPrice
 catalog|schema property type changed|VariantCreateRequest.currency: {"maxLength": 3, "minLength": 0, "type": "string"} -> {"maxLength": 3, "minLength": 0, "pattern": "(?i)ZMW", "type": "string"}
+
+# ---------------------------------------------------------------------------
+# Phase 7 (Sell): the card flow, promotion codes, zones and the direct sale doors are gone.
+# ---------------------------------------------------------------------------
+#
+# Forty-nine breaks, every one a removal or change the plan itself makes (docs/MVP_PLAN.md Phase 7; docs/CLIENT_DECISIONS.md rounds 4 and 5). They are
+# grouped by service below, each group with its reason. None has an additive version: the old door and the new one cannot both exist, because the old
+# one is exactly what let a piece be sold, or a price be invented, without staff having confirmed any money.
+#
+# Client impact, stated plainly: oriah-web's hand-written fetch wrappers and Zod schemas call these, so the storefront and the admin screens break at RUNTIME
+# until the frontend is rebuilt. That is accepted: nothing is live until every phase is built, and the frontend is changed after the backend by decision
+# (2026-11-09). Every removed endpoint, changed field and new state, and the screens and Playwright specs they break, are listed in docs/FRONTEND_WORK.md
+# (Phase 7). Recorded 2026-11-14, with the live smoke test (steps 2b to 6i) proving the replacement path end to end.
+
+# checkout: the card flow, promotion codes and country/zone are gone.
+#
+# Checkout no longer touches money (MVP_PLAN Phase 7): confirm places the order and holds its pieces, and the shopper then gives order a payment
+# reference, which staff confirm. So there is no card number, no payment intent and no payment status on the answer; 402 (declined) and 502
+# (unconfirmable charge) cannot happen; 422 (outside the delivery area) cannot happen either, because delivery is priced per TOWN, never per country or
+# zone, and a town nobody has priced is 409 town-not-offered. A promotion is applied by itself, per piece, so there is no code to type and the preview
+# lists no shipping options: the shopper names a delivery (option, town, payer) and gets one total and one quoteDigest.
+
+checkout|response status removed|POST /api/v1/checkout/confirm -> 402
+checkout|response status removed|POST /api/v1/checkout/confirm -> 422
+checkout|response status removed|POST /api/v1/checkout/confirm -> 502
+checkout|schema property removed|ConfirmRequest.cardNumber
+checkout|schema property removed|ConfirmRequest.promotionCode
+checkout|schema property removed|ConfirmResponse.paymentIntentId
+checkout|schema property removed|ConfirmResponse.paymentStatus
+checkout|schema property removed|PreviewRequest.destinationCountry
+checkout|schema property removed|PreviewRequest.promotionCode
+checkout|schema property removed|PreviewResponse.shippingOptions
+checkout|schema removed|ShippingOptionDto
+
+# inventory: the per-variant reserve / release / confirm doors are gone.
+#
+# Stock is held by a RESERVATION per order (Phase 7, slice 7.1: /api/v1/admin/inventory/reservations, held by id, idempotent, expiring) and SOLD by the
+# order's settlement saga when staff-confirmed money arrives. A person or a screen can no longer sell a piece by calling confirm.
+
+inventory|path removed|/api/v1/admin/inventory/{variantId}/confirm
+inventory|path removed|/api/v1/admin/inventory/{variantId}/release
+inventory|path removed|/api/v1/admin/inventory/{variantId}/reserve
+inventory|schema removed|QuantityRequest
+
+# order: no card /pay, and two more states.
+#
+# POST /api/v1/orders/{id}/pay and AttachPaymentRequest are gone with the card flow: an order is paid ONLY when staff confirm the money in payment and the
+# settlement saga sells the pieces. The status enum gains PAYMENT_SUBMITTED (the shopper said how they paid) and EXPIRED (the hold lapsed or the claim
+# was rejected); a strict client enum will throw on them, so oriah-web must parse the status tolerantly (docs/FRONTEND_WORK.md, Phase 7).
+
+order|path removed|/api/v1/orders/{id}/pay
+order|schema property type changed|OrderResponse.status: {"enum": ["CREATED", "PAID", "FULFILLED", "SHIPPED", "DELIVERED", "CANCELLED"], "type": "string"} -> {"enum": ["CREATED", "PAYMENT_SUBMITTED", "EXPIRED", "PAID", "FULFILLED", "SHIPPED", "DELIVERED", "CANCELLED"], "type": "string"}
+order|schema property type changed|TransitionRequest.targetStatus: {"enum": ["CREATED", "PAID", "FULFILLED", "SHIPPED", "DELIVERED", "CANCELLED"], "type": "string"} -> {"enum": ["CREATED", "PAYMENT_SUBMITTED", "EXPIRED", "PAID", "FULFILLED", "SHIPPED", "DELIVERED", "CANCELLED"], "type": "string"}
+order|schema removed|AttachPaymentRequest
+
+# payment: the card intents are gone from the published contract.
+#
+# The card path (create intent, confirm intent) is switched OFF unless oriah.payment.card.enabled, and nothing calls it: checkout stopped in Phase 7, and
+# ZynlePay (Phase 13) will give it a caller again. Payment's published surface is now what staff do: confirmations, claims and held money.
+
+payment|path removed|/api/v1/payments/intents
+payment|path removed|/api/v1/payments/intents/{id}
+payment|path removed|/api/v1/payments/intents/{id}/confirm
+payment|schema removed|ConfirmIntentRequest
+payment|schema removed|CreateIntentRequest
+payment|schema removed|PaymentIntentResponse
+
+# promotion: codes are gone; a promotion is one a shopper never types.
+#
+# Promotions cover one product, one category or the whole shop, apply by themselves and are worked out per piece (CLIENT_DECISIONS 1.4, Phase 7 slice 7.3).
+# So there is no apply / redeem / disable-by-code door and no public lookup by code. The admin API is re-modelled around PromotionView (create, replace
+# and stop; operations renamed; the list is no longer paged: it answers every promotion, newest first, and filters by scopeType and inForce).
+
+promotion|operationId renamed|GET /api/v1/admin/promotions: 'list' -> 'listPromotions'
+promotion|operationId renamed|POST /api/v1/admin/promotions: 'create' -> 'createPromotion'
+promotion|parameter removed|GET /api/v1/admin/promotions: query 'pageable'
+promotion|path removed|/api/v1/admin/promotions/{code}/disable
+promotion|path removed|/api/v1/promotions/{code}
+promotion|path removed|/api/v1/promotions/{code}/apply
+promotion|path removed|/api/v1/promotions/{code}/redeem
+promotion|requestBody schema changed|POST /api/v1/admin/promotions
+promotion|response schema changed|POST /api/v1/admin/promotions -> 201: {"$ref": "#/components/schemas/PromotionResponse"} -> {"$ref": "#/components/schemas/PromotionView"}
+promotion|response schema changed|GET /api/v1/admin/promotions -> 200: {"$ref": "#/components/schemas/PagePromotionResponse"} -> {"items": {"$ref": "#/components/schemas/PromotionView"}, "type": "array"}
+promotion|response status removed|GET /api/v1/admin/promotions -> 400
+promotion|response status removed|POST /api/v1/admin/promotions -> 400
+promotion|schema removed|ApplyRequest
+promotion|schema removed|ApplyResponse
+promotion|schema removed|CreatePromotionRequest
+promotion|schema removed|PagePromotionResponse
+promotion|schema removed|Pageable
+promotion|schema removed|PageableObject
+promotion|schema removed|PromotionResponse
+promotion|schema removed|SortObject
+
+# shipping: the zone-based rate quote is gone.
+#
+# POST /api/v1/shipping/rates priced delivery by country and zone. Delivery is priced per TOWN, by an admin-managed, dated, switchable price (Phase 7 slice
+# 7.2): GET /api/v1/shipping/towns lists what is offered and POST /api/v1/shipping/quote gives one price. RateRequest, RateResponse and ShippingOption go
+# with it (a SELF_COLLECT constant lives on in the code, not the contract).
+
+shipping|path removed|/api/v1/shipping/rates
+shipping|schema removed|RateRequest
+shipping|schema removed|RateResponse
+shipping|schema removed|ShippingOption
+

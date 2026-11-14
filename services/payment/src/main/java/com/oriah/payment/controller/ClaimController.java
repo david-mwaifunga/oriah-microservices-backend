@@ -59,6 +59,7 @@ public class ClaimController {
 
     @Operation(operationId = "listPaymentClaims", summary = "Claims, newest first; optionally of one order",
             description = "Each says whether money is already recorded for it (`moneyRecorded`) and whether its reference is used for another order (`usedElsewhere`).")
+    @ApiResponse(responseCode = "200", description = "The claims, newest first")
     @GetMapping
     public List<ClaimView> list(@RequestParam(name = "orderId", required = false) UUID orderId) {
         return claims.list(orderId);
@@ -66,6 +67,7 @@ public class ClaimController {
 
     @Operation(operationId = "getPaymentClaim", summary = "One claim")
     @ApiResponse(responseCode = "404", description = "claim-not-found", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The claim")
     @GetMapping("/{claimId}")
     public ClaimView get(@PathVariable("claimId") UUID claimId) {
         return claims.get(claimId);

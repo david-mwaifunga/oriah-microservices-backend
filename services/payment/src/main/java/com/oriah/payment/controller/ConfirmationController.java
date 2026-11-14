@@ -85,6 +85,7 @@ public class ConfirmationController {
     @Operation(operationId = "listPendingConfirmations", summary = "Confirmations order has not answered yet, oldest first",
             description = "Money recorded that nothing has acted on yet. `stuck` is true once one has waited longer than the settlement window "
                     + "(five minutes): someone should look. Settled, held and voided confirmations are not listed.")
+    @ApiResponse(responseCode = "200", description = "The confirmations order has not answered yet, oldest first")
     @GetMapping("/pending")
     public List<PendingView> pending() {
         return confirmations.pending(clock.instant());
@@ -99,6 +100,7 @@ public class ConfirmationController {
             content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "409", description = "already-voided, or confirmation-settled (it paid a sale: correcting it is a later phase's)",
             content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The confirmation, voided")
     @PostMapping("/{id}/void")
     public ConfirmationView voidConfirmation(@PathVariable("id") UUID id, @Valid @RequestBody VoidConfirmationRequest request, @AuthenticationPrincipal Jwt jwt) {
         return confirmations.voidConfirmation(id, request.reason(), Staff.of(jwt, false));
@@ -107,6 +109,7 @@ public class ConfirmationController {
     @Operation(operationId = "getConfirmation", summary = "One confirmation, with what became of the money")
     @ApiResponse(responseCode = "404", description = "confirmation-not-found",
             content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "200", description = "The confirmation, with what became of the money")
     @GetMapping("/{id}")
     public ConfirmationView get(@PathVariable("id") UUID id) {
         return confirmations.get(id);
