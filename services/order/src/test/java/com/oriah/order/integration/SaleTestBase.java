@@ -94,6 +94,8 @@ abstract class SaleTestBase {
     @MockitoBean
     InventoryClient inventory;
     @MockitoBean
+    com.oriah.order.client.CatalogLookupClient catalogLookup;
+    @MockitoBean
     @SuppressWarnings("unused")
     JwtDecoder jwtDecoder;
 

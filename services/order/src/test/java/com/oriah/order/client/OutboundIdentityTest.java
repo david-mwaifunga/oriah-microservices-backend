@@ -101,6 +101,7 @@ class OutboundIdentityTest {
         r.add("spring.cloud.openfeign.client.config.shipping.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.inventory.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.catalog.url", WM::baseUrl);
+        r.add("spring.cloud.openfeign.client.config.catalogLookup.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.customer.url", WM::baseUrl);
         r.add("spring.security.oauth2.client.provider.keycloak.token-uri", () -> WM.baseUrl() + TOKEN_PATH);
         r.add("spring.security.oauth2.client.registration.oriah-admin.client-secret", () -> "test-secret");
@@ -113,6 +114,9 @@ class OutboundIdentityTest {
 
     @Autowired
     private OrderRepository orders;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Autowired
     private OAuth2AuthorizedClientService authorizedClients;
@@ -240,6 +244,27 @@ class OutboundIdentityTest {
         // One value, not two appended: the machine-token interceptor is
         // shipping's alone, so it must not reach this client.
         assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer shopper-token");
+    }
+
+    @Test
+    @DisplayName("catalog's box-name lookup receives the PACKER's token -- once, and never order's machine token: it is catalog's internal door for a person")
+    void catalogLookupSeesThePackerNotTheServiceAccount() throws Exception {
+        String placed = place(shopper("kc-alice", "shopper-token"));
+        UUID id = UUID.fromString(com.jayway.jsonpath.JsonPath.read(placed, "$.id"));
+        UUID box = UUID.randomUUID();
+        jdbc.update("UPDATE orders SET status = 'PAID', hold_state = 'CONSUMED', paid_at = now(), receipt_number = 'OR-000001', paid_confirmation_id = ? WHERE id = ?", UUID.randomUUID(), id);
+        jdbc.update("UPDATE order_items SET box_variant_id = ?, box_line_id = ? WHERE order_id = ?", box, UUID.randomUUID(), id);
+        WM.stubFor(post(urlEqualTo("/api/v1/admin/variants/lookup")).willReturn(okJson(
+                "{\"results\":[{\"variantId\":\"" + box + "\",\"found\":true,\"productTitle\":\"Velvet box\",\"variantTitle\":\"Large\"}]}")));
+
+        String slip = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/admin/orders/" + id + "/dispatch")
+                        .with(jwt().jwt(j -> j.tokenValue("packer-token").subject("kc-dave")).authorities(new SimpleGrantedAuthority("ROLE_FULFILMENT_AGENT"))))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat((String) com.jayway.jsonpath.JsonPath.read(slip, "$.lines[0].box.name")).isEqualTo("Velvet box / Large");
+        var calls = WM.findAll(postRequestedFor(urlEqualTo("/api/v1/admin/variants/lookup")));
+        assertThat(calls).hasSize(1);
+        assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer packer-token");
     }
 
     @Test

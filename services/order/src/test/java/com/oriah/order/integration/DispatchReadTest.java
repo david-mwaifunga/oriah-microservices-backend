@@ -295,6 +295,65 @@ class DispatchReadTest extends SaleTestBase {
         assertThat(body(read(packer(), "/api/v1/admin/orders/" + id + "/dispatch")).get("boxSwapInProgress").asBoolean()).isTrue();
     }
 
+    // ------------------------------------------------------------------ the box's name: a courtesy asked of catalog with the packer's own token
+
+    private static com.oriah.order.client.CatalogLookupClient.Result named(String product, String variant) {
+        return new com.oriah.order.client.CatalogLookupClient.Result(List.of(new com.oriah.order.client.CatalogLookupClient.Result.Entry(SaleStubs.BOX_VARIANT, true,
+                product, variant)));
+    }
+
+    @Test
+    @DisplayName("the slip names the box, asking catalog once for the distinct boxes, and does not hold a database transaction open across the call")
+    void theSlipNamesTheBox() throws Exception {
+        UUID id = paidDelivery("YANGO", "ORIAH_COLLECTS", "150.00", 2);
+        java.util.concurrent.atomic.AtomicBoolean inTransaction = new java.util.concurrent.atomic.AtomicBoolean(true);
+        org.mockito.Mockito.doAnswer(call -> {
+            inTransaction.set(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            return named("Velvet box", "Large");
+        }).when(catalogLookup).lookup(org.mockito.ArgumentMatchers.any());
+
+        JsonNode slip = body(read(packer(), "/api/v1/admin/orders/" + id + "/dispatch"));
+
+        assertThat(slip.get("lines").get(0).get("box").get("name").asText()).isEqualTo("Velvet box / Large");
+        assertThat(slip.get("boxNamesAvailable").asBoolean()).isTrue();
+        assertThat(slip.has("boxNamesProblem")).isFalse();
+        org.mockito.ArgumentCaptor<com.oriah.order.client.CatalogLookupClient.Lookup> asked = org.mockito.ArgumentCaptor.forClass(com.oriah.order.client.CatalogLookupClient.Lookup.class);
+        org.mockito.Mockito.verify(catalogLookup, org.mockito.Mockito.times(1)).lookup(asked.capture());
+        assertThat(asked.getValue().variantIds()).containsExactly(SaleStubs.BOX_VARIANT);
+        assertThat(inTransaction.get()).as("no connection is held while catalog answers").isFalse();
+    }
+
+    @Test
+    @DisplayName("catalog not answering, or refusing, is no failure of the slip: 200 with the box's id, no name, and the reason (unavailable or forbidden)")
+    void aSlipSurvivesCatalog() throws Exception {
+        UUID id = paidDelivery("YANGO", "ORIAH_COLLECTS", "150.00", 1);
+
+        org.mockito.Mockito.doThrow(SaleStubs.feign(503, null)).when(catalogLookup).lookup(org.mockito.ArgumentMatchers.any());
+        JsonNode down = body(read(packer(), "/api/v1/admin/orders/" + id + "/dispatch"));
+        assertThat(down.get("lines").get(0).get("box").get("variantId").asText()).isEqualTo(SaleStubs.BOX_VARIANT.toString());
+        assertThat(down.get("lines").get(0).get("box").has("name")).isFalse();
+        assertThat(down.get("boxNamesAvailable").asBoolean()).isFalse();
+        assertThat(down.get("boxNamesProblem").asText()).isEqualTo("unavailable");
+
+        org.mockito.Mockito.doThrow(SaleStubs.feign(403, null)).when(catalogLookup).lookup(org.mockito.ArgumentMatchers.any());
+        JsonNode refused = body(read(packer(), "/api/v1/admin/orders/" + id + "/dispatch"));
+        assertThat(refused.get("boxNamesAvailable").asBoolean()).isFalse();
+        assertThat(refused.get("boxNamesProblem").asText()).isEqualTo("forbidden");
+    }
+
+    @Test
+    @DisplayName("an order with no box on any line asks catalog nothing")
+    void noBoxNoCall() throws Exception {
+        UUID id = paidDelivery("YANGO", "ORIAH_COLLECTS", "150.00", 1);
+        jdbc.update("UPDATE order_items SET box_variant_id = NULL, box_line_id = NULL WHERE order_id = ?", id);
+
+        JsonNode slip = body(read(packer(), "/api/v1/admin/orders/" + id + "/dispatch"));
+
+        assertThat(slip.get("lines").get(0).has("box")).isFalse();
+        assertThat(slip.get("boxNamesAvailable").asBoolean()).isTrue();
+        org.mockito.Mockito.verify(catalogLookup, org.mockito.Mockito.never()).lookup(org.mockito.ArgumentMatchers.any());
+    }
+
     // ------------------------------------------------------------------ what the shopper and staff read of an order
 
     @Test

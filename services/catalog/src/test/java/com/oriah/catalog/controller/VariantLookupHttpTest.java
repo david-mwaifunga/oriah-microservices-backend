@@ -204,7 +204,7 @@ class VariantLookupHttpTest {
     }
 
     @Test
-    @DisplayName("only a catalogue admin or a procurement admin may ask; a shopper and a signed-out caller may not")
+    @DisplayName("only a catalogue admin, a procurement admin or a packer (to name the box on a packing slip) may ask; a shopper, a sales person and a signed-out caller may not")
     void whoMayAsk() throws Exception {
         String body = "{\"variantIds\":[\"" + UUID.randomUUID() + "\"]}";
 
@@ -220,5 +220,12 @@ class VariantLookupHttpTest {
                 .andExpect(status().isOk());
         mvc.perform(post(LOOKUP).with(procurementAdmin()).contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
+        // Phase 8: the order system asks, with the packer's own token, what a box is called, so the slip can name it. Identity only: no price, no cost.
+        mvc.perform(post(LOOKUP).with(jwt().jwt(token -> token.subject("dave")).authorities(new SimpleGrantedAuthority("ROLE_FULFILMENT_AGENT")))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk());
+        mvc.perform(post(LOOKUP).with(jwt().authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT")))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden());
     }
 }

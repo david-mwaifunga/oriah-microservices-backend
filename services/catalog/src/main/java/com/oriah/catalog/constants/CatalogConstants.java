@@ -73,6 +73,12 @@ public final class CatalogConstants {
     public static final String ROLE_PROCUREMENT_ADMIN = "PROCUREMENT_ADMIN";
 
     /**
+     * A packer or driver (Phase 8), who may resolve the name of a box so a packing slip can say which box goes out ({@code VariantLookupController}:
+     * identity only, never a price). Defined in the realm like every capability; validate_roles.py checks it.
+     */
+    public static final String ROLE_FULFILMENT_AGENT = "FULFILMENT_AGENT";
+
+    /**
      * Reading what stock cost. The pricing screen shows landed cost, so everything under {@link #PRICING_BASE} needs it as well
      * as {@link #ROLE_CATALOG_ADMIN}: cost is gated at the API, never by hiding a column in a screen. Defined in the realm like
      * every capability; validate_roles.py checks it.

@@ -2,25 +2,20 @@ package com.oriah.order.service;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.oriah.observability.ResourceNotFoundException;
-import com.oriah.order.exception.SalesProblem;
-import com.oriah.order.model.Order;
-import com.oriah.order.model.OrderItem;
 import com.oriah.order.model.OrderStatus;
-import com.oriah.order.repository.OrderRepository;
-import com.oriah.order.service.DispatchService.Recorded;
-import com.oriah.order.service.DispatchService.Step;
+import com.oriah.order.client.CatalogLookupClient;
+
+import feign.FeignException;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -69,19 +64,22 @@ public class DispatchReadService {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Slip(UUID orderId, String receiptNumber, OrderStatus status, String stage, Instant paidAt, boolean selfCollect, boolean fareDue,
                        boolean boxSwapInProgress, SlipDelivery delivery, List<SlipLine> lines, Instant packedAt, Instant dispatchedAt, String reference,
-                       BigDecimal farePaid, Instant deliveredAt) {
+                       BigDecimal farePaid, Instant deliveredAt, boolean boxNamesAvailable, String boxNamesProblem) {
+
+        Slip withNames(List<SlipLine> named, boolean available, String problem) {
+            return new Slip(orderId, receiptNumber, status, stage, paidAt, selfCollect, fareDue, boxSwapInProgress, delivery, named, packedAt, dispatchedAt, reference,
+                    farePaid, deliveredAt, available, problem);
+        }
     }
 
     private final JdbcTemplate jdbc;
-    private final OrderRepository orders;
-    private final DispatchService dispatch;
-    private final BoxSwaps swaps;
+    private final DispatchSlips slips;
+    private final CatalogLookupClient lookup;
 
-    public DispatchReadService(JdbcTemplate jdbc, OrderRepository orders, DispatchService dispatch, BoxSwaps swaps) {
+    public DispatchReadService(JdbcTemplate jdbc, DispatchSlips slips, CatalogLookupClient lookup) {
         this.jdbc = jdbc;
-        this.orders = orders;
-        this.dispatch = dispatch;
-        this.swaps = swaps;
+        this.slips = slips;
+        this.lookup = lookup;
     }
 
     /**
@@ -118,38 +116,40 @@ public class DispatchReadService {
     }
 
     /**
-     * The packing slip of one order.
+     * The packing slip of one order: read in a short transaction ({@link DispatchSlips}), then the boxes are NAMED by catalog, outside any transaction (no
+     * connection is held while another service answers). A name is a courtesy: whatever catalog does, the slip answers 200.
      *
-     * @throws ResourceNotFoundException 404, no such order
-     * @throws SalesProblem 409 {@code order-not-paid}, before anything personal is read, for an order that is unpaid or was cancelled
+     * @throws com.oriah.observability.ResourceNotFoundException 404, no such order
+     * @throws com.oriah.order.exception.SalesProblem 409 {@code order-not-paid}, before anything personal is read, for an order that is unpaid or was cancelled
      */
-    @Transactional(readOnly = true)
     public Slip slip(UUID orderId, Viewer viewer) {
-        Order order = orders.findById(orderId).orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId.toString()));
-        if (order.paidAt() == null || List.of(OrderStatus.CREATED, OrderStatus.PAYMENT_SUBMITTED, OrderStatus.EXPIRED, OrderStatus.CANCELLED).contains(order.status())) {
-            throw new SalesProblem(HttpStatus.CONFLICT, "order-not-paid", "this order is " + order.status() + ", not paid: there is nothing to pack or send yet");
+        Slip draft = slips.read(orderId, viewer);
+        List<UUID> boxes = draft.lines().stream().filter(l -> l.box() != null).map(l -> l.box().variantId()).distinct().toList();
+        if (boxes.isEmpty()) {
+            return draft.withNames(draft.lines(), true, null);
         }
-        log.info("Packing slip of order {} read by {}", orderId, viewer.actor());
-        Map<Step, Recorded> steps = dispatch.stepsOf(orderId);
-        Recorded sent = steps.get(Step.DISPATCHED);
-        SlipDelivery delivery = null;
-        if (!order.isSelfCollect() && order.hasDeliveryDetails() && (order.status() != OrderStatus.DELIVERED || viewer.mayViewDeliveredPerson())) {
-            delivery = new SlipDelivery(order.deliveryOption(), order.deliveryOptionName(), order.deliveryPayer(), order.deliveryTownName(), order.recipientName(),
-                    order.recipientPhone(), new Address(order.addressLine1(), order.addressLine2(), order.addressCity(), order.addressState(),
-                            order.addressPostalCode(), order.addressCountry()));
+        try {
+            CatalogLookupClient.Result answer = lookup.lookup(new CatalogLookupClient.Lookup(boxes));
+            Map<UUID, String> names = new HashMap<>();
+            if (answer != null && answer.results() != null) {
+                answer.results().stream().filter(e -> e.found() && e.productTitle() != null)
+                        .forEach(e -> names.put(e.variantId(), e.variantTitle() == null || e.variantTitle().isBlank() ? e.productTitle() : e.productTitle() + " / " + e.variantTitle()));
+            }
+            List<SlipLine> named = draft.lines().stream().map(l -> l.box() == null ? l
+                    : new SlipLine(l.lineId(), l.title(), l.quantity(), new Box(l.box().variantId(), names.get(l.box().variantId())))).toList();
+            return draft.withNames(named, true, null);
+        } catch (FeignException e) {
+            boolean refused = e.status() == 401 || e.status() == 403;
+            if (refused) {
+                log.error("catalog REFUSED the lookup of box names with {}: a role or a path is wrong (the slip is served without names)", e.status());
+            } else {
+                log.warn("catalog could not name the boxes of a packing slip (status {}): the slip is served without names", e.status());
+            }
+            return draft.withNames(draft.lines(), false, refused ? "forbidden" : "unavailable");
+        } catch (RuntimeException e) {
+            log.warn("catalog could not name the boxes of a packing slip ({}): the slip is served without names", e.toString());
+            return draft.withNames(draft.lines(), false, "unavailable");
         }
-        List<SlipLine> lines = order.items().stream()
-                .sorted(Comparator.comparing(OrderItem::title).thenComparing(OrderItem::id))
-                .map(i -> new SlipLine(i.id(), i.title(), i.quantity(), i.boxVariantId() == null ? null : new Box(i.boxVariantId(), null)))
-                .toList();
-        return new Slip(order.id(), order.receiptNumber(), order.status(), DispatchService.stage(order.status()), order.paidAt(), order.isSelfCollect(),
-                FareRule.due(order.deliveryOption(), order.deliveryPayer()), swaps.isInFlight(orderId), delivery, lines,
-                at(steps.get(Step.PACKED)), at(sent), sent == null ? null : sent.reference(), viewer.mayViewCost() && sent != null ? sent.farePaid() : null,
-                at(steps.get(Step.DELIVERED)));
-    }
-
-    private static Instant at(Recorded step) {
-        return step == null ? null : step.occurredAt();
     }
 
     private static Instant instant(java.sql.Timestamp t) {
