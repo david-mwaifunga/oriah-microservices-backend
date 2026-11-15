@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.access.AccessDeniedException;
 
 import com.oriah.order.exception.SalesProblem;
+import com.oriah.order.model.SaleKind;
 
 /**
  * The date a staff-recorded sale is made at, and who may say it (Phase 9, design r4 section A). A pure rule: no Spring, no database, no clock of its own.
@@ -16,8 +17,8 @@ import com.oriah.order.exception.SalesProblem;
  * ended must still get that promotion):
  *
  * <ul>
- *   <li>{@link Kind#LIVE_PHONE}: the sale is happening now (a call or a chat). Dated now; a date typed with it is refused.</li>
- *   <li>{@link Kind#LATE_PAPER}: a sale written on paper and typed in later. Recorded at its TRUE date (CLIENT_DECISIONS 1.1, Q30), of any age; priced
+ *   <li>{@link SaleKind#LIVE_PHONE}: the sale is happening now (a call or a chat). Dated now; a date typed with it is refused.</li>
+ *   <li>{@link SaleKind#LATE_PAPER}: a sale written on paper and typed in later. Recorded at its TRUE date (CLIENT_DECISIONS 1.1, Q30), of any age; priced
  *       with the price and promotion of that day. A reason is ALWAYS required, because a date the person chose decides the price. Past the window of
  *       CLIENT_DECISIONS 8.2 (72 hours, the one {@code oriah.sales.backdate-window} payment also reads) only someone who may back-date a sale may key it.</li>
  * </ul>
@@ -25,11 +26,6 @@ import com.oriah.order.exception.SalesProblem;
  * Everything is judged to the microsecond the database keeps, so the date an event reports is exactly the date the row holds.
  */
 public final class SaleDating {
-
-    /** The two kinds of staff sale. */
-    public enum Kind {
-        LIVE_PHONE, LATE_PAPER
-    }
 
     /** A phone's clock running ahead: a time this far ahead is "now", beyond it is a mistake. */
     public static final Duration CLOCK_SKEW = Duration.ofMinutes(5);
@@ -54,9 +50,9 @@ public final class SaleDating {
      * @throws SalesProblem 400 {@code invalid-occurred-at} (a date on a live sale, none on a paper one, or one in the future); 400 {@code backdate-reason-required}
      * @throws AccessDeniedException (403) a date beyond the window by someone who may not back-date
      */
-    public static Dated check(Kind kind, Instant requested, Instant now, Duration window, boolean mayBackdate, String reason) {
+    public static Dated check(SaleKind kind, Instant requested, Instant now, Duration window, boolean mayBackdate, String reason) {
         Instant clock = now.truncatedTo(ChronoUnit.MICROS);
-        if (kind == Kind.LIVE_PHONE) {
+        if (kind == SaleKind.LIVE_PHONE) {
             if (requested != null) {
                 throw new SalesProblem(HttpStatus.BAD_REQUEST, "invalid-occurred-at",
                         "a sale taken now is dated now: a sale typed in later from paper is recorded as a late paper sale, with its date");

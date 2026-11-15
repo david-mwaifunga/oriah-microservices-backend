@@ -146,6 +146,7 @@ public record PlaceOrderRequest(
          */
         @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
         @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        @com.oriah.money.NgweeAmount
         java.math.BigDecimal deliveryAmount,
 
         /**
@@ -155,6 +156,7 @@ public record PlaceOrderRequest(
          */
         @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
         @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        @com.oriah.money.NgweeAmount
         java.math.BigDecimal shippingAmount,
 
         /**
@@ -164,6 +166,7 @@ public record PlaceOrderRequest(
          */
         @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
         @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        @com.oriah.money.NgweeAmount
         java.math.BigDecimal total
 ) {
 

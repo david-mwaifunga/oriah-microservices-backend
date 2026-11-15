@@ -155,7 +155,7 @@ public class OrderController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id) {
         return service.findById(id)
-                .filter(o -> o.keycloakId().equals(jwt.getSubject()))
+                .filter(o -> o.isOwnedBy(jwt.getSubject()))
                 .map(views::shopper)
                 .orElseThrow(() -> unknownOrder(id));
     }

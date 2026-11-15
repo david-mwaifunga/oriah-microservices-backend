@@ -9,6 +9,7 @@ import java.util.UUID;
 
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.oriah.money.Ngwee;
+import com.oriah.order.model.Channel;
 import com.oriah.order.model.Order;
 import com.oriah.order.model.OrderItem;
 import com.oriah.order.model.OrderStatus;
@@ -29,7 +30,7 @@ import com.oriah.order.model.OrderStatus;
 @JsonPropertyOrder({"orderId", "keycloakId", "previousStatus", "newStatus", "total", "currency", "subtotal", "shippingAmount", "discountAmount",
         "deliveryOption", "paymentIntentId", "lines",
         "confirmationId", "receiptNumber", "arrivedAt", "recordedAt", "paymentMethod", "paymentGross", "paymentFee", "paymentNet",
-        "deliveryTownId", "deliveryPayer", "republished"})
+        "deliveryTownId", "deliveryPayer", "republished", "channel", "occurredAt"})
 public record OrderPaidEvent(
         UUID orderId,
         String keycloakId,
@@ -53,7 +54,19 @@ public record OrderPaidEvent(
         BigDecimal paymentNet,
         UUID deliveryTownId,
         String deliveryPayer,
-        boolean republished
+        boolean republished,
+        /**
+         * Only on an order staff recorded for a caller with no account (Phase 9): {@code PHONE}. Absent on a web order, so every web event is exactly the bytes it
+         * was and no consumer needs a new declaration. The owner ({@code keycloakId}) is null on such an order: there is no shopper to tell.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String channel,
+        /**
+         * Only with {@code channel}: the date the sale TRULY happened (a late paper sale keyed days later), which is not the date the event was written. Nothing
+         * personal travels with it: never the caller, the recorder, a phone, an address or free text.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        java.time.Instant occurredAt
 ) {
     public static final String TYPE = "order.paid";
     public static final int SCHEMA_VERSION = 2;
@@ -92,7 +105,9 @@ public record OrderPaidEvent(
                 stored(order.subtotal()), stored(order.shippingAmount()), stored(order.discountAmount()), order.deliveryOption(), order.paymentIntentId(),
                 order.items().stream().map(OrderPaidEvent::line).sorted(LINE_ORDER).toList(),
                 payment.confirmationId(), order.receiptNumber(), payment.arrivedAt(), payment.recordedAt(), payment.method(), stored(payment.gross()),
-                stored(payment.fee()), stored(payment.net()), order.deliveryTownId(), order.deliveryPayer(), republished);
+                stored(payment.fee()), stored(payment.net()), order.deliveryTownId(), order.deliveryPayer(), republished,
+                order.channel() == Channel.PHONE ? order.channel().name() : null,
+                order.channel() == Channel.PHONE ? order.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS) : null);
     }
 
     private static Line line(OrderItem item) {

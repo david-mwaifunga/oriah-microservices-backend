@@ -148,6 +148,20 @@ class OrderEventConsumerTest {
     }
 
     @Test
+    @DisplayName("the event of an order staff recorded for a caller with no account (no owner, channel PHONE, the date the sale happened) lets go of its hold like any other (Phase 9)")
+    void aPhoneOrderEventReleasesToo() {
+        UUID order = UUID.randomUUID();
+        UUID id = hold(order, 2);
+
+        send("order.cancelled", order, "{\"orderId\":\"" + order + "\",\"keycloakId\":null,\"previousStatus\":\"CREATED\",\"newStatus\":\"CANCELLED\","
+                + "\"total\":4500.00,\"currency\":\"ZMW\",\"lines\":[],\"reservationId\":\"" + id + "\",\"channel\":\"PHONE\","
+                + "\"occurredAt\":\"2026-11-12T09:30:00.123456Z\"}", "order");
+
+        assertThat(reservations.get(id).status()).isEqualTo(Status.RELEASED);
+        assertThat(row().reserved()).isZero();
+    }
+
+    @Test
     @DisplayName("an order that expired lets go of its hold too")
     void expiredReleases() {
         UUID order = UUID.randomUUID();

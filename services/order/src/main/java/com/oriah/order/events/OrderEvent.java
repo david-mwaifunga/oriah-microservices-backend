@@ -9,6 +9,7 @@ import java.util.UUID;
 
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.oriah.money.Ngwee;
+import com.oriah.order.model.Channel;
 import com.oriah.order.model.Order;
 import com.oriah.order.model.OrderItem;
 import com.oriah.order.model.OrderStatus;
@@ -46,7 +47,7 @@ import com.oriah.order.model.OrderStatus;
  * consumers are built against.
  */
 @JsonPropertyOrder({"orderId", "keycloakId", "previousStatus", "newStatus", "total", "currency",
-        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId", "dispatch"})
+        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId", "dispatch", "channel", "occurredAt"})
 public record OrderEvent(
         UUID orderId,
         String keycloakId,
@@ -72,7 +73,19 @@ public record OrderEvent(
          * nowhere else. Absent everywhere else, so the bytes of every other event are what they always were.
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        Dispatch dispatch
+        Dispatch dispatch,
+        /**
+         * Only on an order staff recorded for a caller with no account (Phase 9): {@code PHONE}. Absent on a web order, so every web event is exactly the bytes it
+         * was and no consumer needs a new declaration. The owner ({@code keycloakId}) is null on such an order: there is no shopper to tell.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String channel,
+        /**
+         * Only with {@code channel}: the date the sale TRULY happened (a late paper sale keyed days later), which is not the date the event was written. Nothing
+         * personal travels with it: never the caller, the recorder, a phone, an address or free text.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        java.time.Instant occurredAt
 ) {
     public static final String TOPIC = "oriah.order";
     public static final String AGGREGATE_TYPE = "order";
@@ -126,7 +139,9 @@ public record OrderEvent(
                 order.paymentIntentId(),
                 order.items().stream().map(OrderEvent::line).sorted(LINE_ORDER).toList(),
                 order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.EXPIRED ? order.reservationId() : null,
-                null);
+                null,
+                order.channel() == Channel.PHONE ? order.channel().name() : null,
+                order.channel() == Channel.PHONE ? order.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS) : null);
     }
 
     /** The snapshot of an order that has just been shipped, carrying the dispatch. */
@@ -134,7 +149,8 @@ public record OrderEvent(
         OrderEvent base = of(order, previousStatus);
         return new OrderEvent(base.orderId, base.keycloakId, base.previousStatus, base.newStatus, base.total, base.currency, base.subtotal, base.shippingAmount,
                 base.discountAmount, base.deliveryOption, base.paymentIntentId, base.lines, base.reservationId, new Dispatch(
-                        dispatch.dispatchedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), stored(dispatch.farePaid()), dispatch.payer()));
+                        dispatch.dispatchedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), stored(dispatch.farePaid()), dispatch.payer()),
+                base.channel, base.occurredAt);
     }
 
     /** {@code order.<status in lower case>}: order.created, order.paid, ... order.cancelled. */

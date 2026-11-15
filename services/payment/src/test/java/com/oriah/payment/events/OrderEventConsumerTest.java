@@ -166,6 +166,18 @@ class OrderEventConsumerTest {
     }
 
     @Test
+    @DisplayName("order.paid of an order staff recorded for a caller with no account (no owner, channel PHONE, the date the sale happened) settles its confirmation like any other (Phase 9)")
+    void aPhoneOrderPaidSettles() {
+        UUID order = UUID.randomUUID();
+        UUID confirmation = confirmed(order, "1000.00");
+
+        deliver("order.paid", 2, order, "{\"orderId\":\"" + order + "\",\"keycloakId\":null,\"previousStatus\":\"CREATED\",\"newStatus\":\"PAID\","
+                + "\"confirmationId\":\"" + confirmation + "\",\"republished\":false,\"channel\":\"PHONE\",\"occurredAt\":\"2026-11-12T09:30:00.123456Z\"}");
+
+        assertThat(outcome(confirmation)).isEqualTo("SETTLED");
+    }
+
+    @Test
     @DisplayName("order.paid in its first version names no confirmation: it is read and ignored")
     void versionOneIsIgnored() {
         UUID order = UUID.randomUUID();

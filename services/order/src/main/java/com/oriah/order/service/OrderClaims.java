@@ -54,7 +54,7 @@ public class OrderClaims {
      */
     @Transactional
     public Claimed begin(String owner, UUID orderId, ClaimMethod method, String normalisedReference) {
-        Order order = repository.findById(orderId).filter(o -> o.keycloakId().equals(owner))
+        Order order = repository.findById(orderId).filter(o -> o.isOwnedBy(owner))
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId.toString()));
         if (order.settlingConfirmationId() != null) {
             throw new SalesProblem(HttpStatus.CONFLICT, "payment-being-applied",

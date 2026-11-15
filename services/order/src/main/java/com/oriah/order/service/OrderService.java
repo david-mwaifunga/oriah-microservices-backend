@@ -151,7 +151,7 @@ public class OrderService {
     @Transactional
     public Optional<Order> cancel(String owner, UUID orderId, String actor) {
         return repository.findById(orderId)
-                .filter(o -> o.keycloakId().equals(owner))
+                .filter(o -> o.isOwnedBy(owner))
                 .map(o -> move(requireNotBeingSettled(o), OrderStatus.CANCELLED, actor));
     }
 
@@ -238,6 +238,9 @@ public class OrderService {
         OrderStatus prev = order.status();
         order.transitionTo(target);
         if (target == OrderStatus.CANCELLED) {
+            // The status reaches the database first: a recorded (phone) order that delivers must keep its recipient and address until it is cancelled
+            // (orders_phone_delivery_whole), so the nulling below may only run once the row says CANCELLED.
+            repository.saveAndFlush(order);
             // An order that will never be sent keeps no recipient or address (the correction history, if any, is the audit). The entity never writes these
             // columns, so it is SQL, in this transaction; the entity forgets them too so the answer to the caller shows none.
             jdbc.update("""

@@ -37,8 +37,52 @@ public class Order extends BaseEntity {
     @Column(nullable = false)
     private UUID id;
 
-    @Column(name = "keycloak_id", nullable = false)
+    /** The shopper who owns this order; null only on a PHONE order (staff recorded it for a caller with no account). */
+    @Column(name = "keycloak_id")
     private String keycloakId;
+
+    // How the order was taken, and what a recorded order adds (Phase 9; V13). All written once, at recording, and never through the entity afterwards.
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10, updatable = false)
+    private Channel channel = Channel.WEB;
+
+    /** {@code user:<keycloak subject>} of the member of staff who recorded it; null on a web order. */
+    @Column(name = "recorded_by", length = 128, updatable = false)
+    private String recordedBy;
+
+    @Column(name = "caller_name", length = 120, updatable = false)
+    private String callerName;
+
+    @Column(name = "caller_phone", length = 16, updatable = false)
+    private String callerPhone;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "sale_kind", length = 12, updatable = false)
+    private SaleKind saleKind;
+
+    /** When the sale happened; placed_at stays the time it was keyed. */
+    @Column(name = "occurred_at", nullable = false, updatable = false)
+    private Instant occurredAt;
+
+    @Column(name = "backdate_reason", length = 200, updatable = false)
+    private String backdateReason;
+
+    @Column(name = "slip_reference", length = 40, updatable = false)
+    private String slipReference;
+
+    @Column(name = "request_hash", length = 64, updatable = false)
+    private String requestHash;
+
+    /** PUBLISHED (the shop's town price) or AGREED (keyed by staff for a delivery agreed by phone). */
+    @Column(name = "delivery_price_source", nullable = false, length = 10, updatable = false)
+    private String deliveryPriceSource = "PUBLISHED";
+
+    /** The delivery charge agreed by phone, as agreed: written once and never changed (the live charge, shipping_amount, may be waived). */
+    @Column(name = "delivery_agreed_amount", updatable = false)
+    private BigDecimal deliveryAgreedAmount;
+
+    @Column(name = "delivery_agreed_reason", length = 200, updatable = false)
+    private String deliveryAgreedReason;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
@@ -220,6 +264,10 @@ public class Order extends BaseEntity {
 
     private Order(String keycloakId, UUID shippingAddressId, String currency) {
         this.id = UUID.randomUUID();
+        if (keycloakId == null || keycloakId.isBlank()) {
+            // Only a recorded (PHONE) order has no owner, and it is built by Order.recorded; the database refuses the same (orders_owner_by_channel).
+            throw new IllegalArgumentException("A web order needs its owner: the shopper who placed it.");
+        }
         this.keycloakId = keycloakId;
         this.shippingAddressId = shippingAddressId;
         // Fails fast rather than defaulting. The old default was "USD" on a
@@ -237,6 +285,22 @@ public class Order extends BaseEntity {
         if (currency == null || currency.isBlank()) {
             throw new IllegalArgumentException(
                     "An order must name its currency; money with no unit is not an amount.");
+        }
+        this.currency = currency;
+        this.status = OrderStatus.CREATED;
+        this.subtotal = BigDecimal.ZERO;
+        this.total = BigDecimal.ZERO;
+        this.placedAt = Instant.now();
+        this.updatedAt = placedAt;
+        this.occurredAt = placedAt;
+    }
+
+    /** The order of a caller with no account, recorded by staff: no owner, the same delivery and totals rules as any order. Built by {@link #recorded}. */
+    private Order(String currency, Void recorded) {
+        this.id = UUID.randomUUID();
+        this.channel = Channel.PHONE;
+        if (currency == null || currency.isBlank()) {
+            throw new IllegalArgumentException("An order must name its currency; money with no unit is not an amount.");
         }
         this.currency = currency;
         this.status = OrderStatus.CREATED;
@@ -270,6 +334,11 @@ public class Order extends BaseEntity {
     public Order(String keycloakId, UUID shippingAddressId, String currency, String deliveryOption,
                  BigDecimal shippingAmount, UUID deliveryTownId, String deliveryPayer) {
         this(keycloakId, shippingAddressId, currency);
+        applyDelivery(deliveryOption, shippingAmount, deliveryTownId, deliveryPayer);
+    }
+
+    /** The delivery of any new order: its option, charge, town and payer, judged by the same rules whoever places it. */
+    private void applyDelivery(String deliveryOption, BigDecimal shippingAmount, UUID deliveryTownId, String deliveryPayer) {
         if (deliveryPayer != null && !deliveryPayer.equals("ORIAH_COLLECTS") && !deliveryPayer.equals("RECIPIENT_PAYS")) {
             throw new IllegalArgumentException("deliveryPayer must be ORIAH_COLLECTS or RECIPIENT_PAYS");
         }
@@ -300,6 +369,95 @@ public class Order extends BaseEntity {
         // Before any line is added, the total is already the delivery charge
         // -- a marked order must never hold a total that breaks the formula.
         recomputeTotals();
+    }
+
+    /**
+     * A new order staff record for a caller with no account (Phase 9): no owner, the caller and recorder kept, dated to when the sale happened. Every rule the
+     * database holds about it (V13) is refused here first, in plain words.
+     *
+     * @param sale            who and what: see {@link RecordedSale}
+     * @param deliveryOption  {@code SELF_COLLECT}, or the option agreed or priced
+     * @param shippingAmount  the delivery charge: K0.00 for a pickup or a recipient-paid courier, the published price, or the agreed amount
+     * @param deliveryTownId  the town; required for any delivery
+     * @param deliveryPayer   ORIAH_COLLECTS or RECIPIENT_PAYS; null for a pickup
+     * @throws IllegalArgumentException anything that makes no sense
+     */
+    public static Order recorded(RecordedSale sale, String currency, String deliveryOption, BigDecimal shippingAmount, UUID deliveryTownId, String deliveryPayer) {
+        if (sale == null || sale.recordedBy() == null || sale.recordedBy().isBlank()) {
+            throw new IllegalArgumentException("A recorded order names the member of staff who recorded it.");
+        }
+        if (sale.callerName() == null || sale.callerName().isBlank()) {
+            throw new IllegalArgumentException("A recorded order names its caller.");
+        }
+        if (sale.callerPhone() != null && !sale.callerPhone().matches("^\\+[0-9]{8,15}$")) {
+            throw new IllegalArgumentException("A caller's phone number is + and 8 to 15 digits.");
+        }
+        if (sale.kind() == null) {
+            throw new IllegalArgumentException("A recorded order says whether it is a live phone sale or a late paper sale.");
+        }
+        if (sale.requestHash() == null || !sale.requestHash().matches("^[0-9a-f]{64}$")) {
+            throw new IllegalArgumentException("A recorded order keeps the hash of the request it was made from.");
+        }
+        String reason = sale.backdateReason() == null ? null : sale.backdateReason().strip();
+        boolean late = sale.kind() == SaleKind.LATE_PAPER;
+        if (late != (reason != null) || (reason != null && (reason.length() < 5 || reason.length() > 200))) {
+            throw new IllegalArgumentException("A late paper sale has a reason of 5 to 200 characters; a live sale has none.");
+        }
+        boolean pickup = Quote.SELF_COLLECT.equals(deliveryOption);
+        if (sale.callerPhone() == null && !pickup) {
+            throw new IllegalArgumentException("A delivery needs the caller's phone number.");
+        }
+        Order order = new Order(currency, null);
+        if (sale.occurredAt() == null || sale.occurredAt().isAfter(order.placedAt.plusSeconds(300))) {
+            throw new IllegalArgumentException("A sale cannot have happened in the future.");
+        }
+        order.applyDelivery(deliveryOption, shippingAmount, deliveryTownId, deliveryPayer);
+        if (sale.agreedAmount() != null) {
+            if (pickup || deliveryTownId == null) {
+                throw new IllegalArgumentException("An agreed delivery is for a delivering option and a town.");
+            }
+            if (sale.agreedAmount().compareTo(order.shippingAmount) != 0) {
+                throw new IllegalArgumentException("The agreed delivery is the order's delivery charge.");
+            }
+            if (Quote.ORIAH_COLLECTS.equals(deliveryPayer) ? sale.agreedAmount().signum() <= 0 : sale.agreedAmount().signum() != 0) {
+                throw new IllegalArgumentException("An agreed delivery is more than K0.00 when Oriah collects it and K0.00 when the recipient pays the courier.");
+            }
+            order.deliveryPriceSource = "AGREED";
+            order.deliveryAgreedAmount = sale.agreedAmount().setScale(2, RoundingMode.UNNECESSARY);
+            order.deliveryAgreedReason = sale.agreedReason() == null ? null : sale.agreedReason().strip();
+        } else if (sale.agreedReason() != null) {
+            throw new IllegalArgumentException("A reason for an agreed delivery needs an agreed delivery.");
+        }
+        order.recordedBy = sale.recordedBy();
+        order.callerName = sale.callerName().strip();
+        order.callerPhone = sale.callerPhone();
+        order.saleKind = sale.kind();
+        order.occurredAt = sale.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        order.backdateReason = reason;
+        order.slipReference = sale.slipReference() == null || sale.slipReference().isBlank() ? null : sale.slipReference().strip();
+        order.requestHash = sale.requestHash();
+        return order;
+    }
+
+    public Channel channel() { return channel; }
+    public String recordedBy() { return recordedBy; }
+    public String callerName() { return callerName; }
+    public String callerPhone() { return callerPhone; }
+    public SaleKind saleKind() { return saleKind; }
+    public Instant occurredAt() { return occurredAt; }
+    public String backdateReason() { return backdateReason; }
+    public String slipReference() { return slipReference; }
+    public String requestHash() { return requestHash; }
+    public String deliveryPriceSource() { return deliveryPriceSource; }
+    public BigDecimal deliveryAgreedAmount() { return deliveryAgreedAmount; }
+    public String deliveryAgreedReason() { return deliveryAgreedReason; }
+
+    /**
+     * Whether this shopper owns the order. A recorded order is owned by nobody, so it is no shopper's: {@code null}-safe, because the one place an owner is
+     * null is exactly where a careless {@code equals} would throw instead of answering "not yours".
+     */
+    public boolean isOwnedBy(String subject) {
+        return keycloakId != null && subject != null && keycloakId.equals(subject);
     }
 
     public String recipientName() { return recipientName; }

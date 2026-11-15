@@ -13,7 +13,7 @@ import org.springframework.security.access.AccessDeniedException;
 
 import com.oriah.order.exception.SalesProblem;
 import com.oriah.order.service.SaleDating.Dated;
-import com.oriah.order.service.SaleDating.Kind;
+import com.oriah.order.model.SaleKind;
 
 /**
  * The date a staff-recorded sale is made at, and who may say it (Phase 9, design r4 section A). Two kinds, chosen by the person on the form:
@@ -34,11 +34,11 @@ class SaleDatingTest {
     private static final String REASON = "the paper note was found in the shop drawer";
 
     private static Dated live(Instant typed) {
-        return SaleDating.check(Kind.LIVE_PHONE, typed, NOW, WINDOW, false, null);
+        return SaleDating.check(SaleKind.LIVE_PHONE, typed, NOW, WINDOW, false, null);
     }
 
     private static Dated late(Instant typed, boolean mayBackdate, String reason) {
-        return SaleDating.check(Kind.LATE_PAPER, typed, NOW, WINDOW, mayBackdate, reason);
+        return SaleDating.check(SaleKind.LATE_PAPER, typed, NOW, WINDOW, mayBackdate, reason);
     }
 
     private static void refusedAs(Runnable call, HttpStatus status, String code) {
@@ -51,7 +51,7 @@ class SaleDatingTest {
     @Test
     @DisplayName("a live sale is dated now, to the microsecond the database keeps, with no reason")
     void aLiveSaleIsNow() {
-        Dated d = SaleDating.check(Kind.LIVE_PHONE, null, Instant.parse("2026-11-20T10:00:00.123456789Z"), WINDOW, false, null);
+        Dated d = SaleDating.check(SaleKind.LIVE_PHONE, null, Instant.parse("2026-11-20T10:00:00.123456789Z"), WINDOW, false, null);
 
         assertThat(d.occurredAt()).isEqualTo(Instant.parse("2026-11-20T10:00:00.123456Z"));
         assertThat(d.reason()).isNull();
