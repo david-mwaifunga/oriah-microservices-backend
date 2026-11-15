@@ -60,9 +60,13 @@ CREATE TABLE confirmation_fact (
     fee              NUMERIC(12, 2),
     arrived_at       TIMESTAMPTZ,
     voided_at        TIMESTAMPTZ,
+    held_at          TIMESTAMPTZ,
     outcome          VARCHAR(10),
     held_reason      VARCHAR(30),
     owed_gross       NUMERIC(12, 2),
+    -- Who the event says did it, and when its producer recorded it: what the rows derived from this fact carry.
+    actor            VARCHAR(128),
+    source_recorded_at TIMESTAMPTZ,
     source_event_id  UUID,
     created_at       TIMESTAMPTZ  NOT NULL DEFAULT now(),
     PRIMARY KEY (confirmation_id, kind)

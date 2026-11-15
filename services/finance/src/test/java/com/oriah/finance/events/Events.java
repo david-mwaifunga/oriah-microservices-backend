@@ -153,4 +153,113 @@ final class Events {
         m.put("dispatch", dispatch);
         return bytes(m);
     }
+
+    // ------------------------------------------------------------------ payment
+
+    /** {@code payment.confirmed}: money reached Oriah on {@code arrivedAt}; {@code attempt} counts the announcements of the same confirmation. */
+    static byte[] confirmed(UUID confirmation, UUID order, String gross, String fee, Instant arrivedAt, int attempt) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("confirmationId", confirmation);
+        m.put("orderId", order);
+        m.put("method", "MTN");
+        m.put("reference", "MP2411ABC");
+        m.put("gross", k(gross));
+        m.put("fee", k(fee));
+        m.put("net", k(gross).subtract(k(fee)));
+        m.put("currency", "ZMW");
+        m.put("arrivedAt", arrivedAt);
+        m.put("backdateReason", "the customer paid on a Saturday");
+        m.put("confirmedBy", "user:kc-sam");
+        m.put("confirmedAt", arrivedAt.plusSeconds(600));
+        m.put("attempt", attempt);
+        return bytes(m);
+    }
+
+    static EventContext confirmedContext(UUID confirmation, Instant arrivedAt) {
+        return ctx("payment.confirmed", "payment_confirmation", confirmation, arrivedAt);
+    }
+
+    /** {@code payment.voided}: the confirmation was taken back at {@code voidedAt}; its money arrived on {@code arrivedAt} (absent on an event written before the field). */
+    static byte[] voided(UUID confirmation, UUID order, String gross, String fee, String outcome, Instant voidedAt, Instant arrivedAt) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("confirmationId", confirmation);
+        m.put("orderId", order);
+        m.put("method", "MTN");
+        m.put("reference", "MP2411ABC");
+        m.put("gross", k(gross));
+        m.put("fee", k(fee));
+        m.put("net", k(gross).subtract(k(fee)));
+        m.put("currency", "ZMW");
+        m.put("outcome", outcome);
+        m.put("reason", "keyed against the wrong order, Mary Banda said so");
+        m.put("voidedBy", "user:kc-sam");
+        m.put("voidedAt", voidedAt);
+        if (arrivedAt != null) {
+            m.put("arrivedAt", arrivedAt);
+        }
+        return bytes(m);
+    }
+
+    static EventContext voidedContext(UUID confirmation, Instant voidedAt) {
+        return ctx("payment.voided", "payment_confirmation", confirmation, voidedAt);
+    }
+
+    /** {@code payment.held}: the money could not pay a sale and is owed back to the customer from {@code arrivedAt}. */
+    static byte[] held(UUID confirmation, UUID order, String owed, Instant heldAt, Instant arrivedAt) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("confirmationId", confirmation);
+        m.put("orderId", order);
+        m.put("reason", "WRONG_AMOUNT");
+        m.put("owedGross", k(owed));
+        m.put("currency", "ZMW");
+        m.put("heldAt", heldAt);
+        if (arrivedAt != null) {
+            m.put("arrivedAt", arrivedAt);
+        }
+        return bytes(m);
+    }
+
+    static EventContext heldContext(UUID confirmation, Instant heldAt) {
+        return ctx("payment.held", "payment_confirmation", confirmation, heldAt);
+    }
+
+    // ------------------------------------------------------------------ procurement
+
+    /** One bill for the month inside {@code consignment.period_costs}. */
+    record Bill(int position, String costType, String amount, String effectiveOn) {
+    }
+
+    /** {@code consignment.period_costs}: revision 1 at receipt, a later one a correction (taking back {@code replaces}). */
+    static byte[] periodCosts(UUID consignment, int revision, Instant receivedAt, Instant amendedAt, List<Bill> costs, List<Bill> replaces) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("consignmentId", consignment);
+        m.put("consignmentReference", "C-000045");
+        m.put("revision", revision);
+        m.put("currency", "ZMW");
+        m.put("receivedAt", receivedAt);
+        m.put("amendedAt", amendedAt);
+        m.put("reason", amendedAt == null ? null : "the courier's bill was different");
+        m.put("costs", bills(costs));
+        m.put("replaces", bills(replaces));
+        m.put("recordedAt", amendedAt == null ? receivedAt : amendedAt);
+        return bytes(m);
+    }
+
+    private static List<Map<String, Object>> bills(List<Bill> bills) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Bill b : bills) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("position", b.position());
+            m.put("costType", b.costType());
+            m.put("amount", k(b.amount()));
+            m.put("effectiveOn", b.effectiveOn());
+            out.add(m);
+        }
+        return out;
+    }
+
+    static EventContext periodContext(UUID consignment, Instant occurredAt, int revision) {
+        return new EventContext(UUID.randomUUID(), "consignment.period_costs", "consignment", consignment.toString(), revision, 200L, occurredAt, occurredAt.plusSeconds(1),
+                "user:kc-maya", "procurement", 1);
+    }
 }

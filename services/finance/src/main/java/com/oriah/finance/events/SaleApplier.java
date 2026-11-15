@@ -43,13 +43,15 @@ public class SaleApplier {
     private final LedgerWriter ledger;
     private final AnomalyService anomalies;
     private final BusinessCalendar calendar;
+    private final FeeDerivation derivation;
 
-    public SaleApplier(JdbcTemplate jdbc, Locks locks, LedgerWriter ledger, AnomalyService anomalies, BusinessCalendar calendar) {
+    public SaleApplier(JdbcTemplate jdbc, Locks locks, LedgerWriter ledger, AnomalyService anomalies, BusinessCalendar calendar, FeeDerivation derivation) {
         this.jdbc = jdbc;
         this.locks = locks;
         this.ledger = ledger;
         this.anomalies = anomalies;
         this.calendar = calendar;
+        this.derivation = derivation;
     }
 
     @Transactional
@@ -85,6 +87,8 @@ public class SaleApplier {
             anomalies.raise("recovered-from-republish", p.confirmationId().toString(), Severity.WARN,
                     Map.of("orderId", p.orderId().toString(), "confirmationId", p.confirmationId().toString()), ctx.eventId());
         }
+        // The sale is one of the facts about this confirmation's money: a void that was already seen is now a void of money that paid a sale, a fee that differs is a mismatch.
+        derivation.derive(p.confirmationId(), ctx);
     }
 
     // ------------------------------------------------------------------ what a sale is
@@ -107,8 +111,9 @@ public class SaleApplier {
                     line.lineId(), p.confirmationId(), line.variantId(), line.productId(), line.quantity(), line.unitPrice(), discountOf(line), line.promotionId(),
                     line.title());
         }
-        jdbc.update("INSERT INTO confirmation_fact (confirmation_id, kind, order_id, method, gross, fee, arrived_at, source_event_id) VALUES (?, 'SALE', ?, ?, ?, ?, ?, ?) "
-                + "ON CONFLICT DO NOTHING", p.confirmationId(), p.orderId(), p.paymentMethod(), p.paymentGross(), p.paymentFee(), Timestamp.from(p.arrivedAt()), ctx.eventId());
+        jdbc.update("INSERT INTO confirmation_fact (confirmation_id, kind, order_id, method, gross, fee, arrived_at, actor, source_recorded_at, source_event_id) "
+                + "VALUES (?, 'SALE', ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", p.confirmationId(), p.orderId(), p.paymentMethod(), p.paymentGross(), p.paymentFee(),
+                Timestamp.from(p.arrivedAt()), ctx.actor(), instant(sourceRecordedAt(ctx, p)), ctx.eventId());
         jdbc.update("INSERT INTO order_ref (order_id, channel) VALUES (?, ?) ON CONFLICT DO NOTHING", p.orderId(), p.channel());
     }
 
