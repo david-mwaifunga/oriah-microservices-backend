@@ -227,6 +227,52 @@ class BoxSwapServiceTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM stock_action WHERE reverses_action_id = ?", Integer.class, sale.boxLineId())).isZero();
     }
 
+    @Test
+    @DisplayName("the same swap asked twice at once, with one replacement box's worth in stock, is made once and answered twice: the second is a repeat, never 'short' (order would call that proof nothing moved)")
+    void twoAtOnceAreOneSwap() throws Exception {
+        tx(() -> {
+            Inventory v = inventories.findByIdForUpdate(velvetBox).orElseThrow();
+            v.reserve(198);                      // exactly the two this sale needs are free
+            inventories.saveAndFlush(v);
+        });
+        UUID amendment = UUID.randomUUID();
+        UUID replacementLine = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+        java.util.concurrent.CountDownLatch holding = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(3);
+        try {
+            // Someone holds both stock rows, so both attempts are past their first look ("not made yet") before either can take the stock.
+            var holder = pool.submit(() -> txTemplate.executeWithoutResult(s -> {
+                inventories.findAllForUpdate(new java.util.TreeSet<>(List.of(box, velvetBox)));
+                holding.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(holding.await(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var first = pool.submit(() -> swaps.swap(amendment, order, product, sale.boxLineId(), replacementLine, velvetBox, "the customer asked for the velvet box", ACTOR));
+            var second = pool.submit(() -> swaps.swap(amendment, order, product, sale.boxLineId(), replacementLine, velvetBox, "the customer asked for the velvet box", ACTOR));
+            Thread.sleep(2500);
+            release.countDown();
+            holder.get(30, java.util.concurrent.TimeUnit.SECONDS);
+
+            var a = first.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            var b = second.get(30, java.util.concurrent.TimeUnit.SECONDS);
+
+            assertThat(List.of(a.replay(), b.replay())).as("one made the swap, the other is told it was made").containsExactlyInAnyOrder(false, true);
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM box_swap WHERE amendment_id = ?", Integer.class, amendment)).isEqualTo(1);
+        assertThat(row(velvetBox).onHand()).as("sold once").isEqualTo(198);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM stock_action WHERE reverses_action_id = ?", Integer.class, sale.boxLineId())).as("reversed once").isEqualTo(1);
+        // (no reconciliation here: the test's own hand-made reservation of 198 boxes has no reservation line behind it)
+    }
+
     @Autowired
     private org.springframework.transaction.support.TransactionTemplate txTemplate;
 

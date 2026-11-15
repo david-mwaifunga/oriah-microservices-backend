@@ -60,6 +60,9 @@ public class BoxSwapService {
                        int quantity, Instant occurredAt, Instant recordedAt, String reason, boolean replay) {
     }
 
+    /** The advisory-lock class for "one box swap, by amendment id". Held to the end of the transaction. */
+    private static final int AMENDMENT_LOCK_CLASS = 0x42535741;   // "BSWA"
+
     private final JdbcTemplate jdbc;
     private final InventoryRepository inventories;
     private final StockLedger ledger;
@@ -98,6 +101,10 @@ public class BoxSwapService {
         if (why.length() < 10 || why.length() > 200) {
             throw new IllegalArgumentException("a box swap needs a reason of 10 to 200 characters");
         }
+        // One attempt per amendment at a time, before anything is read: a second attempt waits here, then finds the swap the first one made and answers it as a
+        // repeat. Without this the second reads stock the first is about to take, is told "short", and order (which trusts "short" to mean nothing moved)
+        // would let go of the swap that did happen.
+        jdbc.query("SELECT pg_advisory_xact_lock(?, hashtext(?))", (org.springframework.jdbc.core.RowCallbackHandler) rs -> { }, AMENDMENT_LOCK_CLASS, amendmentId.toString());
         Optional<Swap> recorded = recorded(amendmentId);
         if (recorded.isPresent()) {
             Swap was = recorded.get();

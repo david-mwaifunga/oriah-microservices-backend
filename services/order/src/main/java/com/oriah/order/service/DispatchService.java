@@ -90,7 +90,7 @@ public class DispatchService {
         Map<Step, Recorded> steps = stepsOf(orderId);
         Recorded packed = steps.get(Step.PACKED);
         if (packed != null) {
-            return replay(order, steps, caller, "already-recorded", requestedAt == null || sameInstant(requestedAt, packed.occurredAt()),
+            return replay(order, steps, caller, "already-recorded", (requestedAt == null || sameInstant(requestedAt, packed.occurredAt())) && sameReason(backdateReason, packed),
                     "it was already packed at " + packed.occurredAt());
         }
         requireStatus(order, OrderStatus.PAID, "pack");
@@ -116,7 +116,7 @@ public class DispatchService {
         Recorded sent = steps.get(Step.DISPATCHED);
         if (sent != null) {
             boolean same = (reference == null || reference.equals(sent.reference())) && (farePaid == null || sent.farePaid() != null && farePaid.compareTo(sent.farePaid()) == 0)
-                    && (requestedAt == null || sameInstant(requestedAt, sent.occurredAt()));
+                    && (requestedAt == null || sameInstant(requestedAt, sent.occurredAt())) && sameReason(backdateReason, sent);
             return replay(order, steps, caller, "already-dispatched", same, "it was already dispatched at " + sent.occurredAt()
                     + (sent.reference() != null ? " with reference " + sent.reference() : "") + (caller.mayViewCost() && sent.farePaid() != null ? " and fare " + sent.farePaid() : ""));
         }
@@ -144,7 +144,7 @@ public class DispatchService {
         Map<Step, Recorded> steps = stepsOf(orderId);
         Recorded delivered = steps.get(Step.DELIVERED);
         if (delivered != null) {
-            return replay(order, steps, caller, "already-recorded", requestedAt == null || sameInstant(requestedAt, delivered.occurredAt()),
+            return replay(order, steps, caller, "already-recorded", (requestedAt == null || sameInstant(requestedAt, delivered.occurredAt())) && sameReason(backdateReason, delivered),
                     "it was already delivered at " + delivered.occurredAt());
         }
         Instant notBefore;
@@ -182,6 +182,14 @@ public class DispatchService {
         }
         String hint = order.status() == OrderStatus.PAID ? "it must be packed first" : "it is " + order.status();
         throw new SalesProblem(HttpStatus.CONFLICT, "dispatch-step-not-allowed", "cannot " + what + " this order: " + hint);
+    }
+
+    /**
+     * Whether a repeat's back-dating reason agrees with the one kept. Nothing sent, or nothing kept (the step was inside the window, so no reason was needed), agrees;
+     * a different reason must not be answered as a repeat, or the caller is told the audit trail holds words it does not.
+     */
+    private static boolean sameReason(String sent, Recorded kept) {
+        return sent == null || sent.isBlank() || kept.backdateReason() == null || sent.strip().equals(kept.backdateReason());
     }
 
     private static boolean sameInstant(Instant a, Instant b) {

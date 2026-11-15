@@ -368,6 +368,23 @@ class DispatchStepsTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("a back-dated step asked again: the same reason is a repeat; another reason is 409, never a 200 that pretends to keep it")
+    void aRepeatMustAgreeOnTheReasonKept() throws Exception {
+        UUID id = paidPickup();
+        jdbc.update("UPDATE orders SET paid_at = ? WHERE id = ?", java.sql.Timestamp.from(Instant.now().minus(Duration.ofDays(30))), id);
+        String old = "\"occurredAt\":\"" + Instant.now().minus(Duration.ofDays(10)) + "\"";
+        assertThat(step(packerWhoMayBackdate(), id, "pack", "{" + old + ",\"backdateReason\":\"the shop was shut for the holiday\"}").getResponse().getStatus()).isEqualTo(200);
+
+        MvcResult same = step(packerWhoMayBackdate(), id, "pack", "{" + old + ",\"backdateReason\":\"the shop was shut for the holiday\"}");
+        MvcResult other = step(packerWhoMayBackdate(), id, "pack", "{" + old + ",\"backdateReason\":\"the courier was late, not the shop\"}");
+
+        assertThat(json(same).get("replay").asBoolean()).isTrue();
+        assertThat(other.getResponse().getStatus()).isEqualTo(409);
+        assertThat(type(other)).endsWith("/already-recorded");
+        assertThat(stepRow(id, "PACKED").get("backdate_reason")).isEqualTo("the shop was shut for the holiday");
+    }
+
+    @Test
     @DisplayName("a step cannot be dated before the step it follows: shipping before it was packed, or delivering before it was shipped, is 400 invalid-occurred-at")
     void aStepCannotPrecedeTheOneBeforeIt() throws Exception {
         UUID id = paidDelivery("PLATINUM", "RECIPIENT_PAYS", "0.00");

@@ -396,4 +396,33 @@ class DispatchReadTest extends SaleTestBase {
         assertThat(order.has("dispatch")).isFalse();
         assertThat(order.get("receiptNumber").asText()).matches("OR-\\d{6}");
     }
+
+    @Test
+    @DisplayName("a page of orders, the shopper's and the staff's, carries each order's dispatch dates, read in one go")
+    void aPageCarriesTheDispatchDates() throws Exception {
+        UUID id = paidDelivery("YANGO", "ORIAH_COLLECTS", "150.00", 1);
+        step(id, "pack", "{}");
+        step(id, "ship", "{\"farePaid\":100,\"reference\":\"WB-4411\"}");
+
+        MvcResult myPage = mvc.perform(get("/api/v1/orders/me").with(alice())).andReturn();
+        MvcResult staffPage = mvc.perform(get("/api/v1/admin/orders").with(jwt().authorities(new SimpleGrantedAuthority("ROLE_ORDER_ADMIN"))
+                .jwt(j -> j.subject("kc-maya")))).andReturn();
+        assertThat(myPage.getResponse().getStatus()).as(myPage.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(staffPage.getResponse().getStatus()).as(staffPage.getResponse().getContentAsString()).isEqualTo(200);
+        JsonNode mine = body(myPage);
+        JsonNode staff = body(staffPage);
+
+        for (JsonNode page : new JsonNode[] {mine, staff}) {
+            JsonNode order = null;
+            for (JsonNode o : page.get("content")) {
+                if (id.toString().equals(o.get("id").asText())) {
+                    order = o;
+                }
+            }
+            assertThat(order).as("the order is on the page").isNotNull();
+            assertThat(order.get("dispatch").get("packedAt").asText()).isNotBlank();
+            assertThat(order.get("dispatch").get("reference").asText()).isEqualTo("WB-4411");
+            assertThat(order.toString()).doesNotContain("farePaid");
+        }
+    }
 }

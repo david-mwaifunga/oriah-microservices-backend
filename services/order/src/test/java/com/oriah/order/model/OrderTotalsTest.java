@@ -206,4 +206,18 @@ class OrderTotalsTest {
         assertThatThrownBy(() -> new Order("kc-alice", null, "ZMW", "SELF_COLLECT", new BigDecimal("0.001")))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    @DisplayName("a pickup is delivered to nobody: it can keep no recipient or address, and a delivered order's details are kept once")
+    void aPickupKeepsNoDelivery() {
+        Order pickup = selfCollect();
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> pickup.recordDelivery("Mulenga Chanda", "+260971234567", "Plot 12", null, "Lusaka", null, null, "ZM", null, null))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("nobody");
+
+        Order delivered = new Order("kc-alice", UUID.randomUUID(), "ZMW", "OWN_DELIVERY", new BigDecimal("125.00"));
+        delivered.recordDelivery("Mulenga Chanda", "+260971234567", "Plot 12", null, "Lusaka", null, null, "ZM", "Oriah delivery", "Lusaka");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> delivered.recordDelivery("Someone Else", "+260971234567", "Plot 1", null, "Lusaka", null, null, "ZM", null, null))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("already");
+    }
 }
