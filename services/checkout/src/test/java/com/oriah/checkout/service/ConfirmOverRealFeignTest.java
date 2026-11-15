@@ -304,7 +304,7 @@ class ConfirmOverRealFeignTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
                         {"shippingAddressId":"%s","deliveryOption":"OWN_DELIVERY","deliveryTownId":"%s",
-                         "payer":"ORIAH_COLLECTS","quoteDigest":"%s"}
+                         "payer":"ORIAH_COLLECTS","recipientName":"Mulenga Chanda","recipientPhone":"097 123 4567","quoteDigest":"%s"}
                         """.formatted(ADDRESS, TOWN, deliveredDigest())));
     }
 
@@ -381,6 +381,8 @@ class ConfirmOverRealFeignTest {
                 .withRequestBody(matchingJsonPath("$.deliveryTownId", equalTo(TOWN.toString())))
                 .withRequestBody(matchingJsonPath("$.payer", equalTo("ORIAH_COLLECTS")))
                 .withRequestBody(matchingJsonPath("$.shippingAddressId", equalTo(ADDRESS.toString())))
+                .withRequestBody(matchingJsonPath("$.recipientName", equalTo("Mulenga Chanda")))
+                .withRequestBody(matchingJsonPath("$.recipientPhone", equalTo("+260971234567")))
                 .withRequestBody(matchingJsonPath("$.quoteDigest", equalTo(deliveredDigest()))));
         DOWNSTREAM.verify(1, deleteRequestedFor(urlEqualTo("/api/v1/carts/me")));
     }

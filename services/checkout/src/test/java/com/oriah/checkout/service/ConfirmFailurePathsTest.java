@@ -149,7 +149,7 @@ class ConfirmFailurePathsTest {
 
     /** A delivered choice, to a town: the one that needs shipping to say the town is offered. */
     private ConfirmRequest deliveredRequest() {
-        return new ConfirmRequest(ADDRESS, "OWN_DELIVERY", TOWN, null, seen());
+        return new ConfirmRequest(ADDRESS, "OWN_DELIVERY", TOWN, null, seen(), "Mulenga Chanda", "0971234567");
     }
 
     private void addressIsTheCallers() {

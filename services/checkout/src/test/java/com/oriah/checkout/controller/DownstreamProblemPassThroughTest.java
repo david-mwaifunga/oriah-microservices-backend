@@ -159,7 +159,9 @@ class DownstreamProblemPassThroughTest {
     }
 
     private static String choice() {
-        return "\"shippingAddressId\":\"" + ADDRESS + "\",\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + TOWN + "\"";
+        // (the recipient is sent too: a preview ignores it, and a confirm needs it)
+        return "\"shippingAddressId\":\"" + ADDRESS + "\",\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + TOWN
+                + "\",\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"0971234567\"";
     }
 
     private ResultActions post(String path, String body) throws Exception {

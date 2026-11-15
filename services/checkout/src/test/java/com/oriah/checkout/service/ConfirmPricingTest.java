@@ -287,9 +287,13 @@ class ConfirmPricingTest {
         return new ConfirmRequest(ADDRESS, option, null, null, quoteDigest);
     }
 
-    /** A confirm for a delivered option to TOWN. */
+    /** Who the parcel is for, as the shopper typed it (a Zambian phone number written the way Zambians write it). */
+    private static final String RECIPIENT = "  Mulenga   Chanda ";
+    private static final String RECIPIENT_PHONE_TYPED = "097 123 4567";
+
+    /** A confirm for a delivered option to TOWN, to a named recipient. */
     private static ConfirmRequest confirmTo(String option, String payer, String quoteDigest) {
-        return new ConfirmRequest(ADDRESS, option, TOWN, payer, quoteDigest);
+        return new ConfirmRequest(ADDRESS, option, TOWN, payer, quoteDigest, RECIPIENT, RECIPIENT_PHONE_TYPED);
     }
 
     private PreviewResponse previewFor(String option) {
@@ -497,6 +501,31 @@ class ConfirmPricingTest {
     }
 
     @Test
+    @DisplayName("a delivered bag is placed with who it is for, tidied and in one spelling: the name trimmed, the phone as +260 and nine digits")
+    void aDeliveredBagIsPlacedWithItsRecipient() {
+        shippingOffers(selfCollect(), delivered("OWN_DELIVERY", "125.00"));
+        orderRecordsTotal("4625.00");
+
+        service.confirm(confirmTo("OWN_DELIVERY", ORIAH_COLLECTS, sawDelivered("OWN_DELIVERY", ORIAH_COLLECTS, "125.00", line(VARIANT, 1, "4500.00"))), "k");
+
+        assertThat(placement().recipientName()).isEqualTo("Mulenga Chanda");
+        assertThat(placement().recipientPhone()).isEqualTo("+260971234567");
+    }
+
+    @Test
+    @DisplayName("a recipient that cannot be read is refused before anything is asked of order: order's 400 would reach the shopper as a server fault")
+    void anUnreadableRecipientNeverReachesOrder() {
+        shippingOffers(selfCollect(), delivered("OWN_DELIVERY", "125.00"));
+        String saw = sawDelivered("OWN_DELIVERY", ORIAH_COLLECTS, "125.00", line(VARIANT, 1, "4500.00"));
+
+        assertThatThrownBy(() -> service.confirm(new ConfirmRequest(ADDRESS, "OWN_DELIVERY", TOWN, ORIAH_COLLECTS, saw, "Mulenga Chanda", "12345"), "k"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("phone");
+        assertThatThrownBy(() -> service.confirm(new ConfirmRequest(ADDRESS, "OWN_DELIVERY", TOWN, ORIAH_COLLECTS, saw, null, "0971234567"), "k"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("name");
+        nothingWasOrdered();
+    }
+
+    @Test
     @DisplayName("an option shipping does not offer at confirm is passed on as its own 409 refusal, and nothing is placed")
     void anOptionNotOfferedIsRefused() {
         // Withdrawn since preview, or never offered: checkout cannot tell which,
@@ -528,6 +557,8 @@ class ConfirmPricingTest {
         assertThat(placement().shippingAddressId()).isNull();
         assertThat(placement().deliveryTownId()).isNull();
         assertThat(placement().payer()).isNull();
+        assertThat(placement().recipientName()).as("a pickup has no recipient").isNull();
+        assertThat(placement().recipientPhone()).isNull();
     }
 
     @Test

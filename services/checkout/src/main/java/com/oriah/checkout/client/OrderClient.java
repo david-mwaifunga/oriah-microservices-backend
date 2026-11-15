@@ -30,7 +30,7 @@ public interface OrderClient {
 
     /** {@code unitPrice} is the LIST price; order takes the promotion's discount from catalog itself and refuses a quote that does not match. */
     record PlaceOrderRequest(UUID shippingAddressId, String currency, List<LineItem> items, String deliveryOption, UUID deliveryTownId, String payer,
-                             String quoteDigest) {
+                             String quoteDigest, String recipientName, String recipientPhone) {
     }
 
     record LineItem(UUID variantId, String title, Integer quantity, BigDecimal unitPrice) {

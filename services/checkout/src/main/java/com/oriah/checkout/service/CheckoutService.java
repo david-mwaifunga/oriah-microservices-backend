@@ -30,6 +30,7 @@ import com.oriah.checkout.resilience.DownstreamProblems;
 import com.oriah.checkout.resilience.ResilientFeignCaller;
 import com.oriah.money.Ngwee;
 import com.oriah.observability.ProblemTypes;
+import com.oriah.quote.DeliveryContact;
 import com.oriah.quote.Quote;
 import com.oriah.quote.QuoteDigest;
 import com.oriah.quote.QuoteLine;
@@ -354,6 +355,8 @@ public class CheckoutService {
      *     order, by the quote's digest).
      */
     public ConfirmResponse confirm(ConfirmRequest req, String idempotencyKey) {
+        // Who the parcel is for, read FIRST: an unreadable name or phone is the shopper's to fix, and order's 400 for it would reach them as a server fault.
+        Recipient recipient = Recipient.of(req);
         var myCart = mustCall(cart::getMyCart, "cart");
         if (myCart.items() == null || myCart.items().isEmpty()) {
             throw new CartEmptyException();
@@ -376,7 +379,7 @@ public class CheckoutService {
         requireTheQuoteTheShopperSaw(req.quoteDigest(), quote, priced);
 
         // 5) Place the order from the REPRICED lines. Order prices everything again, checks the same digest before it saves anything, and holds the pieces.
-        OrderClient.OrderResponse placed = place(req, priced, idempotencyKey);
+        OrderClient.OrderResponse placed = place(req, recipient, priced, idempotencyKey);
         log.info("Order placed orderId={} status={} total={} held until {}", placed.id(), placed.status(), placed.total(), placed.holdExpiresAt());
         requireOrderAgrees(placed, quote);
         requireOrderStillHeld(placed);
@@ -386,6 +389,21 @@ public class CheckoutService {
 
         return new ConfirmResponse(placed.id(), placed.status(), placed.total(), priced.currency(), placed.holdExpiresAt(),
                 "Your order is placed and its pieces are held for you until the time shown. Pay by mobile money or bank transfer, then give us the reference.");
+    }
+
+    /**
+     * Who the parcel is for, in the one spelling order keeps ({@link DeliveryContact}): the name tidied, the phone as {@code +260971234567}. Both null for
+     * self-collect, where nobody is delivered to, whatever was typed.
+     *
+     * @throws IllegalArgumentException (400) the name or the phone of a delivered option cannot be read
+     */
+    private record Recipient(String name, String phone) {
+        static Recipient of(ConfirmRequest req) {
+            if (Quote.SELF_COLLECT.equals(req.deliveryOption())) {
+                return new Recipient(null, null);
+            }
+            return new Recipient(DeliveryContact.name(req.recipientName()), DeliveryContact.phone(req.recipientPhone()));
+        }
     }
 
     /**
@@ -407,13 +425,14 @@ public class CheckoutService {
      * name (recognised by its problem TYPE, so another 409 from order is not mistaken for either). Each used to become a generic 500 for an answer the shopper
      * can act on.
      */
-    private OrderClient.OrderResponse place(ConfirmRequest req, RepricedBag priced, String idempotencyKey) {
+    private OrderClient.OrderResponse place(ConfirmRequest req, Recipient recipient, RepricedBag priced, String idempotencyKey) {
         OrderClient.OrderResponse placed;
         List<OrderClient.LineItem> items = priced.lines().stream()
                 .map(l -> new OrderClient.LineItem(l.variantId(), l.title(), l.quantity(), l.unitPrice())).toList();
         try {
             placed = resilient.callOrThrow("order", () -> order.place(idempotencyKey, new OrderClient.PlaceOrderRequest(
-                    req.shippingAddressId(), priced.currency(), items, req.deliveryOption(), req.deliveryTownId(), req.payer(), req.quoteDigest())));
+                    req.shippingAddressId(), priced.currency(), items, req.deliveryOption(), req.deliveryTownId(), req.payer(), req.quoteDigest(),
+                    recipient.name(), recipient.phone())));
         } catch (RuntimeException e) {
             java.util.Optional<java.net.URI> type = ResilientFeignCaller.answeredProblemType(e);
             if (type.filter(ProblemTypes.PRICING_CHANGED::equals).isPresent()) {

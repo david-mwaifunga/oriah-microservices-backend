@@ -2,6 +2,7 @@ package com.oriah.checkout.dto;
 
 import java.util.UUID;
 
+import com.oriah.quote.DeliveryContact;
 import com.oriah.quote.Quote;
 import com.oriah.quote.QuoteDigest;
 
@@ -15,6 +16,7 @@ import jakarta.validation.constraints.Size;
  */
 @AddressUnlessSelfCollect
 @TownUnlessSelfCollect
+@ContactUnlessSelfCollect
 public record ConfirmRequest(
         /**
          * Where to deliver. Not needed when the shopper collects
@@ -49,5 +51,23 @@ public record ConfirmRequest(
         @Size(min = 64, max = 64)
         @Pattern(regexp = QuoteDigest.PATTERN,
                 message = "must be 64 lower-case hex characters; take it from the preview response")
-        String quoteDigest
-) implements DeliveryChoice {}
+        String quoteDigest,
+
+        /**
+         * Who the parcel is for: required for every delivered option and refused for self-collect ({@link ContactUnlessSelfCollect}). The packer or the
+         * driver needs a name to ask for and a number to ring, and nothing else in the system holds either (a shopper's account has a name and an
+         * email; an address has neither). Kept on the order as typed by whoever places it, so a parcel for a friend goes to the friend.
+         */
+        @Size(max = DeliveryContact.NAME_MAX)
+        String recipientName,
+
+        /** The recipient's phone number as typed (+260 97 123 4567, 097 123 4567, 0971234567 ...); checkout and order keep it as +260971234567. */
+        @Size(max = 40)
+        String recipientPhone
+) implements DeliveryChoice {
+
+    /** A confirm with no recipient: self-collect, where nobody is delivered to. */
+    public ConfirmRequest(UUID shippingAddressId, String deliveryOption, UUID deliveryTownId, String payer, String quoteDigest) {
+        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, null, null);
+    }
+}

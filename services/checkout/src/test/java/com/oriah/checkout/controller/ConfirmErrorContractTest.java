@@ -121,6 +121,8 @@ class ConfirmErrorContractTest {
     private static final String DIGEST = "\"quoteDigest\":\"" + "0".repeat(64) + "\"";
     private static final String ADDRESS = "\"shippingAddressId\":\"11111111-1111-1111-1111-111111111111\"";
     private static final String TOWN = "\"deliveryTownId\":\"55555555-5555-5555-5555-555555555555\"";
+    /** Who the parcel is for, typed the way a Zambian types a phone number. */
+    private static final String CONTACT = "\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"097 123 4567\"";
 
     @Test
     @DisplayName("the delivery option is required: confirm places the option the shopper named")
@@ -204,7 +206,54 @@ class ConfirmErrorContractTest {
     @Test
     @DisplayName("a delivered choice with an address, a town and a payer is accepted")
     void aWholeDeliveredChoiceIsAccepted() throws Exception {
-        confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + ",\"payer\":\"RECIPIENT_PAYS\"," + DIGEST + "}")
+        confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + ",\"payer\":\"RECIPIENT_PAYS\"," + CONTACT + "," + DIGEST + "}")
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("a delivery needs someone to hand the parcel to: no recipient name and no phone are each a field error, naming the field to fill in")
+    void aDeliveryNeedsARecipient() throws Exception {
+        confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + "," + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value(PROBLEM_BASE + "validation"))
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItems("recipientName", "recipientPhone")))
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.not(Matchers.hasItem("shippingAddressId"))))
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.not(Matchers.hasItem("deliveryTownId"))));
+    }
+
+    @Test
+    @DisplayName("a phone number that cannot be read is a 400 on recipientPhone, in plain words, and the name is not blamed")
+    void aBadPhoneIsRefused() throws Exception {
+        confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + ",\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"12345\","
+                + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItem("recipientPhone")))
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.not(Matchers.hasItem("recipientName"))))
+                .andExpect(jsonPath("$.fieldErrors[?(@.field=='recipientPhone')].message").value(Matchers.hasItem(Matchers.containsString("phone"))));
+    }
+
+    @Test
+    @DisplayName("a name that is not a name is a 400 on recipientName, and the phone is not blamed")
+    void aBadNameIsRefused() throws Exception {
+        confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + ",\"recipientName\":\"12345\",\"recipientPhone\":\"0971234567\","
+                + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItem("recipientName")))
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.not(Matchers.hasItem("recipientPhone"))));
+    }
+
+    @Test
+    @DisplayName("self-collect takes no recipient: the shopper collects, so a name or a phone sent with it is a 400 on that field")
+    void selfCollectTakesNoRecipient() throws Exception {
+        confirmWith("{\"deliveryOption\":\"SELF_COLLECT\"," + CONTACT + "," + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItems("recipientName", "recipientPhone")));
+        confirmWith("{\"deliveryOption\":\"SELF_COLLECT\",\"recipientName\":\"Mulenga Chanda\"," + DIGEST + "}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItem("recipientName")))
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.not(Matchers.hasItem("recipientPhone"))));
+        confirmWith("{\"deliveryOption\":\"SELF_COLLECT\",\"recipientName\":\"\",\"recipientPhone\":\"  \"," + DIGEST + "}")
                 .andExpect(status().isOk());
     }
 
