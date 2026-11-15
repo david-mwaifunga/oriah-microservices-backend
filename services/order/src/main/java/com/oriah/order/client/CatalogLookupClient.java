@@ -29,6 +29,17 @@ public interface CatalogLookupClient {
     @PostMapping("/api/v1/admin/variants/lookup")
     Result lookup(@RequestBody Lookup body);
 
+    /**
+     * The boxes a sale can go out in (Phase 9), by name and SKU: what a salesperson picks from when the product's default box has run out. Catalog answers
+     * SALES_AGENT, FULFILMENT_AGENT and CATALOG_ADMIN, with the caller's own token; identity only, never a price.
+     */
+    @org.springframework.web.bind.annotation.GetMapping("/api/v1/admin/variants/packaging")
+    List<Box> packaging();
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Box(UUID variantId, UUID productId, String title, String variantTitle, String sku) {
+    }
+
     record Lookup(List<UUID> variantIds) {
     }
 

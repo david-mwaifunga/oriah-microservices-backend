@@ -213,6 +213,11 @@ public class RecordedPricing {
         }
     }
 
+    /** Where Oriah can deliver and by what, with no price: the list a salesperson picks from (shipping's own, read with order's machine token). */
+    public ShippingClient.Places places() {
+        return placesList();
+    }
+
     private ShippingClient.Places placesList() {
         try {
             ShippingClient.Places places = shipping.places();

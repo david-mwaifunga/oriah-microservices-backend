@@ -7,15 +7,24 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import java.util.UUID;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.order.dto.RecordOrderRequest;
+import com.oriah.order.client.ShippingClient;
 import com.oriah.order.dto.RecordedOrderView;
+import com.oriah.order.dto.RecordedViews;
 import com.oriah.order.service.RecordedOrderService;
+import com.oriah.order.service.RecordedPricing;
+import com.oriah.order.service.RecordedReadService;
 import com.oriah.order.service.RecordedOrderService.Who;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -48,9 +57,13 @@ public class RecordedOrderController {
     private static final String BACKDATE_SALE = "ROLE_BACKDATE_SALE";
 
     private final RecordedOrderService service;
+    private final RecordedReadService reads;
+    private final RecordedPricing pricing;
 
-    public RecordedOrderController(RecordedOrderService service) {
+    public RecordedOrderController(RecordedOrderService service, RecordedReadService reads, RecordedPricing pricing) {
         this.service = service;
+        this.reads = reads;
+        this.pricing = pricing;
     }
 
     private static Who who(Jwt jwt, Authentication auth) {
@@ -81,5 +94,72 @@ public class RecordedOrderController {
         }
         RecordedOrderService.Recorded done = service.record(request, key, who(jwt, auth));
         return ResponseEntity.status(done.created() ? HttpStatus.CREATED : HttpStatus.OK).body(RecordedOrderView.of(done.order(), !done.created()));
+    }
+
+    @Operation(operationId = "previewRecordedOrder", summary = "Price a sale to read the total to the caller, writing and holding nothing",
+            description = "The same pricing as recording, with no key, no hold and no personal data needed. The `expectedTotal` of the body is ignored here.")
+    @ApiResponse(responseCode = "200", description = "The sale as it would be recorded")
+    @PostMapping("/preview")
+    public RecordedViews.Preview preview(Authentication auth, @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody RecordOrderRequest request) {
+        RecordedOrderService.Previewed done = service.preview(request, who(jwt, auth));
+        return RecordedViews.Preview.of(done.priced(), done.occurredAt(), done.kind().name());
+    }
+
+    @Operation(operationId = "listRecordedOrders", summary = "Recorded orders, newest first",
+            description = "`q` finds by the caller's phone in any spelling (exact), a receipt number, a slip number (exact) or a name (a prefix of three letters or more); "
+                    + "`status` narrows. At most 50 a page. A phone is masked in the list.")
+    @ApiResponse(responseCode = "200", description = "A page of recorded orders")
+    @GetMapping
+    public RecordedViews.Page list(@RequestParam(name = "q", required = false) String q, @RequestParam(name = "status", required = false) String status,
+                                   @RequestParam(name = "page", defaultValue = "0") int page, @RequestParam(name = "size", defaultValue = "20") int size) {
+        return reads.list(q, status, page, size);
+    }
+
+    @Operation(operationId = "getRecordedOrder", summary = "One recorded order",
+            description = "The caller's phone and the parcel's address are shown while the order is alive and withheld once it is delivered. A web order is 404.")
+    @ApiResponse(responseCode = "200", description = "The order")
+    @ApiResponse(responseCode = "404", description = "No such recorded order (a web order is not one)",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping("/{id}")
+    public RecordedOrderView get(@AuthenticationPrincipal Jwt jwt, @PathVariable("id") UUID id) {
+        return reads.detail(id, Actor.of(jwt));
+    }
+
+    @Operation(operationId = "receiptOfRecordedOrder", summary = "The receipt to give the caller",
+            description = "Ours, never a tax invoice, with no VAT line: the receipt number, the day it was paid, the caller's name only, every line and the total.")
+    @ApiResponse(responseCode = "200", description = "The receipt")
+    @ApiResponse(responseCode = "409", description = "receipt-not-ready: the order is not paid yet",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping("/{id}/receipt")
+    public RecordedViews.Receipt receipt(@PathVariable("id") UUID id) {
+        return reads.receipt(id);
+    }
+
+    @Operation(operationId = "cancelRecordedOrder", summary = "Cancel a recorded order that is waiting for money",
+            description = "Its hold goes and the recipient and address are forgotten; the caller is kept. A paid order is 409 (a paid sale is undone by a return, never a status change).")
+    @ApiResponse(responseCode = "200", description = "The order, now CANCELLED")
+    @ApiResponse(responseCode = "409", description = "The order cannot be cancelled now",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/{id}/cancel")
+    public RecordedOrderView cancel(@AuthenticationPrincipal Jwt jwt, @PathVariable("id") UUID id) {
+        return reads.cancel(id, Actor.of(jwt));
+    }
+
+    @Operation(operationId = "recordedBoxes", summary = "The boxes a sale can go out in",
+            description = "Catalog's packaging, by name and SKU (no price): what a salesperson picks from when the product's own box has run out. Read with the person's token.")
+    @ApiResponse(responseCode = "200", description = "The boxes")
+    @ApiResponse(responseCode = "503", description = "Catalog did not answer",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping("/boxes")
+    public java.util.List<com.oriah.order.client.CatalogLookupClient.Box> boxes() {
+        return reads.boxes();
+    }
+
+    @Operation(operationId = "recordedDeliveryPlaces", summary = "Where Oriah can deliver and by what, with no price",
+            description = "Shipping's own list of the towns and options that are switched on: what a salesperson picks from when a delivery is agreed by phone.")
+    @ApiResponse(responseCode = "200", description = "The towns by province and the options")
+    @GetMapping("/delivery-places")
+    public ShippingClient.Places places() {
+        return pricing.places();
     }
 }

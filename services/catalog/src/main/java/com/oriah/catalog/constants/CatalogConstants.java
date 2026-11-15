@@ -79,6 +79,12 @@ public final class CatalogConstants {
     public static final String ROLE_FULFILMENT_AGENT = "FULFILMENT_AGENT";
 
     /**
+     * Sales staff (Phase 9), who record a sale by phone and choose its box: they may read the as-of price of a piece and the list of boxes
+     * ({@code PackagingListController}: identity only, never a cost). Defined in the realm like every capability.
+     */
+    public static final String ROLE_SALES_AGENT = "SALES_AGENT";
+
+    /**
      * Reading what stock cost. The pricing screen shows landed cost, so everything under {@link #PRICING_BASE} needs it as well
      * as {@link #ROLE_CATALOG_ADMIN}: cost is gated at the API, never by hiding a column in a screen. Defined in the realm like
      * every capability; validate_roles.py checks it.

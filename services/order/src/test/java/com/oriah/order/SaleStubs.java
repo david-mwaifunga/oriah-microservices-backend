@@ -54,9 +54,18 @@ public final class SaleStubs {
                 .when(shipping).places();
     }
 
-    /** Shipping having no published price for what is asked: 409 town-not-offered, as it answers for a town nobody has priced. */
+    /**
+     * Shipping having no published price for any town: 409 town-not-offered, as it answers for a town nobody has priced. A pickup is still priced at no charge
+     * (self-collect is always offered), so a web order can be placed beside it.
+     */
     public static void shippingNotOffered(ShippingClient shipping) {
-        doThrow(feign(409, "{\"type\":\"https://oriah.dev/problems/town-not-offered\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"not offered\"}")).when(shipping).quote(any());
+        doAnswer(inv -> {
+            ShippingClient.QuoteAsk asked = inv.getArgument(0);
+            if ("SELF_COLLECT".equals(asked.optionCode())) {
+                return new ShippingClient.QuoteReply(null, null, "SELF_COLLECT", null, new BigDecimal("0.00"), asked.currency(), null);
+            }
+            throw feign(409, "{\"type\":\"https://oriah.dev/problems/town-not-offered\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"not offered\"}");
+        }).when(shipping).quote(any());
     }
 
     /** Inventory holding whatever it is asked to hold, for ten minutes from now, with one box (BOX_VARIANT) per piece. */

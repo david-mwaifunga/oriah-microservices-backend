@@ -33,4 +33,9 @@ public interface ProductVariantRepository extends JpaRepository<ProductVariant, 
     @Query("SELECT v FROM ProductVariant v JOIN FETCH v.product p WHERE v.active = true AND v.unitPrice > 0 "
             + "AND p.kind = com.oriah.catalog.model.ProductKind.SELLABLE AND p.deleted = false ORDER BY p.title, v.sku")
     List<ProductVariant> findPricedForSale();
+
+    /** Every active variant of a packaging product that is not deleted: the boxes a sale can go out in (Phase 9), by name and SKU. */
+    @Query("SELECT v FROM ProductVariant v JOIN FETCH v.product p WHERE v.active = true AND p.kind = com.oriah.catalog.model.ProductKind.PACKAGING AND p.deleted = false "
+            + "ORDER BY p.title, v.sku")
+    List<ProductVariant> findPackagingInUse();
 }
