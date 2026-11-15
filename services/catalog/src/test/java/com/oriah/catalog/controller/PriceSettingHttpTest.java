@@ -524,6 +524,87 @@ class PriceSettingHttpTest {
         assertThat(rows(ring.variantId())).isEqualTo(1);
     }
 
+    // ---------------------------------------------------------------- the owner's historical price (Phase 9)
+
+    private static RequestPostProcessor owner() {
+        return jwt().jwt(j -> j.subject("kc-owner").claim("name", "Owner"))
+                .authorities(new SimpleGrantedAuthority("ROLE_CATALOG_ADMIN"), new SimpleGrantedAuthority("ROLE_COST_VIEWER"), new SimpleGrantedAuthority("ROLE_BACKDATE_SALE"));
+    }
+
+    private ResultActions setPriceAs(RequestPostProcessor who, UUID variant, String json) throws Exception {
+        return mvc.perform(put(PRICING + variant + "/price").with(who).contentType(MediaType.APPLICATION_JSON).content(json));
+    }
+
+    @Test
+    @DisplayName("the person who may back-date a sale can add a price from BEFORE the price in force, with a reason: today's price is untouched, the row is kept with its reason, and the as-of read prices a sale of that day")
+    void theOwnersHistoricalPrice() throws Exception {
+        Piece ring = fixtures.ring("Aurelia");
+        setPrice(ring.variantId(), "1500.00", null).andExpect(status().isOk());
+        UUID first = latestPriceId(ring.variantId());
+        Instant tenDaysAgo = Instant.now().minus(10, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+
+        setPriceAs(owner(), ring.variantId(), "{\"unitPrice\":1300.00,\"expectedPriceId\":\"" + first + "\",\"effectiveFrom\":\"" + tenDaysAgo + "\","
+                + "\"backdateReason\":\"the ring was sold on paper before it was priced here\"}")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.price.unitPrice").value(1300.00));
+
+        assertThat(currentPrice(ring.variantId())).as("today's price is untouched").isEqualByComparingTo("1500.00");
+        assertThat(latestPriceId(ring.variantId())).as("the price in force is still the first row").isEqualTo(first);
+        assertThat(rows(ring.variantId())).isEqualTo(2);
+        Map<String, Object> row = jdbc.queryForMap("SELECT effective_from, backdate_reason FROM variant_price WHERE variant_id = ? AND unit_price = 1300.00", ring.variantId());
+        assertThat(((java.sql.Timestamp) row.get("effective_from")).toInstant()).isEqualTo(tenDaysAgo);
+        assertThat(row.get("backdate_reason")).isEqualTo("the ring was sold on paper before it was priced here");
+        assertThat(jdbc.queryForObject("SELECT backdate_reason FROM variant_price WHERE id = ?", String.class, first)).isNull();
+        // a sale of that day is priced at that day's price (the staff as-of read), and a sale of today at today's
+        RequestPostProcessor sales = jwt().jwt(j -> j.subject("kc-sam")).authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT"));
+        String atTenDays = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/admin/variants/pricing-as-of").with(sales)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"at\":\"" + tenDaysAgo.plus(1, ChronoUnit.HOURS) + "\",\"variantIds\":[\"" + ring.variantId() + "\"]}"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(atTenDays).contains("\"PRICED\"").contains("1300.00");
+        String today = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/admin/variants/pricing-as-of").with(sales)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"at\":\"" + Instant.now() + "\",\"variantIds\":[\"" + ring.variantId() + "\"]}"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(today).contains("1500.00");
+    }
+
+    @Test
+    @DisplayName("a historical price needs the capability AND a reason: without the capability the old refusals stand; with it and no reason it is 400 backdate-reason-required; nothing is saved")
+    void theHistoricalPriceNeedsTheCapabilityAndAReason() throws Exception {
+        Piece ring = fixtures.ring("Aurelia");
+        setPrice(ring.variantId(), "1500.00", null).andExpect(status().isOk());
+        UUID first = latestPriceId(ring.variantId());
+        String tenDaysAgo = Instant.now().minus(10, ChronoUnit.DAYS).toString();
+        String body = "{\"unitPrice\":1300.00,\"expectedPriceId\":\"" + first + "\",\"effectiveFrom\":\"" + tenDaysAgo + "\"";
+
+        setPrice(ring.variantId(), body + ",\"backdateReason\":\"the ring was sold on paper before it was priced\"}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value(PROBLEMS + "effective-date-too-old"));
+        setPriceAs(owner(), ring.variantId(), body + "}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value(PROBLEMS + "backdate-reason-required"));
+        setPriceAs(owner(), ring.variantId(), body + ",\"backdateReason\":\"four\"}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value(PROBLEMS + "backdate-reason-required"));
+        assertThat(rows(ring.variantId())).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("the capability does not let anyone rewrite today's price: a date after the latest row but older than 72 hours is still too old, even for the owner")
+    void theOwnerCannotRewriteTheLivePrice() throws Exception {
+        Piece ring = fixtures.ring("Aurelia");
+        setPrice(ring.variantId(), "1500.00", null).andExpect(status().isOk());
+        // the latest row is today's; a date 100 hours back is BEFORE it, so it is historical; to be "after the latest but too old" the latest must itself be old.
+        jdbc.execute("ALTER TABLE variant_price DISABLE TRIGGER USER");
+        try {
+            jdbc.update("UPDATE variant_price SET effective_from = now() - interval '20 days' WHERE variant_id = ?", ring.variantId());
+        } finally {
+            jdbc.execute("ALTER TABLE variant_price ENABLE TRIGGER USER");
+        }
+        UUID first = latestPriceId(ring.variantId());
+
+        setPriceAs(owner(), ring.variantId(), "{\"unitPrice\":1300.00,\"expectedPriceId\":\"" + first + "\",\"effectiveFrom\":\"" + Instant.now().minus(10, ChronoUnit.DAYS)
+                + "\",\"backdateReason\":\"the ring was sold on paper before it was priced here\"}")
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.type").value(PROBLEMS + "effective-date-too-old"));
+        assertThat(rows(ring.variantId())).isEqualTo(1);
+    }
+
     // ---------------------------------------------------------------- inventory unavailable
 
     @Test

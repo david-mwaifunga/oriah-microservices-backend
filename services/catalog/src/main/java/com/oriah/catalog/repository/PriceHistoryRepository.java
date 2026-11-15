@@ -23,19 +23,25 @@ public class PriceHistoryRepository {
 
     /** What is written for a new price. */
     public record NewEntry(UUID id, UUID variantId, BigDecimal unitPrice, String currency, Instant effectiveFrom, Instant recordedAt,
-                           String setBy, String setByName, String assessment, String reason, String costBasisJson) {
+                           String setBy, String setByName, String assessment, String reason, String costBasisJson, String backdateReason) {
+
+        /** An ordinary price: nothing historical about it. */
+        public NewEntry(UUID id, UUID variantId, BigDecimal unitPrice, String currency, Instant effectiveFrom, Instant recordedAt,
+                        String setBy, String setByName, String assessment, String reason, String costBasisJson) {
+            this(id, variantId, unitPrice, currency, effectiveFrom, recordedAt, setBy, setByName, assessment, reason, costBasisJson, null);
+        }
     }
 
     /** A row as stored. {@code costBasisJson} is null for a migrated row. */
     public record Entry(UUID id, long seq, UUID variantId, BigDecimal unitPrice, String currency, Instant effectiveFrom, Instant recordedAt,
-                        String setBy, String setByName, String source, String assessment, String reason, String costBasisJson) {
+                        String setBy, String setByName, String source, String assessment, String reason, String costBasisJson, String backdateReason) {
 
         public PriceRow asRow() {
             return new PriceRow(seq, effectiveFrom, unitPrice);
         }
     }
 
-    private static final String COLUMNS = "id, seq, variant_id, unit_price, currency, effective_from, recorded_at, set_by, set_by_name, source, assessment, reason, cost_basis::text AS cost_basis";
+    private static final String COLUMNS = "id, seq, variant_id, unit_price, currency, effective_from, recorded_at, set_by, set_by_name, source, assessment, reason, cost_basis::text AS cost_basis, backdate_reason";
 
     private final JdbcTemplate jdbc;
 
@@ -74,17 +80,18 @@ public class PriceHistoryRepository {
     public Entry append(NewEntry entry) {
         return jdbc.queryForObject("""
                 INSERT INTO variant_price (id, variant_id, unit_price, currency, effective_from, recorded_at, set_by, set_by_name,
-                                           source, assessment, reason, cost_basis)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SET', ?, ?, ?::jsonb)
+                                           source, assessment, reason, cost_basis, backdate_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SET', ?, ?, ?::jsonb, ?)
                 RETURNING """ + " " + COLUMNS,
                 this::entry, entry.id(), entry.variantId(), entry.unitPrice(), entry.currency(), java.sql.Timestamp.from(entry.effectiveFrom()),
-                java.sql.Timestamp.from(entry.recordedAt()), entry.setBy(), entry.setByName(), entry.assessment(), entry.reason(), entry.costBasisJson());
+                java.sql.Timestamp.from(entry.recordedAt()), entry.setBy(), entry.setByName(), entry.assessment(), entry.reason(), entry.costBasisJson(),
+                entry.backdateReason());
     }
 
     private Entry entry(ResultSet rs, int row) throws SQLException {
         return new Entry(rs.getObject("id", UUID.class), rs.getLong("seq"), rs.getObject("variant_id", UUID.class), rs.getBigDecimal("unit_price"),
                 rs.getString("currency"), rs.getTimestamp("effective_from").toInstant(), rs.getTimestamp("recorded_at").toInstant(),
                 rs.getString("set_by"), rs.getString("set_by_name"), rs.getString("source"), rs.getString("assessment"), rs.getString("reason"),
-                rs.getString("cost_basis"));
+                rs.getString("cost_basis"), rs.getString("backdate_reason"));
     }
 }

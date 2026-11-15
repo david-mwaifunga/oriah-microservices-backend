@@ -83,8 +83,8 @@ public class PricingController {
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @PutMapping("/variants/{variantId}/price")
     public PriceChangeResponse setPrice(@PathVariable("variantId") UUID variantId, @Valid @RequestBody SetPriceRequest request,
-                                        @AuthenticationPrincipal Jwt jwt) {
-        return pricing.setPrice(variantId, request, staff(jwt), bearer(jwt));
+                                        @AuthenticationPrincipal Jwt jwt, org.springframework.security.core.Authentication auth) {
+        return pricing.setPrice(variantId, request, staff(jwt, auth), bearer(jwt));
     }
 
     @Operation(operationId = "getVariantPricing",
@@ -151,7 +151,7 @@ public class PricingController {
     }
 
     /** The subject is the record; the name is whatever the token carries (the `name` claim only), trimmed and capped, or null. */
-    private static PricingService.Staff staff(Jwt jwt) {
+    private static PricingService.Staff staff(Jwt jwt, org.springframework.security.core.Authentication auth) {
         String name = jwt.getClaimAsString("name");
         if (name != null) {
             name = name.strip();
@@ -161,6 +161,8 @@ public class PricingController {
                 name = name.substring(0, NAME_LIMIT);
             }
         }
-        return new PricingService.Staff("user:" + jwt.getSubject(), name);
+        // BACKDATE_SALE (the owner's): may add a price from before the price in force, with a reason (Phase 9). Everyone else keeps the ordinary dating rules.
+        boolean mayBackdate = auth != null && auth.getAuthorities().stream().anyMatch(a -> "ROLE_BACKDATE_SALE".equals(a.getAuthority()));
+        return new PricingService.Staff("user:" + jwt.getSubject(), name, mayBackdate);
     }
 }

@@ -185,7 +185,14 @@ public class ProductService {
      */
     public record PriceWrite(UUID variantId, BigDecimal unitPrice, String currency, Instant requestedEffectiveFrom, UUID expectedPriceId,
                              UUID evaluatedBoxVariantId, GuardResult result, PriceCheck.Reading reading, String reason, String setByName,
-                             Promoted promoted) {
+                             Promoted promoted, boolean mayBackdate, String backdateReason) {
+
+        /** An ordinary save (no capability to back-date): the old rules exactly. */
+        public PriceWrite(UUID variantId, BigDecimal unitPrice, String currency, Instant requestedEffectiveFrom, UUID expectedPriceId,
+                          UUID evaluatedBoxVariantId, GuardResult result, PriceCheck.Reading reading, String reason, String setByName,
+                          Promoted promoted) {
+            this(variantId, unitPrice, currency, requestedEffectiveFrom, expectedPriceId, evaluatedBoxVariantId, result, reading, reason, setByName, promoted, false, null);
+        }
 
         /** A save with no promotion in play: the net price is the price. */
         public PriceWrite(UUID variantId, BigDecimal unitPrice, String currency, Instant requestedEffectiveFrom, UUID expectedPriceId,
@@ -232,24 +239,30 @@ public class ProductService {
                     "the price changed since it was read: someone else has priced this variant")
                     .with("currentPriceId", latestId);
         }
-        // The same number in another currency is a change: a legacy dollar piece is moved to Kwacha by saying ZMW, even at the same figure.
-        if (latest.isPresent() && variant.unitPrice().compareTo(write.unitPrice()) == 0 && write.currency().equalsIgnoreCase(variant.currency())) {
+        Instant now = clock.instant();
+        PriceHistory.Resolved dated = PriceHistory.resolve(write.requestedEffectiveFrom(), now, latest.map(PriceHistoryRepository.Entry::effectiveFrom).orElse(null),
+                pricing.getBackdateWindow(), write.mayBackdate(), write.backdateReason());
+        Instant effectiveFrom = dated.effectiveFrom();
+        // The same number in another currency is a change: a legacy dollar piece is moved to Kwacha by saying ZMW, even at the same figure. A HISTORICAL row
+        // (dated before the price in force) is not a change of today's price, so it is not "nothing changed" whatever today's price is.
+        if (!dated.historical() && latest.isPresent() && variant.unitPrice().compareTo(write.unitPrice()) == 0 && write.currency().equalsIgnoreCase(variant.currency())) {
             throw new PricingProblem(HttpStatus.BAD_REQUEST, "nothing-changed", "the price is already " + write.unitPrice().toPlainString() + " " + write.currency());
         }
-
-        Instant now = clock.instant();
-        Instant effectiveFrom = PriceHistory.effectiveFrom(write.requestedEffectiveFrom(), now,
-                latest.map(PriceHistoryRepository.Entry::effectiveFrom).orElse(null), pricing.getBackdateWindow());
         BigDecimal was = variant.unitPrice();
 
-        product.repriceVariant(write.variantId(), write.unitPrice(), write.currency());
+        if (!dated.historical()) {
+            product.repriceVariant(write.variantId(), write.unitPrice(), write.currency());
+        }
         PriceAssessment observed = write.result().assessment();
         String reason = PriceCheck.needsReason(observed) ? write.reason() : null;
         PriceHistoryRepository.Entry row = priceHistory.append(new PriceHistoryRepository.NewEntry(UUID.randomUUID(), write.variantId(),
                 write.unitPrice(), write.currency(), effectiveFrom, now, actor, write.setByName(), observed.name(), reason,
-                EventJson.write(PriceCheck.basis(write.result(), write.reading(), write.promoted()))));
+                EventJson.write(PriceCheck.basis(write.result(), write.reading(), write.promoted())), dated.backdateReason()));
 
-        record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
+        if (!dated.historical()) {
+            // Today's price changed, so the product's snapshot did; a historical row leaves the product exactly as it was.
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
+        }
         outbox.append(new EventDraft(PRICE_AGGREGATE, row.id().toString(), PriceSetEvent.TYPE, SCHEMA_VERSION, PRICE_TOPIC, effectiveFrom, actor,
                 new PriceSetEvent(write.variantId(), product.id(), write.unitPrice(), was.signum() == 0 ? null : was, write.currency(), effectiveFrom,
                         now, observed.name(), reason, write.setByName(), PriceCheck.summary(write.result(), write.reading(), write.promoted()),

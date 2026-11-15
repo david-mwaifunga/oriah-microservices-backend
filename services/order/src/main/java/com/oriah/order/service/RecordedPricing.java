@@ -148,7 +148,8 @@ public class RecordedPricing {
         }
         if (!noPrice.isEmpty()) {
             throw new SalesProblem(HttpStatus.CONFLICT, "no-price-at-date",
-                    "a piece had no price at " + at + " (it was first priced later, or never): it cannot be recorded at that date. A sale is never priced at today's price")
+                    "a piece had no price at " + at + " (it was first priced later, or never): it cannot be recorded at that date, because a sale is never priced at today's price. "
+                            + "The owner (who may back-date a sale) can add a price from that date, with a reason, on the pricing screen; then record the sale again")
                     .with("variantIds", noPrice).with("at", at.toString());
         }
     }

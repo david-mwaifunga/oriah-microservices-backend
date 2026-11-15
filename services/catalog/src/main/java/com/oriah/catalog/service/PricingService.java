@@ -69,7 +69,12 @@ import lombok.extern.slf4j.Slf4j;
 public class PricingService {
 
     /** Who is pricing: the actor as the event log records it, and the name the token carries, if any. */
-    public record Staff(String actor, String name) {
+    public record Staff(String actor, String name, boolean mayBackdate) {
+
+        /** A member of staff who may not back-date a sale: the ordinary rules. */
+        public Staff(String actor, String name) {
+            this(actor, name, false);
+        }
     }
 
     /** What is read about a variant before anything else is done: no lock is held, and no entity leaves this class. */
@@ -120,8 +125,8 @@ public class PricingService {
             throw new PricingProblem(HttpStatus.CONFLICT, "stale-price", "the price changed since it was read: someone else has priced this variant")
                     .with("currentPriceId", latestId);
         }
-        PriceHistory.effectiveFrom(request.effectiveFrom(), check.now(), target.latest() == null ? null : target.latest().effectiveFrom(),
-                pricing.getBackdateWindow());
+        PriceHistory.resolve(request.effectiveFrom(), check.now(), target.latest() == null ? null : target.latest().effectiveFrom(), pricing.getBackdateWindow(),
+                staff.mayBackdate(), request.backdateReason());
 
         PriceCheck.Reading reading = check.read(variantId, target.boxVariantId(), bearer);
         // The price is judged on what a customer pays per piece: the list price less the promotion in force now.
@@ -138,7 +143,7 @@ public class PricingService {
 
         ProductService.PriceApplied applied = products.setVariantPrice(target.productId(),
                 new ProductService.PriceWrite(variantId, request.unitPrice(), currency, request.effectiveFrom(), request.expectedPriceId(),
-                        target.boxVariantId(), result, reading, reason, staff.name(), promoted),
+                        target.boxVariantId(), result, reading, reason, staff.name(), promoted, staff.mayBackdate(), request.backdateReason()),
                 staff.actor());
         return new PriceChangeResponse(entry(applied.row()), result.assessment(), PriceCheck.costView(reading), applied.productStatus(), applied.publishable(),
                 promoted.discountPerPiece(), promoted.promotionId(), promoted.netPrice());

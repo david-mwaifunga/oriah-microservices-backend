@@ -21,6 +21,8 @@ import jakarta.validation.constraints.Size;
  *                          price is below the dearest cost still held (plus the default box's); ignored otherwise
  * @param acknowledgedFloor the floor the person was shown when they accepted a price below cost. If the floor has risen since, the
  *                          warning comes back with the new figures, so a reason is never accepted against figures nobody saw
+ * @param backdateReason    only for the person who may back-date a sale (BACKDATE_SALE), and only with an {@code effectiveFrom} BEFORE the price in force: why a price
+ *                          from an earlier day is being added now (5 to 200 characters). It adds a historical row and changes nothing about today's price
  * @param expectedPriceId   the id of the price the person saw in force, or null if they saw it unpriced. A price saved in between
  *                          makes this stale (409): two people pricing one piece never overwrite each other unseen
  */
@@ -42,6 +44,9 @@ public record SetPriceRequest(
         @NgweeAmount
         BigDecimal acknowledgedFloor,
 
-        UUID expectedPriceId
+        UUID expectedPriceId,
+
+        @Size(max = 200, message = "backdateReason must be at most 200 characters")
+        String backdateReason
 ) {
 }
