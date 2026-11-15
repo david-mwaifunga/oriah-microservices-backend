@@ -89,7 +89,9 @@ public class OrderPricingService {
      * The order as order itself prices it: catalog's prices for the lines (less any promotion's discount per piece), and shipping's price for
      * the town, option and payer the shopper chose, held as the shared {@link Quote} whose {@code total()} is the one formula the digest binds.
      */
-    public record PricedOrder(List<PricedLine> lines, BigDecimal subtotal, String currency, Quote quote) {
+    public record PricedOrder(List<PricedLine> lines, BigDecimal subtotal, String currency, Quote quote, String optionName, String townName) {
+
+        /** What shipping called the option and the town it priced; null for a pickup. */
 
         public String deliveryOption() {
             return quote.deliveryOption();
@@ -236,7 +238,7 @@ public class OrderPricingService {
             throw new QuoteChangedException();
         }
 
-        return new PricedOrder(List.copyOf(lines), subtotal, currency, quote);
+        return new PricedOrder(List.copyOf(lines), subtotal, currency, quote, collect ? null : delivery.optionName(), collect ? null : delivery.townName());
     }
 
     /**

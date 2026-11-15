@@ -218,7 +218,7 @@ class PlaceOrderAddressTest {
         UUID town = UUID.fromString("33333333-3333-4333-8333-333333333333");
         com.oriah.order.SaleStubs.shippingDelivers(shipping, "OWN_DELIVERY", town, "ORIAH_COLLECTS", "125.00", "ZMW");
         String body = "{\"shippingAddressId\":\"" + STRANGERS + "\",\"currency\":\"ZMW\","
-                + "\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + town + "\",\"payer\":\"ORIAH_COLLECTS\","
+                + "\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + town + "\",\"payer\":\"ORIAH_COLLECTS\",\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"+260971234567\","
                 + "\"quoteDigest\":\"" + com.oriah.quote.QuoteDigest.of(new com.oriah.quote.Quote(
                         List.of(line(VARIANT, 1, "4500.00")), "ZMW", "OWN_DELIVERY", new BigDecimal("125.00"), town, "ORIAH_COLLECTS")) + "\","
                 + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,"

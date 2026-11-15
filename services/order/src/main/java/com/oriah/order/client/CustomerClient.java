@@ -46,12 +46,16 @@ public interface CustomerClient {
     List<Address> myAddresses();
 
     /**
-     * Only the id. customer sends label, lines, city, country and more; order
-     * needs none of them to answer "is this one yours?", and binding them would
-     * make this client break on a change to a field order does not read.
-     * {@code ignoreUnknown} is on the record, as on checkout's own copy, so
-     * that tolerance is part of this contract rather than of mapper settings.
+     * The id, to answer "is this one yours?", and the lines of the address (Phase 8): a parcel is delivered to the address as it was when the order was
+     * placed, and a shopper can delete an address later, so order copies the text at placement. The label and the default flag are not read.
+     * {@code ignoreUnknown} is on the record, as on checkout's own copy, so that tolerance is part of this contract rather than of mapper settings.
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record Address(UUID id) {}
+    record Address(UUID id, String line1, String line2, String city, String state, String postalCode, String country) {
+
+        /** An address known only by its id: enough to be recognised as the caller's. */
+        public Address(UUID id) {
+            this(id, null, null, null, null, null, null);
+        }
+    }
 }

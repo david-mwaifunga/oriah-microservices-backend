@@ -163,7 +163,7 @@ class PlaceOrderPricingTest {
 
     /** The JSON fields a delivered body carries beyond the option: the town and the payer. Self-collect carries neither. */
     private static String townFields(String option) {
-        return "SELF_COLLECT".equals(option) ? "" : "\"deliveryTownId\":\"" + TOWN + "\",\"payer\":\"ORIAH_COLLECTS\",";
+        return "SELF_COLLECT".equals(option) ? "" : "\"deliveryTownId\":\"" + TOWN + "\",\"payer\":\"ORIAH_COLLECTS\",\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"+260971234567\",";
     }
 
     /** The digest of a quote with this option and delivery, to {@link #TOWN} with Oriah collecting when it is a delivery. */

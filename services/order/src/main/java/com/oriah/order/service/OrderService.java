@@ -9,7 +9,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.oriah.order.client.CustomerClient;
 import com.oriah.order.client.InventoryClient;
+import com.oriah.quote.Quote;
 import com.oriah.order.dto.PlaceOrderRequest;
 import com.oriah.order.events.OrderEventLog;
 import com.oriah.order.exception.SalesProblem;
@@ -105,9 +107,10 @@ public class OrderService {
      * @param actor who placed it, {@code user:<keycloak subject>}
      */
     public Placement placeOrder(String keycloakId, PlaceOrderRequest req, String idempotencyKey, String actor) {
-        addresses.requireCallersOwn(req.shippingAddressId());
+        CustomerClient.Address address = addresses.requireCallersOwn(req.shippingAddressId());
         OrderPricingService.PricedOrder priced = pricing.price(req);
-        OrderWriter.Begun begun = writer.begin(keycloakId, req.shippingAddressId(), priced, idempotencyKey);
+        OrderWriter.Begun begun = writer.begin(keycloakId, req.shippingAddressId(), priced, idempotencyKey,
+                Quote.SELF_COLLECT.equals(req.deliveryOption()) ? null : OrderWriter.DeliveryDetails.of(req.recipientName(), req.recipientPhone(), address));
         if (!begun.needsHold()) {
             // The same placement was made before (the same key, or the same bag still waiting for payment): that order, not a second hold.
             return new Placement(begun.order(), false);

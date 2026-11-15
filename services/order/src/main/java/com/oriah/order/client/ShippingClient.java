@@ -33,6 +33,11 @@ public interface ShippingClient {
      * reach the free-delivery threshold); {@code payer} is the one it resolved, which the order records.
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record QuoteReply(UUID townId, String townName, String optionCode, String payer, BigDecimal amount, String currency, UUID priceId) {
+    record QuoteReply(UUID townId, String townName, String optionCode, String optionName, String payer, BigDecimal amount, String currency, UUID priceId) {
+
+        /** A reply that names no option (a pickup names none). */
+        public QuoteReply(UUID townId, String townName, String optionCode, String payer, BigDecimal amount, String currency, UUID priceId) {
+            this(townId, townName, optionCode, null, payer, amount, currency, priceId);
+        }
     }
 }

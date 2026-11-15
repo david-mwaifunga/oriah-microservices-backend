@@ -100,6 +100,40 @@ public class Order extends BaseEntity {
     @Column(name = "delivery_town_id")
     private UUID deliveryTownId;
 
+    // The delivery as it was when the order was placed (Phase 8; V10): who it is for and where it goes. Written once, at placement, from what the shopper
+    // typed and the address customer answered with; never changed through the entity (a correction before dispatch is SQL, with its history kept). Null for
+    // a pickup and for an order placed before V10. Never in an event or a log.
+    @Column(name = "recipient_name", length = 120, updatable = false)
+    private String recipientName;
+
+    @Column(name = "recipient_phone", length = 16, updatable = false)
+    private String recipientPhone;
+
+    @Column(name = "address_line1", updatable = false)
+    private String addressLine1;
+
+    @Column(name = "address_line2", updatable = false)
+    private String addressLine2;
+
+    @Column(name = "address_city", length = 120, updatable = false)
+    private String addressCity;
+
+    @Column(name = "address_state", length = 120, updatable = false)
+    private String addressState;
+
+    @Column(name = "address_postal_code", length = 20, updatable = false)
+    private String addressPostalCode;
+
+    @Column(name = "address_country", length = 2, updatable = false)
+    private String addressCountry;
+
+    /** What shipping called the option when it was priced (e.g. "Yango"): the carrier, as far as the packer is concerned. */
+    @Column(name = "delivery_option_name", length = 80, updatable = false)
+    private String deliveryOptionName;
+
+    @Column(name = "delivery_town_name", length = 120, updatable = false)
+    private String deliveryTownName;
+
     /** Who pays the courier: ORIAH_COLLECTS or RECIPIENT_PAYS (K0 on this order); null for self-collect and older orders. */
     @Column(name = "delivery_payer", length = 16)
     private String deliveryPayer;
@@ -263,6 +297,23 @@ public class Order extends BaseEntity {
         recomputeTotals();
     }
 
+    public String recipientName() { return recipientName; }
+    public String recipientPhone() { return recipientPhone; }
+    public String addressLine1() { return addressLine1; }
+    public String addressLine2() { return addressLine2; }
+    public String addressCity() { return addressCity; }
+    public String addressState() { return addressState; }
+    public String addressPostalCode() { return addressPostalCode; }
+    public String addressCountry() { return addressCountry; }
+    public String deliveryOptionName() { return deliveryOptionName; }
+    public String deliveryTownName() { return deliveryTownName; }
+
+    /** Whether the shopper collects: nothing is shipped or delivered, and no recipient or address is kept. */
+    public boolean isSelfCollect() { return Quote.SELF_COLLECT.equals(deliveryOption); }
+
+    /** Whether the packer has someone to hand the parcel to and somewhere to take it (an order placed before Phase 8 has neither). */
+    public boolean hasDeliveryDetails() { return recipientName != null && addressLine1 != null; }
+
     public BigDecimal shippingAmount() { return shippingAmount; }
     public BigDecimal deliveryWaivedAmount() { return deliveryWaivedAmount; }
     public String deliveryWaivedBy() { return deliveryWaivedBy; }
@@ -410,6 +461,31 @@ public class Order extends BaseEntity {
         items.add(item);
         recomputeTotals();
         return item;
+    }
+
+    /**
+     * Keeps who the parcel is for and where it goes, as they were at placement. Called once, on a new delivered order, before it is saved.
+     *
+     * @throws IllegalStateException for a pickup (it delivers to nobody) or an order that already has them
+     */
+    public void recordDelivery(String recipientName, String recipientPhone, String line1, String line2, String city, String state, String postalCode,
+                               String country, String optionName, String townName) {
+        if (isSelfCollect()) {
+            throw new IllegalStateException("a pickup is delivered to nobody");
+        }
+        if (this.recipientName != null) {
+            throw new IllegalStateException("order " + id + " already has its delivery details");
+        }
+        this.recipientName = recipientName;
+        this.recipientPhone = recipientPhone;
+        this.addressLine1 = line1;
+        this.addressLine2 = line2;
+        this.addressCity = city;
+        this.addressState = state;
+        this.addressPostalCode = postalCode;
+        this.addressCountry = country;
+        this.deliveryOptionName = optionName;
+        this.deliveryTownName = townName;
     }
 
     /**

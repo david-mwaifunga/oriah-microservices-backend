@@ -41,7 +41,7 @@ public final class SaleStubs {
 
     /** Shipping answering every ask with this one delivery: the option, town and payer it names, at this amount. */
     public static void shippingDelivers(ShippingClient shipping, String option, UUID town, String payer, String amount, String currency) {
-        doAnswer(inv -> new ShippingClient.QuoteReply(town, "Kabwe", option, payer, new BigDecimal(amount), currency, UUID.randomUUID()))
+        doAnswer(inv -> new ShippingClient.QuoteReply(town, "Kabwe", option, "Oriah delivery", payer, new BigDecimal(amount), currency, UUID.randomUUID()))
                 .when(shipping).quote(any());
     }
 

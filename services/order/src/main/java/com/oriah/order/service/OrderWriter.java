@@ -73,6 +73,23 @@ public class OrderWriter {
         this.maxHeldPieces = maxHeldPieces;
     }
 
+    /**
+     * Who the parcel is for and where it goes, ready to be kept on a new delivered order: the recipient as the shopper typed it, tidied and in one spelling
+     * ({@link com.oriah.quote.DeliveryContact}), and the address lines as customer answered them. Never logged, never in an event.
+     */
+    public record DeliveryDetails(String recipientName, String recipientPhone, String line1, String line2, String city, String state, String postalCode,
+                                  String country) {
+
+        /** Null for a pickup; otherwise the recipient read by the shared rule and the address copied from the caller's own. */
+        public static DeliveryDetails of(String typedName, String typedPhone, com.oriah.order.client.CustomerClient.Address address) {
+            if (address == null || typedName == null || typedName.isBlank()) {
+                return null;
+            }
+            return new DeliveryDetails(com.oriah.quote.DeliveryContact.name(typedName), com.oriah.quote.DeliveryContact.phone(typedPhone), address.line1(),
+                    address.line2(), address.city(), address.state(), address.postalCode(), address.country());
+        }
+    }
+
     /** What {@link #begin} did: an order to finish placing (hold its pieces), or one that already stands and is simply answered. */
     public record Begun(Order order, boolean needsHold) {
     }
@@ -83,7 +100,8 @@ public class OrderWriter {
      * @param idempotencyKey the caller's key for this placement, or null
      */
     @Transactional
-    public Begun begin(String keycloakId, UUID shippingAddressId, OrderPricingService.PricedOrder priced, String idempotencyKey) {
+    public Begun begin(String keycloakId, UUID shippingAddressId, OrderPricingService.PricedOrder priced, String idempotencyKey,
+                       DeliveryDetails delivery) {
         // One lock per shopper, held to the commit: the lookups below and the caps read what a racing placement is about to write. Its key is
         // its own name, distinct from the outbox's (which the event log takes last).
         jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", rs -> {
@@ -93,7 +111,7 @@ public class OrderWriter {
         if (idempotencyKey != null) {
             Order keyed = repository.findByKeycloakIdAndIdempotencyKey(keycloakId, idempotencyKey).orElse(null);
             if (keyed != null) {
-                if (!digest.equals(keyed.quoteDigest()) || !sameAddress(priced, shippingAddressId, keyed)) {
+                if (!digest.equals(keyed.quoteDigest()) || !sameDelivery(priced, shippingAddressId, delivery, keyed)) {
                     throw new SalesProblem(HttpStatus.CONFLICT, "idempotency-key-reused",
                             "this Idempotency-Key was used for a different order: use a new key for a new order");
                 }
@@ -102,14 +120,15 @@ public class OrderWriter {
         }
         Order live = repository.findFirstByKeycloakIdAndQuoteDigestAndStatusIn(keycloakId, digest, LIVE).orElse(null);
         if (live != null) {
-            if (!sameAddress(priced, shippingAddressId, live)) {
-                // The fingerprint prices the goods and the delivery, not WHERE it goes: two addresses in one town price alike. Answering the earlier order as
-                // though it were this one would tell the shopper it succeeded and send the parcel to the first address.
+            if (!sameDelivery(priced, shippingAddressId, delivery, live)) {
+                // The fingerprint prices the goods and the delivery, not WHERE it goes or WHO it is for: two addresses in one town price alike. Answering the
+                // earlier order as though it were this one would tell the shopper it succeeded and send the parcel to the first address, or the first person.
                 boolean mayCancel = live.status() == OrderStatus.CREATED && live.holdState() == HoldState.HELD;
                 throw new SalesProblem(HttpStatus.CONFLICT, "live-order-has-another-address",
                         mayCancel
-                                ? "you already hold an order for this same bag, to another delivery address: cancel it first, or place it again to that address"
-                                : "you already hold an order for this same bag, to another delivery address, and you can no longer cancel it (its payment has been "
+                                ? "you already hold an order for this same bag, to another delivery address or recipient: cancel it first, or place it again "
+                                        + "to that address and recipient"
+                                : "you already hold an order for this same bag, to another delivery address or recipient, and you can no longer cancel it (its payment has been "
                                         + "claimed, or it is still being placed): wait for it to be paid, or to lapse")
                         .with("orderId", live.id()).with("orderStatus", live.status().name());
             }
@@ -122,6 +141,11 @@ public class OrderWriter {
                 priced.deliveryTownId(), priced.payer());
         priced.lines().forEach(line -> order.addItem(line.variantId(), line.productId(), line.title(), line.quantity(),
                 line.unitPrice(), line.discountPerPiece(), line.promotionId()));
+        if (delivery != null && !order.isSelfCollect()) {
+            // Written once, here, with the new row: a repeat answers the order that stands and never re-snapshots.
+            order.recordDelivery(delivery.recipientName(), delivery.recipientPhone(), delivery.line1(), delivery.line2(), delivery.city(), delivery.state(),
+                    delivery.postalCode(), delivery.country(), priced.optionName(), priced.townName());
+        }
         order.startHold(digest, idempotencyKey);
         Order saved = repository.saveAndFlush(order);
         log.info("Placed order id={} keycloakId={} subtotal={} total={} {} items={} (PENDING: inventory not yet asked)",
@@ -129,9 +153,18 @@ public class OrderWriter {
         return new Begun(saved, true);
     }
 
-    /** Where the order goes matters only when something is sent: a pickup is the same pickup whatever address the shopper had chosen. */
-    private static boolean sameAddress(OrderPricingService.PricedOrder priced, UUID shippingAddressId, Order existing) {
-        return com.oriah.quote.Quote.SELF_COLLECT.equals(priced.deliveryOption()) || java.util.Objects.equals(shippingAddressId, existing.shippingAddressId());
+    /**
+     * Where the order goes and who it is for matter only when something is sent: a pickup is the same pickup whatever address the shopper had chosen.
+     * A delivery is the same delivery only to the same address AND the same recipient, compared as they are kept (name tidied, phone in one spelling), so
+     * the same person typing the same number two ways is one order, and a corrected phone on a repeat is not silently dropped.
+     */
+    private static boolean sameDelivery(OrderPricingService.PricedOrder priced, UUID shippingAddressId, DeliveryDetails delivery, Order existing) {
+        if (com.oriah.quote.Quote.SELF_COLLECT.equals(priced.deliveryOption())) {
+            return true;
+        }
+        return java.util.Objects.equals(shippingAddressId, existing.shippingAddressId())
+                && (delivery == null || (java.util.Objects.equals(delivery.recipientName(), existing.recipientName())
+                        && java.util.Objects.equals(delivery.recipientPhone(), existing.recipientPhone())));
     }
 
     /** An order that already stands: held (just answer it), or still PENDING (a placement that was never finished: finish it). */

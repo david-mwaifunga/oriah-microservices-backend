@@ -37,7 +37,12 @@ public class ShippingQuotes {
     }
 
     /** What shipping priced: the amount that goes on the order, and the town and payer it resolved (null for self-collect). */
-    public record Delivery(BigDecimal amount, UUID townId, String payer) {
+    public record Delivery(BigDecimal amount, UUID townId, String payer, String townName, String optionName) {
+
+        /** A delivery that names neither its town nor its option. */
+        public Delivery(BigDecimal amount, UUID townId, String payer) {
+            this(amount, townId, payer, null, null);
+        }
     }
 
     /**
@@ -78,6 +83,6 @@ public class ShippingQuotes {
             log.error("shipping quoted payer {} with cost {} for {}: unusable", resolvedPayer, cost, option);
             throw new UpstreamRejectedException("shipping quoted an unusable payer");
         }
-        return new Delivery(cost, reply.townId(), resolvedPayer);
+        return new Delivery(cost, reply.townId(), resolvedPayer, reply.townName(), reply.optionName());
     }
 }

@@ -51,6 +51,7 @@ import jakarta.validation.constraints.Size;
  */
 @AddressUnlessSelfCollect
 @TownUnlessSelfCollect
+@ContactUnlessSelfCollect
 public record PlaceOrderRequest(
         /**
          * Where to deliver. Not needed when the shopper collects
@@ -125,8 +126,26 @@ public record PlaceOrderRequest(
         @NotBlank
         @Size(min = 64, max = 64)
         @Pattern(regexp = QuoteDigest.PATTERN, message = "must be 64 lower-case hex characters")
-        String quoteDigest
+        String quoteDigest,
+
+        /**
+         * Who the parcel is for (Phase 8): required for every delivered option and refused for self-collect ({@link ContactUnlessSelfCollect}). Kept on
+         * the order in one spelling, so the packer and the driver have someone to ask for and a number to ring.
+         */
+        @Size(max = com.oriah.quote.DeliveryContact.NAME_MAX)
+        String recipientName,
+
+        /** The recipient's phone number as typed (097 123 4567, +260 97 123 4567 ...); kept as +260971234567. */
+        @Size(max = 40)
+        String recipientPhone
 ) {
+
+    /** A request with no recipient: a pickup. */
+    public PlaceOrderRequest(UUID shippingAddressId, String currency, List<LineItem> items, String deliveryOption, UUID deliveryTownId, String payer,
+                             String quoteDigest) {
+        this(shippingAddressId, currency, items, deliveryOption, deliveryTownId, payer, quoteDigest, null, null);
+    }
+
     /**
      * <h2>Why every @Size carries an explicit {@code min}</h2>
      *

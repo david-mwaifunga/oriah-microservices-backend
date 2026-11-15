@@ -59,13 +59,14 @@ public class AddressOwnership {
      * @param addressId the address the order names; {@code null} -- a
      *                  self-collect order with nowhere to deliver -- asks
      *                  nothing of customer
+     * @return the caller's address as customer answered it (its lines are copied onto a delivered order); null when none was named
      * @throws IllegalArgumentException     it is not one of the caller's -- 400
      * @throws UpstreamUnavailableException customer could not be asked -- 503
      * @throws UpstreamRejectedException    customer refused or answered nothing -- 500
      */
-    public void requireCallersOwn(UUID addressId) {
+    public CustomerClient.Address requireCallersOwn(UUID addressId) {
         if (addressId == null) {
-            return;
+            return null;
         }
         List<CustomerClient.Address> theirs;
         try {
@@ -81,10 +82,9 @@ public class AddressOwnership {
         if (theirs == null) {
             throw new UpstreamRejectedException("customer answered with no address list");
         }
-        boolean own = theirs.stream().anyMatch(a -> addressId.equals(a.id()));
-        if (!own) {
+        return theirs.stream().filter(a -> addressId.equals(a.id())).findFirst().orElseThrow(() -> {
             log.warn("Refusing order: addressId={} is not one of the caller's", addressId);
-            throw new IllegalArgumentException(NOT_YOURS);
-        }
+            return new IllegalArgumentException(NOT_YOURS);
+        });
     }
 }

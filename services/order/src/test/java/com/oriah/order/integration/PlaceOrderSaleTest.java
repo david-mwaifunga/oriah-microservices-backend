@@ -138,6 +138,7 @@ class PlaceOrderSaleTest {
         return "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"" + option + "\","
                 + (town == null ? "" : "\"deliveryTownId\":\"" + town + "\",")
                 + (payer == null ? "" : "\"payer\":\"" + payer + "\",")
+                + ("SELF_COLLECT".equals(option) ? "" : "\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"+260971234567\",")
                 + "\"quoteDigest\":\"" + quoteDigest + "\","
                 + "\"items\":[{\"variantId\":\"" + RING + "\",\"title\":\"x\",\"quantity\":" + quantity + ",\"unitPrice\":4500.00}]}";
     }

@@ -54,7 +54,7 @@ class DeliveryWaiverTest extends SaleTestBase {
         String digest = QuoteDigest.of(new Quote(List.of(new QuoteLine(RING, quantity, new BigDecimal("4500.00"), new BigDecimal("0.00"), null)), "ZMW",
                 "OWN_DELIVERY", new BigDecimal("125.00"), TOWN, "ORIAH_COLLECTS"));
         String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + TOWN
-                + "\",\"payer\":\"ORIAH_COLLECTS\",\"quoteDigest\":\"" + digest + "\","
+                + "\",\"payer\":\"ORIAH_COLLECTS\",\"recipientName\":\"Mulenga Chanda\",\"recipientPhone\":\"+260971234567\",\"quoteDigest\":\"" + digest + "\","
                 + "\"items\":[{\"variantId\":\"" + RING + "\",\"title\":\"x\",\"quantity\":" + quantity + ",\"unitPrice\":4500.00}]}";
         MvcResult placed = mvc.perform(post("/api/v1/orders").with(alice()).contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
         assertThat(placed.getResponse().getStatus()).as(placed.getResponse().getContentAsString()).isEqualTo(201);
