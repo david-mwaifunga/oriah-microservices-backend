@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.oriah.inventory.events.StockCostEvents;
 import com.oriah.inventory.ledger.FifoConformer;
 import com.oriah.inventory.ledger.FifoConformer.Action;
 import com.oriah.inventory.ledger.FifoConformer.Kind;
@@ -38,9 +39,11 @@ class StockLedger {
     private static final int LOCK_CLASS = 0x494E5653;   // "INVS"
 
     private final JdbcTemplate jdbc;
+    private final StockCostEvents costEvents;
 
-    StockLedger(JdbcTemplate jdbc) {
+    StockLedger(JdbcTemplate jdbc, StockCostEvents costEvents) {
         this.jdbc = jdbc;
+        this.costEvents = costEvents;
     }
 
     /** A lot as it is held now. */
@@ -117,12 +120,15 @@ class StockLedger {
 
     long insertMovement(UUID variantId, UUID actionId, UUID lotId, StockReason reason, String role, int qtyDelta, BigDecimal unitCost,
                         boolean estimated, String kind, Long reverses, Long replaces, Instant occurredAt, String actor) {
-        return jdbc.queryForObject("""
+        long id = jdbc.queryForObject("""
                 INSERT INTO stock_movement (variant_id, action_id, lot_id, reason, role, qty_delta, unit_cost, is_estimated, kind,
                                             reverses_movement_id, replaces_movement_id, occurred_at, actor)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
                 Long.class, variantId, actionId, lotId, reason.name(), role, qtyDelta, unitCost, estimated, kind, reverses, replaces,
                 Timestamp.from(occurredAt), actor);
+        // Every row that moves a cost is announced to finance, just before this transaction commits (a receipt and a lot transfer move none).
+        costEvents.movementWritten(id, role, reason);
+        return id;
     }
 
     /** The lots still current, oldest first: the order FIFO draws in. */
