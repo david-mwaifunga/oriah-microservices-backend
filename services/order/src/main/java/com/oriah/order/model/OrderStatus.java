@@ -32,7 +32,7 @@ public enum OrderStatus {
     PAYMENT_SUBMITTED(Set.of("PAID", "EXPIRED")),
     EXPIRED(Set.of("PAID")),
     PAID(Set.of("FULFILLED")),
-    FULFILLED(Set.of("SHIPPED")),
+    FULFILLED(Set.of("SHIPPED", "DELIVERED")),   // DELIVERED only for a pickup (handed over): Order.transitionTo knows the option, this enum cannot
     SHIPPED(Set.of("DELIVERED")),
     DELIVERED(Set.of()),     // terminal
     CANCELLED(Set.of());     // terminal
@@ -52,11 +52,16 @@ public enum OrderStatus {
     }
 
     /**
-     * Whether a person may ask for this status through the admin transition endpoint: the fulfilment steps, and cancelling an unpaid
-     * order (which the state machine itself allows only from CREATED). Never PAID (only money makes an order paid), EXPIRED (only a hold
-     * lapsing or a rejected claim) or PAYMENT_SUBMITTED (only the shopper's claim).
+     * Whether a person may ask for this status through the generic admin transition endpoint: only cancelling an unpaid order (which the state machine
+     * itself allows only from CREATED). Packing, sending and delivering are the dispatch steps (Phase 8), which keep the record the books and refunds
+     * read; never PAID (only money makes an order paid), EXPIRED (only a hold lapsing or a rejected claim) or PAYMENT_SUBMITTED (only the shopper's claim).
      */
     public static boolean adminMayRequest(OrderStatus target) {
-        return target == FULFILLED || target == SHIPPED || target == DELIVERED || target == CANCELLED;
+        return target == CANCELLED;
+    }
+
+    /** The statuses that are reached only through the dispatch steps, whose refusal through the generic door says so. */
+    public static boolean isDispatchStep(OrderStatus target) {
+        return target == FULFILLED || target == SHIPPED || target == DELIVERED;
     }
 }

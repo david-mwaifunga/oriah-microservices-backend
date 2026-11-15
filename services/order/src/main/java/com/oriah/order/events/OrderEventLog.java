@@ -55,7 +55,7 @@ public class OrderEventLog {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public AppendedEvent placed(Order order, String actor) {
-        return append(order, null, actor);
+        return append(order, null, actor, null, null);
     }
 
     /**
@@ -67,7 +67,32 @@ public class OrderEventLog {
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public AppendedEvent moved(Order order, OrderStatus previousStatus, String actor) {
-        return append(order, previousStatus, actor);
+        if (order.status() == OrderStatus.SHIPPED) {
+            // A SHIPPED event without the dispatch would hide the courier fare from finance: it is appended only by shipped().
+            throw new IllegalStateException("order.shipped is appended with its dispatch, through shipped()");
+        }
+        return append(order, previousStatus, actor, null, null);
+    }
+
+    /**
+     * {@code order.<new status>} for a dispatch step, dated to the day the step TRUE happened ({@code occurredAt}), which may be earlier than the moment it
+     * was typed. Never SHIPPED: that carries the dispatch, see {@link #shipped}.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AppendedEvent moved(Order order, OrderStatus previousStatus, String actor, java.time.Instant occurredAt) {
+        if (order.status() == OrderStatus.SHIPPED) {
+            throw new IllegalStateException("order.shipped is appended with its dispatch, through shipped()");
+        }
+        return append(order, previousStatus, actor, occurredAt, null);
+    }
+
+    /**
+     * {@code order.shipped}, dated to the day the parcel went, with the dispatch: the fare Oriah paid the courier (when it paid one) and who paid the
+     * courier. The one place the fare is published.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AppendedEvent shipped(Order order, OrderStatus previousStatus, String actor, java.time.Instant occurredAt, OrderEvent.Dispatch dispatch) {
+        return append(order, previousStatus, actor, occurredAt, OrderEvent.shipped(order, previousStatus, dispatch));
     }
 
     /**
@@ -128,7 +153,7 @@ public class OrderEventLog {
                 new PaymentUnsettledEvent(confirmationId, orderId, reason, currency)));
     }
 
-    private AppendedEvent append(Order order, OrderStatus previousStatus, String actor) {
+    private AppendedEvent append(Order order, OrderStatus previousStatus, String actor, java.time.Instant occurredAt, OrderEvent payload) {
         orders.flush();
         return outbox.append(new EventDraft(
                 OrderEvent.AGGREGATE_TYPE,
@@ -136,8 +161,8 @@ public class OrderEventLog {
                 OrderEvent.eventType(order.status()),
                 OrderEvent.SCHEMA_VERSION,
                 OrderEvent.TOPIC,
-                previousStatus == null ? order.placedAt() : order.updatedAt(),
+                occurredAt != null ? occurredAt : (previousStatus == null ? order.placedAt() : order.updatedAt()),
                 actor,
-                OrderEvent.of(order, previousStatus)));
+                payload != null ? payload : OrderEvent.of(order, previousStatus)));
     }
 }

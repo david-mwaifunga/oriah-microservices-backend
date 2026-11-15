@@ -42,6 +42,39 @@ class OrderStatusTest {
     }
 
     @Test
+    @DisplayName("a packed order is shipped or, for a pickup, handed over: FULFILLED -> DELIVERED is an edge of the graph, and Order refuses it for anything but a pickup, and shipping a pickup")
+    void aPickupIsHandedOver() {
+        assertThat(OrderStatus.FULFILLED.canTransitionTo(OrderStatus.SHIPPED)).isTrue();
+        assertThat(OrderStatus.FULFILLED.canTransitionTo(OrderStatus.DELIVERED)).isTrue();
+        assertThat(OrderStatus.PAID.canTransitionTo(OrderStatus.DELIVERED)).isFalse();
+        assertThat(OrderStatus.SHIPPED.canTransitionTo(OrderStatus.FULFILLED)).isFalse();
+
+        com.oriah.order.model.Order pickup = packed("SELF_COLLECT");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> pickup.transitionTo(OrderStatus.SHIPPED)).isInstanceOf(IllegalStateException.class).hasMessageContaining("never shipped");
+        pickup.transitionTo(OrderStatus.DELIVERED);
+        assertThat(pickup.status()).isEqualTo(OrderStatus.DELIVERED);
+
+        for (String option : new String[] {"YANGO", "OWN_DELIVERY"}) {
+            com.oriah.order.model.Order parcel = packed(option);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> parcel.transitionTo(OrderStatus.DELIVERED)).as(option).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("shipped first");
+            parcel.transitionTo(OrderStatus.SHIPPED);
+            parcel.transitionTo(OrderStatus.DELIVERED);
+        }
+    }
+
+    private static com.oriah.order.model.Order packed(String option) {
+        boolean pickup = "SELF_COLLECT".equals(option);
+        com.oriah.order.model.Order order = new com.oriah.order.model.Order("kc", null, "ZMW", option, java.math.BigDecimal.ZERO,
+                pickup ? null : java.util.UUID.randomUUID(), pickup ? null : "ORIAH_COLLECTS");
+        order.addItem(java.util.UUID.randomUUID(), "ring", 1, new java.math.BigDecimal("100.00"));
+        order.transitionTo(OrderStatus.PAYMENT_SUBMITTED);
+        order.transitionTo(OrderStatus.PAID);
+        order.transitionTo(OrderStatus.FULFILLED);
+        return order;
+    }
+
+    @Test
     @DisplayName("non-adjacent jumps (CREATED -> SHIPPED, CREATED -> DELIVERED) are blocked")
     void noJumps() {
         assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.SHIPPED)).isFalse();
@@ -87,11 +120,13 @@ class OrderStatusTest {
     }
 
     @Test
-    @DisplayName("the statuses a person is allowed to ask for through the admin transition are only the fulfilment ones, and cancelling an unpaid order")
+    @DisplayName("the only status a person may ask for through the generic admin transition is CANCELLED (an unpaid order); packing, sending and delivering are the dispatch steps")
     void adminMayAskForOnly() {
-        assertThat(OrderStatus.adminMayRequest(OrderStatus.FULFILLED)).isTrue();
-        assertThat(OrderStatus.adminMayRequest(OrderStatus.SHIPPED)).isTrue();
-        assertThat(OrderStatus.adminMayRequest(OrderStatus.DELIVERED)).isTrue();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.FULFILLED)).as("the dispatch step pack").isFalse();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.SHIPPED)).as("the dispatch step ship").isFalse();
+        assertThat(OrderStatus.adminMayRequest(OrderStatus.DELIVERED)).as("the dispatch step deliver").isFalse();
+        assertThat(OrderStatus.isDispatchStep(OrderStatus.FULFILLED) && OrderStatus.isDispatchStep(OrderStatus.SHIPPED) && OrderStatus.isDispatchStep(OrderStatus.DELIVERED)).isTrue();
+        assertThat(OrderStatus.isDispatchStep(OrderStatus.CANCELLED) || OrderStatus.isDispatchStep(OrderStatus.PAID)).isFalse();
         assertThat(OrderStatus.adminMayRequest(OrderStatus.CANCELLED)).isTrue();
         assertThat(OrderStatus.adminMayRequest(OrderStatus.PAID)).as("only money, through the settlement saga, makes an order paid").isFalse();
         assertThat(OrderStatus.adminMayRequest(OrderStatus.EXPIRED)).as("only the hold lapsing, or a rejected claim").isFalse();

@@ -46,7 +46,7 @@ import com.oriah.order.model.OrderStatus;
  * consumers are built against.
  */
 @JsonPropertyOrder({"orderId", "keycloakId", "previousStatus", "newStatus", "total", "currency",
-        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId"})
+        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId", "dispatch"})
 public record OrderEvent(
         UUID orderId,
         String keycloakId,
@@ -66,11 +66,27 @@ public record OrderEvent(
          * of every other event are what they always were.
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        UUID reservationId
+        UUID reservationId,
+        /**
+         * Only on {@code order.shipped} (Phase 8): the dispatch as it happened. The ONE home of the courier fare Oriah paid -- finance reads it here and
+         * nowhere else. Absent everywhere else, so the bytes of every other event are what they always were.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        Dispatch dispatch
 ) {
     public static final String TOPIC = "oriah.order";
     public static final String AGGREGATE_TYPE = "order";
     public static final int SCHEMA_VERSION = 1;
+
+    /**
+     * The dispatch, on {@code order.shipped}: when the parcel went (the keyed date, which dates the month the fare belongs to), the fare Oriah paid the
+     * courier and who paid the courier. {@code farePaid} present means a fare was paid (0.00: the courier charged nothing); absent means none was due
+     * (a courier the recipient paid, or Oriah's own delivery). No recipient, address, reference or reason: nothing personal and nothing free-text.
+     */
+    @JsonPropertyOrder({"dispatchedAt", "farePaid", "payer"})
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    public record Dispatch(java.time.Instant dispatchedAt, BigDecimal farePaid, String payer) {
+    }
 
     /**
      * One line as it was sold: the variant, catalog's title at the moment of
@@ -109,7 +125,16 @@ public record OrderEvent(
                 order.deliveryOption(),
                 order.paymentIntentId(),
                 order.items().stream().map(OrderEvent::line).sorted(LINE_ORDER).toList(),
-                order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.EXPIRED ? order.reservationId() : null);
+                order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.EXPIRED ? order.reservationId() : null,
+                null);
+    }
+
+    /** The snapshot of an order that has just been shipped, carrying the dispatch. */
+    public static OrderEvent shipped(Order order, OrderStatus previousStatus, Dispatch dispatch) {
+        OrderEvent base = of(order, previousStatus);
+        return new OrderEvent(base.orderId, base.keycloakId, base.previousStatus, base.newStatus, base.total, base.currency, base.subtotal, base.shippingAmount,
+                base.discountAmount, base.deliveryOption, base.paymentIntentId, base.lines, base.reservationId, new Dispatch(
+                        dispatch.dispatchedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), stored(dispatch.farePaid()), dispatch.payer()));
     }
 
     /** {@code order.<status in lower case>}: order.created, order.paid, ... order.cancelled. */

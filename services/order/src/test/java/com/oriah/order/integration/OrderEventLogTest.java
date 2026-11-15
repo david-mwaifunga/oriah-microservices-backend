@@ -176,6 +176,13 @@ class OrderEventLogTest {
         return UUID.fromString(objectMapper.readTree(json).get("id").asText());
     }
 
+    private void step(UUID orderId, String step, String packerSubject) throws Exception {
+        mvc.perform(post("/api/v1/admin/orders/" + orderId + "/dispatch/" + step)
+                        .with(jwt().jwt(j -> j.subject(packerSubject)).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_FULFILMENT_AGENT")))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk());
+    }
+
     private void adminMoves(UUID orderId, String target, String staffSubject) throws Exception {
         mvc.perform(post("/api/v1/admin/orders/" + orderId + "/transition").with(staff(staffSubject))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -356,17 +363,15 @@ class OrderEventLogTest {
         // Only money makes an order PAID (the settlement saga, tested in SettlementReceiveTest, which also pins order.paid): here the sale is made
         // by hand so this test is about the changes AFTER it, and who made them.
         jdbc.update("UPDATE orders SET status = 'PAID' WHERE id = ?", orderId);
-        adminMoves(orderId, "FULFILLED", "kc-maya");
-        adminMoves(orderId, "SHIPPED", "kc-maya");
-        adminMoves(orderId, "DELIVERED", "kc-maya");
+        // A pickup is packed and handed over (Phase 8): two dispatch steps by the packer, no SHIPPED. The courier walk, with its fare, is DispatchStepsTest's.
+        step(orderId, "pack", "kc-dave");
+        step(orderId, "deliver", "kc-dave");
 
         List<Row> rows = rows(orderId);
-        assertThat(rows).extracting(Row::seq).containsExactly(1L, 2L, 3L, 4L);
-        assertThat(rows).extracting(Row::eventType).containsExactly(
-                "order.created", "order.fulfilled", "order.shipped", "order.delivered");
-        assertThat(rows).extracting(Row::actor).containsExactly(
-                "user:kc-alice", "user:kc-maya", "user:kc-maya", "user:kc-maya");
-        assertThat(rows.get(3).payload()).contains("\"previousStatus\":\"SHIPPED\",\"newStatus\":\"DELIVERED\"");
+        assertThat(rows).extracting(Row::seq).containsExactly(1L, 2L, 3L);
+        assertThat(rows).extracting(Row::eventType).containsExactly("order.created", "order.fulfilled", "order.delivered");
+        assertThat(rows).extracting(Row::actor).containsExactly("user:kc-alice", "user:kc-dave", "user:kc-dave");
+        assertThat(rows.get(2).payload()).contains("\"previousStatus\":\"FULFILLED\",\"newStatus\":\"DELIVERED\"");
 
         UUID cancelled = placeAs("kc-alice");
         mvc.perform(post("/api/v1/orders/" + cancelled + "/cancel").with(customer("kc-alice")))

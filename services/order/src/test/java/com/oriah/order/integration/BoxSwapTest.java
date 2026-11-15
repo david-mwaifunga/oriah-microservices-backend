@@ -86,9 +86,11 @@ class BoxSwapTest extends SaleTestBase {
         return jdbc.queryForList("SELECT * FROM order_box_swap_inflight WHERE order_id = ?", orderId);
     }
 
-    private MvcResult transition(UUID orderId, String target) throws Exception {
-        return mvc.perform(post("/api/v1/admin/orders/" + orderId + "/transition").with(manager()).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"targetStatus\":\"" + target + "\"}")).andReturn();
+    /** The hand-over of a pickup (these orders are pickups): its dispatch, which a swap in flight must hold back. */
+    private MvcResult handOver(UUID orderId) throws Exception {
+        return mvc.perform(post("/api/v1/admin/orders/" + orderId + "/dispatch/deliver")
+                .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_FULFILMENT_AGENT")).jwt(j -> j.subject("kc-dave"))).contentType(MediaType.APPLICATION_JSON)
+                .content("{}")).andReturn();
     }
 
     /** Inventory swapping whatever it is asked to, but first doing {@code whileAsked}: what happens while the swap is in flight. */
@@ -483,7 +485,7 @@ class BoxSwapTest extends SaleTestBase {
         assertThat(problem.get("type").asText()).endsWith("/box-swap-in-progress");
         assertThat(problem.get("amendmentId").asText()).as("it names the swap to resume").isEqualTo(amendment.toString());
         assertThat(problem.get("startedAt").asText()).isNotBlank();
-        MvcResult shipped = transition(id, "SHIPPED");
+        MvcResult shipped = handOver(id);
         assertThat(shipped.getResponse().getStatus()).isEqualTo(409);
         assertThat(json.readTree(shipped.getResponse().getContentAsString()).get("type").asText()).endsWith("/box-swap-in-progress");
         assertThat(row(id).get("status")).as("not shipped").isEqualTo("FULFILLED");
@@ -494,7 +496,7 @@ class BoxSwapTest extends SaleTestBase {
 
         assertThat(inflight(id)).isEmpty();
         assertThat(amendments(id)).isEqualTo(1);
-        assertThat(transition(id, "SHIPPED").getResponse().getStatus()).as("now nothing is in flight").isEqualTo(200);
+        assertThat(handOver(id).getResponse().getStatus()).as("now nothing is in flight").isEqualTo(200);
     }
 
     @Test
@@ -504,7 +506,7 @@ class BoxSwapTest extends SaleTestBase {
         jdbc.update("UPDATE orders SET status = 'FULFILLED' WHERE id = ?", id);
         UUID line = lineOf(id);
         AtomicReference<MvcResult> shippedMeanwhile = new AtomicReference<>();
-        inventorySwapsWhile(() -> shippedMeanwhile.set(transition(id, "SHIPPED")));
+        inventorySwapsWhile(() -> shippedMeanwhile.set(handOver(id)));
 
         MvcResult done = swap(manager(), id, line, REPLACEMENT, REASON, null);
 
@@ -514,8 +516,8 @@ class BoxSwapTest extends SaleTestBase {
         assertThat(row(id).get("status")).isEqualTo("FULFILLED");
         assertThat(item(line).get("box_variant_id")).isEqualTo(REPLACEMENT);
 
-        assertThat(transition(id, "SHIPPED").getResponse().getStatus()).isEqualTo(200);
-        assertThat(row(id).get("status")).isEqualTo("SHIPPED");
+        assertThat(handOver(id).getResponse().getStatus()).isEqualTo(200);
+        assertThat(row(id).get("status")).isEqualTo("DELIVERED");
     }
 
     @Test
@@ -655,7 +657,7 @@ class BoxSwapTest extends SaleTestBase {
         other.start();
         assertThat(holding.await(20, TimeUnit.SECONDS)).isTrue();
 
-        MvcResult result = transition(id, "SHIPPED");
+        MvcResult result = handOver(id);
         other.join();
 
         assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(409);

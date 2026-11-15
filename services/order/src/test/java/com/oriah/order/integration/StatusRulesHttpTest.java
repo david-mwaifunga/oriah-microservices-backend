@@ -111,14 +111,19 @@ class StatusRulesHttpTest {
     }
 
     @Test
-    @DisplayName("the fulfilment steps still work for staff, in order: a PAID order is fulfilled, shipped and delivered")
-    void fulfilmentStillWorks() throws Exception {
+    @DisplayName("packing, sending and delivering are no longer asked for through the generic door (Phase 8): 409 use-the-dispatch-steps, nothing changes and nothing is announced")
+    void fulfilmentIsTheDispatchStepsNow() throws Exception {
         Order paid = order("kc-alice", OrderStatus.PAID);
+        long before = events(paid.id());
 
-        transition(paid.id(), "FULFILLED").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("FULFILLED"));
-        transition(paid.id(), "SHIPPED").andExpect(status().isOk());
-        transition(paid.id(), "DELIVERED").andExpect(status().isOk()).andExpect(jsonPath("$.status").value("DELIVERED"));
+        for (String target : new String[] {"FULFILLED", "SHIPPED", "DELIVERED"}) {
+            transition(paid.id(), target).andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/use-the-dispatch-steps"));
+        }
         transition(paid.id(), "CANCELLED").andExpect(status().isConflict());
+
+        assertThat(orders.findById(paid.id()).orElseThrow().status()).isEqualTo(OrderStatus.PAID);
+        assertThat(events(paid.id())).isEqualTo(before);
     }
 
     @Test

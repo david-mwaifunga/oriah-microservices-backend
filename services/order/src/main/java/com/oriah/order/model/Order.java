@@ -526,6 +526,13 @@ public class Order extends BaseEntity {
             throw new IllegalStateException(
                     "Cannot transition order " + id + " from " + status + " to " + next);
         }
+        // The status graph cannot see the delivery option: a pickup is handed over, never shipped, and only a pickup is handed over (Phase 8).
+        if (status == OrderStatus.FULFILLED && next == OrderStatus.SHIPPED && isSelfCollect()) {
+            throw new IllegalStateException("Cannot ship order " + id + ": its shopper collects it, so it is handed over, never shipped");
+        }
+        if (status == OrderStatus.FULFILLED && next == OrderStatus.DELIVERED && !isSelfCollect()) {
+            throw new IllegalStateException("Cannot deliver order " + id + " from FULFILLED: only a pickup is handed over without being shipped first");
+        }
         this.status = next;
         if ((next == OrderStatus.CANCELLED || next == OrderStatus.EXPIRED) && (holdState == HoldState.HELD || holdState == HoldState.PENDING)) {
             // An order that ends unpaid gives its hold back (inventory lets go of the reservation the ending event names).

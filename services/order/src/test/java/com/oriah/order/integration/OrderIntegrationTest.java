@@ -195,7 +195,7 @@ class OrderIntegrationTest {
     }
 
     @Test
-    @DisplayName("admin transition: PAID -> FULFILLED -> SHIPPED -> DELIVERED")
+    @DisplayName("admin transition: FULFILLED, SHIPPED and DELIVERED are the dispatch steps now (409 use-the-dispatch-steps); DispatchStepsTest walks them")
     void adminFullPath() throws Exception {
         String orderId = placeAliceOrder();
         // Paid first -- by money, which this test is not about (SettlementReceiveTest is): the sale is made by hand.
@@ -206,8 +206,8 @@ class OrderIntegrationTest {
                             .with(jwt().authorities(ROLE_ORDER_ADMIN))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"targetStatus\":\"" + target + "\"}"))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.status").value(target));
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/use-the-dispatch-steps"));
         }
     }
 
