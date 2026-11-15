@@ -227,6 +227,20 @@ class ConsignmentEventConsumerTest {
     }
 
     @Test
+    @DisplayName("procurement's month bills (consignment.period_costs, Phase 10, finance's feed) are declared and ignored, so a replay never stalls on them")
+    void aPeriodCostEventIsIgnored() {
+        UUID consignment = UUID.randomUUID();
+        Message<byte[]> message = MessageBuilder.fromMessage(relayed(UUID.randomUUID(), "consignment.period_costs", consignment, 1, RECEIVED_AT, "{}").build())
+                .setHeader(EventHeaders.AGGREGATE_TYPE, "consignment")
+                .build();
+        int before = processed();
+
+        live.accept(message);
+
+        assertThat(processed()).as("recorded as seen, so it is never offered again").isGreaterThanOrEqualTo(before);
+    }
+
+    @Test
     @DisplayName("an event written before linePosition existed is accepted and keyed by its outbox id")
     void anOlderEvent() {
         UUID line = UUID.randomUUID();

@@ -396,6 +396,16 @@ class SettlementReceiveTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("inventory's cost of a stock movement (Phase 10, finance's feed) is declared and ignored here, so it never lands on the dead-letter topic")
+    void aStockCostIsIgnored() {
+        UUID action = UUID.randomUUID();
+
+        inventoryEvents.accept(message("stock_action", action, "stock.cost_recorded", 1, "{}", "inventory"));
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM order_settlement", Long.class)).isZero();
+    }
+
+    @Test
     @DisplayName("a type nobody declared, or a version of one that was never agreed, is refused on its first delivery (never retried)")
     void anUndeclaredEventIsRefused() {
         UUID id = UUID.randomUUID();

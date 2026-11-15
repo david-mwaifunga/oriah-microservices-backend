@@ -98,7 +98,9 @@ public class ProductEventConsumer {
             .handles(OrderEventConsumer.ORDER, OrderEventConsumer.CANCELLED, 1)
             .handles(OrderEventConsumer.ORDER, OrderEventConsumer.EXPIRED, 1)
             .ignores("order.created", "order.payment_submitted", "order.payment_unsettled", "order.paid", "order.fulfilled", "order.shipped",
-                    "order.delivered");
+                    "order.delivered")
+            // Procurement's month bills (Phase 10: finance's feed, declared here BEFORE procurement emits it): not stock, so ignored.
+            .ignores("consignment.period_costs");
 
     @Bean
     public Consumer<Message<byte[]>> productEvents(

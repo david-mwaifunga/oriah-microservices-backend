@@ -37,8 +37,9 @@ public final class OrderInbox {
             .handles(CLAIM, REJECTED, 1)
             .handles(CONFIRMATION, VOIDED, 1)
             .handles(RESERVATION, EXPIRED, 1)
-            // payment's card events (until Phase 13) and held money, and inventory's sale and box swap: facts order never acts on
-            .ignores("payment.succeeded", "payment.failed", "payment.held", "reservation.consumed", "box.swapped");
+            // payment's card events (until Phase 13) and held money, and inventory's sale and box swap: facts order never acts on;
+            // and inventory's cost of each stock movement (Phase 10: finance's feed, declared here BEFORE inventory emits it)
+            .ignores("payment.succeeded", "payment.failed", "payment.held", "reservation.consumed", "box.swapped", "stock.cost_recorded");
 
     private OrderInbox() {
     }
