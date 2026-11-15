@@ -32,6 +32,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
 /** Whether the books can be trusted: the status, the anomalies, acknowledging one, and reading a producer's history again. FINANCE_ADMIN only. */
+@ProblemResponses
 @RestController
 @RequestMapping("/api/v1/admin/finance")
 @PreAuthorize("hasRole('FINANCE_ADMIN')")
@@ -59,6 +60,8 @@ public class OperationsController {
         return operations.anomalies(status);
     }
 
+    @WriteResponses
+    @NotFoundResponse
     @PostMapping("/anomalies/{id}/ack")
     @Transactional
     @Operation(operationId = "acknowledgeAnomaly", summary = "Say an error or warning has been looked at, with a note (Idempotency-Key required)")
@@ -70,6 +73,7 @@ public class OperationsController {
         return done.replay() ? ResponseEntity.ok(done.body()) : ResponseEntity.status(HttpStatus.CREATED).location(URI.create("/api/v1/admin/finance/anomalies?status=ALL")).body(done.body());
     }
 
+    @WriteResponses
     @PostMapping("/catch-up/reverify")
     @Transactional
     @Operation(operationId = "reverifyCatchUp", summary = "Read a producer's whole history again at the next start (Idempotency-Key required)")

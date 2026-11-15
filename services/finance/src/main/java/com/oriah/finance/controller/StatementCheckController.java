@@ -28,6 +28,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
 /** What each provider's statement says it charged for a month, for the reconciliation. FINANCE_ADMIN only. */
+@ProblemResponses
 @RestController
 @RequestMapping("/api/v1/admin/finance")
 @PreAuthorize("hasRole('FINANCE_ADMIN')")
@@ -45,6 +46,7 @@ public class StatementCheckController {
         this.idempotency = idempotency;
     }
 
+    @WriteResponses
     @PostMapping("/statement-checks")
     @Transactional
     @Operation(operationId = "addStatementCheck", summary = "Enter what a provider's statement says it charged in fees for a month (Idempotency-Key required)")

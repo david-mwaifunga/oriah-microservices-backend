@@ -38,6 +38,7 @@ import jakarta.validation.Valid;
  * Expenses: typed in, reversed, corrected and read. FINANCE_ADMIN only (the owner and the bookkeeper). Every write needs an {@code Idempotency-Key}: sent again with the same
  * request it answers 200 with the original answer and does nothing; a new write answers 201.
  */
+@ProblemResponses
 @RestController
 @RequestMapping("/api/v1/admin/finance")
 @PreAuthorize("hasRole('FINANCE_ADMIN')")
@@ -55,6 +56,7 @@ public class ExpenseController {
         this.idempotency = idempotency;
     }
 
+    @WriteResponses
     @PostMapping("/expenses")
     @Transactional
     @Operation(operationId = "addExpense", summary = "Type in an expense (Idempotency-Key required)")
@@ -71,12 +73,15 @@ public class ExpenseController {
         return expenses.list(month, category, source, includeReversed, page, size);
     }
 
+    @NotFoundResponse
     @GetMapping("/expenses/{id}")
     @Operation(operationId = "getExpense", summary = "One expense")
     public ExpenseResponse get(@PathVariable UUID id) {
         return expenses.get(id);
     }
 
+    @WriteResponses
+    @NotFoundResponse
     @PostMapping("/expenses/{id}/reversal")
     @Transactional
     @Operation(operationId = "reverseExpense", summary = "Take an expense back, with a reason (Idempotency-Key required)")
@@ -86,6 +91,8 @@ public class ExpenseController {
         return answer(idempotency.run(actor, key, "POST " + BASE + "/" + id + "/reversal", request, ExpenseResponse.class, () -> expenses.reverse(actor, id, request.reason())));
     }
 
+    @WriteResponses
+    @NotFoundResponse
     @PostMapping("/expenses/{id}/correction")
     @Transactional
     @Operation(operationId = "correctExpense", summary = "Correct or re-classify an expense: a reversal plus a new expense in one step (Idempotency-Key required)")

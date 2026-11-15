@@ -4,7 +4,7 @@
 #
 # Drives the full backend through the gateway. Each step is listed under the
 # banner it prints, so a failure on screen can be found here by its number.
-# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20f.
+# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20i.
 #
 # Phase 7 "Sell": the sale is placed, HELD, claimed, confirmed BY STAFF and settled
 # asynchronously (steps 2b-6j). Checkout never touches money: there is no card, and
@@ -3703,6 +3703,75 @@ $webId = "$((Invoke-Api GET "$gw/orders/me" $aliceH $null).Json.content[0].id)"
 $webCancel = Invoke-Api POST "$recorded/$webId/cancel" $saraH $null
 Require ($webCancel.Status -eq 404) "cancelling a shopper's order through the recorded door gave $($webCancel.Status), expected 404"
 Write-Host "    sara recorded, listed and cancelled a sale; her answers carry no cost, margin, staff identity or reservation; eight doors (orders, box swap, waiver, dispatch, cost lots, pricing, write-offs, held money) answered 403; a shopper's order is 404 through this door" -ForegroundColor Gray
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+Write-Host "[20i/20] Finance (Phase 10): the books were filled from every producer's history; the phone sale shows its money line by line; an expense is keyed once; a month still running cannot be reported; only the book-keeper's door opens..." -ForegroundColor Cyan
+$finBase = "$gw/admin/finance"
+$finMonth = [DateTime]::UtcNow.AddHours(2).ToString("yyyy-MM")
+$finDay = [DateTime]::UtcNow.AddHours(2).ToString("yyyy-MM-dd")
+
+# --- (a) who may: only FINANCE_ADMIN (the owner holds it; a shopper and a salesperson do not) ------------------------------------------------------------
+$noToken = Invoke-Api GET "$finBase/status" $null $null
+Require ($noToken.Status -eq 401) "finance status with no token gave $($noToken.Status), expected 401"
+foreach ($who in @(@{ N = "alice"; H = $aliceH }, @{ N = "sara"; H = $saraH })) {
+    foreach ($u in @("$finBase/status", "$finBase/reports/profit/$finMonth", "$finBase/anomalies", "$finBase/expenses")) {
+        $denied = Invoke-Api GET $u $who.H $null
+        Require ($denied.Status -eq 403) "$($who.N) GET $u gave $($denied.Status), expected 403: the books are the book-keeper's and the owner's alone"
+    }
+}
+
+# --- (b) the catch-up: finance read every producer's history from the beginning, and nothing is open that should not be ----------------------------------
+$finStatus = Wait-Until { $s = Invoke-Api GET "$finBase/status" $mayaH $null; if (($s.Status -eq 200) -and ($s.Json.catchUpComplete -eq $true)) { $s } else { $null } } 240 3
+Require ($null -ne $finStatus) "finance's catch-up had not finished 4 minutes after the stack started: $((Invoke-Api GET "$finBase/status" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)"
+$producerNames = @(@($finStatus.Json.producers) | ForEach-Object { "$($_.producer)" } | Sort-Object)
+Require (($producerNames -join ",") -ceq "catalog,inventory,order,payment,procurement") "finance reads $($producerNames -join ',') but should read catalog, inventory, order, payment and procurement"
+Require ([int]$finStatus.Json.openErrors -eq 0) "finance has $($finStatus.Json.openErrors) open error(s) after its catch-up: $((Invoke-Api GET "$finBase/anomalies?status=OPEN" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)"
+Require (("$($finStatus.Json | ConvertTo-Json -Compress -Depth 5)") -cnotmatch "amount") "the status carries an amount: it is counts and ids only"
+
+# --- (c) the phone sale of step 20h appears in the books line by line: revenue less discount is what the caller paid, and its stock cost is booked --------
+$sums = Wait-Until {
+    $e = Invoke-Api GET "$finBase/reports/profit/$finMonth/entries?orderId=$p9AId&size=100" $mayaH $null
+    if ($e.Status -ne 200) { return $null }
+    $rows = @($e.Json.items)
+    $rev = [decimal]0; $disc = [decimal]0; $cogs = [decimal]0
+    foreach ($row in $rows) {
+        if ("$($row.account)" -ceq "REVENUE_GOODS") { $rev += [decimal]$row.amount }
+        if ("$($row.account)" -ceq "DISCOUNTS") { $disc += [decimal]$row.amount }
+        if ("$($row.account)" -ceq "COGS_GOODS") { $cogs += [decimal]$row.amount }
+    }
+    if (($rev -gt 0) -and ($cogs -gt 0)) { @{ Revenue = $rev; Discount = $disc; Cogs = $cogs } } else { $null }
+} 180 3
+Require ($null -ne $sums) "finance has no revenue and cost rows for the phone order $p9AId in $finMonth after 3 minutes"
+Require (($sums.Revenue - $sums.Discount) -eq $p9Total) "the phone sale paid K$p9Total but the books show goods K$($sums.Revenue) less discount K$($sums.Discount)"
+Write-Host "    the catch-up finished (5 producers, no open error); the phone sale's books: goods K$($sums.Revenue) less discount K$($sums.Discount) = the K$p9Total the caller paid, stock cost K$($sums.Cogs) booked"
+
+# --- (d) the report of the month shows it, and says whether it can be relied on --------------------------------------------------------------------------
+$finReport = Invoke-Api GET "$finBase/reports/profit/$finMonth" $mayaH $null
+Assert-Reply $finReport "the profit report of $finMonth" 200
+Require (("$($finReport.Json.currency)" -ceq "ZMW") -and (@($finReport.Json.lines).Count -ge 10)) "the report reads $($finReport.Json | ConvertTo-Json -Compress -Depth 3)"
+$goodsLine = @(@($finReport.Json.lines) | Where-Object { "$($_.key)" -ceq "goodsAtListPrice" })
+Require (($goodsLine.Count -eq 1) -and ([decimal]$goodsLine[0].amount -ge $sums.Revenue)) "the report's goods line is not there or is less than the phone sale's own goods"
+Require ($finReport.Json.status.doNotRelyYet -is [bool]) "the report does not say whether it can be relied on"
+$finProducts = Invoke-Api GET "$finBase/reports/profit/$finMonth/products" $mayaH $null
+Assert-Reply $finProducts "the gross profit by product of $finMonth" 200
+Assert-Reply (Invoke-Api GET "$finBase/reports/estimated-stock" $mayaH $null) "the standing list of estimated stock costs" 200
+Assert-Reply (Invoke-Api GET "$finBase/anomalies?status=ALL" $mayaH $null) "the anomaly list" 200
+
+# --- (e) an expense is keyed once; a tenth of a ngwee is refused; a month still running cannot be reported -----------------------------------------------
+$finKey = New-Key "smoke-expense"
+$finExpense = @{ category = "RENT_UTILITIES"; amount = 1.37; expenseDate = $finDay; description = "Smoke test rent $saleTag" }
+$ex1 = Invoke-Api POST "$finBase/expenses" ($mayaH + @{ "Idempotency-Key" = $finKey }) $finExpense
+Assert-Reply $ex1 "keying an expense" 201
+$ex2 = Invoke-Api POST "$finBase/expenses" ($mayaH + @{ "Idempotency-Key" = $finKey }) $finExpense
+Require (($ex2.Status -eq 200) -and ("$($ex2.Json.id)" -ceq "$($ex1.Json.id)")) "the same expense again gave $($ex2.Status), expected 200 with the same id"
+$fine = Invoke-Api POST "$finBase/expenses" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-expense-fine") }) (With-Fields $finExpense @{ amount = 1.005 })
+Require ($fine.Status -eq 400) "an expense of K1.005 gave $($fine.Status), expected 400"
+$posted = Invoke-Api GET "$finBase/reports/profit/$finMonth/entries?category=RENT_UTILITIES&size=200" $mayaH $null
+Assert-Reply $posted "the rent entries of $finMonth" 200
+Require (@(@($posted.Json.items) | Where-Object { [decimal]$_.amount -eq [decimal]1.37 }).Count -ge 1) "the K1.37 expense is not among the rent rows of $finMonth"
+$tooSoon = Invoke-Api POST "$finBase/reports/profit/$finMonth/issue" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-issue") }) @{}
+Require (($tooSoon.Status -eq 409) -and "$($tooSoon.Json.type)".EndsWith("/month-not-finished")) "reporting the running month gave $($tooSoon.Status) '$($tooSoon.Json.type)', expected 409 month-not-finished"
+Write-Host "    only the owner opens the books (a shopper and a salesperson get 403, no token 401); an expense is keyed once (a repeat answers the same one), K1.005 is refused 400, and the running month cannot be reported (409 month-not-finished)"
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

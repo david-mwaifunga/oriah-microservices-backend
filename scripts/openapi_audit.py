@@ -73,6 +73,17 @@ NON_200_SUCCESS = {
     ("procurement", "delete", "/api/v1/admin/procurement/consignments/{id}"): "204",
     ("procurement", "post", "/api/v1/admin/procurement/consignments/{id}/documents"): "201",
     ("procurement", "post", "/api/v1/admin/procurement/purchase-orders/{id}/documents"): "201",
+    # Phase 10: finance writes answer 201 the first time and 200 for the same request again (ResponseEntity, which springdoc cannot see into).
+    ("finance", "post", "/api/v1/admin/finance/expenses"): "201",
+    ("finance", "post", "/api/v1/admin/finance/expenses/{id}/reversal"): "201",
+    ("finance", "post", "/api/v1/admin/finance/expenses/{id}/correction"): "201",
+    ("finance", "post", "/api/v1/admin/finance/tax-entries"): "201",
+    ("finance", "post", "/api/v1/admin/finance/tax-entries/{id}/reversal"): "201",
+    ("finance", "post", "/api/v1/admin/finance/tax-entries/{id}/correction"): "201",
+    ("finance", "post", "/api/v1/admin/finance/statement-checks"): "201",
+    ("finance", "post", "/api/v1/admin/finance/reports/profit/{month}/issue"): "201",
+    ("finance", "post", "/api/v1/admin/finance/anomalies/{id}/ack"): "201",
+    ("finance", "post", "/api/v1/admin/finance/catch-up/reverify"): "201",
 }
 
 # The one auto-numbered id in the contract, pinned deliberately rather than

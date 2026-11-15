@@ -267,7 +267,9 @@ final class Events {
 
     /** One row of the stock ledger as inventory announces it. */
     static final class Stock {
-        long movementId = 1000 + (System.nanoTime() % 1_000_000);
+        /** Unique within the run: the ledger keys a movement's row by this number, so two tests drawing the same one would silently share (or contradict) a row. */
+        private static final java.util.concurrent.atomic.AtomicLong NEXT_MOVEMENT = new java.util.concurrent.atomic.AtomicLong(10_000_000);
+        long movementId = NEXT_MOVEMENT.incrementAndGet();
         UUID actionId = UUID.randomUUID();
         String actionKind = "SALE";
         String reason = "SALE";

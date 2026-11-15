@@ -33,6 +33,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 
 /** Tax paid to ZRA, typed in. FINANCE_ADMIN only. Every write needs an {@code Idempotency-Key}. */
+@ProblemResponses
 @RestController
 @RequestMapping("/api/v1/admin/finance")
 @PreAuthorize("hasRole('FINANCE_ADMIN')")
@@ -50,6 +51,7 @@ public class TaxController {
         this.idempotency = idempotency;
     }
 
+    @WriteResponses
     @PostMapping("/tax-entries")
     @Transactional
     @Operation(operationId = "addTaxEntry", summary = "Enter a tax paid to ZRA (Idempotency-Key required)")
@@ -64,12 +66,15 @@ public class TaxController {
         return taxes.list(month);
     }
 
+    @NotFoundResponse
     @GetMapping("/tax-entries/{id}")
     @Operation(operationId = "getTaxEntry", summary = "One tax entry")
     public TaxEntryResponse get(@PathVariable UUID id) {
         return taxes.get(id);
     }
 
+    @WriteResponses
+    @NotFoundResponse
     @PostMapping("/tax-entries/{id}/reversal")
     @Transactional
     @Operation(operationId = "reverseTaxEntry", summary = "Take a tax entry back, with a reason (Idempotency-Key required)")
@@ -79,6 +84,8 @@ public class TaxController {
         return answer(idempotency.run(actor, key, "POST " + BASE + "/" + id + "/reversal", request, TaxEntryResponse.class, () -> taxes.reverse(actor, id, request.reason())));
     }
 
+    @WriteResponses
+    @NotFoundResponse
     @PostMapping("/tax-entries/{id}/correction")
     @Transactional
     @Operation(operationId = "correctTaxEntry", summary = "Correct a tax entry: a reversal plus a new entry in one step (Idempotency-Key required)")

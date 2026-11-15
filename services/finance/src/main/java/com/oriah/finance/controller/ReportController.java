@@ -36,6 +36,7 @@ import jakarta.validation.Valid;
 /**
  * The profit report. FINANCE_ADMIN only (the owner and the bookkeeper). {@code asOf} reproduces a month as finance knew it at an earlier moment; leaving it out is now.
  */
+@ProblemResponses
 @RestController
 @RequestMapping("/api/v1/admin/finance/reports")
 @PreAuthorize("hasRole('FINANCE_ADMIN')")
@@ -80,6 +81,7 @@ public class ReportController {
         return reports.entries(month, line, product, category, orderId, changedSinceIssue, asOf, page, size);
     }
 
+    @WriteResponses
     @PostMapping("/profit/{month}/issue")
     @Transactional
     @Operation(operationId = "issueProfitReport", summary = "Report a month: store it whole as it is now (Idempotency-Key required)")
