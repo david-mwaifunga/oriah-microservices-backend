@@ -278,7 +278,7 @@ class RealmRolesTest {
     void theDevPeopleAreTheOnesTheTestsSignInAs() {
         Map<String, JsonNode> byName = users(devUsers).stream()
                 .collect(Collectors.toMap(u -> u.path("username").asText(), u -> u));
-        assertThat(byName).containsKeys("maya", "admin", "alice");
+        assertThat(byName).containsKeys("maya", "admin", "alice", "dave");
 
         // maya: every admin surface, AND a second customer in the smoke test's
         // money-path probes -- so USER as well. Imported users get no default
@@ -289,6 +289,10 @@ class RealmRolesTest {
         assertThat(byName.get("admin").path("requiredActions").toString()).contains("UPDATE_PASSWORD");
         // alice: a customer and nothing else.
         assertThat(realmRolesOf(byName.get("alice"))).containsExactly(USER);
+        // dave: a packer or driver (Phase 8) and a customer account, nothing more. The smoke test signs in as him to prove a DISPATCH person reads
+        // who, where and what is in the parcel without seeing money (Q29) and can reach nothing else of the shop's.
+        assertThat(realmRolesOf(byName.get("dave"))).containsExactlyInAnyOrder("DISPATCH", USER);
+        assertThat(byName.get("dave").path("requiredActions").isMissingNode() || byName.get("dave").path("requiredActions").isEmpty()).isTrue();
     }
 
     @Test

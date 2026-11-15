@@ -191,6 +191,10 @@ public class SecurityConfig {
                         // admit a person; here they are not routed to anyone at all. Before the broad inventory rule below.
                         .pathMatchers("/api/v1/admin/inventory/reservations/**", "/api/v1/admin/inventory/box-swaps/**").denyAll()
                         .pathMatchers("/api/v1/admin/orders/*/dispatch/**").hasRole("FULFILMENT_AGENT")
+                        // Phase 8: the packer's work list (what is waiting to be packed, packed, on its way), served by order from a controller of its
+                        // own. An EXACT path, not a prefix: anything else under /orders/dispatch/ falls through to the ORDER_ADMIN prefix below and
+                        // fails closed, so a path added to order by mistake is never opened to packers by accident.
+                        .pathMatchers(HttpMethod.GET, "/api/v1/admin/orders/dispatch/queue").hasRole("FULFILMENT_AGENT")
                         .pathMatchers("/api/v1/admin/orders/*/delivery-waiver/**").hasRole("DELIVERY_WAIVER")
                         // A sale recorded more than 72 hours after it was paid
                         // is the owner's call (section 8.2), so it is its own

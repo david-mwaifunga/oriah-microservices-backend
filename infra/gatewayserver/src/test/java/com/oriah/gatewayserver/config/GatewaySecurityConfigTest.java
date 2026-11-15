@@ -264,6 +264,8 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/inventory/box-commitments,                                    ROLE_INVENTORY_ADMIN",
             "/api/v1/admin/inventory/box-commitments/00000000-0000-0000-0000-000000000001, ROLE_INVENTORY_ADMIN",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch,         ROLE_FULFILMENT_AGENT",
+            // Phase 8: the packer's work list is served by order from a controller of its own, at an EXACT path: nothing else under /orders/dispatch/.
+            "/api/v1/admin/orders/dispatch/queue,                                        ROLE_FULFILMENT_AGENT",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver,  ROLE_DELIVERY_WAIVER",
             "/api/v1/admin/orders/recorded,                                              ROLE_SALES_AGENT",
             "/api/v1/admin/orders/late-recorded,                                         ROLE_BACKDATE_SALE",
@@ -306,6 +308,7 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/pricing/below-cost",
             "/api/v1/admin/pricing/variants/00000000-0000-0000-0000-000000000001",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch",
+            "/api/v1/admin/orders/dispatch/queue",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver",
             "/api/v1/admin/orders/recorded",
             "/api/v1/admin/orders/late-recorded",
@@ -352,6 +355,8 @@ class GatewaySecurityConfigTest {
             // back-dating a sale.
             "/api/v1/admin/inventory/write-offs,                                         ROLE_INVENTORY_ADMIN",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/dispatch,         ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/dispatch/queue,                                        ROLE_ORDER_ADMIN",
+            "/api/v1/admin/orders/dispatch/queue,                                        ROLE_SALES_AGENT",
             "/api/v1/admin/orders/00000000-0000-0000-0000-000000000001/delivery-waiver,  ROLE_ORDER_ADMIN",
             "/api/v1/admin/orders/recorded,                                              ROLE_ORDER_ADMIN",
             "/api/v1/admin/orders/late-recorded,                                         ROLE_ORDER_ADMIN",
@@ -386,6 +391,24 @@ class GatewaySecurityConfigTest {
         as(jobRole).post().uri(AN_ORDER + "/transition")
                 .exchange()
                 .expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("a packer (DISPATCH) reaches the work list, the slip and the steps and nothing else: no orders list, box swap, waiver, payment, customer, cost or stock, "
+            + "and nothing else under /orders/dispatch/ (an unknown path there falls to ORDER_ADMIN and fails closed)")
+    void aPackerReachesOnlyTheDispatchWork() {
+        assertAdmitted(as("DISPATCH").get().uri("/api/v1/admin/orders/dispatch/queue"));
+        assertAdmitted(as("DISPATCH").get().uri(AN_ORDER + "/dispatch"));
+        assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/pack"));
+        assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/ship"));
+        assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/deliver"));
+        assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/delivery-details"));
+        for (String path : java.util.List.of("/api/v1/admin/orders", AN_ORDER, AN_ORDER + "/box-swaps", AN_ORDER + "/delivery-waiver",
+                "/api/v1/admin/orders/dispatch/anything-else", "/api/v1/admin/orders/dispatch", "/api/v1/admin/payments/confirmations",
+                "/api/v1/admin/customers", "/api/v1/admin/costs/lots", "/api/v1/admin/inventory", "/api/v1/admin/pricing/below-cost")) {
+            as("DISPATCH").get().uri(path).exchange().expectStatus().isForbidden();
+        }
+        as("DISPATCH").post().uri(AN_ORDER + "/transition").exchange().expectStatus().isForbidden();
     }
 
     @Test

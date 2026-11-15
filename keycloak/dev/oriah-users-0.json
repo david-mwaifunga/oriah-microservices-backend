@@ -52,6 +52,23 @@
         }
       ],
       "realmRoles": ["USER"]
+    },
+    {
+      "id": "3b9d5a1e-7c42-4f6a-9e08-5d1c7a2b4f63",
+      "username": "dave",
+      "enabled": true,
+      "email": "dave@oriah.local",
+      "emailVerified": true,
+      "firstName": "Dave",
+      "lastName": "Packer",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["DISPATCH", "USER"]
     }
   ]
 }
