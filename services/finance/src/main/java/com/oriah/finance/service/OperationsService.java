@@ -84,6 +84,7 @@ public class OperationsService {
 
     @Transactional
     public AnomalyResponse acknowledge(String actor, long id, String note) {
+        FreeText.noPhoneNumbers(note, "the note");
         locks.writer();
         List<Map<String, Object>> raised = jdbc.queryForList("SELECT code, subject, severity FROM anomaly_log WHERE id = ? AND action = 'RAISE'", id);
         if (raised.isEmpty()) {

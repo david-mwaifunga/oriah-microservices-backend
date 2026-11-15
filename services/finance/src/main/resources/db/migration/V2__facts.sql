@@ -32,7 +32,7 @@ CREATE TABLE sale (
     -- The original order.paid was never seen; this sale was recovered from a republished copy.
     recovered_from_republish BOOLEAN      NOT NULL DEFAULT FALSE,
     source_event_id          UUID,
-    created_at               TIMESTAMPTZ  NOT NULL DEFAULT now()
+    created_at               TIMESTAMPTZ  NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE TABLE sale_line (
@@ -62,7 +62,6 @@ CREATE TABLE confirmation_fact (
     voided_at        TIMESTAMPTZ,
     held_at          TIMESTAMPTZ,
     outcome          VARCHAR(10),
-    held_reason      VARCHAR(30),
     owed_gross       NUMERIC(12, 2),
     -- Who the event says did it, and when its producer recorded it: what the rows derived from this fact carry.
     actor            VARCHAR(128),
@@ -126,7 +125,7 @@ CREATE TABLE anomaly_log (
     severity        VARCHAR(5)   NOT NULL CHECK (severity IN ('INFO', 'WARN', 'ERROR')),
     detail          JSONB,
     by_actor        VARCHAR(128),
-    at              TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    at              TIMESTAMPTZ  NOT NULL DEFAULT clock_timestamp(),
     note            VARCHAR(200),
     source_event_id UUID,
     CONSTRAINT ck_anomaly_ack_note CHECK (action <> 'ACK' OR (note IS NOT NULL AND char_length(btrim(note)) >= 5 AND by_actor IS NOT NULL))
@@ -158,7 +157,7 @@ CREATE TABLE statement_check (
     statement_fees NUMERIC(12, 2) NOT NULL CHECK (statement_fees >= 0),
     note           VARCHAR(200),
     entered_by     VARCHAR(128) NOT NULL,
-    entered_at     TIMESTAMPTZ  NOT NULL DEFAULT now()
+    entered_at     TIMESTAMPTZ  NOT NULL DEFAULT clock_timestamp()
 );
 
 -- An event finance read and deliberately did nothing with, and why (for example an order.paid from before confirmations had ids).

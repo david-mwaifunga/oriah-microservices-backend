@@ -217,7 +217,7 @@ public class ProfitReportService {
         Map<String, BigDecimal> recorded = new TreeMap<>();
         jdbc.query("""
                 SELECT cf.method, sum(l.amount) FROM ledger_entry l JOIN confirmation_fact cf ON cf.confirmation_id = l.confirmation_id AND cf.kind = 'CONFIRMED'
-                 WHERE l.account = 'EXPENSE' AND l.category = 'PAYMENT_CHARGES' AND l.effect_month = ? AND l.recorded_at <= ? GROUP BY cf.method""",
+                 WHERE l.account = 'EXPENSE' AND l.category IN ('PAYMENT_CHARGES', 'PAYMENT_CHARGES_ADJUSTMENT') AND l.effect_month = ? AND l.recorded_at <= ? GROUP BY cf.method""",
                 rs -> { recorded.merge(rs.getString(1), rs.getBigDecimal(2), BigDecimal::add); }, first, cut);
         jdbc.query("""
                 SELECT x.provider, sum(l.amount) FROM ledger_entry l JOIN expense x ON x.ledger_entry_id = l.entry_id
@@ -236,9 +236,9 @@ public class ProfitReportService {
     }
 
     private Status status(LocalDate first, Timestamp cut) {
-        int errors = openAnomalies("ERROR");
-        int warnings = openAnomalies("WARN");
-        Boolean complete = jdbc.queryForObject("SELECT count(*) > 0 AND bool_and(completed_at IS NOT NULL) FROM outbox_catch_up", Boolean.class);
+        int errors = openAnomalies("ERROR", cut);
+        int warnings = openAnomalies("WARN", cut);
+        Boolean complete = jdbc.queryForObject("SELECT count(*) > 0 AND bool_and(completed_at IS NOT NULL AND completed_at <= ?) FROM outbox_catch_up", Boolean.class, cut);
         BigDecimal notTied = nz(jdbc.queryForObject("""
                 SELECT sum(abs(net)) FROM (SELECT account, sum(amount) AS net FROM ledger_entry WHERE product_id IS NULL AND effect_month = ? AND recorded_at <= ?
                    AND account IN ('REVENUE_GOODS', 'DISCOUNTS', 'COGS_GOODS', 'COGS_PACKAGING', 'STOCK_OUT') GROUP BY account) t""", BigDecimal.class, first, cut));
@@ -323,9 +323,10 @@ public class ProfitReportService {
         }
     }
 
-    private int openAnomalies(String severity) {
-        Integer n = jdbc.queryForObject("SELECT count(*) FROM (SELECT DISTINCT ON (code, subject) action, severity FROM anomaly_log ORDER BY code, subject, id DESC) a "
-                + "WHERE action = 'RAISE' AND severity = ?", Integer.class, severity);
+    /** The errors (or warnings) that were open at the cut: the latest row of each anomaly AT that moment is a RAISE. */
+    private int openAnomalies(String severity, Timestamp cut) {
+        Integer n = jdbc.queryForObject("SELECT count(*) FROM (SELECT DISTINCT ON (code, subject) action, severity FROM anomaly_log WHERE at <= ? ORDER BY code, subject, id DESC) a "
+                + "WHERE action = 'RAISE' AND severity = ?", Integer.class, cut, severity);
         return n == null ? 0 : n;
     }
 
@@ -340,6 +341,15 @@ public class ProfitReportService {
         if (page < 0 || size < 1 || size > MAX_SIZE) {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-page", "page is 0 or more and size is 1 to " + MAX_SIZE);
         }
+        return build(ym, asOf, page, size);
+    }
+
+    /** Every product row of the month, for the stored copy of a reported month (which must add up to its own total however many products there are). */
+    ProductReportResponse allProducts(YearMonth ym, Instant asOf) {
+        return build(ym, asOf, 0, Integer.MAX_VALUE);
+    }
+
+    private ProductReportResponse build(YearMonth ym, Instant asOf, int page, int size) {
         LocalDate first = ym.atDay(1);
         Timestamp cut = Timestamp.from(asOf);
         Map<UUID, BigDecimal[]> byProduct = new LinkedHashMap<>();
@@ -410,9 +420,9 @@ public class ProfitReportService {
 
     /** The cut: what finance knew at this moment (default now; never beyond five minutes ahead, which is clock skew, not a future). */
     Instant asOf(String text) {
-        Instant now = clock.instant();
+        Instant now = jdbc.queryForObject("SELECT clock_timestamp()", Timestamp.class).toInstant();
         if (text == null || text.isBlank()) {
-            return now.plusSeconds(1);
+            return now;
         }
         try {
             Instant at = Instant.parse(text);

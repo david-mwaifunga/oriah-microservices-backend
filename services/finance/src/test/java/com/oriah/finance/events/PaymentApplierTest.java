@@ -246,7 +246,7 @@ class PaymentApplierTest {
     }
 
     @Test
-    @DisplayName("held money with no arrival day on its event (written before the field) takes the confirmation's arrival day; with neither, the day it was learned, and says so")
+    @DisplayName("held money with no arrival day on its event (written before the field) takes the confirmation's arrival day; with neither it WAITS for the confirmation, never guessing a day that could be another month")
     void heldMoneyFromAnOlderEvent() {
         UUID known = UUID.randomUUID();
         UUID unknown = UUID.randomUUID();
@@ -254,10 +254,35 @@ class PaymentApplierTest {
         confirm(known, order, "10.00", ARRIVED, 1);
 
         hold(known, order, Instant.parse("2026-10-15T08:00:00Z"), null);
-        hold(unknown, order, Instant.parse("2026-10-16T08:00:00Z"), null);
+        hold(unknown, order, Instant.parse("2026-11-01T08:00:00Z"), null);
 
         assertThat(jdbc.queryForObject("SELECT effect_day FROM ledger_entry WHERE entry_key = ?", java.sql.Date.class, "held:" + known).toLocalDate()).isEqualTo(LocalDate.parse("2026-10-14"));
-        assertThat(jdbc.queryForObject("SELECT effect_day FROM ledger_entry WHERE entry_key = ?", java.sql.Date.class, "held:" + unknown).toLocalDate()).isEqualTo(LocalDate.parse("2026-10-16"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_entry WHERE entry_key = ?", Long.class, "held:" + unknown)).as("no day to book it on yet").isZero();
+        assertThat(open("held-without-arrival-date", unknown)).as("and it says it is waiting").isTrue();
+
+        confirm(unknown, order, "10.00", ARRIVED, 1);
+
+        assertThat(jdbc.queryForObject("SELECT effect_day FROM ledger_entry WHERE entry_key = ?", java.sql.Date.class, "held:" + unknown).toLocalDate())
+                .as("the confirmation arrives and the money is booked on the day it arrived, not the day it was learned").isEqualTo(LocalDate.parse("2026-10-14"));
+        assertThat(open("held-without-arrival-date", unknown)).isFalse();
+    }
+
+    @Test
+    @DisplayName("money held is checked against the confirmation it came from: another order or another amount is an open error, not a quietly different liability")
+    void heldMustMatchTheConfirmation() {
+        UUID conf = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+        confirm(conf, order, "10.00", ARRIVED, 1);
+
+        payments.apply(Events.heldContext(conf, Instant.parse("2026-10-15T08:00:00Z")), Events.held(conf, order, "900.00", Instant.parse("2026-10-15T08:00:00Z"), ARRIVED));
+
+        assertThat(open("held-differs-from-confirmation", conf)).isTrue();
+    }
+
+    @Test
+    @DisplayName("finance keeps no reason text from a held-money event: the field is not stored at all")
+    void noHeldReasonIsKept() {
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM information_schema.columns WHERE table_name = 'confirmation_fact' AND column_name = 'held_reason'", Long.class)).isZero();
     }
 
     @Test

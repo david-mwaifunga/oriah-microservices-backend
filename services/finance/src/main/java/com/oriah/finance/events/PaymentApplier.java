@@ -115,9 +115,9 @@ public class PaymentApplier {
         locks.writer();
         locks.confirmation(p.confirmationId());
         jdbc.update("""
-                INSERT INTO confirmation_fact (confirmation_id, kind, order_id, owed_gross, arrived_at, held_at, held_reason, actor, source_recorded_at, source_event_id)
-                VALUES (?, 'HELD', ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (confirmation_id, kind) DO NOTHING""",
-                p.confirmationId(), p.orderId(), p.owedGross(), instant(p.arrivedAt()), Timestamp.from(p.heldAt()), p.reason(), ctx.actor(), instant(ctx.recordedAt()), ctx.eventId());
+                INSERT INTO confirmation_fact (confirmation_id, kind, order_id, owed_gross, arrived_at, held_at, actor, source_recorded_at, source_event_id)
+                VALUES (?, 'HELD', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (confirmation_id, kind) DO NOTHING""",
+                p.confirmationId(), p.orderId(), p.owedGross(), instant(p.arrivedAt()), Timestamp.from(p.heldAt()), ctx.actor(), instant(ctx.recordedAt()), ctx.eventId());
         derivation.derive(p.confirmationId(), ctx);
     }
 

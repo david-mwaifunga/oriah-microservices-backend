@@ -109,10 +109,13 @@ class StockCostRaceTest {
 
         long costRows = jdbc.queryForObject("SELECT count(*) FROM stock_movement WHERE role IN ('ORIGINAL', 'RECUT_REVERSAL', 'RECUT_REPLACEMENT') "
                 + "AND reason <> 'CONSIGNMENT_RECEIVED'", Long.class);
-        long announced = jdbc.queryForObject("SELECT count(*) FROM outbox WHERE event_type = 'stock.cost_recorded'", Long.class);
+        // The outbox is append-only, so it still holds what earlier tests announced; a movement id is never reused (TRUNCATE keeps the sequence), so this test's announcements are the
+        // ones about movements that are in the ledger now.
+        String mine = " FROM outbox WHERE event_type = 'stock.cost_recorded' AND (payload::jsonb ->> 'movementId')::bigint IN (SELECT id FROM stock_movement)";
+        long announced = jdbc.queryForObject("SELECT count(*)" + mine, Long.class);
         assertThat(costRows).isGreaterThan(0);
         assertThat(announced).as("every row that moved a cost, once").isEqualTo(costRows);
-        assertThat(jdbc.queryForObject("SELECT count(DISTINCT payload::jsonb ->> 'movementId') FROM outbox WHERE event_type = 'stock.cost_recorded'", Long.class))
+        assertThat(jdbc.queryForObject("SELECT count(DISTINCT payload::jsonb ->> 'movementId')" + mine, Long.class))
                 .isEqualTo(costRows);
     }
 

@@ -5,6 +5,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -125,11 +126,18 @@ public class FeeDerivation {
     // ------------------------------------------------------------------ held money
 
     private Long postHeld(UUID conf, Fact confirmed, Fact held, EventContext ctx) {
+        if (confirmed != null && (confirmed.gross().compareTo(held.owedGross()) != 0 || !Objects.equals(confirmed.orderId(), held.orderId()))) {
+            anomalies.raise("held-differs-from-confirmation", conf.toString(), Severity.ERROR, Map.of("confirmationId", conf.toString(), "confirmedGross", confirmed.gross().toPlainString(),
+                    "heldAmount", held.owedGross().toPlainString(), "sameOrder", Objects.equals(confirmed.orderId(), held.orderId())), ctx.eventId());
+        }
         Instant arrived = held.arrivedAt() != null ? held.arrivedAt() : confirmed != null ? confirmed.arrivedAt() : null;
         if (arrived == null) {
-            arrived = held.heldAt();
+            // An event written before the field existed, and the confirmation has not been heard of yet: the day it was learned could be another month, and a row is never moved.
+            // Wait: the confirmation, when it arrives, derives this again and books it on the day the money arrived.
             anomalies.raise("held-without-arrival-date", conf.toString(), Severity.WARN, Map.of("confirmationId", conf.toString()), ctx.eventId());
+            return null;
         }
+        anomalies.autoResolve("held-without-arrival-date", conf.toString());
         return ledger.post(Entry.of("held:" + conf, "MEMO_HELD_MONEY", held.owedGross(), arrived, calendar.dayOf(arrived), "PAYMENT_HELD", held.actor())
                 .sourceRecordedAt(held.sourceRecordedAt()).event(held.eventId(), "payment", null).order(held.orderId()).confirmation(conf)).entryId();
     }

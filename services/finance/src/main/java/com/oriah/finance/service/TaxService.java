@@ -63,6 +63,7 @@ public class TaxService {
 
     @Transactional
     public TaxEntryResponse reverse(String actor, UUID id, String reason) {
+        FreeText.noPhoneNumbers(reason, "the reason");
         locks.writer();
         return get(reversal(actor, loadForUndo(id), reason, null));
     }
@@ -94,6 +95,7 @@ public class TaxService {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-paid-date", "A tax cannot have been paid in the future");
         }
         FreeText.noPhoneNumbers(reference, "the reference");
+        FreeText.noPhoneNumbers(reason, "the reason");
         boolean issued = expenses.issued(month);
         if (issued && (reason == null || reason.isBlank())) {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "reason-required-for-issued-month", "The month of " + forMonth + " was already reported: say why this is entered now, and the report will show it was entered after the fact");
@@ -109,8 +111,13 @@ public class TaxService {
     private UUID reversal(String actor, Row o, String reason, UUID group) {
         boolean issued = expenses.issued(o.month());
         UUID id = UUID.randomUUID();
-        long entryId = ledger.post(Entry.of("tax-rev:" + id, "TAX_ENTERED", o.amount().negate(), o.month().atStartOfDay(BusinessCalendar.ZONE).toInstant(), o.month(), "TAX_ENTRY", actor)
-                .reverses(o.entryId())).entryId();
+        long entryId;
+        try {
+            entryId = ledger.post(Entry.of("tax-rev:" + id, "TAX_ENTERED", o.amount().negate(), o.month().atStartOfDay(BusinessCalendar.ZONE).toInstant(), o.month(), "TAX_ENTRY", actor)
+                    .reverses(o.entryId())).entryId();
+        } catch (org.springframework.dao.DuplicateKeyException raced) {
+            throw new FinanceProblem(HttpStatus.CONFLICT, "tax-entry-already-reversed", "That tax entry has just been reversed by someone else");
+        }
         jdbc.update("""
                 INSERT INTO tax_entry (tax_entry_id, ledger_entry_id, tax_type, period_month, amount, paid_on, reference, reverses_tax_entry_id, correction_group, reason, in_issued_month, created_by)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", id, entryId, o.taxType(), o.month(), o.amount(), o.paidOn(), o.reference(), o.id(), group, reason, issued, actor);

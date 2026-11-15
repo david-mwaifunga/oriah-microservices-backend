@@ -57,6 +57,7 @@ public class ReportIssueService {
     @Transactional
     public IssueResponse issue(String actor, String month, IssueRequest request) {
         YearMonth ym = ProfitReportService.parse(month);
+        FreeText.noPhoneNumbers(request.note(), "the note");
         locks.issuer();
         Instant now = clock.instant();
         if (now.isBefore(calendar.endOf(ym).plus(grace))) {
@@ -65,7 +66,7 @@ public class ReportIssueService {
         }
         Instant asOf = jdbc.queryForObject("SELECT clock_timestamp()", Timestamp.class).toInstant();
         ProfitReportResponse report = reports.month(ym, asOf);
-        ProductReportResponse products = reports.products(ym, asOf, 0, ProfitReportService.MAX_SIZE);
+        ProductReportResponse products = reports.allProducts(ym, asOf);
         List<String> reasons = new ArrayList<>();
         if (!report.status().catchUpComplete()) {
             reasons.add("finance has not yet read every service's whole history (the catch-up is not complete)");
@@ -92,8 +93,8 @@ public class ReportIssueService {
         IssueResponse.Snapshot snapshot = new IssueResponse.Snapshot(report, products);
         jdbc.update("""
                 INSERT INTO report_issue (issue_id, month, issue_no, as_of, issued_at, issued_by, note, incomplete_reasons, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb))""",
-                UUID.randomUUID(), ym.atDay(1), issueNo, Timestamp.from(asOf), Timestamp.from(now), actor, request.note(), reasons.isEmpty() ? null : EventJson.write(reasons), EventJson.write(snapshot));
-        return new IssueResponse(issueNo, ym.toString(), asOf, now, actor, request.note(), reasons, snapshot);
+                UUID.randomUUID(), ym.atDay(1), issueNo, Timestamp.from(asOf), Timestamp.from(asOf), actor, request.note(), reasons.isEmpty() ? null : EventJson.write(reasons), EventJson.write(snapshot));
+        return new IssueResponse(issueNo, ym.toString(), asOf, asOf, actor, request.note(), reasons, snapshot);
     }
 
     @Transactional(readOnly = true)

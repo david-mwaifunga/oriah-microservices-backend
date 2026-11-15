@@ -373,4 +373,38 @@ class ProfitReportTest {
         }
         assertThat(line(report("2022-07"), 7)).as("3,000.00 less the corrected cost of 3 x 450.00").isEqualByComparingTo("1650.00");
     }
+
+    @Test
+    @DisplayName("a hand-keyed payment-charge adjustment counts in what finance recorded for the provider, so a gap against the statement can be closed to K0.00")
+    void anAdjustmentClosesTheStatementGap() throws Exception {
+        UUID ring = UUID.randomUUID();
+        Paid s = new Paid().line(Sold.of(ring, 1, "1000.00", "0.00")).fee("8.00").arrived("2018-06-10T08:00:00Z");
+        Instant arrived = Instant.parse("2018-06-10T08:00:00Z");
+        payments.apply(Events.confirmedContext(s.confirmation, arrived), Events.confirmed(s.confirmation, s.order, "1000.00", "8.00", arrived, 1));
+        sale(s);
+        mvc.perform(post("/api/v1/admin/finance/statement-checks").with(bookkeeper()).header("Idempotency-Key", "k-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"month\":\"2018-06\",\"method\":\"MTN\",\"statementFees\":10.00}")).andReturn();
+        assertThat(named(report("2018-06").get("memo").get("statementChecks"), "method", "MTN").get("difference").decimalValue()).isEqualByComparingTo("2.00");
+
+        ok(mvc.perform(post("/api/v1/admin/finance/expenses").with(bookkeeper()).header("Idempotency-Key", "k-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"category\":\"PAYMENT_CHARGES_ADJUSTMENT\",\"amount\":2.00,\"expenseDate\":\"2018-06-20\",\"description\":\"fee left out\",\"linkedConfirmationId\":\"" + s.confirmation
+                        + "\",\"reason\":\"the statement shows a fee the record left out\"}")).andReturn(), 201);
+
+        JsonNode mtn = named(report("2018-06").get("memo").get("statementChecks"), "method", "MTN");
+        assertThat(mtn.get("recordedFees").decimalValue()).isEqualByComparingTo("10.00");
+        assertThat(mtn.get("difference").decimalValue()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    @DisplayName("a report as of an earlier moment says how many errors were open THEN and whether the catch-up had finished THEN, not today's")
+    void theStatusIsTheStatusThen() throws Exception {
+        Instant before = Instant.now();
+        Thread.sleep(50);
+        jdbc.update("INSERT INTO anomaly_log (code, subject, action, severity) VALUES ('test-error', ?, 'RAISE', 'ERROR')", "asof-" + UUID.randomUUID());
+
+        int now = report("2018-08").get("status").get("openErrors").asInt();
+        int then = ok(mvc.perform(get(REPORT + "/2018-08?asOf=" + before).with(bookkeeper())).andReturn(), 200).get("status").get("openErrors").asInt();
+
+        assertThat(now - then).as("the error raised after the moment is not in the report of that moment").isEqualTo(1);
+    }
 }

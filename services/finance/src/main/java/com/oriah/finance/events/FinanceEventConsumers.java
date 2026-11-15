@@ -1,6 +1,5 @@
 package com.oriah.finance.events;
 
-import java.io.UncheckedIOException;
 import java.util.function.Consumer;
 
 import org.springframework.context.annotation.Bean;
@@ -86,7 +85,7 @@ public class FinanceEventConsumers {
                     inbox.once(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
                 }
                 refusals.applied(String.valueOf(message.getHeaders().get(EventHeaders.EVENT_ID)));
-            } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) {
+            } catch (RuntimeException e) {
                 recordRefusal(refusals, message, e);
                 throw e;
             }
@@ -115,7 +114,7 @@ public class FinanceEventConsumers {
                     catchUp.once(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
                 }
                 refusals.applied(String.valueOf(message.getHeaders().get(EventHeaders.EVENT_ID)));
-            } catch (IllegalArgumentException | IllegalStateException | UncheckedIOException e) {
+            } catch (RuntimeException e) {
                 recordRefusal(refusals, message, e);
                 throw e;
             }

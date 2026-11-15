@@ -289,4 +289,36 @@ class ReportIssueTest {
         assertThat(List.of(byOrder.get("total").asLong())).containsExactly(2L);
         assertThat(Instant.parse(goods.get("items").get(0).get("recordedAt").asText())).isNotNull();
     }
+
+    @Test
+    @DisplayName("a month reported with more than 200 products stores every one of them, so the stored table adds up to its own total")
+    void theSnapshotKeepsEveryProduct() throws Exception {
+        Paid p = new Paid().arrived("2018-07-10T08:00:00Z");
+        for (int i = 0; i < 205; i++) {
+            p.line(Sold.of(UUID.randomUUID(), 1, "10.00", "0.00"));
+        }
+        sale(p);
+
+        JsonNode issue = ok(send(REPORT + "/2018-07/issue", key(), "{\"acknowledgeIncomplete\":true}"), 201);
+
+        JsonNode products = issue.get("snapshot").get("products");
+        assertThat(products.get("items").size()).as("every product row, not the first 200").isEqualTo(205);
+        BigDecimal sum = BigDecimal.ZERO;
+        for (JsonNode row : products.get("items")) {
+            sum = sum.add(row.get("grossProfit").decimalValue());
+        }
+        assertThat(sum).isEqualByComparingTo(products.get("totals").get("grossProfit").decimalValue());
+    }
+
+    @Test
+    @DisplayName("the report asked for at the moment a month was reported still says it was reported")
+    void reportedAtTheMomentItWasReported() throws Exception {
+        sale(new Paid().line(Sold.of(UUID.randomUUID(), 1, "10.00", "0.00")).arrived("2018-09-10T08:00:00Z"));
+        JsonNode issue = ok(send(REPORT + "/2018-09/issue", key(), "{\"acknowledgeIncomplete\":true}"), 201);
+
+        JsonNode asIssued = ok(mvc.perform(get(REPORT + "/2018-09?asOf=" + issue.get("asOf").asText()).with(bookkeeper())).andReturn(), 200);
+
+        assertThat(asIssued.get("status").get("issued").asBoolean()).isTrue();
+        assertThat(issue.get("issuedAt").asText()).isEqualTo(issue.get("asOf").asText());
+    }
 }

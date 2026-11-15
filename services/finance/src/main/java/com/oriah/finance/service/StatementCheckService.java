@@ -26,8 +26,10 @@ public class StatementCheckService {
     private final JdbcTemplate jdbc;
     private final BusinessCalendar calendar;
     private final Clock clock;
+    private final com.oriah.finance.ledger.Locks locks;
 
-    public StatementCheckService(JdbcTemplate jdbc, BusinessCalendar calendar, Clock clock) {
+    public StatementCheckService(JdbcTemplate jdbc, BusinessCalendar calendar, Clock clock, com.oriah.finance.ledger.Locks locks) {
+        this.locks = locks;
         this.jdbc = jdbc;
         this.calendar = calendar;
         this.clock = clock;
@@ -35,6 +37,7 @@ public class StatementCheckService {
 
     @Transactional
     public StatementCheckResponse add(String actor, StatementCheckRequest r) {
+        locks.writer();
         LocalDate month = parseMonth(r.month());
         if (month.isAfter(BusinessCalendar.firstOfMonth(calendar.today(clock.instant())))) {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-month", "A statement is for a month that has begun");

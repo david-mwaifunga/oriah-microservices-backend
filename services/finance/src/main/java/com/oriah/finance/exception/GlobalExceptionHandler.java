@@ -23,7 +23,7 @@ public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
 
     @ExceptionHandler(FinanceProblem.class)
     public ResponseEntity<ProblemDetail> financeProblem(FinanceProblem ex) {
-        log.info("{} {}: {}", ex.status().value(), ex.code(), ex.getMessage());
+        log.info("{} {}", ex.status().value(), ex.code());
         ProblemDetail pd = problem(ex.status(), URI.create("https://oriah.dev/problems/" + ex.code()), ex.status().getReasonPhrase(), ex.getMessage());
         ex.properties().forEach(pd::setProperty);
         return ResponseEntity.status(ex.status()).body(pd);

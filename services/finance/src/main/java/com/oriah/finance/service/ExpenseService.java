@@ -10,8 +10,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -43,7 +41,6 @@ public class ExpenseService {
 
     static final int DEFAULT_SIZE = 50;
     static final int MAX_SIZE = 200;
-    private static final Pattern DIGIT_RUN = Pattern.compile("\\d{9,}");
 
     private final JdbcTemplate jdbc;
     private final LedgerWriter ledger;
@@ -77,6 +74,7 @@ public class ExpenseService {
 
     @Transactional
     public ExpenseResponse reverse(String actor, UUID id, String reason) {
+        FreeText.noPhoneNumbers(reason, "the reason");
         locks.writer();
         Row original = loadForUndo(id);
         UUID reversal = reversal(actor, original, reason, null);
@@ -123,9 +121,9 @@ public class ExpenseService {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-expense-date", "An expense cannot be dated in the future (today is " + today + "): type it on the day it is spent");
         }
         String text = description.strip();
-        if (DIGIT_RUN.matcher(text.replaceAll("[\\s+\\-()]", "")).find()) {
-            throw new FinanceProblem(HttpStatus.BAD_REQUEST, "no-phone-numbers", "Do not type phone numbers into the description: it is kept for good and names no one");
-        }
+        FreeText.noPhoneNumbers(text, "the description");
+        FreeText.noPhoneNumbers(reason, "the reason");
+        provider = FreeText.providerCode(provider);
         if ("OTHER".equals(category.code()) && text.length() < 5) {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-description", "'Other' needs a description of at least five characters, so the bookkeeper can tell what it was");
         }
@@ -168,6 +166,12 @@ public class ExpenseService {
         if (jdbc.queryForObject("SELECT count(*) FROM dispatch_fact WHERE order_id = ?", Long.class, order) == 0) {
             throw new FinanceProblem(HttpStatus.CONFLICT, "order-not-dispatched-yet", "Order " + order + " has not been dispatched yet: a courier fare is entered after the parcel has gone");
         }
+        locks.order(order);
+        Long standing = jdbc.queryForObject("SELECT count(*) FROM expense x JOIN ledger_entry l ON l.entry_id = x.ledger_entry_id WHERE x.category = 'COURIER_FARE' AND x.kind = 'ADD' "
+                + "AND x.linked_order_id = ? AND NOT EXISTS (SELECT 1 FROM ledger_entry r WHERE r.reverses_entry_id = l.entry_id)", Long.class, order);
+        if (standing != null && standing > 0) {
+            throw new FinanceProblem(HttpStatus.CONFLICT, "fare-already-posted", "A fare for order " + order + " already stands: correct that one instead, so it is not counted twice");
+        }
         Long posted = jdbc.query("SELECT entry_id FROM ledger_entry l WHERE entry_key = ? AND NOT EXISTS (SELECT 1 FROM ledger_entry r WHERE r.reverses_entry_id = l.entry_id)",
                 (rs, n) -> rs.getLong(1), "fare:" + order).stream().findFirst().orElse(null);
         if (posted != null) {
@@ -187,7 +191,12 @@ public class ExpenseService {
         if (o.confirmation() != null) {
             entry.confirmation(o.confirmation());
         }
-        long entryId = ledger.post(entry).entryId();
+        long entryId;
+        try {
+            entryId = ledger.post(entry).entryId();
+        } catch (org.springframework.dao.DuplicateKeyException raced) {
+            throw new FinanceProblem(HttpStatus.CONFLICT, "expense-already-reversed", "That expense has just been reversed by someone else");
+        }
         jdbc.update("""
                 INSERT INTO expense (expense_id, ledger_entry_id, kind, category, description, provider, linked_order_id, linked_confirmation_id, correction_group, reason, in_issued_month, origin,
                                      created_by) VALUES (?, ?, 'REVERSAL', ?, ?, ?, ?, ?, ?, ?, ?, 'KEYED', ?)""",
@@ -305,10 +314,5 @@ public class ExpenseService {
         } catch (DateTimeParseException e) {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-month", "A month is written year-month, for example 2026-10");
         }
-    }
-
-    @SuppressWarnings("unused")
-    private static Timestamp unused(Matcher m) {
-        return null;
     }
 }

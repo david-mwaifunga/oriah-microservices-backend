@@ -210,7 +210,15 @@ class ExpenseHttpTest {
         JsonNode fine = ok(send(PATH, key(), "{" + base + ",\"linkedOrderId\":\"" + noFare + "\"}", bookkeeper()), 201);
 
         assertThat(fine.get("linkedOrderId").asText()).isEqualTo(noFare.toString());
-        assertThat(month("2026-10-01", "COURIER_FARE")).isGreaterThanOrEqualTo(new BigDecimal("35.00"));
+        java.util.Map<String, Object> row = jdbc.queryForMap("SELECT l.amount, l.effect_day, l.order_id, l.account, l.category FROM expense x JOIN ledger_entry l ON l.entry_id = x.ledger_entry_id WHERE x.expense_id = ?::uuid",
+                fine.get("id").asText());
+        assertThat((BigDecimal) row.get("amount")).as("the typed fare itself was booked, not just the fixture's").isEqualByComparingTo("35.00");
+        assertThat(row.get("effect_day").toString()).isEqualTo("2026-10-14");
+        assertThat(row.get("order_id")).isEqualTo(noFare);
+        assertThat(row.get("account")).isEqualTo("EXPENSE");
+        assertThat(row.get("category")).isEqualTo("COURIER_FARE");
+        assertThat(type(ok(send(PATH, key(), "{" + base + ",\"linkedOrderId\":\"" + noFare + "\"}", bookkeeper()), 409))).as("a second typed fare for the same order would count it twice")
+                .endsWith("/fare-already-posted");
     }
 
     @Test
@@ -260,8 +268,10 @@ class ExpenseHttpTest {
         assertThat(corrected.get("amount").decimalValue()).isEqualByComparingTo("1250.00");
         assertThat(corrected.get("expenseDate").asText()).isEqualTo("2026-03-15");
         assertThat(month("2026-03-01")).isEqualByComparingTo("1250.00");
-        assertThat(jdbc.queryForObject("SELECT count(DISTINCT correction_group) FROM expense WHERE correction_group IS NOT NULL AND expense_id IN (?::uuid, ?::uuid)", Long.class, id,
-                corrected.get("id").asText())).as("the original, its reversal and the new row all belong to one group, which is the group of the new row").isGreaterThanOrEqualTo(0);
+        UUID group = jdbc.queryForObject("SELECT correction_group FROM expense WHERE expense_id = ?::uuid", UUID.class, corrected.get("id").asText());
+        assertThat(group).as("the new row carries the group of its correction").isNotNull();
+        assertThat(jdbc.queryForList("SELECT kind FROM expense WHERE correction_group = ? ORDER BY kind", String.class, group))
+                .as("the group is exactly the reversal of the original and the new row").hasSize(2).contains("REVERSAL");
         assertThat(type(ok(send(PATH + "/" + corrected.get("id").asText() + "/correction", key(), "{\"reason\":\"just looking again\"}", bookkeeper()), 400))).endsWith("/correction-changes-nothing");
     }
 
