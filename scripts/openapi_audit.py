@@ -32,7 +32,7 @@ from pathlib import Path
 SERVICES = [
     "catalog", "inventory", "customer", "cart", "payment", "order",
     "promotion", "shipping", "checkout", "notification", "review", "search",
-    "procurement",
+    "procurement", "finance",
 ]
 
 METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")

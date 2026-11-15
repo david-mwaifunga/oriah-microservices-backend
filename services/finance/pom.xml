@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.oriah</groupId>
+        <artifactId>services</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>finance</artifactId>
+    <packaging>jar</packaging>
+    <name>finance</name>
+    <description>Expenses, the ledger, taxes entered by hand and the monthly profit report: what the shop really made.</description>
+
+    <dependencies>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator</artifactId></dependency>
+        <!-- Cross-cutting observability: see shared/oriah-observability-starter. -->
+        <dependency><groupId>com.oriah</groupId><artifactId>oriah-observability-starter</artifactId><version>${project.version}</version></dependency>
+
+        <!--
+            No JPA on purpose: the ledger is append-only and read in sets (sums by month, account and product), so every statement is SQL
+            (JdbcClient / JdbcTemplate) and nothing is an entity that could be edited in memory and flushed.
+        -->
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-jdbc</artifactId></dependency>
+
+        <!-- The ngwee rule for money (shared/oriah-money), and its edge guard for tests. -->
+        <dependency><groupId>com.oriah</groupId><artifactId>oriah-money</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>com.oriah</groupId><artifactId>oriah-money</artifactId><version>${project.version}</version><type>test-jar</type><scope>test</scope></dependency>
+
+        <!--
+            The event log (shared/oriah-events). Finance only RECEIVES: it reads every other service's outbox through the Inbox, from the
+            beginning (the replay catch-up), and produces nothing. The test-jar carries the schema guards that prove V3 copied the
+            reference tables exactly. The Kafka binder is required explicitly: the module declares it optional.
+        -->
+        <dependency><groupId>com.oriah</groupId><artifactId>oriah-events</artifactId><version>${project.version}</version></dependency>
+        <dependency><groupId>com.oriah</groupId><artifactId>oriah-events</artifactId><version>${project.version}</version><type>test-jar</type><scope>test</scope></dependency>
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-stream-kafka</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-flyway</artifactId></dependency>
+        <dependency><groupId>org.flywaydb</groupId><artifactId>flyway-database-postgresql</artifactId></dependency>
+        <dependency><groupId>org.postgresql</groupId><artifactId>postgresql</artifactId><scope>runtime</scope></dependency>
+        <dependency><groupId>org.springdoc</groupId><artifactId>springdoc-openapi-starter-webmvc-ui</artifactId></dependency>
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-config</artifactId></dependency>
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-netflix-eureka-client</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-oauth2-resource-server</artifactId></dependency>
+        <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
+
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc-test</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-actuator-test</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-flyway-test</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation-test</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-testcontainers</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-junit-jupiter</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-postgresql</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
+        <!-- An in-memory binder so tests can read what was delivered without a Kafka container. -->
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-stream-test-binder</artifactId><scope>test</scope></dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin>
+            <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId></plugin>
+        </plugins>
+    </build>
+</project>

@@ -7,10 +7,10 @@ Docker port is bound to `127.0.0.1`, never to your Wi-Fi.
 
 | Runs in **Docker** (`.\scripts\dev-stack.ps1`) | Runs in **IntelliJ** (profile `local`) |
 |---|---|
-| 13 Postgres databases (one per service that has one, plus Keycloak's) | `configserver` :8888 — hands every service its settings |
+| 14 Postgres databases (one per service that has one, plus Keycloak's) | `configserver` :8888 — hands every service its settings |
 | Keycloak :7080 — logins and roles | `eurekaserver` :8761 — the phone book: where each service is |
 | Kafka :9092 — events between services | `gatewayserver` :8080 — the single front door |
-| Redis :6379 — the gateway's rate limiter | the 13 services, :8081–:8093 |
+| Redis :6379 — the gateway's rate limiter | the 14 services, :8081–:8094 |
 | SeaweedFS :8333 — product images | |
 | *optional, `-Traces`:* Tempo, Prometheus, Grafana :3000 | |
 
@@ -107,7 +107,7 @@ services you started):
 powershell.exe -ExecutionPolicy Bypass -File .\scripts\local-dev-test.ps1 -Running -Services cart,catalog
 ```
 
-Without `-Running` it starts all 16 apps (the 3 platform apps and the 13 services) from source itself, checks each and
+Without `-Running` it starts all 17 apps (the 3 platform apps and the 14 services) from source itself, checks each and
 stops them again (about 30 minutes) — the proof that this setup works at all.
 
 ### Placing an order on your own PC (Phase 7)
@@ -242,9 +242,10 @@ database and user are `orders`.
 | Keycloak | 5443 | keycloak | keycloak | `jdbc:postgresql://localhost:5443/keycloak` |
 | procurement | 5444 | procurement | procurement | `jdbc:postgresql://localhost:5444/procurement` |
 | shipping | 5445 | shipping | shipping | `jdbc:postgresql://localhost:5445/shipping` |
+| finance | 5446 | finance | finance | `jdbc:postgresql://localhost:5446/finance` |
 
 - **pgAdmin:** Tools → Import/Export Servers → `local-dev/pgadmin-servers.json`
-  adds all thirteen under **Oriah local**; it asks each password once.
+  adds all fourteen under **Oriah local**; it asks each password once.
 - **DataGrip:** add each as a PostgreSQL data source from the table above.
   Tables live in schema `public`; `flyway_schema_history` lists the migrations
   applied.
@@ -430,7 +431,7 @@ own port (`http://localhost:8086/...`) only to rule the gateway out.
   login token that was signed by the old Keycloak's keys. The people's ids are
   fixed, so their customers, carts and orders survive the reset.
 
-  Never `docker compose down -v` for this — it wipes all thirteen databases, not
+  Never `docker compose down -v` for this — it wipes all fourteen databases, not
   just Keycloak's. And never change roles or users in the Keycloak console:
   the change is not in the committed files and is lost at the next reset.
 

@@ -74,6 +74,7 @@
 #   5443 → postgres-keycloak:5432     # Keycloak's own store (logins, roles)
 #   5444 → postgres-procurement:5432  # suppliers (the 13th service, Phase 2)
 #   5445 → postgres-shipping:5432     # delivery prices by town (Phase 7)
+#   5446 → postgres-finance:5432      # the books: expenses, payroll, reports
 #   6379 → redis:6379
 #   8333 → oriah-s3:8333               # S3 API for product images
 #   7080 → keycloak:8080
@@ -91,6 +92,7 @@
 #   8091 → review:8091
 #   8092 → search:8092
 #   8093 → procurement:8093
+#   8094 → finance:8094
 #   8761 → eurekaserver:8761
 #   8888 → configserver:8888
 #   9090 → prometheus:9090
@@ -306,6 +308,25 @@ services:
       - postgres-shipping-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U shipping -d shipping"]
+
+  # finance's database: the books (admin-only). Host port 5446 is the next free
+  # one after shipping's 5445 -- services/finance's application-local.yaml
+  # connects to it when the app runs from the IDE.
+  postgres-finance:
+    extends:
+      file: ../common-config.yml
+      service: postgres-base-config
+    container_name: oriah-postgres-finance
+    environment:
+      POSTGRES_DB: finance
+      POSTGRES_USER: finance
+      POSTGRES_PASSWORD: finance
+    ports:
+      - "127.0.0.1:5446:5432"
+    volumes:
+      - postgres-finance-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finance -d finance"]
 
   # Keycloak's own database. Not a domain service's: it holds every login --
   # the owner, each hire's job role, every customer who registered -- so it
@@ -1301,6 +1322,28 @@ services:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8093"]
       start_period: 90s
 
+  finance:
+    # The books: expenses, payroll and financial reports. Admin-only (FINANCE_ADMIN); it waits
+    # for its own Postgres AND for Kafka, as every other service that publishes events does.
+    extends:
+      file: ../common-config.yml
+      service: microservice-keycloak-config
+    image: oriah/finance:dev
+    container_name: oriah-finance
+    environment:
+      SPRING_DATASOURCE_USERNAME: finance
+      SPRING_DATASOURCE_PASSWORD: finance
+    ports:
+      - "127.0.0.1:8094:8094"
+    depends_on:
+      postgres-finance:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8094"]
+      start_period: 90s
+
   # ─────────────────────────── frontend tier ───────────────────────────
 
   oriah-web:
@@ -1400,6 +1443,7 @@ volumes:
   postgres-search-data:
   postgres-procurement-data:
   postgres-shipping-data:
+  postgres-finance-data:
   postgres-keycloak-data:
   prometheus-data:
   grafana-data:

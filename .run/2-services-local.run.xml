@@ -13,6 +13,7 @@
     <toRun name="review :8091 (local)" type="Application" />
     <toRun name="search :8092 (local)" type="Application" />
     <toRun name="procurement :8093 (local)" type="Application" />
+    <toRun name="finance :8094 (local)" type="Application" />
     <method v="2" />
   </configuration>
 </component>

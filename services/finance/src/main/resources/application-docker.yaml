@@ -1,0 +1,25 @@
+# Overrides applied when SPRING_PROFILES_ACTIVE=docker.
+# Mirror of procurement's docker profile -- see catalog's for the rationale on the issuer-uri / jwk-set-uri split.
+
+spring:
+  datasource:
+    url: jdbc:postgresql://postgres-finance:5432/finance
+    username: ${SPRING_DATASOURCE_USERNAME:finance}
+    password: ${SPRING_DATASOURCE_PASSWORD:finance}
+
+  config:
+    import: "configserver:http://configserver:8888"
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+          jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://eurekaserver:8761/eureka/
+
+spring.cloud.stream.kafka.binder.brokers: kafka:9092

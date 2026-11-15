@@ -34,5 +34,6 @@
         <module>review</module>
         <module>search</module>
         <module>procurement</module>
+        <module>finance</module>
     </modules>
 </project>

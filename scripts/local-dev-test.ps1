@@ -42,7 +42,7 @@
 #>
 param(
     [string[]] $Services = @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order',
-                             'promotion', 'shipping', 'checkout', 'notification', 'review', 'search', 'procurement'),
+                             'promotion', 'shipping', 'checkout', 'notification', 'review', 'search', 'procurement', 'finance'),
     [int] $StartTimeoutSec = 300,
     [switch] $KeepRunning,
     [switch] $Running
@@ -55,7 +55,7 @@ Set-Location $root
 $Platform = [ordered]@{ configserver = 8888; eurekaserver = 8761; gatewayserver = 8080 }
 $Ports = @{ catalog = 8081; inventory = 8082; customer = 8083; cart = 8084; payment = 8085; order = 8086
             promotion = 8087; shipping = 8088; checkout = 8089; notification = 8090; review = 8091; search = 8092
-            procurement = 8093 }
+            procurement = 8093; finance = 8094 }
 $NoDatabase = @('checkout')
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -138,7 +138,7 @@ try {
     # --- [0] backing services ---------------------------------------------------
     Write-Host "[0] Backing services in Docker are healthy" -ForegroundColor Cyan
     $backing = @('oriah-keycloak', 'oriah-kafka', 'oriah-redis', 'oriah-s3', 'oriah-postgres-keycloak') +
-               @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search', 'procurement', 'shipping' |
+               @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search', 'procurement', 'shipping', 'finance' |
                  ForEach-Object { "oriah-postgres-$_" })
     $bad = @($backing | Where-Object { ((Invoke-Native { docker inspect -f '{{.State.Health.Status}}' $_ }) -join '') -ne 'healthy' })
     if ($bad.Count) {

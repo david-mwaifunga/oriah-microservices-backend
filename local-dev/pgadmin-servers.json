@@ -12,6 +12,7 @@
     "10": { "Name": "search",       "Group": "Oriah local", "Host": "localhost", "Port": 5442, "MaintenanceDB": "search",       "Username": "search",       "SSLMode": "disable" },
     "11": { "Name": "keycloak (read only - never edit)", "Group": "Oriah local", "Host": "localhost", "Port": 5443, "MaintenanceDB": "keycloak", "Username": "keycloak", "SSLMode": "disable" },
     "12": { "Name": "procurement",  "Group": "Oriah local", "Host": "localhost", "Port": 5444, "MaintenanceDB": "procurement",  "Username": "procurement",  "SSLMode": "disable" },
-    "13": { "Name": "shipping",     "Group": "Oriah local", "Host": "localhost", "Port": 5445, "MaintenanceDB": "shipping",     "Username": "shipping",     "SSLMode": "disable" }
+    "13": { "Name": "shipping",     "Group": "Oriah local", "Host": "localhost", "Port": 5445, "MaintenanceDB": "shipping",     "Username": "shipping",     "SSLMode": "disable" },
+    "14": { "Name": "finance",      "Group": "Oriah local", "Host": "localhost", "Port": 5446, "MaintenanceDB": "finance",      "Username": "finance",      "SSLMode": "disable" }
   }
 }

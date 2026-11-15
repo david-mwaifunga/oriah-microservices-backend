@@ -28,7 +28,7 @@ GATEWAY = 'http://localhost:8080'
 PLATFORM = {'configserver': 8888, 'eurekaserver': 8761, 'gatewayserver': 8080}
 SERVICES = {'catalog': 8081, 'inventory': 8082, 'customer': 8083, 'cart': 8084, 'payment': 8085,
             'order': 8086, 'promotion': 8087, 'shipping': 8088, 'checkout': 8089,
-            'notification': 8090, 'review': 8091, 'search': 8092, 'procurement': 8093}
+            'notification': 8090, 'review': 8091, 'search': 8092, 'procurement': 8093, 'finance': 8094}
 ROUTES_SRC = ROOT / 'infra' / 'gatewayserver' / 'src' / 'main' / 'java' / 'com' / 'oriah' / \
     'gatewayserver' / 'config' / 'GatewayRoutesConfig.java'
 

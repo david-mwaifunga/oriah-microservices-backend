@@ -41,11 +41,11 @@ Set-Location $root
 
 $Backing = @('postgres-catalog', 'postgres-inventory', 'postgres-customer', 'postgres-cart', 'postgres-payment',
              'postgres-order', 'postgres-promotion', 'postgres-notification', 'postgres-review', 'postgres-search',
-             'postgres-procurement', 'postgres-shipping', 'postgres-keycloak', 'keycloak', 'kafka', 'redis', 'oriah-s3')
+             'postgres-procurement', 'postgres-shipping', 'postgres-finance', 'postgres-keycloak', 'keycloak', 'kafka', 'redis', 'oriah-s3')
 $TraceTools = @('tempo', 'prometheus', 'grafana')
 $JavaApps = @('configserver', 'eurekaserver', 'gatewayserver',
               'catalog', 'inventory', 'customer', 'cart', 'payment', 'order',
-              'promotion', 'shipping', 'checkout', 'notification', 'review', 'search', 'procurement')
+              'promotion', 'shipping', 'checkout', 'notification', 'review', 'search', 'procurement', 'finance')
 
 # docker writes progress to stderr; under ErrorActionPreference=Stop,
 # PowerShell 5.1 would treat that as a failure. Judge by exit code.

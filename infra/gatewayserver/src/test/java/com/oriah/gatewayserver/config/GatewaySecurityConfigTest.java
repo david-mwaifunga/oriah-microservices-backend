@@ -258,6 +258,7 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/procurement/suppliers/00000000-0000-0000-0000-000000000001,  ROLE_PROCUREMENT_ADMIN",
             "/api/v1/admin/shipping/towns,                                               ROLE_SHIPPING_ADMIN",
             "/api/v1/admin/finance/expenses,                                             ROLE_FINANCE_ADMIN",
+            "/api/v1/admin/finance/contact-info,                                         ROLE_FINANCE_ADMIN",
             "/api/v1/admin/costs/lots,                                                   ROLE_COST_VIEWER",
             "/api/v1/admin/inventory/write-offs,                                         ROLE_STOCK_WRITE_OFF",
             // Phase 6: boxes set aside for a product are INVENTORY_ADMIN's ("box commitments"), under the inventory prefix.
@@ -308,6 +309,7 @@ class GatewaySecurityConfigTest {
             "/api/v1/admin/procurement/suppliers/00000000-0000-0000-0000-000000000001",
             "/api/v1/admin/shipping/towns",
             "/api/v1/admin/finance/expenses",
+            "/api/v1/admin/finance/contact-info",
             "/api/v1/admin/costs/lots",
             "/api/v1/admin/inventory/write-offs",
             "/api/v1/admin/inventory/box-commitments",
@@ -515,6 +517,13 @@ class GatewaySecurityConfigTest {
         as(jobRole).get().uri(supplier).exchange().expectStatus().isForbidden();
         as(jobRole).patch().uri(supplier).exchange().expectStatus().isForbidden();
         as(jobRole).delete().uri(supplier).exchange().expectStatus().isForbidden();
+    }
+
+    @ParameterizedTest(name = "{0} cannot reach finance's contact-info")
+    @DisplayName("MANAGER and SALES get 403 on finance's contact-info: only FINANCE_ADMIN holders (the owner, the bookkeeper) are admitted")
+    @ValueSource(strings = {"MANAGER", "SALES"})
+    void staffWithoutFinanceCannotReachFinanceContactInfo(String jobRole) {
+        as(jobRole).get().uri("/api/v1/admin/finance/contact-info").exchange().expectStatus().isForbidden();
     }
 
     @Test

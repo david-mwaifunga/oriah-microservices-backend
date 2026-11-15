@@ -1,0 +1,79 @@
+spring:
+  application:
+    name: finance
+  config:
+    # Pull additional config from the Config Server; optional so tests and offline dev still work when the server is down.
+    import: "optional:configserver:http://localhost:8888"
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  # Money is exact: a JSON number read into a double would round before the ngwee rule could see it. The platform's JSON reader also turns 1.9 into 1 for
+  # a whole number unless this is off; a fraction where a whole number belongs is a 400.
+  jackson:
+    deserialization:
+      accept-float-as-int: false
+
+  cloud:
+    stream:
+      # Finance reads every other service's events through the Inbox and produces none. The consumers, their bindings and the catch-up are declared in the slice
+      # that completes the last applier: until then the inbox stays off, so an event can never be marked as applied by something that did not apply it.
+      default:
+        contentType: application/json
+      kafka:
+        binder:
+          # Overridden in application-docker.yaml to the in-network broker. The localhost default is the Kafka HOST listener, which is what a developer running
+          # finance from the IDE reaches.
+          brokers: localhost:9092
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:7080/realms/oriah
+
+server:
+  # 8081-8093 are taken by the other services.
+  port: 8094
+  error:
+    include-message: always
+    include-binding-errors: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://localhost:8761/eureka/
+  instance:
+    prefer-ip-address: true
+
+# ---------------------------------------------------------------------------
+# Local fallback for GET /api/v1/admin/finance/contact-info.
+#
+# config-repo/finance.yaml overrides every key below whenever the Config Server is up: spring.config.import wins over the document that imports it. This block
+# exists so the endpoint -- and, more importantly, the @Validated binding -- still work when it is down, which the local/Maven profile explicitly tolerates via
+# `optional:configserver`. Without it, @NotBlank/@NotEmpty on FinanceContactInfoDto turn an absent prefix into BindValidationException and this service refuses to
+# start.
+#
+# The keys here mirror config-repo/finance.yaml ONE FOR ONE on purpose. Maps merge key by key across property sources while lists are replaced wholesale, so an
+# extra key here would survive a config-repo override that omits it and leak a stale value into the served response.
+# ---------------------------------------------------------------------------
+oriah:
+  finance:
+    contact-info:
+      message: "Finance service contact details are unavailable - the Config Server could not be reached"
+      contact-details:
+        name: unavailable
+        email: unavailable
+      on-call-support:
+        - unavailable

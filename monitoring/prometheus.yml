@@ -54,5 +54,6 @@ scrape_configs:
           - 'review:8091'
           - 'search:8092'
           - 'procurement:8093'
+          - 'finance:8094'
         labels:
           tier: services

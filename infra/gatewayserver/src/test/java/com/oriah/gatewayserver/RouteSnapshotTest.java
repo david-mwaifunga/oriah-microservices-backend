@@ -89,6 +89,8 @@ class RouteSnapshotTest {
             // Phase 2: suppliers, and every later procurement endpoint (the
             // gateway already guarded the prefix; nothing was routed to it).
             "procurement-admin-route",
+            // Finance: expenses and the books, one admin prefix (FINANCE_ADMIN).
+            "finance-admin-route",
             // Phase 5: cost and margin reads (lots, the sale rows of the ledger) live under a prefix of their own,
             // /api/v1/admin/costs/, which the security chain has guarded with COST_VIEWER since Phase 0 and which
             // nothing was routed to until inventory built them.
@@ -123,7 +125,8 @@ class RouteSnapshotTest {
             "notification-docs",
             "review-docs",
             "search-docs",
-            "procurement-docs");
+            "procurement-docs",
+            "finance-docs");
 
     @Autowired
     private RouteLocator routeLocator;
@@ -163,6 +166,8 @@ class RouteSnapshotTest {
                 .containsEntry("payment-admin-route", "lb://payment")
                 .containsEntry("procurement-admin-route", "lb://procurement")
                 .containsEntry("procurement-docs", "lb://procurement")
+                .containsEntry("finance-admin-route", "lb://finance")
+                .containsEntry("finance-docs", "lb://finance")
                 .containsEntry("shipping-route", "lb://shipping")
                 .containsEntry("shipping-admin-route", "lb://shipping")
                 .containsEntry("checkout-route", "lb://checkout")
@@ -207,6 +212,7 @@ class RouteSnapshotTest {
             "/api/v1/admin/procurement/suppliers,                procurement-admin-route",
             "/api/v1/admin/procurement/suppliers/11111111-1111-1111-1111-111111111111, procurement-admin-route",
             "/api/v1/admin/procurement/contact-info,             procurement-admin-route",
+            "/api/v1/admin/finance/contact-info,                 finance-admin-route",
             "/api/v1/shipping/quote,                             shipping-route",
             "/api/v1/shipping/towns,                             shipping-route",
             "/api/v1/admin/shipping/towns,                       shipping-admin-route",
@@ -236,7 +242,8 @@ class RouteSnapshotTest {
             "/v3/api-docs/catalog,                               catalog-docs",
             "/v3/api-docs/checkout,                              checkout-docs",
             "/v3/api-docs/search,                                search-docs",
-            "/v3/api-docs/procurement,                           procurement-docs"
+            "/v3/api-docs/procurement,                           procurement-docs",
+            "/v3/api-docs/finance,                               finance-docs"
     })
     void pathResolvesToExpectedRoute(String path, String expectedRouteId) {
         assertThat(firstMatchingRouteId(path))

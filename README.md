@@ -52,10 +52,11 @@ All of the above is built and running. Still later: Kubernetes / Helm.
 oriah-api/
 ├── pom.xml                 Root parent: BOM imports, plugin management,
 │                           shared properties. Every module inherits.
-├── services/               13 domain services, each its own module:
+├── services/               14 domain services, each its own module:
 │                             catalog, inventory, cart, checkout, order,
 │                             payment, promotion, shipping, customer,
-│                             review, search, notification, procurement
+│                             review, search, notification, procurement,
+│                             finance
 │                           (checkout is stateless — no DB; shipping got its
 │                           own Postgres in Phase 7)
 ├── infra/                  configserver, eurekaserver, gatewayserver
@@ -95,11 +96,11 @@ Prerequisites: **JDK 25** (exactly 25: the build refuses any other version with 
 .\mvnw.cmd -ntp -pl services/catalog spring-boot:test-run
 ```
 
-### The whole stack (40 containers)
+### The whole stack (42 containers)
 
-13 Postgres (twelve domain databases and Keycloak's), Keycloak, Kafka, Redis,
+14 Postgres (thirteen domain databases and Keycloak's), Keycloak, Kafka, Redis,
 SeaweedFS and its bucket-setup job, Prometheus, Grafana, Loki, Tempo, Alloy, the
-3 infra modules, the 13 domain services and the storefront (`oriah-web`). It was
+3 infra modules, the 14 domain services and the storefront (`oriah-web`). It was
 39 until Phase 7 gave shipping a database of its own.
 
 ```powershell
@@ -130,8 +131,8 @@ http://localhost:4000 · Grafana for traces.
 > only what is **committed** in `config-repo`. Measuring tools and the numbers are
 > in `docs/MVP_PLAN.md`, Phase 2.
 
-> ⚠️ **`docker compose down -v` destroys all thirteen Postgres volumes** — the
-> twelve domain databases *and* Keycloak's. Never use it to apply a realm change.
+> ⚠️ **`docker compose down -v` destroys all fourteen Postgres volumes** — the
+> thirteen domain databases *and* Keycloak's. Never use it to apply a realm change.
 > The realm (and, in dev, `keycloak/dev/oriah-users-0.json`) is imported only
 > when the realm does not yet exist, so after editing either file remove
 > **only** Keycloak's volume and start it again, then restart `order` (its

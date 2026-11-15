@@ -9,7 +9,7 @@
 #
 #   powershell.exe -ExecutionPolicy Bypass -File .\scripts\jvm-memory-report.ps1
 #
-# Read-only. Services answer on their own ports (8081-8093); the gateway keeps its actuator
+# Read-only. Services answer on their own ports (8081-8094); the gateway keeps its actuator
 # private, so it is not in the list. NOTE on ASCII: no non-ASCII characters (Windows PowerShell 5.1).
 
 param(
@@ -17,6 +17,7 @@ param(
         catalog = 8081; inventory = 8082; customer = 8083; cart = 8084; payment = 8085
         order = 8086; promotion = 8087; shipping = 8088; checkout = 8089
         notification = 8090; review = 8091; search = 8092; procurement = 8093
+        finance = 8094
     }
 )
 

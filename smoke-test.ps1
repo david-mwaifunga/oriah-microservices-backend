@@ -427,6 +427,7 @@ $routeProbes = [ordered]@{
     review       = '/api/v1/reviews/me'
     search       = '/api/v1/search'
     procurement  = '/v3/api-docs/procurement'
+    finance      = '/v3/api-docs/finance'
 }
 Write-Host "[pre-flight] Waiting for the gateway to resolve all $($routeProbes.Count) services..." -ForegroundColor Cyan
 $unresolved = @($routeProbes.Keys)
@@ -2189,7 +2190,7 @@ Write-Host "[13/20] Prometheus scrapes every service..." -ForegroundColor Cyan
 $up = Invoke-RestMethod -Method GET -Uri "http://localhost:9090/api/v1/query?query=up"
 $expected = @("catalog:8081","inventory:8082","customer:8083","cart:8084","payment:8085",
               "order:8086","promotion:8087","shipping:8088","checkout:8089",
-              "notification:8090","review:8091","search:8092","procurement:8093")
+              "notification:8090","review:8091","search:8092","procurement:8093","finance:8094")
 $downServices = @()
 foreach ($svc in $expected) {
     $hit = $up.data.result | Where-Object { $_.metric.instance -eq $svc }
@@ -2238,7 +2239,7 @@ $servicePorts = [ordered]@{
     catalog = 8081; inventory = 8082; customer = 8083; cart = 8084
     payment = 8085; order = 8086; promotion = 8087; shipping = 8088
     checkout = 8089; notification = 8090; review = 8091; search = 8092
-    procurement = 8093
+    procurement = 8093; finance = 8094
 }
 
 # Retries only CONNECTION-level failures, never a bad status. A single 10s

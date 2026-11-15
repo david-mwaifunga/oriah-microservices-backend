@@ -64,11 +64,11 @@ public class GatewayRoutesConfig {
     private static final int STOREFRONT_REPLENISH_RATE = 20;
     private static final int STOREFRONT_BURST_CAPACITY = 40;
 
-    /** The 13 services whose OpenAPI spec the gateway aggregates. */
+    /** The 14 services whose OpenAPI spec the gateway aggregates. */
     private static final List<String> DOCS_SERVICES = List.of(
             "catalog", "inventory", "customer", "cart", "payment", "order",
             "promotion", "shipping", "checkout", "notification", "review", "search",
-            "procurement");
+            "procurement", "finance");
 
     private final RedisRateLimiter redisRateLimiter;
     private final KeyResolver ipKeyResolver;
@@ -234,6 +234,9 @@ public class GatewayRoutesConfig {
         // now, consignments and purchase orders in later phases, each guarded by
         // PROCUREMENT_ADMIN at the edge (SecurityConfig) and again in the service.
         routes = simple(routes, "procurement-admin-route", "/api/v1/admin/procurement/**", "procurement");
+        // Everything under /api/v1/admin/finance/ is finance's, guarded by
+        // FINANCE_ADMIN at the edge (SecurityConfig) and again in the service.
+        routes = simple(routes, "finance-admin-route", "/api/v1/admin/finance/**", "finance");
         // Delivery prices by town and option (Phase 7): towns, options, prices (draft then published) and the free-delivery
         // threshold, guarded by SHIPPING_ADMIN at the edge (SecurityConfig has matched the prefix since Phase 0) and again in the service.
         routes = simple(routes, "shipping-admin-route", "/api/v1/admin/shipping/**", "shipping");

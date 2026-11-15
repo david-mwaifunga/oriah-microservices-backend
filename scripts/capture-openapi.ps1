@@ -65,7 +65,7 @@ $ErrorActionPreference = "Stop"
 
 $services = @(
     "catalog", "inventory", "customer", "cart", "payment", "order",
-    "promotion", "shipping", "checkout", "notification", "review", "search", "procurement"
+    "promotion", "shipping", "checkout", "notification", "review", "search", "procurement", "finance"
 )
 
 if (-not (Test-Path $OutDir)) {
