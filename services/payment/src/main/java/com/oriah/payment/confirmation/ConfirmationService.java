@@ -106,7 +106,7 @@ public class ConfirmationService {
 
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         Instant arrivedAt = (request.arrivedAt() == null ? now : request.arrivedAt()).truncatedTo(ChronoUnit.MICROS);
-        String backdateReason = ArrivalWindow.check(arrivedAt, now, settings.backdateWindow(), staff.mayBackdate(), request.backdateReason());
+        String backdateReason = ArrivalWindow.check(arrivedAt, now, sales.backdateWindow(), staff.mayBackdate(), request.backdateReason());
 
         String referenceKey = method.requiresReference() ? method.name() + ":" + reference : null;
         if (referenceKey != null) {

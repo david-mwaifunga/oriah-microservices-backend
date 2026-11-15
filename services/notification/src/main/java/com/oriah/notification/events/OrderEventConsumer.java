@@ -135,6 +135,16 @@ public class OrderEventConsumer {
                 log.info("{} for order {} is a repeat of one already announced: the customer is not told twice", type, payload.orderId());
                 return;
             }
+            if (payload.isPhone()) {
+                // An order staff recorded for a caller with no account has no shopper to message (Phase 9). It is recorded as applied all the same,
+                // so it is never delivered again; reaching the caller by phone or WhatsApp is Phase 11's, read from order by id, never from an event.
+                log.info("{} for order {} was recorded by staff for a caller with no account: no message is sent", type, payload.orderId());
+                return;
+            }
+            if (payload.keycloakId() == null || payload.keycloakId().isBlank()) {
+                // A web order always has an owner: one without is a defect upstream, refused so it is noticed (the dead-letter topic on Kafka).
+                throw new IllegalArgumentException("order event " + type + " for order " + payload.orderId() + " has no owner and is not a phone order");
+            }
             var template = renderTemplate(type, payload);
             NotificationLog notification = repository.save(new NotificationLog(
                     payload.orderId(), payload.keycloakId(), type, "email", template.subject(), template.body()));

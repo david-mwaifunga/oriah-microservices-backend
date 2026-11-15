@@ -209,10 +209,8 @@ oriah:
     # Staff-confirmed money (Phase 7).
     #
     # currency: the one currency the shop takes. A confirmation names it or takes it; any other is refused.
-    # backdate-window: how far back anyone who may confirm may date money (the day it arrived). Older needs BACKDATE_SALE and a reason.
     # -------------------------------------------------------------------------
     currency: ZMW
-    backdate-window: PT72H
 
     # -------------------------------------------------------------------------
     # The settlement watcher (SettlementWatcher): announces a confirmation AGAIN while order has not said what became of its money (it paid the
@@ -283,3 +281,6 @@ oriah:
     # How long confirmed money may wait for order's answer (it paid the sale, or could not) before it is called STUCK: flagged in the pending list,
     # announced again by the watcher, and counted by the payment.confirmations.stuck gauge.
     settlement-stuck-after: PT5M
+    # How far back anyone who may confirm may date money (the day it arrived); older needs BACKDATE_SALE and a reason. The ONE 72-hour setting: order reads the
+    # same key for the date of a recorded sale and of a dispatch step.
+    backdate-window: PT72H

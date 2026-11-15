@@ -11,7 +11,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *
  * @param settlementStuckAfter how long a confirmation may wait for order's answer before it is called stuck: listed for staff, announced again by
  *                             the watcher, and logged as an error
+ * @param backdateWindow       how far back anyone who may confirm may date money (72 hours); further back needs BACKDATE_SALE and a reason. The SAME
+ *                             setting order reads for a recorded sale's and a dispatch step's date: one number, never copied
  */
 @ConfigurationProperties(prefix = "oriah.sales")
-public record SalesSettings(@DefaultValue("PT5M") Duration settlementStuckAfter) {
+public record SalesSettings(@DefaultValue("PT5M") Duration settlementStuckAfter, @DefaultValue("PT72H") Duration backdateWindow) {
 }

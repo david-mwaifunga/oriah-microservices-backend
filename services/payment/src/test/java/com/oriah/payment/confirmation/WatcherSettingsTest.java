@@ -39,7 +39,8 @@ class WatcherSettingsTest {
 
         assertThat(yaml.getProperty("oriah.sales.settlement-stuck-after")).isEqualTo("PT5M");
         assertThat(yaml.getProperty("oriah.payment.currency")).isEqualTo("ZMW");
-        assertThat(yaml.getProperty("oriah.payment.backdate-window")).isEqualTo("PT72H");
+        assertThat(yaml.getProperty("oriah.sales.backdate-window")).as("the one 72-hour setting, shared with order").isEqualTo("PT72H");
+        assertThat(yaml.getProperty("oriah.payment.backdate-window")).as("payment keeps no window of its own").isNull();
         assertThat(yaml.getProperty("oriah.payment.card.enabled")).isEqualTo(false);
     }
 
@@ -52,8 +53,8 @@ class WatcherSettingsTest {
     @Test
     @DisplayName("the settings read as the documents say (a smoke check that the keys are where the bound records look for them)")
     void theRecordsBind() {
-        var settings = new ConfirmationSettings("ZMW", java.time.Duration.ofHours(72));
-        var sales = new SalesSettings(java.time.Duration.ofMinutes(5));
+        var settings = new ConfirmationSettings("ZMW");
+        var sales = new SalesSettings(java.time.Duration.ofMinutes(5), java.time.Duration.ofHours(72));
         var watcher = new WatcherSettings(30000, 10);
 
         assertThat(Map.of("currency", settings.currency(), "stuck", sales.settlementStuckAfter(), "attempts", watcher.maxEmitAttempts()))

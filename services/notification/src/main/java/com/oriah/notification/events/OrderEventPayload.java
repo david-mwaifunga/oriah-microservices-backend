@@ -29,6 +29,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  *
  * @param previousStatus  null on order.created: the order had no status before
  * @param paymentIntentId null until the order is paid
+ * @param channel         how the order was taken (Phase 9): {@code PHONE} for an order staff recorded for a caller with no account (then
+ *                        {@code keycloakId} is null and there is nobody here to tell); absent on a web order, which is how every earlier event reads
  * @param republished     only on {@code order.paid} version 2, and true only when it is the SAME answer announced again (order does that while
  *                        payment has not heard its answer, so a lost one is recovered): the customer was already told, once; absent otherwise
  */
@@ -48,8 +50,16 @@ public record OrderEventPayload(
         List<Line> lines,
         // Absent on every event but a repeated order.paid, and written back absent (not null) so the contract's own examples round-trip exactly.
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        Boolean republished
+        Boolean republished,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String channel
 ) {
+
+    /** Whether staff recorded this order for a caller with no account. */
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    public boolean isPhone() {
+        return "PHONE".equals(channel);
+    }
 
     /** One line of the order: what was bought, how many, and the price of one, in the event's currency. */
     @JsonIgnoreProperties(ignoreUnknown = true)

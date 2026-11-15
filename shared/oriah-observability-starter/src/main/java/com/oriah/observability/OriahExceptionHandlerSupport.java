@@ -135,17 +135,19 @@ public abstract class OriahExceptionHandlerSupport {
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ProblemDetail badArgument(IllegalArgumentException ex) {
-        log.debug("400 IllegalArgumentException: {}", ex.getMessage());
+        // The message may name a person (a caller's name or phone in a phone order): the client is answered with it, the log carries only the kind.
+        log.debug("400 IllegalArgumentException");
         return problem(HttpStatus.BAD_REQUEST, TYPE_BAD_REQUEST, "Bad Request", ex.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ProblemDetail validationFailed(MethodArgumentNotValidException ex) {
-        log.debug("400 validation failure: {}", ex.getMessage());
         List<FieldErrorView> fieldErrors = new ArrayList<>();
         for (FieldError fe : ex.getBindingResult().getFieldErrors()) {
             fieldErrors.add(new FieldErrorView(fe.getField(), fe.getDefaultMessage()));
         }
+        // Field names and rules only: the framework's own message carries the rejected VALUE, which may be a caller's phone or name.
+        log.debug("400 validation failure on field(s) {}", fieldErrors.stream().map(FieldErrorView::field).toList());
         ProblemDetail pd = problem(HttpStatus.BAD_REQUEST, TYPE_VALIDATION, "Validation Failed",
                 "Request validation failed");
         pd.setProperty("fieldErrors", fieldErrors);
@@ -290,7 +292,8 @@ public abstract class OriahExceptionHandlerSupport {
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ProblemDetail malformedBody(HttpMessageNotReadableException ex) {
-        log.debug("400 unreadable request body", ex);
+        // Never the exception itself: Jackson's message echoes a slice of the payload, which may be a caller's name, phone or address.
+        log.debug("400 unreadable request body ({})", ex.getClass().getSimpleName());
         return problem(HttpStatus.BAD_REQUEST, TYPE_BAD_REQUEST, "Bad Request",
                 "Request body is missing or is not valid JSON");
     }

@@ -228,6 +228,51 @@ class OrderEventConsumerTest {
         assertThat(told(packed).subject()).isEqualTo("Your order is being prepared");
     }
 
+    @Test
+    @DisplayName("an order recorded by staff for a caller with no account (channel PHONE, no owner) is applied, makes no notification row, and is not refused (Phase 9: reaching the caller is Phase 11)")
+    void aPhoneOrderHasNobodyToTell() throws Exception {
+        for (String type : new String[] {"order.created", "order.paid", "order.fulfilled", "order.shipped", "order.delivered", "order.cancelled", "order.expired"}) {
+            UUID orderId = UUID.randomUUID();
+            Map<String, Object> payload = new java.util.HashMap<>();
+            payload.put("orderId", orderId.toString());
+            payload.put("keycloakId", null);
+            payload.put("newStatus", "CREATED");
+            payload.put("total", "100.00");
+            payload.put("currency", "ZMW");
+            payload.put("channel", "PHONE");
+
+            send(type, orderId, payload);
+
+            assertThat(repository.findAll().stream().filter(l -> l.orderId().equals(orderId))).as(type + " tells nobody").isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("a web order with no owner is a defect, not a phone order: it is refused (to the dead-letter topic on Kafka), and an absent channel means web")
+    void aWebOrderWithNoOwnerIsRefused() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        Map<String, Object> payload = new java.util.HashMap<>();
+        payload.put("orderId", orderId.toString());
+        payload.put("keycloakId", null);
+        payload.put("newStatus", "CREATED");
+        payload.put("total", "100.00");
+        payload.put("currency", "ZMW");
+
+        assertThatThrownBy(() -> orderEvents.accept(Relayed.orderEvent("order.created", orderId, 1, objectMapper.writeValueAsBytes(payload))))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(repository.count()).isZero();
+    }
+
+    @Test
+    @DisplayName("a web order announced with channel WEB is told as before")
+    void aWebOrderWithAChannelIsToldAsBefore() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        send("order.paid", orderId, Map.of("orderId", orderId.toString(), "keycloakId", "kc-alice", "newStatus", "PAID", "total", "10", "currency", "ZMW",
+                "channel", "WEB"));
+
+        assertThat(told(orderId).keycloakId()).isEqualTo("kc-alice");
+    }
+
     private void send(String eventType, UUID orderId, Map<String, Object> payload) throws Exception {
         inputDestination.send(Relayed.orderEvent(eventType, orderId, 1, objectMapper.writeValueAsBytes(payload)),
                 "oriah.order");
