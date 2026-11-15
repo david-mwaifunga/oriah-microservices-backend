@@ -19,6 +19,9 @@ import java.util.UUID;
  * in force when it was saved made of it, and {@code assessment} is about the NET price (what a customer pays per piece). {@code discountPerPiece}
  * is 0.00 and {@code promotionId} null when nothing applied. These three come last, so a reader of the first eleven fields reads on unchanged.
  *
+ * <p>Phase 9: {@code backdateReason} comes last and is present only on a HISTORICAL price, one the owner added for a day BEFORE the price in force (it changes nothing about
+ * today's price, so it names no {@code previousUnitPrice}: there is nothing it changed from).
+ *
  * <p>Nothing consumes this topic yet.
  */
 public record PriceSetEvent(
@@ -35,7 +38,8 @@ public record PriceSetEvent(
         Map<String, Object> cost,
         BigDecimal discountPerPiece,
         UUID promotionId,
-        BigDecimal netPrice) {
+        BigDecimal netPrice,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String backdateReason) {
 
     public static final String TYPE = "price.set";
 }

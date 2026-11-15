@@ -60,6 +60,8 @@ and the books stay right: priced at the sale's own day, never edited, no cost or
 
 - **Review panel** (six lenses, skeptics on each finding): no serious finding. Fixed afterwards: a paper sale typed a few minutes ahead was refused with a false "catalog did not answer"; the price preview wrongly asked for a caller and a total; the owner could not see who keyed a late sale (promised in the design, now on the order administrator's read); the packer was not told whose name a phone pickup is for. More tests were added for a published delivery, a lost reply, a named recipient and the date a price is asked at.
 
+- **Codex, second pass over the finished code:** one serious and two smaller findings, all fixed with tests: a sale typed a few minutes ahead could be priced on one day and counted on the next (now dated and priced at one instant); the owner's historical price was judged on today's promotion instead of its own day's; the event for a historical price named a previous price it did not change from and left out the reason.
+
 ### What is still open
 
 - An as-of promotion by category uses the piece's category today, so a sale made while it sat in another category can lose (or gain) a discount; product and shop-wide promotions are exact. Fix: version category membership.

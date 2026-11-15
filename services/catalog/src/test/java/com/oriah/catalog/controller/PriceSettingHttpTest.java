@@ -26,6 +26,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
 
 import com.oriah.catalog.StubInventory;
+import com.oriah.catalog.StubPromotion;
 import com.oriah.catalog.TestcontainersConfiguration;
 import com.oriah.catalog.pricing.PricingFixtures;
 import com.oriah.catalog.pricing.PricingFixtures.Piece;
@@ -565,6 +566,37 @@ class PriceSettingHttpTest {
                 .contentType(MediaType.APPLICATION_JSON).content("{\"at\":\"" + Instant.now() + "\",\"variantIds\":[\"" + ring.variantId() + "\"]}"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         assertThat(today).contains("1500.00");
+    }
+
+    @Test
+    @DisplayName("a historical price is judged on the promotion of ITS day, not today's, and is kept with its reason: the response shows the reason, the price.set event carries it and names no 'previous price' (there is none to change from)")
+    void aHistoricalPriceBelongsToItsOwnDay() throws Exception {
+        StubPromotion.reset();
+        try {
+            Piece ring = fixtures.ring("Aurelia");
+            setPrice(ring.variantId(), "1500.00", null).andExpect(status().isOk());
+            UUID first = latestPriceId(ring.variantId());
+            Instant tenDaysAgo = Instant.now().minus(10, ChronoUnit.DAYS).truncatedTo(ChronoUnit.MICROS);
+            // a half-price promotion that began an hour ago: it did not exist on the day the historical price belongs to
+            StubPromotion.promote(StubPromotion.definition("SHOP", null, "PERCENTAGE", "50.00", "2026-11-01"), Instant.now().minus(1, ChronoUnit.HOURS),
+                    Instant.parse("2999-01-01T00:00:00Z"));
+
+            setPriceAs(owner(), ring.variantId(), "{\"unitPrice\":1300.00,\"expectedPriceId\":\"" + first + "\",\"effectiveFrom\":\"" + tenDaysAgo + "\","
+                    + "\"backdateReason\":\"the ring was sold on paper before it was priced here\"}")
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.discountPerPiece").value(0.0))
+                    .andExpect(jsonPath("$.netPrice").value(1300.00))
+                    .andExpect(jsonPath("$.price.backdateReason").value("the ring was sold on paper before it was priced here"));
+
+            assertThat(StubPromotion.calls().stream().anyMatch(c -> c.at() != null && c.at().startsWith(tenDaysAgo.toString().substring(0, 16)))).as("promotion was asked about that day").isTrue();
+            String priceId = jdbc.queryForObject("SELECT id::text FROM variant_price WHERE variant_id = ? AND unit_price = 1300.00", String.class, ring.variantId());
+            String event = jdbc.queryForObject("SELECT payload::text FROM outbox WHERE aggregate_type = 'variant_price' AND aggregate_id = ?", String.class, priceId);
+            assertThat(event).contains("\"backdateReason\":\"the ring was sold on paper before it was priced here\"").doesNotContain("\"previousUnitPrice\":1");
+            String ordinary = jdbc.queryForObject("SELECT payload::text FROM outbox WHERE aggregate_type = 'variant_price' AND aggregate_id = ?", String.class, first.toString());
+            assertThat(ordinary).as("an ordinary price's event is unchanged").doesNotContain("backdateReason");
+        } finally {
+            StubPromotion.reset();
+        }
     }
 
     @Test

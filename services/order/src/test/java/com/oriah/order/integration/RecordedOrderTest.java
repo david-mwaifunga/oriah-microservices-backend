@@ -418,7 +418,7 @@ class RecordedOrderTest extends SaleTestBase {
     }
 
     @Test
-    @DisplayName("a paper sale dated a few minutes ahead (a clock running fast, which the date rule allows for) is priced at this moment: catalog allows 30 seconds, so it must never be asked for a later one")
+    @DisplayName("a paper sale dated a few minutes ahead (a clock running fast, which the date rule allows for) is dated AND priced at this moment, one instant for both: catalog allows 30 seconds, and a sale must never be priced on one day and counted on the next")
     void aPaperSaleAheadByAFewMinutesIsPricedNow() throws Exception {
         Instant ahead = Instant.now().plusSeconds(180);
         String body = "{\"kind\":\"LATE_PAPER\",\"caller\":{\"name\":\"Mulenga Chanda\"},\"lines\":[" + line(RING, 1) + "],\"delivery\":{\"mode\":\"PICKUP\"},"
@@ -429,7 +429,7 @@ class RecordedOrderTest extends SaleTestBase {
         ArgumentCaptor<CatalogAsOfClient.AsOfAsk> ask = ArgumentCaptor.forClass(CatalogAsOfClient.AsOfAsk.class);
         verify(catalogAsOf).priceAsOf(ask.capture());
         assertThat(ask.getValue().at()).as("catalog refuses a moment more than 30 seconds ahead").isBefore(Instant.now().plusSeconds(30));
-        assertThat(Instant.parse(order.get("occurredAt").asText())).as("the sale keeps the date it was typed with").isCloseTo(ahead, org.assertj.core.api.Assertions.within(1, java.time.temporal.ChronoUnit.SECONDS));
+        assertThat(Instant.parse(order.get("occurredAt").asText())).as("dated at the instant it was priced, not the one typed").isCloseTo(ask.getValue().at(), org.assertj.core.api.Assertions.within(1, java.time.temporal.ChronoUnit.MILLIS));
     }
 
     @Test

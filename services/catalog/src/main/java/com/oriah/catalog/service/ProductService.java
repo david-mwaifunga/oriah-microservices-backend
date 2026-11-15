@@ -248,7 +248,7 @@ public class ProductService {
         if (!dated.historical() && latest.isPresent() && variant.unitPrice().compareTo(write.unitPrice()) == 0 && write.currency().equalsIgnoreCase(variant.currency())) {
             throw new PricingProblem(HttpStatus.BAD_REQUEST, "nothing-changed", "the price is already " + write.unitPrice().toPlainString() + " " + write.currency());
         }
-        BigDecimal was = variant.unitPrice();
+        BigDecimal was = dated.historical() ? BigDecimal.ZERO : variant.unitPrice();   // a historical row changed nothing, so it has no "previous price"
 
         if (!dated.historical()) {
             product.repriceVariant(write.variantId(), write.unitPrice(), write.currency());
@@ -266,7 +266,7 @@ public class ProductService {
         outbox.append(new EventDraft(PRICE_AGGREGATE, row.id().toString(), PriceSetEvent.TYPE, SCHEMA_VERSION, PRICE_TOPIC, effectiveFrom, actor,
                 new PriceSetEvent(write.variantId(), product.id(), write.unitPrice(), was.signum() == 0 ? null : was, write.currency(), effectiveFrom,
                         now, observed.name(), reason, write.setByName(), PriceCheck.summary(write.result(), write.reading(), write.promoted()),
-                        write.promoted().discountPerPiece(), write.promoted().promotionId(), write.promoted().netPrice())));
+                        write.promoted().discountPerPiece(), write.promoted().promotionId(), write.promoted().netPrice(), dated.backdateReason())));
         log.info("Priced variant id={} sku=\"{}\" on product id={} from {} to {} {} ({})", write.variantId(), variant.sku(), productId, was,
                 write.unitPrice(), write.currency(), observed);
         return new PriceApplied(row, product.status(), product.isPublishable());

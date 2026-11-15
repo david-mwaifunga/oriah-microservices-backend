@@ -13,6 +13,7 @@ import java.util.UUID;
  * @param reason     why a price below cost was accepted, in the person's words
  * @param costBasis  what the person was shown when they saved it (the floor, the lots and their revisions, the default box, the
  *                   currencies, when it was read); absent on a migrated row
+ * @param backdateReason only on a HISTORICAL row (added by the owner for a day before the price in force): why, in the owner's words; absent otherwise
  */
 public record PriceEntryResponse(
         UUID id,
@@ -25,5 +26,6 @@ public record PriceEntryResponse(
         String source,
         String assessment,
         String reason,
-        Object costBasis) {
+        Object costBasis,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) String backdateReason) {
 }

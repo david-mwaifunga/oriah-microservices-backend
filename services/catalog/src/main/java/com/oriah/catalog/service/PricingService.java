@@ -104,12 +104,12 @@ public class PricingService {
     }
 
     /**
-     * What a promotion makes of a list price NOW: the discount per piece, the promotion and the net price, which is what the below-cost rule
+     * What a promotion makes of a list price at an instant (null: NOW): the discount per piece, the promotion and the net price, which is what the below-cost rule
      * judges (what a customer pays per piece). Promotion being unable to answer is a 503 ({@link com.oriah.catalog.exception.PromotionsUnavailableException}),
      * never "no promotion": a price is not saved, or read as fine, without knowing what a customer would pay.
      */
-    private Promoted promotedNow(UUID variantId, UUID productId, BigDecimal listPrice) {
-        Map<UUID, Discount> discounts = promotions.discountsAt(List.of(new PromotionPricing.Piece(variantId, productId, listPrice)), null);
+    private Promoted promotedAt(UUID variantId, UUID productId, BigDecimal listPrice, Instant at) {
+        Map<UUID, Discount> discounts = promotions.discountsAt(List.of(new PromotionPricing.Piece(variantId, productId, listPrice)), at);
         return Promoted.of(listPrice, discounts.get(variantId));
     }
 
@@ -125,12 +125,13 @@ public class PricingService {
             throw new PricingProblem(HttpStatus.CONFLICT, "stale-price", "the price changed since it was read: someone else has priced this variant")
                     .with("currentPriceId", latestId);
         }
-        PriceHistory.resolve(request.effectiveFrom(), check.now(), target.latest() == null ? null : target.latest().effectiveFrom(), pricing.getBackdateWindow(),
-                staff.mayBackdate(), request.backdateReason());
+        PriceHistory.Resolved dated = PriceHistory.resolve(request.effectiveFrom(), check.now(), target.latest() == null ? null : target.latest().effectiveFrom(),
+                pricing.getBackdateWindow(), staff.mayBackdate(), request.backdateReason());
 
         PriceCheck.Reading reading = check.read(variantId, target.boxVariantId(), bearer);
-        // The price is judged on what a customer pays per piece: the list price less the promotion in force now.
-        Promoted promoted = promotedNow(variantId, target.productId(), request.unitPrice());
+        // The price is judged on what a customer pays per piece: the list price less the promotion in force when it takes effect (now, or for a HISTORICAL row the day
+        // it belongs to: today's promotion says nothing about what a customer paid ten days ago).
+        Promoted promoted = promotedAt(variantId, target.productId(), request.unitPrice(), dated.historical() ? dated.effectiveFrom() : null);
         GuardResult result = PriceGuard.evaluate(promoted.netPrice(), currency, reading.goods(), target.boxVariantId(), reading.box());
         String reason = request.belowCostReason() == null ? null : request.belowCostReason().strip();
         if (reason != null && !reason.isEmpty() && (reason.length() < 5 || reason.length() > 200)) {
@@ -207,7 +208,7 @@ public class PricingService {
         Promoted promoted = null;
         if (target.latest() != null) {
             // The standing is that of the NET price: what a customer pays per piece under the promotion in force now.
-            promoted = promotedNow(variantId, target.productId(), target.currentPrice());
+            promoted = promotedAt(variantId, target.productId(), target.currentPrice(), null);
             GuardResult result = PriceGuard.evaluate(promoted.netPrice(), target.currentCurrency(), reading.goods(), target.boxVariantId(), reading.box());
             assessment = result.assessment();
             shortfall = result.shortfall();
@@ -249,7 +250,7 @@ public class PricingService {
     private static PriceEntryResponse entry(PriceHistoryRepository.Entry row) {
         Object basis = row.costBasisJson() == null ? null : EventJson.mapper().readValue(row.costBasisJson(), Object.class);
         return new PriceEntryResponse(row.id(), row.unitPrice(), row.currency(), row.effectiveFrom(), row.recordedAt(), row.setBy(), row.setByName(),
-                row.source(), row.assessment(), row.reason(), basis);
+                row.source(), row.assessment(), row.reason(), basis, row.backdateReason());
     }
 
     // ---------------------------------------------------------------- every price against the cost
