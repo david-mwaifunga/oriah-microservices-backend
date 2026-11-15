@@ -144,6 +144,11 @@ public class SettlementService {
         if (!order.currency().equalsIgnoreCase(p.currency()) || p.gross().compareTo(order.total()) != 0) {
             return "WRONG_AMOUNT";
         }
+        if (order.saleKind() == com.oriah.order.model.SaleKind.LATE_PAPER && !LusakaDay.same(order.occurredAt(), p.arrivedAt())) {
+            // A paper sale counts on the day it happened: money keyed for another day would date its revenue, cost and packaging to that other day while
+            // its price and receipt say this one. Held for the caller; staff void it and key it again with the right day.
+            return "WRONG_DATE";
+        }
         return null;
     }
 

@@ -209,7 +209,13 @@ abstract class SaleTestBase {
     }
 
     UUID confirmed(UUID confirmation, UUID order, String gross, String currency) {
-        paymentEvents.accept(message("payment_confirmation", confirmation, "payment.confirmed", 1, confirmedPayload(confirmation, order, gross, currency), "payment"));
+        return confirmed(confirmation, order, gross, currency, ARRIVED);
+    }
+
+    /** Delivers {@code payment.confirmed} for money that arrived at {@code arrivedAt}. */
+    UUID confirmed(UUID confirmation, UUID order, String gross, String currency, String arrivedAt) {
+        paymentEvents.accept(message("payment_confirmation", confirmation, "payment.confirmed", 1,
+                confirmedPayload(confirmation, order, gross, currency).replace("\"arrivedAt\":\"" + ARRIVED + "\"", "\"arrivedAt\":\"" + arrivedAt + "\""), "payment"));
         return confirmation;
     }
 

@@ -195,7 +195,9 @@ class RecordedLateSaleTest extends SaleTestBase {
     @Test
     @DisplayName("staff confirm the money and the order is PAID, with a receipt, dated to the day the money ARRIVED; order.paid says channel PHONE, has no owner and nothing personal")
     void theMoneyPaysARecordedOrder() throws Exception {
-        JsonNode recorded = body(record(sales(), "k-pay", late(Instant.now().minus(Duration.ofHours(30)), REASON, null).replace("LATE_PAPER", "LATE_PAPER")), 201);
+        // A live sale: the money may come on any day, and the sale counts on the day it was paid (Q22).
+        JsonNode recorded = body(record(sales(), "k-pay", late(Instant.now().minus(Duration.ofHours(30)), REASON, null).replace("LATE_PAPER", "LIVE_PHONE")
+                .replaceFirst(",\"occurredAt\":\"[^\"]*\"", "").replaceFirst(",\"backdateReason\":\"[^\"]*\"", "")), 201);
         UUID id = UUID.fromString(recorded.get("id").asText());
 
         confirmed(id, "4500.00");
@@ -214,10 +216,45 @@ class RecordedLateSaleTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("a paper sale paid on another day than it happened is HELD for the caller as WRONG_DATE, never settled: the sale counts on the day it happened, so a mistyped date "
+            + "cannot move its revenue and cost into another month; staff void it and key the money again with the right day")
+    void aPaperSalePaidOnAnotherDayIsHeld() throws Exception {
+        Instant sold = Instant.parse("2026-11-12T09:00:00Z");
+        JsonNode recorded = body(record(owner(), "k-wd", late(sold, REASON, null)), 201);
+        UUID id = UUID.fromString(recorded.get("id").asText());
+
+        UUID wrong = confirmed(UUID.randomUUID(), id, "4500.00", "ZMW", "2026-11-14T09:00:00Z");
+
+        assertThat(row(id).get("status")).as("not paid").isEqualTo("CREATED");
+        assertThat(settlement(wrong)).containsEntry("state", "UNSETTLED").containsEntry("reason", "WRONG_DATE");
+        assertThat(events(id, "order.paid")).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE aggregate_type = 'order' AND event_type = 'order.payment_unsettled' AND payload::text LIKE '%WRONG_DATE%'",
+                Integer.class)).isEqualTo(1);
+
+        voided(wrong, id);
+        confirmed(UUID.randomUUID(), id, "4500.00", "ZMW", "2026-11-12T13:30:00Z");
+
+        assertThat(row(id).get("status")).as("the same Lusaka day (15:30): paid").isEqualTo("PAID");
+        assertThat(at(row(id).get("paid_at"))).isEqualTo(Instant.parse("2026-11-12T13:30:00Z"));
+    }
+
+    @Test
+    @DisplayName("a live sale is paid whatever day the money arrives: its date follows the money, so it is never held for a date")
+    void aLiveSaleFollowsTheMoney() throws Exception {
+        JsonNode recorded = body(record(sales(), "k-lv", late(Instant.now(), null, null).replace("LATE_PAPER", "LIVE_PHONE").replaceFirst(",\"occurredAt\":\"[^\"]*\"", "")), 201);
+        UUID id = UUID.fromString(recorded.get("id").asText());
+
+        confirmed(UUID.randomUUID(), id, "4500.00", "ZMW", "2026-11-01T09:00:00Z");
+
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+    }
+
+    @Test
     @DisplayName("a hold that lapsed while the caller was paying does not lose the sale: money confirmed afterwards pays it when the pieces are free (the box kept), and is held for the caller when they are not")
     void aLapsedHoldIsStillPaid() throws Exception {
         UUID box = UUID.fromString("b0b0b0b0-0000-4000-8000-000000000001");
-        String withBox = late(Instant.now().minus(Duration.ofHours(30)), REASON, null).replace("\"quantity\":1}", "\"quantity\":1,\"boxVariantId\":\"" + box + "\"}");
+        String withBox = late(Instant.now(), null, null).replace("LATE_PAPER", "LIVE_PHONE").replaceFirst(",\"occurredAt\":\"[^\"]*\"", "")
+                .replace("\"quantity\":1}", "\"quantity\":1,\"boxVariantId\":\"" + box + "\"}");
         UUID id = UUID.fromString(body(record(sales(), "k-lapse", withBox), 201).get("id").asText());
         UUID reservation = (UUID) row(id).get("reservation_id");
 

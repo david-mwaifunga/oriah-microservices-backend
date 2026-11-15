@@ -28,7 +28,7 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class SettlementOutcomes {
 
-    static final Set<String> REASONS = Set.of("WRONG_AMOUNT", "ORDER_CANCELLED", "PIECE_SOLD", "ALREADY_PAID", "ORDER_UNKNOWN");
+    static final Set<String> REASONS = Set.of("WRONG_AMOUNT", "ORDER_CANCELLED", "PIECE_SOLD", "ALREADY_PAID", "ORDER_UNKNOWN", "WRONG_DATE");
 
     /** The reason kept on a SETTLED confirmation that had been voided before order's answer arrived: a disagreement a person must put right. */
     public static final String SETTLED_AFTER_VOID = "SETTLED_AFTER_VOID";

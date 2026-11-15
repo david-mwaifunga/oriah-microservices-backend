@@ -10,7 +10,7 @@ import java.util.UUID;
  *
  * @param state         RECEIVED, CONSUMING (inventory is being asked to sell the pieces), BLOCKED_BOX (only a box is missing: the sale waits), DONE
  *                      (the order is paid with it) or UNSETTLED (it could not pay the sale; payment holds the money)
- * @param reason        why it is UNSETTLED: WRONG_AMOUNT, ORDER_UNKNOWN, ORDER_CANCELLED, ALREADY_PAID, PIECE_SOLD or VOIDED
+ * @param reason        why it is UNSETTLED: WRONG_AMOUNT, ORDER_UNKNOWN, ORDER_CANCELLED, ALREADY_PAID, PIECE_SOLD, WRONG_DATE (a paper sale paid on another day) or VOIDED
  * @param reservationId the hold THIS attempt sells, minted and kept so a retry names the same one
  * @param deferredEnd   a lapse (EXPIRED) or a rejected claim (REJECTED) that arrived while this was in flight: applied if it ends unsettled
  * @param voidedAt      payment voided this confirmation

@@ -213,9 +213,9 @@ class OrderEventConsumerTest {
     }
 
     @Test
-    @DisplayName("every reason order can give is held: wrong amount, cancelled, the piece sold, already paid, an order nobody knows")
+    @DisplayName("every reason order can give is held: wrong amount, cancelled, the piece sold, already paid, an order nobody knows, a paper sale paid on another day than it happened")
     void everyReason() {
-        for (String reason : new String[] {"WRONG_AMOUNT", "ORDER_CANCELLED", "PIECE_SOLD", "ALREADY_PAID", "ORDER_UNKNOWN"}) {
+        for (String reason : new String[] {"WRONG_AMOUNT", "ORDER_CANCELLED", "PIECE_SOLD", "ALREADY_PAID", "ORDER_UNKNOWN", "WRONG_DATE"}) {
             UUID confirmation = confirmed(UUID.randomUUID(), "250.00");
 
             unsettled(UUID.randomUUID(), confirmation, reason);
