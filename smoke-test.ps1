@@ -961,7 +961,9 @@ Require (Lots-Say $saleLargeLots @("12@3.00")) "the large box's open lots are [$
 $db = Invoke-Api PUT "$gw/admin/products/$saleProductId/default-packaging" $mayaH @{ packagingVariantId = $saleSmallBoxId }
 Assert-Reply $db "choosing the small box as the sale ring's default" 200
 Require ("$($db.Json.defaultPackagingVariantId)" -ceq $saleSmallBoxId) "the default box reads '$($db.Json.defaultPackagingVariantId)', expected the small box $saleSmallBoxId"
-$pr = Invoke-Api PUT "$gw/admin/pricing/variants/$saleVariantId/price" $mayaH @{ unitPrice = 100.00; expectedPriceId = $null }
+# The price starts 70 hours back (inside the 72 hours a price may be dated): Phase 9's paper sale, made 48 hours ago, is priced as of its own day, and a piece
+# with no price on that day cannot be recorded (never priced at today's price).
+$pr = Invoke-Api PUT "$gw/admin/pricing/variants/$saleVariantId/price" $mayaH @{ unitPrice = 100.00; expectedPriceId = $null; effectiveFrom = (Format-Instant ([DateTime]::UtcNow.AddHours(-70))) }
 Assert-Reply $pr "pricing the sale ring at K100" 200
 Require ("$($pr.Json.assessment)" -ceq "OK") "K100 against a cost near K9.34 + K2.00 box should read OK; got '$($pr.Json.assessment)'"
 $pub = Invoke-Api POST "$gw/admin/products/$saleProductId/publish" $mayaH $null
@@ -3551,6 +3553,133 @@ Require (("$($daveDelivers.Json.status)" -ceq "DELIVERED") -and ($daveDelivers.J
 $daveDelivered = Get-OrderEventPayload $cOrderId "order.delivered"
 Require (($daveDelivered -notmatch 'dispatch') -and ($daveDelivered -notmatch 'farePaid')) "order.delivered must not repeat the fare; it reads $daveDelivered"
 Write-Host "    dave read the work list and the slip (who, where, the box by name through his own token, a fare due) with no money, login or actor in them; ten doors answered 403; he delivered the order and was told no fare" -ForegroundColor Gray
+
+Write-Host "[20h/20] Phone orders (Phase 9): staff record a sale for a caller with no account; a paper sale is dated and priced at its own day; a salesperson (sara: SALES) reads no cost..." -ForegroundColor Cyan
+try {
+    $saraToken = Get-Jwt "sara"
+} catch {
+    throw "sara cannot sign in: the dev user is in keycloak/dev/oriah-users-0.json and reaches Keycloak only after its volume is reset (docs: CLAUDE.md, Keycloak: docker compose rm -sf keycloak postgres-keycloak; docker volume rm default_postgres-keycloak-data; docker compose up -d keycloak; then restart order). $($_.Exception.Message)"
+}
+$saraH = @{ Authorization = "Bearer $saraToken" }
+function Get-OrderColumn($OrderId, [string]$Column) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-order", "psql", "-U", "orders", "-d", "orders", "-t", "-A", "-c", "SELECT coalesce($Column::text, '') FROM orders WHERE id = '$OrderId'")
+    return (@($rows | Where-Object { $_ -match "\S" }) -join "").Trim()
+}
+$recorded = "$gw/admin/orders/recorded"
+$p9Line = @(@{ variantId = $saleVariantId; quantity = 1 })
+
+# --- (a) a live sale for a caller with no account: the server prices it, the person confirms the total they read out -------------------------------------
+$p9Preview = Invoke-Api POST "$recorded/preview" $mayaH @{ kind = "LIVE_PHONE"; caller = @{ name = "Smoke Caller" }; lines = $p9Line; delivery = @{ mode = "PICKUP" }; expectedTotal = 1.00 }
+Assert-Reply $p9Preview "previewing a phone sale" 200
+$p9Total = [decimal]$p9Preview.Json.total
+Require ($p9Total -gt 0) "the preview total is K$p9Total"
+$p9Body = @{ kind = "LIVE_PHONE"; caller = @{ name = "Smoke Caller"; phone = "097 123 4567" }; lines = $p9Line; delivery = @{ mode = "PICKUP" }; expectedTotal = $p9Total }
+$p9KeyA = New-Key "smoke-phone-a"
+$wrongTotal = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }) ($p9Body + @{ expectedTotal = ($p9Total + 1) })
+Require (($wrongTotal.Status -eq 409) -and "$($wrongTotal.Json.type)".EndsWith("/total-differs") -and (Same-Money $wrongTotal.Json.total "$p9Total")) "recording with the wrong total gave $($wrongTotal.Status) '$($wrongTotal.Json.type)', expected 409 total-differs naming K$p9Total"
+$typed = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-typed") }) ($p9Body + @{ total = 1.00 })
+Require ($typed.Status -eq 400) "a body that types the total gave $($typed.Status), expected 400: no price, discount or total can be typed"
+$p9A = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }) $p9Body
+Assert-Reply $p9A "recording the phone sale" 201
+$p9AId = "$($p9A.Json.id)"
+Require (("$($p9A.Json.channel)" -ceq "PHONE") -and ("$($p9A.Json.status)" -ceq "CREATED") -and (Same-Money $p9A.Json.total "$p9Total") -and ($p9A.Json.replay -eq $false)) "the recorded sale reads $($p9A.Json | ConvertTo-Json -Compress -Depth 5)"
+Require ((Get-OrderColumn $p9AId "keycloak_id") -ceq "") "the recorded order has an owner; a caller has no account"
+$p9Repeat = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }) $p9Body
+Require (($p9Repeat.Status -eq 200) -and ("$($p9Repeat.Json.id)" -ceq $p9AId) -and ($p9Repeat.Json.replay -eq $true)) "the same request again gave $($p9Repeat.Status), expected 200 with the same order"
+$p9Cash = Confirm-Money @{ orderId = $p9AId; method = "CASH"; gross = $p9Total } (New-Key "smoke-phone-a-money")
+Assert-Reply $p9Cash "staff confirming the phone sale's cash" 201
+Wait-OrderStatus $p9AId "PAID" 90 | Out-Null
+$p9Receipt = Invoke-Api GET "$recorded/$p9AId/receipt" $mayaH $null
+Assert-Reply $p9Receipt "the receipt of the phone sale" 200
+Require (("$($p9Receipt.Json.receiptNumber)" -cmatch '^OR-\d{6}$') -and ("$($p9Receipt.Json.notice)" -match "not a tax invoice") -and (-not ("$($p9Receipt.Json | ConvertTo-Json -Compress -Depth 6)" -match "260|971234567"))) "the receipt reads $($p9Receipt.Json | ConvertTo-Json -Compress -Depth 6): our number, no tax invoice, and no phone number"
+$p9Paid = Get-OrderEventPayload $p9AId "order.paid"
+Require (($p9Paid -match '"channel":"PHONE"') -and ($p9Paid -match '"keycloakId":null') -and ($p9Paid -notmatch "Smoke Caller") -and ($p9Paid -notmatch "971234567")) "order.paid of the phone sale should say PHONE, have no owner and no personal data; it reads $p9Paid"
+Write-Host "    a phone sale for a caller with no account: wrong total 409 total-differs, a typed total 400, recorded 201 (no owner), a repeat 200, paid in cash, receipt $($p9Receipt.Json.receiptNumber) (not a tax invoice, no phone), order.paid says PHONE with nothing personal" -ForegroundColor Gray
+
+# --- (b) a delivery agreed by phone: the charge enters only here; a shopper can never send one; the owner can still waive it ------------------------------
+$p9KeyB = New-Key "smoke-phone-b"
+$p9AgreedBody = @{ kind = "LIVE_PHONE"; caller = @{ name = "Chipo Banda"; phone = "0977 000 111" }; lines = $p9Line
+                   delivery = @{ mode = "AGREED"; optionCode = "OWN_DELIVERY"; townId = $townId; payer = "ORIAH_COLLECTS"; agreedAmount = 60.00; agreedReason = "agreed by phone with a regular customer" }
+                   address = @{ line1 = "Plot 12 Great East Road"; city = "Kabwe"; country = "ZM" }; expectedTotal = ($p9Total + 60.00) }
+$p9B = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyB }) $p9AgreedBody
+Assert-Reply $p9B "recording the agreed delivery" 201
+$p9BId = "$($p9B.Json.id)"
+Require ((Same-Money $p9B.Json.delivery.amount "60.00") -and ("$($p9B.Json.delivery.source)" -ceq "AGREED") -and (Same-Money $p9B.Json.total "$($p9Total + 60.00)")) "the agreed delivery reads $($p9B.Json | ConvertTo-Json -Compress -Depth 5)"
+Require (((Get-OrderColumn $p9BId "delivery_agreed_amount") -match '^60') -and ((Get-OrderColumn $p9BId "delivery_price_source") -ceq "AGREED")) "the agreed amount was not kept"
+$ownRecipientPays = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-b2") }) ($p9AgreedBody + @{ delivery = @{ mode = "AGREED"; optionCode = "OWN_DELIVERY"; townId = $townId; payer = "RECIPIENT_PAYS" } })
+Require (($ownRecipientPays.Status -eq 400) -and "$($ownRecipientPays.Json.type)".EndsWith("/invalid-delivery")) "own delivery paid by the recipient gave $($ownRecipientPays.Status) '$($ownRecipientPays.Json.type)', expected 400 invalid-delivery (no driver cash float)"
+$shopperAmount = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-shopper-amount") }) @{ deliveryOption = "SELF_COLLECT"; quoteDigest = ("0" * 64); deliveryAmount = 0.00 }
+Require ($shopperAmount.Status -eq 400) "a customer confirm carrying a delivery amount gave $($shopperAmount.Status), expected 400"
+$waived = Invoke-Api POST "$gw/admin/orders/$p9BId/delivery-waiver" $mayaH @{ reason = "free delivery for a regular customer" }
+Assert-Reply $waived "the owner waiving the agreed delivery" 200
+Require ((Same-Money $waived.Json.shippingAmount "0.00") -and (Same-Money $waived.Json.total "$p9Total")) "the waiver left the order at $($waived.Json | ConvertTo-Json -Compress -Depth 4)"
+Require (((Get-OrderColumn $p9BId "delivery_agreed_amount") -match '^60') -and ((Get-OrderColumn $p9BId "delivery_price_source") -ceq "AGREED")) "the waiver changed the agreement that was made by phone"
+$p9BCash = Confirm-Money @{ orderId = $p9BId; method = "CASH"; gross = $p9Total } (New-Key "smoke-phone-b-money")
+Assert-Reply $p9BCash "staff confirming the waived total" 201
+Wait-OrderStatus $p9BId "PAID" 90 | Out-Null
+Assert-Reply (Invoke-Api POST "$gw/admin/orders/$p9BId/dispatch/pack" $mayaH @{}) "packing the phone delivery" 200
+$p9Ship = Invoke-Api POST "$gw/admin/orders/$p9BId/dispatch/ship" $mayaH @{}
+Assert-Reply $p9Ship "shipping the phone delivery (own delivery: no fare)" 200
+Assert-Reply (Invoke-Api POST "$gw/admin/orders/$p9BId/dispatch/deliver" $mayaH @{}) "delivering the phone delivery" 200
+$p9Delivered = Invoke-Api GET "$recorded/$p9BId" $mayaH $null
+Assert-Reply $p9Delivered "reading the delivered phone order" 200
+Require (("$($p9Delivered.Json.caller.phone)" -cmatch '\*') -and (-not $p9Delivered.Json.address) -and (-not $p9Delivered.Json.recipient)) "a delivered order should withhold the caller's phone (masked) and the address; it reads $($p9Delivered.Json | ConvertTo-Json -Compress -Depth 5)"
+Write-Host "    an agreed delivery of K60.00 kept as agreed: own delivery paid by the recipient 400, a customer's delivery amount 400, the owner's waiver lowered the charge and left the agreement, paid, packed, sent and delivered through Phase 8, and the delivered order withholds the phone and the address" -ForegroundColor Gray
+
+# --- (c) a paper sale: dated and priced at its own day; money keyed for another day is held, not applied ------------------------------------------------
+$paperAt = (Get-Date).ToUniversalTime().AddHours(-48)
+$p9KeyC = New-Key "smoke-phone-c"
+$p9PaperBody = @{ kind = "LATE_PAPER"; caller = @{ name = "Natasha Phiri"; phone = "0966 000 222" }; lines = $p9Line; delivery = @{ mode = "PICKUP" }; occurredAt = (Format-Instant $paperAt)
+                  backdateReason = "written on paper in the shop and typed in on Monday"; slipReference = "SMOKE-$saleTag"; expectedTotal = $p9Total }
+$noReason = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-c0") }) ($p9PaperBody + @{ backdateReason = $null })
+Require (($noReason.Status -eq 400) -and "$($noReason.Json.type)".EndsWith("/backdate-reason-required")) "a paper sale with no reason gave $($noReason.Status) '$($noReason.Json.type)', expected 400 backdate-reason-required"
+$p9C = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyC }) $p9PaperBody
+Assert-Reply $p9C "recording the paper sale" 201
+$p9CId = "$($p9C.Json.id)"
+Require ((Near-Instant (ConvertTo-UtcInstant $p9C.Json.occurredAt) $paperAt 2) -and ("$($p9C.Json.kind)" -ceq "LATE_PAPER")) "the paper sale should be dated to its own day ($paperAt): it reads $($p9C.Json.occurredAt)"
+$wrongDay = Confirm-Money @{ orderId = $p9CId; method = "CASH"; gross = $p9Total } (New-Key "smoke-phone-c-wrongday")
+Assert-Reply $wrongDay "staff confirming the paper sale's cash on today's date" 201
+Wait-Confirmation "$($wrongDay.Json.id)" "HELD" 90 | Out-Null
+Require ((Invoke-Api GET "$recorded/$p9CId" $mayaH $null).Json.status -ceq "CREATED") "the paper sale was applied although its money was dated to another day than the sale"
+$voidWrong = Invoke-Api POST "$gw/admin/payments/confirmations/$($wrongDay.Json.id)/void" $mayaH @{ reason = "keyed with today's date; the sale was two days ago" }
+Assert-Reply $voidWrong "voiding the wrongly dated confirmation" 200
+$rightDay = Confirm-Money @{ orderId = $p9CId; method = "CASH"; gross = $p9Total; arrivedAt = (Format-Instant $paperAt) } (New-Key "smoke-phone-c-rightday")
+Assert-Reply $rightDay "staff confirming the paper sale's cash on the day of the sale" 201
+Wait-OrderStatus $p9CId "PAID" 90 | Out-Null
+Require (Near-Instant (ConvertTo-UtcInstant (Invoke-Api GET "$recorded/$p9CId" $mayaH $null).Json.paidAt) $paperAt 2) "the paper sale should count on the day the money arrived, which is the day of the sale"
+$tooOld = Invoke-Api POST $recorded ($saraH + @{ "Idempotency-Key" = (New-Key "smoke-phone-c-old") }) ($p9PaperBody + @{ occurredAt = (Format-Instant ((Get-Date).ToUniversalTime().AddDays(-10))) })
+Require ($tooOld.Status -eq 403) "a paper sale 10 days old recorded by sara (no BACKDATE_SALE) gave $($tooOld.Status), expected 403"
+Write-Host "    a paper sale 48 hours old recorded at its own date with its reason and slip; money keyed for another day HELD and never applied, voided and keyed again with the day of the sale -> PAID on that day; sara is refused a sale 10 days old" -ForegroundColor Gray
+
+# --- (d) sara: a salesperson records and reads, and reaches no cost, no pricing and no order administration (Q29) ------------------------------------------
+$p9KeyD = New-Key "smoke-phone-d"
+$p9D = Invoke-Api POST $recorded ($saraH + @{ "Idempotency-Key" = $p9KeyD }) $p9Body
+Assert-Reply $p9D "sara recording a phone sale" 201
+$p9DId = "$($p9D.Json.id)"
+$saraList = Invoke-Api GET "$recorded?q=Smoke" $saraH $null
+Assert-Reply $saraList "sara's list of recorded orders" 200
+Require (@(@($saraList.Json.content) | Where-Object { "$($_.id)" -ceq $p9DId }).Count -eq 1) "sara's list should hold the order she recorded"
+$saraText = (@($p9D.Json, $saraList.Json, (Invoke-Api GET "$recorded/$p9DId" $saraH $null).Json) | ForEach-Object { $_ | ConvertTo-Json -Depth 8 -Compress }) -join " "
+foreach ($k in @("landed", "margin", "costLot", "unitCost", "keycloak", "recordedBy", "reservationId", "priceId", "farePaid", "user:")) { Require ($saraText -cnotmatch [regex]::Escape($k)) "sara reads '$k' on a recorded order: a salesperson must read no cost, margin or staff identity (Q29)" }
+foreach ($no in @(
+    @{ M = "GET";  U = "$gw/admin/orders/$p9DId" },
+    @{ M = "POST"; U = "$gw/admin/orders/$p9DId/box-swaps"; B = @{} },
+    @{ M = "POST"; U = "$gw/admin/orders/$p9DId/delivery-waiver"; B = @{ reason = "not mine to give" } },
+    @{ M = "POST"; U = "$gw/admin/orders/$p9DId/dispatch/pack"; B = @{} },
+    @{ M = "GET";  U = "$gw/admin/costs/lots" },
+    @{ M = "GET";  U = "$gw/admin/pricing/below-cost" },
+    @{ M = "GET";  U = "$gw/admin/inventory/write-offs" },
+    @{ M = "GET";  U = "$gw/admin/payments/held-money" })) {
+    $denied = Invoke-Api $no.M $no.U $saraH $no.B
+    Require ($denied.Status -eq 403) "sara $($no.M) $($no.U) gave $($denied.Status), expected 403: a salesperson records and reads sales and reaches nothing else"
+}
+$saraCancel = Invoke-Api POST "$recorded/$p9DId/cancel" $saraH $null
+Assert-Reply $saraCancel "sara cancelling the order she recorded" 200
+Require ("$($saraCancel.Json.status)" -ceq "CANCELLED") "the cancelled order reads $($saraCancel.Json.status)"
+$webId = "$((Invoke-Api GET "$gw/orders/me" $aliceH $null).Json.content[0].id)"
+$webCancel = Invoke-Api POST "$recorded/$webId/cancel" $saraH $null
+Require ($webCancel.Status -eq 404) "cancelling a shopper's order through the recorded door gave $($webCancel.Status), expected 404"
+Write-Host "    sara recorded, listed and cancelled a sale; her answers carry no cost, margin, staff identity or reservation; eight doors (orders, box swap, waiver, dispatch, cost lots, pricing, write-offs, held money) answered 403; a shopper's order is 404 through this door" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

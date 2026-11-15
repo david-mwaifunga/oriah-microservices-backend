@@ -657,7 +657,7 @@ class PlaceOrderPricingTest {
     @DisplayName("the caller cannot name the shipping amount, a delivery amount or the total, whatever the value: order prices them itself and the request is refused (Phase 9)")
     void theCallerCannotNameTheShippingAmount() throws Exception {
         shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
-        for (String field : new String[] {"shippingAmount", "deliveryAmount", "total"}) {
+        for (String field : new String[] {"shippingAmount", "deliveryAmount", "total", "discount"}) {
             for (String value : new String[] {"0", "1.00", "125.00"}) {
                 String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
                         + "\"deliveryOption\":\"OWN_DELIVERY\"," + townFields("OWN_DELIVERY") + "\"" + field + "\":" + value + ","

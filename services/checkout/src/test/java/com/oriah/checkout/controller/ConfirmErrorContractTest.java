@@ -168,7 +168,7 @@ class ConfirmErrorContractTest {
     @DisplayName("a customer cannot name a delivery amount, a shipping amount or a total, whatever the value (even 0): the charge is always the shop's published town price, never "
             + "a figure from the customer (Phase 9: an agreed delivery enters only through staff)")
     void aCustomerCannotNameWhatDeliveryCosts() throws Exception {
-        for (String field : new String[] {"deliveryAmount", "shippingAmount", "total"}) {
+        for (String field : new String[] {"deliveryAmount", "shippingAmount", "total", "discount"}) {
             for (String value : new String[] {"0", "0.00", "1.00", "150.00"}) {
                 confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + "," + CONTACT + "," + DIGEST + ",\"" + field + "\":" + value + "}")
                         .andExpect(status().isBadRequest())

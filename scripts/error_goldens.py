@@ -144,6 +144,15 @@ CASES = [
     ("400-dispatch-queue-with-a-bad-stage", "GET", "/api/v1/admin/orders/dispatch/queue?stage=NOT_A_STAGE", "admin", None),
     ("403-dispatch-queue-as-a-shopper", "GET", "/api/v1/admin/orders/dispatch/queue", "user", None),
     ("403-pack-as-a-shopper", "POST", "/api/v1/admin/orders/" + MISSING + "/dispatch/pack", "user", {}),
+    # Phase 9 (phone orders): an order nobody recorded is 404 on each door (nothing is written); a body with no expected total is 400 before anything else is looked at; a shopper holds
+    # no SALES_AGENT. "admin" (maya, OWNER) holds SALES_AGENT.
+    ("404-recorded-order-unknown", "GET", "/api/v1/admin/orders/recorded/" + MISSING, "admin", None),
+    ("404-recorded-receipt-unknown", "GET", "/api/v1/admin/orders/recorded/" + MISSING + "/receipt", "admin", None),
+    ("404-recorded-cancel-unknown", "POST", "/api/v1/admin/orders/recorded/" + MISSING + "/cancel", "admin", None),
+    ("400-record-without-an-expected-total", "POST", "/api/v1/admin/orders/recorded", "admin",
+     {"kind": "LIVE_PHONE", "caller": {"name": "Golden Caller"}, "lines": [{"variantId": MISSING, "quantity": 1}], "delivery": {"mode": "PICKUP"}}),
+    ("403-record-as-a-shopper", "POST", "/api/v1/admin/orders/recorded", "user", {}),
+    ("403-recorded-list-as-a-shopper", "GET", "/api/v1/admin/orders/recorded", "user", None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

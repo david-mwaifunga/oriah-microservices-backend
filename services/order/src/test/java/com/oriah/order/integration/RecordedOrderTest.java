@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MvcResult;
@@ -252,6 +253,30 @@ class RecordedOrderTest extends SaleTestBase {
 
         assertThat(type(ok(record(sales(), "k-h", otherBox), 409))).endsWith("/idempotency-key-reused");
         assertThat(type(ok(record(sales(), "k-h", otherQuantity), 409))).endsWith("/idempotency-key-reused");
+    }
+
+    @Autowired
+    private com.oriah.order.service.RecordedOrderWriter writer;
+    @Autowired
+    private com.oriah.order.service.RecordedPricing recordedPricing;
+
+    @Test
+    @DisplayName("the look under the lock is a second line of defence: two requests with one key that both passed the first look (one made the order while the other priced) cannot make two orders or change the first")
+    void theWriterRefusesAnotherRequestUnderTheKey() throws Exception {
+        JsonNode first = ok(record(sales(), "k-race", pickupBody("k-race", "4500.00")), 201);
+        var request = new com.oriah.order.dto.RecordOrderRequest(com.oriah.order.model.SaleKind.LIVE_PHONE, new com.oriah.order.dto.RecordOrderRequest.Caller("Someone Else", null),
+                List.of(new com.oriah.order.dto.RecordOrderRequest.Line(RING, 1, null, null, null)), new com.oriah.order.dto.RecordOrderRequest.Delivery(
+                        com.oriah.order.dto.RecordOrderRequest.DeliveryMode.PICKUP, null, null, null, null, null), null, null, null, null, null, new BigDecimal("4500.00"), null, null, null);
+        var priced = recordedPricing.price(request, Instant.now(), com.oriah.order.model.SaleKind.LIVE_PHONE);
+        var other = new com.oriah.order.model.RecordedSale("user:kc-sam", "Someone Else", null, com.oriah.order.model.SaleKind.LIVE_PHONE, Instant.now(), null, null, "f".repeat(64), null, null);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> writer.begin("k-race", other, priced, request, null))
+                .isInstanceOfSatisfying(com.oriah.order.exception.SalesProblem.class, p -> assertThat(p.code()).isEqualTo("idempotency-key-reused"));
+        var same = writer.begin("k-race", new com.oriah.order.model.RecordedSale("user:kc-sam", "Mulenga Chanda", "+260971234567", com.oriah.order.model.SaleKind.LIVE_PHONE, Instant.now(),
+                null, null, (String) row(UUID.fromString(first.get("id").asText())).get("request_hash"), null, null), priced, request, null);
+        assertThat(same.created()).isFalse();
+        assertThat(same.order().id().toString()).isEqualTo(first.get("id").asText());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM orders", Integer.class)).isEqualTo(1);
     }
 
     // ------------------------------------------------------------------ the box

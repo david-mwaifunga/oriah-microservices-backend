@@ -93,17 +93,22 @@ public record ConfirmRequest(
         @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
         @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
         @com.oriah.money.NgweeAmount
-        java.math.BigDecimal total
+        java.math.BigDecimal total,
+        /** Never accepted (Phase 9): a promotion's discount is worked out by the shop per piece; a discount sent by a customer is refused, never ignored. */
+        @jakarta.validation.constraints.Null(message = "a discount cannot be sent: promotions apply by themselves")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        @com.oriah.money.NgweeAmount
+        java.math.BigDecimal discount
 ) implements DeliveryChoice {
 
     /** A confirm with no recipient: self-collect, where nobody is delivered to. */
     public ConfirmRequest(UUID shippingAddressId, String deliveryOption, UUID deliveryTownId, String payer, String quoteDigest) {
-        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, null, null, null, null, null);
+        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, null, null, null, null, null, null);
     }
 
     /** A confirm with a recipient, as every caller but the refusal tests builds it. */
     public ConfirmRequest(UUID shippingAddressId, String deliveryOption, UUID deliveryTownId, String payer, String quoteDigest, String recipientName,
                           String recipientPhone) {
-        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, recipientName, recipientPhone, null, null, null);
+        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, recipientName, recipientPhone, null, null, null, null);
     }
 }
