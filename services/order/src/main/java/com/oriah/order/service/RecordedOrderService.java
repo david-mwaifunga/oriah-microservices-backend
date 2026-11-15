@@ -91,7 +91,7 @@ public class RecordedOrderService {
 
         Instant now = clock.instant();
         SaleDating.Dated dated = SaleDating.check(req.kind(), req.occurredAt(), now, backdateWindow, who.mayBackdate(), req.backdateReason());
-        RecordedPricing.Priced priced = pricing.price(req, dated.occurredAt(), req.kind());
+        RecordedPricing.Priced priced = pricing.price(req, priceInstant(dated.occurredAt(), now), req.kind());
         requireTheTotalTheyRead(req, priced);
 
         RecordedSale sale = new RecordedSale(who.actor(), contacts.callerName(), contacts.callerPhone(), req.kind(), dated.occurredAt(), dated.reason(), req.slipReference(),
@@ -109,7 +109,15 @@ public class RecordedOrderService {
     public Previewed preview(RecordOrderRequest req, Who who) {
         Instant now = clock.instant();
         SaleDating.Dated dated = SaleDating.check(req.kind(), req.occurredAt(), now, backdateWindow, who.mayBackdate(), req.backdateReason());
-        return new Previewed(pricing.price(req, dated.occurredAt(), req.kind()), dated.occurredAt(), req.kind());
+        return new Previewed(pricing.price(req, priceInstant(dated.occurredAt(), now), req.kind()), dated.occurredAt(), req.kind());
+    }
+
+    /**
+     * The instant catalog is asked to price at. A paper sale may be typed a few minutes ahead of this clock (the date rule allows for a clock running fast), but catalog
+     * refuses a moment more than 30 seconds in the future, so the price is read as of now: nothing that has happened yet can have a different price.
+     */
+    private static Instant priceInstant(Instant occurredAt, Instant now) {
+        return occurredAt.isAfter(now) ? now : occurredAt;
     }
 
     private static void requireTheTotalTheyRead(RecordOrderRequest req, RecordedPricing.Priced priced) {

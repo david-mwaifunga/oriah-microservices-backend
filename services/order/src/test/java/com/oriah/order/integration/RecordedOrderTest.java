@@ -401,4 +401,97 @@ class RecordedOrderTest extends SaleTestBase {
             assertThat(text).doesNotContain("Mulenga").doesNotContain("971234567").doesNotContain("Great East").doesNotContain("kc-sam");
         }
     }
+
+    // ------------------------------------------------------------------ what the panel found: the date a price is asked at, a published delivery, a lost reply, a named recipient
+
+    @Test
+    @DisplayName("a live sale is priced at the moment it is recorded, and dated then")
+    void aLiveSaleIsPricedNow() throws Exception {
+        Instant before = Instant.now();
+
+        JsonNode order = ok(record(sales(), "k-live-at", pickupBody("k-live-at", "4500.00")), 201);
+
+        ArgumentCaptor<CatalogAsOfClient.AsOfAsk> ask = ArgumentCaptor.forClass(CatalogAsOfClient.AsOfAsk.class);
+        verify(catalogAsOf).priceAsOf(ask.capture());
+        assertThat(ask.getValue().at()).isBetween(before.minusSeconds(1), Instant.now().plusSeconds(1));
+        assertThat(Instant.parse(order.get("occurredAt").asText())).isBetween(before.minusSeconds(1), Instant.now().plusSeconds(1));
+    }
+
+    @Test
+    @DisplayName("a paper sale dated a few minutes ahead (a clock running fast, which the date rule allows for) is priced at this moment: catalog allows 30 seconds, so it must never be asked for a later one")
+    void aPaperSaleAheadByAFewMinutesIsPricedNow() throws Exception {
+        Instant ahead = Instant.now().plusSeconds(180);
+        String body = "{\"kind\":\"LATE_PAPER\",\"caller\":{\"name\":\"Mulenga Chanda\"},\"lines\":[" + line(RING, 1) + "],\"delivery\":{\"mode\":\"PICKUP\"},"
+                + "\"occurredAt\":\"" + ahead + "\",\"backdateReason\":\"written on paper a moment ago\",\"expectedTotal\":4500.00}";
+
+        JsonNode order = ok(record(sales(), "k-ahead", body), 201);
+
+        ArgumentCaptor<CatalogAsOfClient.AsOfAsk> ask = ArgumentCaptor.forClass(CatalogAsOfClient.AsOfAsk.class);
+        verify(catalogAsOf).priceAsOf(ask.capture());
+        assertThat(ask.getValue().at()).as("catalog refuses a moment more than 30 seconds ahead").isBefore(Instant.now().plusSeconds(30));
+        assertThat(Instant.parse(order.get("occurredAt").asText())).as("the sale keeps the date it was typed with").isCloseTo(ahead, org.assertj.core.api.Assertions.within(1, java.time.temporal.ChronoUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("the shop's published delivery price is the order's charge: asked for the goods AFTER discount, kept as PUBLISHED with no agreed amount; an amount or a reason sent with it is 400")
+    void aPublishedDelivery() throws Exception {
+        priced(RING, "4500.00", "500.00", UUID.randomUUID());
+        List<ShippingClient.QuoteAsk> asks = new java.util.ArrayList<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            ShippingClient.QuoteAsk a = inv.getArgument(0);
+            asks.add(a);
+            return new ShippingClient.QuoteReply(TOWN, "Kabwe", "OWN_DELIVERY", "Oriah delivery", "ORIAH_COLLECTS", new BigDecimal("80.00"), a.currency(), UUID.randomUUID());
+        }).when(shipping).quote(any());
+        String published = agreedBody("OWN_DELIVERY", "ORIAH_COLLECTS", null, null, "4080.00").replace("\"AGREED\"", "\"PUBLISHED\"");
+
+        JsonNode order = ok(record(sales(), "k-pub", published), 201);
+
+        assertThat(order.get("total").decimalValue()).isEqualByComparingTo("4080.00");
+        assertThat(order.get("delivery").get("source").asText()).isEqualTo("PUBLISHED");
+        assertThat(order.get("delivery").get("amount").decimalValue()).isEqualByComparingTo("80.00");
+        assertThat(asks).isNotEmpty();
+        assertThat(asks.get(asks.size() - 1).goodsTotal()).as("a free-delivery threshold is judged on what the customer pays for the goods").isEqualByComparingTo("4000.00");
+        var row = row(UUID.fromString(order.get("id").asText()));
+        assertThat(row.get("delivery_price_source")).isEqualTo("PUBLISHED");
+        assertThat(row.get("delivery_agreed_amount")).isNull();
+
+        String withAmount = agreedBody("OWN_DELIVERY", "ORIAH_COLLECTS", "60.00", null, "4060.00").replace("\"AGREED\"", "\"PUBLISHED\"");
+        assertThat(type(ok(record(sales(), "k-pub-amount", withAmount.replace("Mulenga", "Chipo")), 400))).endsWith("/invalid-delivery");
+    }
+
+    @Test
+    @DisplayName("a lost reply from inventory leaves the order written but not held; the same request again holds it under the same reservation (200, the same order, announced once)")
+    void aRepeatFinishesAnOrderWhoseHoldWasLost() throws Exception {
+        SaleStubs.inventoryRefuses(inventory, 503, "{}");
+        MvcResult lost = record(sales(), "k-lost", pickupBody("k-lost", "4500.00"));
+        assertThat(lost.getResponse().getStatus()).as(lost.getResponse().getContentAsString()).isEqualTo(503);
+        UUID id = jdbc.queryForObject("SELECT id FROM orders WHERE idempotency_key = 'k-lost'", UUID.class);
+        assertThat(row(id).get("hold_state")).isEqualTo("PENDING");
+        assertThat(events(id, "order.created")).isEmpty();
+        SaleStubs.inventoryHolds(inventory);
+
+        JsonNode again = ok(record(sales(), "k-lost", pickupBody("k-lost", "4500.00")), 200);
+
+        assertThat(again.get("id").asText()).isEqualTo(id.toString());
+        assertThat(row(id).get("hold_state")).isEqualTo("HELD");
+        assertThat(events(id, "order.created")).hasSize(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM orders", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a parcel for someone else: the recipient named is kept (tidied), not the caller; the address's optional lines are kept too")
+    void aNamedRecipient() throws Exception {
+        String body = agreedBody("YANGO", "ORIAH_COLLECTS", "80.00", null, "4580.00").replace("\"address\":{",
+                "\"recipient\":{\"name\":\"Bwalya Mumba\",\"phone\":\"0966 111 222\"},\"address\":{\"line2\":\"Behind the market\",\"state\":\"Central\",\"postalCode\":\"10101\",");
+
+        JsonNode order = ok(record(sales(), "k-recip", body), 201);
+
+        var row = row(UUID.fromString(order.get("id").asText()));
+        assertThat(row.get("recipient_name")).isEqualTo("Bwalya Mumba");
+        assertThat(row.get("recipient_phone")).isEqualTo("+260966111222");
+        assertThat(row.get("caller_name")).isEqualTo("Mulenga Chanda");
+        assertThat(row.get("address_line2")).isEqualTo("Behind the market");
+        assertThat(row.get("address_state")).isEqualTo("Central");
+        assertThat(row.get("address_postal_code")).isEqualTo("10101");
+    }
 }

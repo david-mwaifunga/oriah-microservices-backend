@@ -3591,7 +3591,7 @@ $recorded = "$gw/admin/orders/recorded"
 $p9Line = @(@{ variantId = $saleVariantId; quantity = 1 })
 
 # --- (a) a live sale for a caller with no account: the server prices it, the person confirms the total they read out -------------------------------------
-$p9Preview = Invoke-Api POST "$recorded/preview" $mayaH @{ kind = "LIVE_PHONE"; caller = @{ name = "Smoke Caller" }; lines = $p9Line; delivery = @{ mode = "PICKUP" }; expectedTotal = 1.00 }
+$p9Preview = Invoke-Api POST "$recorded/preview" $mayaH @{ kind = "LIVE_PHONE"; lines = $p9Line; delivery = @{ mode = "PICKUP" } }
 Assert-Reply $p9Preview "previewing a phone sale" 200
 $p9Total = [decimal]$p9Preview.Json.total
 Require ($p9Total -gt 0) "the preview total is K$p9Total"

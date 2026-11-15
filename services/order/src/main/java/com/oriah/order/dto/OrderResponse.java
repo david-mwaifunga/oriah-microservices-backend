@@ -53,7 +53,11 @@ public record OrderResponse(
         /** Who a delivered parcel is for and where it goes, as kept when the order was placed; absent for a pickup and for an order placed before Phase 8. */
         @JsonInclude(JsonInclude.Include.NON_NULL) Delivery delivery,
         /** When it was packed, sent and delivered, and the courier's reference; absent until the first step. Never the courier fare, which is cost. */
-        @JsonInclude(JsonInclude.Include.NON_NULL) Dispatch dispatch
+        @JsonInclude(JsonInclude.Include.NON_NULL) Dispatch dispatch,
+        /** WEB or PHONE; staff's views only (the shopper's own answers never carry it). */
+        @JsonInclude(JsonInclude.Include.NON_NULL) String channel,
+        /** What staff recorded of a phone sale: who keyed it, when it really happened, why it was keyed late and the paper slip; staff's views only, PHONE orders only. */
+        @JsonInclude(JsonInclude.Include.NON_NULL) Recorded recorded
 ) {
 
     /** The shopper's own delivery details (their data, read back to them), with the names of the option and the town. */
@@ -70,11 +74,16 @@ public record OrderResponse(
     public record Dispatch(Instant packedAt, Instant dispatchedAt, Instant deliveredAt, String reference) {
     }
 
+    /** Who recorded a phone sale and on what grounds: the owner's accountability for a sale dated and priced in the past. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Recorded(String kind, Instant occurredAt, String recordedBy, String callerName, String backdateReason, String slipReference) {
+    }
+
     /** This answer with its dispatch steps (read in one batch by {@code DispatchViews}); null leaves it without. */
     public OrderResponse withDispatch(Dispatch dispatch) {
         return new OrderResponse(id, keycloakId, status, subtotal, shippingAmount, discountAmount, total, currency, deliveryOption, paymentIntentId,
                 shippingAddressId, placedAt, updatedAt, items, deliveryTownId, deliveryPayer, holdExpiresAt, deliveryWaivedAmount, deliveryWaivedBy,
-                deliveryWaiverReason, deliveryWaivedAt, receiptNumber, paidAt, delivery, dispatch);
+                deliveryWaiverReason, deliveryWaivedAt, receiptNumber, paidAt, delivery, dispatch, channel, recorded);
     }
 
     /**
@@ -107,7 +116,10 @@ public record OrderResponse(
                 o.hasDeliveryDetails() ? new Delivery(o.recipientName(), o.recipientPhone(),
                         new Address(o.addressLine1(), o.addressLine2(), o.addressCity(), o.addressState(), o.addressPostalCode(), o.addressCountry()),
                         o.deliveryOptionName(), o.deliveryTownName()) : null,
-                null
+                null,
+                staff ? o.channel().name() : null,
+                staff && o.channel() == com.oriah.order.model.Channel.PHONE
+                        ? new Recorded(o.saleKind() == null ? null : o.saleKind().name(), o.occurredAt(), o.recordedBy(), o.callerName(), o.backdateReason(), o.slipReference()) : null
         );
     }
 }

@@ -259,7 +259,8 @@ class OrderEventConsumerTest {
         payload.put("currency", "ZMW");
 
         assertThatThrownBy(() -> orderEvents.accept(Relayed.orderEvent("order.created", orderId, 1, objectMapper.writeValueAsBytes(payload))))
-                .isInstanceOf(RuntimeException.class);
+                .isInstanceOf(RuntimeException.class)
+                .hasStackTraceContaining("has no owner and is not a phone order");
         assertThat(repository.count()).isZero();
     }
 

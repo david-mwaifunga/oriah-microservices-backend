@@ -58,6 +58,8 @@ and the books stay right: priced at the sale's own day, never edited, no cost or
   piece a price from before its first price: built (`BACKDATE_SALE` + a written reason adds a historical price, today's price untouched; catalog V7). (3) A promotion by category is judged on the piece's category today:
   a known limit, recorded. (4) Deploy payment before order (the new `WRONG_DATE` reason): recorded. (5) A `discount` sent by a shopper was silently ignored: now refused 400.
 
+- **Review panel** (six lenses, skeptics on each finding): no serious finding. Fixed afterwards: a paper sale typed a few minutes ahead was refused with a false "catalog did not answer"; the price preview wrongly asked for a caller and a total; the owner could not see who keyed a late sale (promised in the design, now on the order administrator's read); the packer was not told whose name a phone pickup is for. More tests were added for a published delivery, a lost reply, a named recipient and the date a price is asked at.
+
 ### What is still open
 
 - An as-of promotion by category uses the piece's category today, so a sale made while it sat in another category can lose (or gain) a discount; product and shop-wide promotions are exact. Fix: version category membership.

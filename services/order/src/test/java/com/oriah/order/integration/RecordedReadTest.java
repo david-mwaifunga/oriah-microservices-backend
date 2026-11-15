@@ -264,7 +264,7 @@ class RecordedReadTest extends SaleTestBase {
     @Test
     @DisplayName("a preview prices the sale with nothing written and nothing held, and needs no caller and no key: the total to read to the caller")
     void preview() throws Exception {
-        String body = "{\"kind\":\"LIVE_PHONE\",\"caller\":{\"name\":\"x\"},\"lines\":[{\"variantId\":\"" + RING + "\",\"quantity\":2}],\"delivery\":{\"mode\":\"PICKUP\"},\"expectedTotal\":1.00}";
+        String body = "{\"kind\":\"LIVE_PHONE\",\"lines\":[{\"variantId\":\"" + RING + "\",\"quantity\":2}],\"delivery\":{\"mode\":\"PICKUP\"}}";
 
         MvcResult result = mvc.perform(post(PATH + "/preview").with(sales()).contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
         JsonNode priced = ok(result);
@@ -304,5 +304,54 @@ class RecordedReadTest extends SaleTestBase {
         assertThat(places.get("provinces").get(0).get("towns").get(0).get("id").asText()).isEqualTo(TOWN.toString());
         assertThat(places.get("options")).isNotEmpty();
         assertThat(result.getResponse().getContentAsString()).doesNotContainIgnoringCase("amount").doesNotContainIgnoringCase("price");
+    }
+
+    // ------------------------------------------------------------------ the owner's read of who keyed what
+
+    @Test
+    @DisplayName("the order administrator reads who keyed a phone sale and why: channel, kind, the true date, the recorder, the caller's name, the late reason and the slip; a web order shows WEB and none of it, and the shopper's own read has none")
+    void theOwnerSeesWhoKeyedALateSale() throws Exception {
+        Instant at = Instant.now().minusSeconds(3600);
+        String late = "{\"kind\":\"LATE_PAPER\",\"caller\":{\"name\":\"Natasha Phiri\"},\"lines\":[{\"variantId\":\"" + RING + "\",\"quantity\":1}],\"delivery\":{\"mode\":\"PICKUP\"},"
+                + "\"occurredAt\":\"" + at + "\",\"backdateReason\":\"written on paper in the shop\",\"slipReference\":\"SLIP-7\",\"expectedTotal\":4000.00}";
+        UUID phone = record("k-own", late);
+        UUID web = heldOrder();
+        RequestPostProcessor admin = jwt().authorities(new SimpleGrantedAuthority("ROLE_ORDER_ADMIN")).jwt(j -> j.subject("kc-ada"));
+
+        JsonNode phoneView = ok(mvc.perform(get("/api/v1/admin/orders/" + phone).with(admin)).andReturn());
+        JsonNode webView = ok(mvc.perform(get("/api/v1/admin/orders/" + web).with(admin)).andReturn());
+
+        assertThat(phoneView.get("channel").asText()).isEqualTo("PHONE");
+        JsonNode recorded = phoneView.get("recorded");
+        assertThat(recorded.get("kind").asText()).isEqualTo("LATE_PAPER");
+        assertThat(recorded.get("recordedBy").asText()).isEqualTo("user:kc-sam");
+        assertThat(recorded.get("callerName").asText()).isEqualTo("Natasha Phiri");
+        assertThat(recorded.get("backdateReason").asText()).isEqualTo("written on paper in the shop");
+        assertThat(recorded.get("slipReference").asText()).isEqualTo("SLIP-7");
+        assertThat(Instant.parse(recorded.get("occurredAt").asText())).isCloseTo(at, org.assertj.core.api.Assertions.within(1, java.time.temporal.ChronoUnit.SECONDS));
+        assertThat(webView.get("channel").asText()).isEqualTo("WEB");
+        assertThat(webView.has("recorded")).isFalse();
+        MvcResult mine = mvc.perform(get("/api/v1/orders/me").with(jwt().authorities(ROLE_USER).jwt(j -> j.subject("kc-alice")))).andReturn();
+        assertThat(mine.getResponse().getContentAsString()).doesNotContain("\"channel\"").doesNotContain("recordedBy");
+    }
+
+    @Test
+    @DisplayName("a packer handed a phone pickup is told the caller's NAME to hand it to (never the phone or any money), and the dispatch steps work on an order with no owner; after hand-over the name is withheld")
+    void aPackerSeesWhoCollectsAPhonePickup() throws Exception {
+        UUID id = record("k-pk", pickup("Chipo Banda", "0977000111"));
+        confirmed(id, "4000.00");
+        RequestPostProcessor packer = jwt().authorities(new SimpleGrantedAuthority("ROLE_FULFILMENT_AGENT")).jwt(j -> j.subject("kc-dave").tokenValue("dave-token"));
+
+        JsonNode slip = ok(mvc.perform(get("/api/v1/admin/orders/" + id + "/dispatch").with(packer)).andReturn());
+
+        assertThat(slip.get("collectorName").asText()).isEqualTo("Chipo Banda");
+        assertThat(slip.toString()).doesNotContain("0977").doesNotContain("971").doesNotContainIgnoringCase("total").doesNotContainIgnoringCase("price");
+        assertThat(mvc.perform(post("/api/v1/admin/orders/" + id + "/dispatch/pack").with(packer).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn()
+                .getResponse().getStatus()).isEqualTo(200);
+        assertThat(mvc.perform(post("/api/v1/admin/orders/" + id + "/dispatch/deliver").with(packer).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn()
+                .getResponse().getStatus()).isEqualTo(200);
+        JsonNode after = ok(mvc.perform(get("/api/v1/admin/orders/" + id + "/dispatch").with(packer)).andReturn());
+        assertThat(after.has("collectorName")).as("withheld once handed over, as the parcel's address is").isFalse();
+        assertThat(after.get("status").asText()).isEqualTo("DELIVERED");
     }
 }

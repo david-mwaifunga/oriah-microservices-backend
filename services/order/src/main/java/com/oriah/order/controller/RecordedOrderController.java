@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.oriah.order.dto.PreviewOrderRequest;
 import com.oriah.order.dto.RecordOrderRequest;
 import com.oriah.order.client.ShippingClient;
 import com.oriah.order.dto.RecordedOrderView;
@@ -97,11 +98,11 @@ public class RecordedOrderController {
     }
 
     @Operation(operationId = "previewRecordedOrder", summary = "Price a sale to read the total to the caller, writing and holding nothing",
-            description = "The same pricing as recording, with no key, no hold and no personal data needed. The `expectedTotal` of the body is ignored here.")
+            description = "The same pricing as recording, with no key, no hold and no personal data: no caller, no recipient, no address and no expected total.")
     @ApiResponse(responseCode = "200", description = "The sale as it would be recorded")
     @PostMapping("/preview")
-    public RecordedViews.Preview preview(Authentication auth, @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody RecordOrderRequest request) {
-        RecordedOrderService.Previewed done = service.preview(request, who(jwt, auth));
+    public RecordedViews.Preview preview(Authentication auth, @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody PreviewOrderRequest request) {
+        RecordedOrderService.Previewed done = service.preview(request.asSale(), who(jwt, auth));
         return RecordedViews.Preview.of(done.priced(), done.occurredAt(), done.kind().name());
     }
 

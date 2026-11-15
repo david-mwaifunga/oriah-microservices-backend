@@ -64,11 +64,11 @@ public class DispatchReadService {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Slip(UUID orderId, String receiptNumber, OrderStatus status, String stage, Instant paidAt, boolean selfCollect, boolean fareDue,
                        boolean boxSwapInProgress, SlipDelivery delivery, List<SlipLine> lines, Instant packedAt, Instant dispatchedAt, String reference,
-                       BigDecimal farePaid, Instant deliveredAt, boolean boxNamesAvailable, String boxNamesProblem) {
+                       BigDecimal farePaid, Instant deliveredAt, boolean boxNamesAvailable, String boxNamesProblem, String collectorName) {
 
         Slip withNames(List<SlipLine> named, boolean available, String problem) {
             return new Slip(orderId, receiptNumber, status, stage, paidAt, selfCollect, fareDue, boxSwapInProgress, delivery, named, packedAt, dispatchedAt, reference,
-                    farePaid, deliveredAt, available, problem);
+                    farePaid, deliveredAt, available, problem, collectorName);
         }
     }
 

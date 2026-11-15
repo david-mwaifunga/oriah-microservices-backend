@@ -61,6 +61,9 @@ public class DispatchSlips {
                     order.recipientPhone(), new Address(order.addressLine1(), order.addressLine2(), order.addressCity(), order.addressState(),
                             order.addressPostalCode(), order.addressCountry()));
         }
+        // A pickup has no recipient to hand the parcel to, so the packer is told the caller's NAME (never the phone) for a phone sale, until it is handed over.
+        String collector = order.isSelfCollect() && order.channel() == com.oriah.order.model.Channel.PHONE
+                && (order.status() != OrderStatus.DELIVERED || viewer.mayViewDeliveredPerson()) ? order.callerName() : null;
         List<SlipLine> lines = order.items().stream()
                 .sorted(Comparator.comparing(OrderItem::title).thenComparing(OrderItem::id))
                 .map(i -> new SlipLine(i.id(), i.title(), i.quantity(), i.boxVariantId() == null ? null : new Box(i.boxVariantId(), null)))
@@ -68,7 +71,7 @@ public class DispatchSlips {
         return new Slip(order.id(), order.receiptNumber(), order.status(), DispatchService.stage(order.status()), order.paidAt(), order.isSelfCollect(),
                 FareRule.due(order.deliveryOption(), order.deliveryPayer()), swaps.isInFlight(orderId), delivery, lines,
                 at(steps.get(Step.PACKED)), at(sent), sent == null ? null : sent.reference(), viewer.mayViewCost() && sent != null ? sent.farePaid() : null,
-                at(steps.get(Step.DELIVERED)), true, null);
+                at(steps.get(Step.DELIVERED)), true, null, collector);
     }
 
     private static Instant at(Recorded step) {

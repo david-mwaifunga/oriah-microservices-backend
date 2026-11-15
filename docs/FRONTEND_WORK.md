@@ -624,7 +624,7 @@ with no account. All paths are `/api/v1/admin/orders/recorded...`; a **salespers
   where the person picks an option and a town from `GET /recorded/delivery-places` (`{provinces[{id, name, towns[{id, name}]}], options[{code, name, kind}]}`, no prices), says who pays the courier
   (`ORIAH_COLLECTS` or `RECIPIENT_PAYS`) and, for Oriah's charge, types the amount **agreed by phone** (`delivery.mode: "AGREED"`, `agreedAmount`); the shop's own published price is `mode: "PUBLISHED"`
   (a live sale only). Own delivery can never be recipient-paid (the screen should not offer it). The recipient defaults to the caller; **the address line is required for a delivery**.
-- **There is no price, discount or total box (Q12).** Call `POST /recorded/preview` with the same body (the caller may be left out) as the person fills it in: it answers `{kind, occurredAt,
+- **There is no price, discount or total box (Q12).** Call `POST /recorded/preview` with the same body as the person fills it in, **less the caller, recipient, address and `expectedTotal`, which it does not take**: it answers `{kind, occurredAt,
   currency, lines[{title, quantity, unitPrice, discountPerPiece, lineTotal}], subtotal, discountAmount, delivery, total}`. Show the total, let the person read it to the caller, and send it as
   `expectedTotal` when recording: **a different total is 409 `total-differs`** (it names the real total: re-read it to the caller). Promotions apply by themselves, priced as of the sale's own day.
 - **Record** with `POST /recorded` and a required `Idempotency-Key` (a UUID made when the form opens, **kept if the request is repeated**: a repeat is 200 with the same order). 201 answers the
@@ -642,14 +642,14 @@ with no account. All paths are `/api/v1/admin/orders/recorded...`; a **salespers
   newest first; a row is `{id, status, kind, occurredAt, placedAt, callerName, callerPhone (masked), total, currency, receiptNumber}`).
 - **One order:** `GET /recorded/{id}`: caller, recipient and address **while the order is alive** (a hold that lapsed still needs its caller rung: show the phone), lines, discount, delivery and its
   source (`PUBLISHED` or `AGREED`), total, `receiptNumber`/`paidAt` once paid, and `dispatch{packedAt, dispatchedAt, deliveredAt}`; after DELIVERED the phone is masked and the recipient and address are
-  gone. **Show the channel and the caller's name in the admin order list** (`GET /api/v1/admin/orders` and `SalesQueues` gain `channel` for ORDER_ADMIN; the recorded list is the salesperson's own).
+  gone. **Show the channel and who keyed a phone sale in the admin order screens:** `GET /api/v1/admin/orders` and `/{id}` (ORDER_ADMIN) gain `channel` (`WEB` or `PHONE`) and, for a phone sale, `recorded{kind, occurredAt, recordedBy, callerName, backdateReason, slipReference}`: the owner's check on who keyed a late sale and why. The staff queues (`awaiting-payment`, `settlements`) are unchanged; the recorded list is the salesperson's own.
 - **The receipt for the caller:** `GET /recorded/{id}/receipt` (409 `receipt-not-ready` until paid): `{receiptNumber, paidAt, callerName, currency, lines[...], subtotal, discountAmount, delivery{optionName,
   townName, payer, amount, note}, total, notice}`. It is OUR receipt, **never a tax invoice, no VAT line** (show the `notice`), has the caller's name only (no phone or street: it may be forwarded) and, for a
   courier the recipient pays, says "you pay the courier directly: K0.00 on this receipt". Telling the caller it is ready is **manual until Phase 11**: staff ring them from the order's phone.
 - **Cancel** while it waits for money: `POST /recorded/{id}/cancel` (a paid order is 409: a paid sale is undone by a return, Phase 12). A lapsed (EXPIRED) order is NOT cancelled by sales: it may still be paid.
 - **A paper sale's money must carry the day of the sale.** If staff confirm it on another day, payment HOLDS it (`WRONG_DATE`: it appears in held money and in the settlements list) and the order is not paid:
   **void that confirmation and key the money again with `arrivedAt` = the day of the sale** (the person confirming a sale older than 72 hours needs `BACKDATE_SALE`).
-- The packer's work list and slip (Phase 8) work for a phone order as for any: a pickup's slip carries the **caller's name** for the person to hand it to, never the phone.
+- The packer's work list and slip (Phase 8) work for a phone order as for any: a pickup's slip carries `collectorName`, **the caller's name** for the person to hand it to (never the phone), until it is handed over.
 
 **What it breaks in oriah-web today**
 
