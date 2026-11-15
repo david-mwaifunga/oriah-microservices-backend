@@ -313,6 +313,21 @@ public class Order extends BaseEntity {
     public String deliveryOptionName() { return deliveryOptionName; }
     public String deliveryTownName() { return deliveryTownName; }
 
+    /**
+     * An order that is cancelled forgets who it was for and where it was going: personal data is not kept for a parcel that will never be sent. Only in
+     * memory: the columns are never written by the entity, and the same statement is made in SQL by whoever cancels (see OrderService).
+     */
+    public void forgetDelivery() {
+        this.recipientName = null;
+        this.recipientPhone = null;
+        this.addressLine1 = null;
+        this.addressLine2 = null;
+        this.addressCity = null;
+        this.addressState = null;
+        this.addressPostalCode = null;
+        this.addressCountry = null;
+    }
+
     /** Whether the shopper collects: nothing is shipped or delivered, and no recipient or address is kept. */
     public boolean isSelfCollect() { return Quote.SELF_COLLECT.equals(deliveryOption); }
 

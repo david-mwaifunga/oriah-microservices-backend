@@ -43,19 +43,22 @@ public class OrderService {
     private final OrderWriter writer;
     private final OrderHolds holds;
     private final AddressOwnership addresses;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     public OrderService(OrderRepository repository,
                         OrderEventLog events,
                         OrderPricingService pricing,
                         OrderWriter writer,
                         OrderHolds holds,
-                        AddressOwnership addresses) {
+                        AddressOwnership addresses,
+                        org.springframework.jdbc.core.JdbcTemplate jdbc) {
         this.repository = repository;
         this.events = events;
         this.pricing = pricing;
         this.writer = writer;
         this.holds = holds;
         this.addresses = addresses;
+        this.jdbc = jdbc;
     }
 
     /**
@@ -234,6 +237,14 @@ public class OrderService {
     private Order move(Order order, OrderStatus target, String actor) {
         OrderStatus prev = order.status();
         order.transitionTo(target);
+        if (target == OrderStatus.CANCELLED) {
+            // An order that will never be sent keeps no recipient or address (the correction history, if any, is the audit). The entity never writes these
+            // columns, so it is SQL, in this transaction; the entity forgets them too so the answer to the caller shows none.
+            jdbc.update("""
+                    UPDATE orders SET recipient_name = NULL, recipient_phone = NULL, address_line1 = NULL, address_line2 = NULL, address_city = NULL,
+                        address_state = NULL, address_postal_code = NULL, address_country = NULL WHERE id = ?""", order.id());
+            order.forgetDelivery();
+        }
         events.moved(order, prev, actor);
         log.info("Order id={} {} -> {} by {}", order.id(), prev, target, actor);
         return order;

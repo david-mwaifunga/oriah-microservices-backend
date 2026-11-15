@@ -394,7 +394,7 @@ class GatewaySecurityConfigTest {
     }
 
     @Test
-    @DisplayName("a packer (DISPATCH) reaches the work list, the slip and the steps and nothing else: no orders list, box swap, waiver, payment, customer, cost or stock, "
+    @DisplayName("a packer (DISPATCH) reaches the work list, the slip and the steps and nothing else (correcting a recipient or address is ORDER_ADMIN's): no orders list, box swap, waiver, payment, customer, cost or stock, "
             + "and nothing else under /orders/dispatch/ (an unknown path there falls to ORDER_ADMIN and fails closed)")
     void aPackerReachesOnlyTheDispatchWork() {
         assertAdmitted(as("DISPATCH").get().uri("/api/v1/admin/orders/dispatch/queue"));
@@ -402,8 +402,7 @@ class GatewaySecurityConfigTest {
         assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/pack"));
         assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/ship"));
         assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/deliver"));
-        assertAdmitted(as("DISPATCH").post().uri(AN_ORDER + "/dispatch/delivery-details"));
-        for (String path : java.util.List.of("/api/v1/admin/orders", AN_ORDER, AN_ORDER + "/box-swaps", AN_ORDER + "/delivery-waiver",
+        for (String path : java.util.List.of("/api/v1/admin/orders", AN_ORDER, AN_ORDER + "/box-swaps", AN_ORDER + "/delivery-waiver", AN_ORDER + "/delivery-details",
                 "/api/v1/admin/orders/dispatch/anything-else", "/api/v1/admin/orders/dispatch", "/api/v1/admin/payments/confirmations",
                 "/api/v1/admin/customers", "/api/v1/admin/costs/lots", "/api/v1/admin/inventory", "/api/v1/admin/pricing/below-cost")) {
             as("DISPATCH").get().uri(path).exchange().expectStatus().isForbidden();
