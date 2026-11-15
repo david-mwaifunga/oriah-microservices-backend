@@ -3470,14 +3470,14 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"kind\": \"LIVE_PHONE\",\n  \"caller\": {\n    \"name\": \"\",\n    \"phone\": \"\"\n  },\n  \"lines\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1,\n      \"boxVariantId\": \"00000000-0000-0000-0000-000000000000\"\n    }\n  ],\n  \"delivery\": {\n    \"recipientName\": \"\",\n    \"recipientPhone\": \"\",\n    \"address\": {\n      \"line1\": \"\",\n      \"line2\": \"\",\n      \"city\": \"\",\n      \"state\": \"\",\n      \"postalCode\": \"\",\n      \"country\": \"\"\n    },\n    \"optionName\": \"\",\n    \"townName\": \"\"\n  },\n  \"recipient\": {\n    \"name\": \"\",\n    \"phone\": \"\"\n  },\n  \"address\": {\n    \"line1\": \"\",\n    \"line2\": \"\",\n    \"city\": \"\",\n    \"state\": \"\",\n    \"postalCode\": \"\",\n    \"country\": \"\"\n  },\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\",\n  \"slipReference\": \"\",\n  \"expectedTotal\": 0.0\n}",
+              "raw": "{\n  \"kind\": \"LIVE_PHONE\",\n  \"lines\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1,\n      \"boxVariantId\": \"00000000-0000-0000-0000-000000000000\"\n    }\n  ],\n  \"delivery\": {\n    \"recipientName\": \"\",\n    \"recipientPhone\": \"\",\n    \"address\": {\n      \"line1\": \"\",\n      \"line2\": \"\",\n      \"city\": \"\",\n      \"state\": \"\",\n      \"postalCode\": \"\",\n      \"country\": \"\"\n    },\n    \"optionName\": \"\",\n    \"townName\": \"\"\n  },\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             },
-            "description": "The same pricing as recording, with no key, no hold and no personal data needed. The `expectedTotal` of the body is ignored here."
+            "description": "The same pricing as recording, with no key, no hold and no personal data: no caller, no recipient, no address and no expected total."
           }
         },
         {
