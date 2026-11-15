@@ -137,13 +137,46 @@ public record PlaceOrderRequest(
 
         /** The recipient's phone number as typed (097 123 4567, +260 97 123 4567 ...); kept as +260971234567. */
         @Size(max = 40)
-        String recipientPhone
+        String recipientPhone,
+
+        /**
+         * Never accepted (Phase 9). What delivery costs is the shop's published town price, worked out by shipping and order; an amount sent by a customer
+         * can only be a mistake or an attempt, so it is refused rather than silently ignored. An agreed delivery enters an order only through staff.
+         * Hidden from the contract: it exists so the request can be refused.
+         */
+        @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        java.math.BigDecimal deliveryAmount,
+
+        /**
+         * Never accepted (Phase 9). What delivery costs is the shop's published town price, worked out by shipping and order; an amount sent by a customer
+         * can only be a mistake or an attempt, so it is refused rather than silently ignored. An agreed delivery enters an order only through staff.
+         * Hidden from the contract: it exists so the request can be refused.
+         */
+        @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        java.math.BigDecimal shippingAmount,
+
+        /**
+         * Never accepted (Phase 9). What delivery costs is the shop's published town price, worked out by shipping and order; an amount sent by a customer
+         * can only be a mistake or an attempt, so it is refused rather than silently ignored. An agreed delivery enters an order only through staff.
+         * Hidden from the contract: it exists so the request can be refused.
+         */
+        @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        java.math.BigDecimal total
 ) {
 
     /** A request with no recipient: a pickup. */
     public PlaceOrderRequest(UUID shippingAddressId, String currency, List<LineItem> items, String deliveryOption, UUID deliveryTownId, String payer,
                              String quoteDigest) {
-        this(shippingAddressId, currency, items, deliveryOption, deliveryTownId, payer, quoteDigest, null, null);
+        this(shippingAddressId, currency, items, deliveryOption, deliveryTownId, payer, quoteDigest, null, null, null, null, null);
+    }
+
+    /** A request with a recipient, as every caller but the refusal tests builds it. */
+    public PlaceOrderRequest(UUID shippingAddressId, String currency, List<LineItem> items, String deliveryOption, UUID deliveryTownId, String payer,
+                             String quoteDigest, String recipientName, String recipientPhone) {
+        this(shippingAddressId, currency, items, deliveryOption, deliveryTownId, payer, quoteDigest, recipientName, recipientPhone, null, null, null);
     }
 
     /**

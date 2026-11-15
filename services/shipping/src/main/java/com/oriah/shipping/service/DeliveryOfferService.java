@@ -62,6 +62,20 @@ public class DeliveryOfferService {
     public record Offers(String currency, SelfCollect selfCollect, BigDecimal freeDeliveryThreshold, List<ProvinceOffer> provinces) {
     }
 
+    /** A town Oriah can deliver to (switched on), with no price: staff agreeing a delivery by phone choose from these (Phase 9). */
+    public record PlaceTown(UUID id, String name) {
+    }
+
+    public record PlaceProvince(UUID id, String name, List<PlaceTown> towns) {
+    }
+
+    /** A way a parcel can go (switched on): own delivery, Yango, a courier, a bus company's parcel service. Self-collect is not one. */
+    public record PlaceOption(String code, String name, String kind) {
+    }
+
+    public record Places(List<PlaceProvince> provinces, List<PlaceOption> options) {
+    }
+
     /**
      * The price the customer is quoted for one town and option: {@code amount} is what goes on the order. {@code listAmount} is the published
      * price before the free-delivery threshold; {@code priceId} says which published price it came from (null for self-collect).
@@ -74,6 +88,30 @@ public class DeliveryOfferService {
 
     public DeliveryOfferService(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * Where Oriah can deliver and by what, WITHOUT any price (Phase 9): every town and option that is switched on, whether or not a price is published for
+     * it. The website offers only a published price (a customer is never quoted anything else); a delivery agreed by phone may be for a town not priced yet,
+     * and staff must be able to pick it. A province with no active town is left out.
+     */
+    @Transactional(readOnly = true)
+    public Places places() {
+        Map<UUID, PlaceProvince> provinces = new LinkedHashMap<>();
+        jdbc.query("""
+                SELECT p.id AS province_id, p.name AS province_name, t.id AS town_id, t.name AS town_name
+                  FROM town t JOIN province p ON p.id = t.province_id
+                 WHERE t.active
+                 ORDER BY p.position, t.name""",
+                (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                    String provinceName = rs.getString("province_name");
+                    PlaceProvince province = provinces.computeIfAbsent(rs.getObject("province_id", UUID.class),
+                            id -> new PlaceProvince(id, provinceName, new ArrayList<>()));
+                    province.towns().add(new PlaceTown(rs.getObject("town_id", UUID.class), rs.getString("town_name")));
+                });
+        List<PlaceOption> options = jdbc.query("SELECT code, name, kind FROM delivery_option WHERE active ORDER BY position, code",
+                (rs, n) -> new PlaceOption(rs.getString("code"), rs.getString("name"), rs.getString("kind")));
+        return new Places(new ArrayList<>(provinces.values()), options);
     }
 
     /** Every town with at least one offered option, grouped by province; a province with nothing offered is left out. */

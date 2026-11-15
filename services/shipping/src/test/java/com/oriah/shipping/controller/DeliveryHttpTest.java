@@ -83,6 +83,18 @@ class DeliveryHttpTest {
                 .andExpect(status().isCreated()).andReturn();
     }
 
+    @Test
+    @DisplayName("places (Phase 9): a shopper, and a salesperson who holds only SALES_AGENT, may read where Oriah delivers and by what; a packer and a stranger may not")
+    void placesAreForShoppersAndSales() throws Exception {
+        RequestPostProcessor sales = jwt().jwt(j -> j.subject("kc-sam")).authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT"));
+
+        mvc.perform(get(SHOP + "/places").with(shopper())).andExpect(status().isOk()).andExpect(jsonPath("$.provinces").isArray()).andExpect(jsonPath("$.options").isArray());
+        mvc.perform(get(SHOP + "/places").with(sales)).andExpect(status().isOk());
+        mvc.perform(get(SHOP + "/places").with(packer())).andExpect(status().isForbidden());
+        mvc.perform(get(SHOP + "/places")).andExpect(status().isUnauthorized());
+        mvc.perform(get(SHOP + "/towns").with(sales)).andExpect(status().isForbidden());
+    }
+
     // ---------------------------------------------------------------- who may
 
     @Test

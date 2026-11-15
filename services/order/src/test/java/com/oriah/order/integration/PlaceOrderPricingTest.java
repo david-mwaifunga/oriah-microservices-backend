@@ -654,22 +654,24 @@ class PlaceOrderPricingTest {
     }
 
     @Test
-    @DisplayName("the caller cannot name the shipping amount or the total: order prices them itself")
+    @DisplayName("the caller cannot name the shipping amount, a delivery amount or the total, whatever the value: order prices them itself and the request is refused (Phase 9)")
     void theCallerCannotNameTheShippingAmount() throws Exception {
         shippingOffers("OWN_DELIVERY", "125.00", "ZMW");
-        String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
-                + "\"deliveryOption\":\"OWN_DELIVERY\"," + townFields("OWN_DELIVERY") + "\"shippingAmount\":0,\"total\":1.00,"
-                + "\"quoteDigest\":\"" + optionDigest("OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")) + "\","
-                + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
+        for (String field : new String[] {"shippingAmount", "deliveryAmount", "total"}) {
+            for (String value : new String[] {"0", "1.00", "125.00"}) {
+                String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\","
+                        + "\"deliveryOption\":\"OWN_DELIVERY\"," + townFields("OWN_DELIVERY") + "\"" + field + "\":" + value + ","
+                        + "\"quoteDigest\":\"" + optionDigest("OWN_DELIVERY", "125.00", line(VARIANT, 1, "4500.00")) + "\","
+                        + "\"items\":[{\"variantId\":\"" + VARIANT + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
 
-        mvc.perform(post("/api/v1/orders").with(alice())
-                        .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.total").value(4625.00));
+                mvc.perform(post("/api/v1/orders").with(alice())
+                                .contentType(MediaType.APPLICATION_JSON).content(body))
+                        .andExpect(status().isBadRequest())
+                        .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItem(field)));
+            }
+        }
 
-        var row = jdbc.queryForMap("SELECT shipping_amount, total FROM orders");
-        assertThat((BigDecimal) row.get("shipping_amount")).isEqualByComparingTo("125.00");
-        assertThat((BigDecimal) row.get("total")).isEqualByComparingTo("4625.00");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM orders", Integer.class)).as("nothing was placed").isZero();
     }
 
     @Test

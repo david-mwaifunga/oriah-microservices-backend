@@ -55,6 +55,16 @@ public class ShippingController {
         return ResponseEntity.ok(offers.offers());
     }
 
+    @Operation(operationId = "places", summary = "Where Oriah can deliver and by what, with no prices (for staff agreeing a delivery by phone)",
+            description = "Every town and option that is switched on, whether or not a price is published for it. Shoppers are offered only published prices "
+                    + "(`GET /towns`); this is the list a member of staff picks from when a delivery is agreed by phone or WhatsApp. No price appears in it.")
+    @ApiResponse(responseCode = "200", description = "The switched-on towns by province, and the switched-on options")
+    @PreAuthorize("hasAnyRole('USER','SALES_AGENT')")
+    @GetMapping("/places")
+    public ResponseEntity<DeliveryOfferService.Places> places() {
+        return ResponseEntity.ok(offers.places());
+    }
+
     @Operation(operationId = "quote", summary = "The delivery price for one town and option, before paying",
             description = "The amount is what goes on the order. The recipient paying the courier means K0; the free-delivery threshold is judged on the goods "
                     + "after discount. A town not yet priced is `town-not-offered` (the shop prices it first), never `outside the delivery area`.")

@@ -63,11 +63,44 @@ public record ConfirmRequest(
 
         /** The recipient's phone number as typed (+260 97 123 4567, 097 123 4567, 0971234567 ...); checkout and order keep it as +260971234567. */
         @Size(max = 40)
-        String recipientPhone
+        String recipientPhone,
+
+        /**
+         * Never accepted (Phase 9). What delivery costs is the shop's published town price, worked out by shipping and order; an amount sent by a customer
+         * can only be a mistake or an attempt, so it is refused rather than silently ignored. An agreed delivery enters an order only through staff.
+         * Hidden from the contract: it exists so the request can be refused.
+         */
+        @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        java.math.BigDecimal deliveryAmount,
+
+        /**
+         * Never accepted (Phase 9). What delivery costs is the shop's published town price, worked out by shipping and order; an amount sent by a customer
+         * can only be a mistake or an attempt, so it is refused rather than silently ignored. An agreed delivery enters an order only through staff.
+         * Hidden from the contract: it exists so the request can be refused.
+         */
+        @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        java.math.BigDecimal shippingAmount,
+
+        /**
+         * Never accepted (Phase 9). What delivery costs is the shop's published town price, worked out by shipping and order; an amount sent by a customer
+         * can only be a mistake or an attempt, so it is refused rather than silently ignored. An agreed delivery enters an order only through staff.
+         * Hidden from the contract: it exists so the request can be refused.
+         */
+        @jakarta.validation.constraints.Null(message = "a delivery amount cannot be sent: the price comes from the shop")
+        @io.swagger.v3.oas.annotations.media.Schema(hidden = true)
+        java.math.BigDecimal total
 ) implements DeliveryChoice {
 
     /** A confirm with no recipient: self-collect, where nobody is delivered to. */
     public ConfirmRequest(UUID shippingAddressId, String deliveryOption, UUID deliveryTownId, String payer, String quoteDigest) {
-        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, null, null);
+        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, null, null, null, null, null);
+    }
+
+    /** A confirm with a recipient, as every caller but the refusal tests builds it. */
+    public ConfirmRequest(UUID shippingAddressId, String deliveryOption, UUID deliveryTownId, String payer, String quoteDigest, String recipientName,
+                          String recipientPhone) {
+        this(shippingAddressId, deliveryOption, deliveryTownId, payer, quoteDigest, recipientName, recipientPhone, null, null, null);
     }
 }

@@ -165,6 +165,22 @@ class ConfirmErrorContractTest {
     }
 
     @Test
+    @DisplayName("a customer cannot name a delivery amount, a shipping amount or a total, whatever the value (even 0): the charge is always the shop's published town price, never "
+            + "a figure from the customer (Phase 9: an agreed delivery enters only through staff)")
+    void aCustomerCannotNameWhatDeliveryCosts() throws Exception {
+        for (String field : new String[] {"deliveryAmount", "shippingAmount", "total"}) {
+            for (String value : new String[] {"0", "0.00", "1.00", "150.00"}) {
+                confirmWith("{" + ADDRESS + ",\"deliveryOption\":\"OWN_DELIVERY\"," + TOWN + "," + CONTACT + "," + DIGEST + ",\"" + field + "\":" + value + "}")
+                        .andExpect(status().isBadRequest())
+                        .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItem(field)));
+            }
+        }
+        confirmWith("{\"deliveryOption\":\"SELF_COLLECT\"," + DIGEST + ",\"deliveryAmount\":0}")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field").value(Matchers.hasItem("deliveryAmount")));
+    }
+
+    @Test
     @DisplayName("a delivered option without a delivery town is a 400 naming deliveryTownId")
     void aDeliveryNeedsATown() throws Exception {
         // Delivery is priced per town, so a delivered quote must name its

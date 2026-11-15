@@ -115,6 +115,30 @@ class DeliveryOfferServiceTest {
     }
 
     @Test
+    @DisplayName("places (Phase 9): every town and option that is switched on, whether or not a price is published for it, and no price at all: staff agreeing a delivery by phone need the "
+            + "list of where Oriah can send and by what")
+    void placesAreWhatIsSwitchedOnWithNoPrice() {
+        TownView unpriced = freshTown();
+        TownView priced = freshTown();
+        publish(priced, "YANGO", "80.00", true, true);
+        TownView off = freshTown();
+        admin.switchTown(off.id(), false, off.version(), ADMIN);
+        var bus = admin.addOption("Place Bus " + UUID.randomUUID().toString().substring(0, 6), "BUS_PARCEL", ADMIN);
+        var busOff = admin.addOption("Place Off " + UUID.randomUUID().toString().substring(0, 6), "BUS_PARCEL", ADMIN);
+        admin.switchOption(busOff.code(), false, busOff.version(), ADMIN);
+
+        var places = offers.places();
+
+        var towns = places.provinces().stream().flatMap(p -> p.towns().stream()).toList();
+        assertThat(towns).extracting(DeliveryOfferService.PlaceTown::id).contains(unpriced.id(), priced.id()).doesNotContain(off.id());
+        assertThat(places.provinces()).extracting(DeliveryOfferService.PlaceProvince::name).contains("Copperbelt");
+        assertThat(places.options()).extracting(DeliveryOfferService.PlaceOption::code).contains("OWN_DELIVERY", "YANGO", bus.code()).doesNotContain(busOff.code(),
+                "SELF_COLLECT");
+        assertThat(places.options()).filteredOn(o -> o.code().equals("YANGO")).singleElement().satisfies(o -> assertThat(o.kind()).isNotBlank());
+        assertThat(places.toString()).as("no price anywhere").doesNotContain("80.00").doesNotContain("amount");
+    }
+
+    @Test
     @DisplayName("self-collect is always offered, at no charge, outside the town matrix; the free-delivery threshold is shown when it is on")
     void selfCollectAndThreshold() {
         Offers before = offers.offers();
