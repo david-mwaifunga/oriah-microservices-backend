@@ -148,6 +148,7 @@ Postman steps below.
 | Keycloak admin console | http://localhost:7080 | `admin` | `admin` |
 | Staff user — job role `OWNER` (every capability) + `USER` | log in through Postman or the storefront | `maya` | `password` |
 | Packer / driver — job role `DISPATCH` + `USER` (Phase 8; a dev stack needs the Keycloak volume reset to have it) | same | `dave` | `password` |
+| Salesperson — job role `SALES` + `USER` (Phase 9; a dev stack needs the Keycloak volume reset to have it) | same | `sara` | `password` |
 | Customer user — `USER` only | same | `alice` | `password` |
 | Owner placeholder — `OWNER` + `USER`, email `admin@oriah.local` | same | `admin` | temporary `ChangeMeOnFirstLogin!`; must set a new one at first login — use `maya` instead |
 | OAuth client (Postman, scripts, order's own calls to inventory and shipping) | realm `oriah` | `oriah-admin` | secret `oriah-admin-secret` |
@@ -187,7 +188,7 @@ token. The five job roles:
 | `BOOKKEEPER` | `FINANCE_ADMIN`, `COST_VIEWER` |
 
 Shoppers hold `USER`. Today `admin` and `maya` hold `OWNER` + `USER`, `dave`
-holds `DISPATCH` + `USER` (a packer: he reads the work list and the slip, no money),
+holds `DISPATCH` + `USER` (a packer: he reads the work list and the slip, no money), `sara` holds `SALES` + `USER` (a salesperson: she records and reads sales, no cost),
 and `alice` holds `USER` only.
 
 **The machine identity.** `service-account-oriah-admin` is not a person: it is

@@ -3561,6 +3561,28 @@ try {
     throw "sara cannot sign in: the dev user is in keycloak/dev/oriah-users-0.json and reaches Keycloak only after its volume is reset (docs: CLAUDE.md, Keycloak: docker compose rm -sf keycloak postgres-keycloak; docker volume rm default_postgres-keycloak-data; docker compose up -d keycloak; then restart order). $($_.Exception.Message)"
 }
 $saraH = @{ Authorization = "Bearer $saraToken" }
+# A copy of a request body with some fields replaced (a hashtable + a hashtable throws when both name a key).
+function With-Fields($Base, $Over) {
+    $copy = @{} + $Base
+    foreach ($k in $Over.Keys) { $copy[$k] = $Over[$k] }
+    return $copy
+}
+# A recorded order belongs to nobody, so the shopper's read is 404: poll the recorded door as staff until it has the status.
+function Wait-RecordedStatus($OrderId, [string]$Status, [int]$Seconds = 90) {
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    $last = "no answer"
+    while ($true) {
+        $r = Invoke-Api GET "$recorded/$OrderId" $mayaH $null
+        if ($r.Status -eq 200) {
+            $last = "$($r.Json.status)"
+            if ($last -ceq $Status) { return $r.Json }
+        }
+        else { $last = "HTTP $($r.Status)" }
+        if ((Get-Date) -gt $deadline) { break }
+        Start-Sleep -Seconds 1
+    }
+    Fail "recorded order $OrderId is '$last' $Seconds s later, expected '$Status'. $(Get-SalesNote $OrderId)"
+}
 function Get-OrderColumn($OrderId, [string]$Column) {
     $rows = Invoke-DockerText @("exec", "oriah-postgres-order", "psql", "-U", "orders", "-d", "orders", "-t", "-A", "-c", "SELECT coalesce($Column::text, '') FROM orders WHERE id = '$OrderId'")
     return (@($rows | Where-Object { $_ -match "\S" }) -join "").Trim()
@@ -3575,9 +3597,9 @@ $p9Total = [decimal]$p9Preview.Json.total
 Require ($p9Total -gt 0) "the preview total is K$p9Total"
 $p9Body = @{ kind = "LIVE_PHONE"; caller = @{ name = "Smoke Caller"; phone = "097 123 4567" }; lines = $p9Line; delivery = @{ mode = "PICKUP" }; expectedTotal = $p9Total }
 $p9KeyA = New-Key "smoke-phone-a"
-$wrongTotal = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }) ($p9Body + @{ expectedTotal = ($p9Total + 1) })
+$wrongTotal = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }) (With-Fields $p9Body @{ expectedTotal = ($p9Total + 1) })
 Require (($wrongTotal.Status -eq 409) -and "$($wrongTotal.Json.type)".EndsWith("/total-differs") -and (Same-Money $wrongTotal.Json.total "$p9Total")) "recording with the wrong total gave $($wrongTotal.Status) '$($wrongTotal.Json.type)', expected 409 total-differs naming K$p9Total"
-$typed = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-typed") }) ($p9Body + @{ total = 1.00 })
+$typed = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-typed") }) (With-Fields $p9Body @{ total = 1.00 })
 Require ($typed.Status -eq 400) "a body that types the total gave $($typed.Status), expected 400: no price, discount or total can be typed"
 $p9A = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }) $p9Body
 Assert-Reply $p9A "recording the phone sale" 201
@@ -3588,7 +3610,7 @@ $p9Repeat = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyA }
 Require (($p9Repeat.Status -eq 200) -and ("$($p9Repeat.Json.id)" -ceq $p9AId) -and ($p9Repeat.Json.replay -eq $true)) "the same request again gave $($p9Repeat.Status), expected 200 with the same order"
 $p9Cash = Confirm-Money @{ orderId = $p9AId; method = "CASH"; gross = $p9Total } (New-Key "smoke-phone-a-money")
 Assert-Reply $p9Cash "staff confirming the phone sale's cash" 201
-Wait-OrderStatus $p9AId "PAID" 90 | Out-Null
+Wait-RecordedStatus $p9AId "PAID" 90 | Out-Null
 $p9Receipt = Invoke-Api GET "$recorded/$p9AId/receipt" $mayaH $null
 Assert-Reply $p9Receipt "the receipt of the phone sale" 200
 Require (("$($p9Receipt.Json.receiptNumber)" -cmatch '^OR-\d{6}$') -and ("$($p9Receipt.Json.notice)" -match "not a tax invoice") -and (-not ("$($p9Receipt.Json | ConvertTo-Json -Compress -Depth 6)" -match "260|971234567"))) "the receipt reads $($p9Receipt.Json | ConvertTo-Json -Compress -Depth 6): our number, no tax invoice, and no phone number"
@@ -3606,7 +3628,7 @@ Assert-Reply $p9B "recording the agreed delivery" 201
 $p9BId = "$($p9B.Json.id)"
 Require ((Same-Money $p9B.Json.delivery.amount "60.00") -and ("$($p9B.Json.delivery.source)" -ceq "AGREED") -and (Same-Money $p9B.Json.total "$($p9Total + 60.00)")) "the agreed delivery reads $($p9B.Json | ConvertTo-Json -Compress -Depth 5)"
 Require (((Get-OrderColumn $p9BId "delivery_agreed_amount") -match '^60') -and ((Get-OrderColumn $p9BId "delivery_price_source") -ceq "AGREED")) "the agreed amount was not kept"
-$ownRecipientPays = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-b2") }) ($p9AgreedBody + @{ delivery = @{ mode = "AGREED"; optionCode = "OWN_DELIVERY"; townId = $townId; payer = "RECIPIENT_PAYS" } })
+$ownRecipientPays = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-b2") }) (With-Fields $p9AgreedBody @{ delivery = @{ mode = "AGREED"; optionCode = "OWN_DELIVERY"; townId = $townId; payer = "RECIPIENT_PAYS" } })
 Require (($ownRecipientPays.Status -eq 400) -and "$($ownRecipientPays.Json.type)".EndsWith("/invalid-delivery")) "own delivery paid by the recipient gave $($ownRecipientPays.Status) '$($ownRecipientPays.Json.type)', expected 400 invalid-delivery (no driver cash float)"
 $shopperAmount = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-shopper-amount") }) @{ deliveryOption = "SELF_COLLECT"; quoteDigest = ("0" * 64); deliveryAmount = 0.00 }
 Require ($shopperAmount.Status -eq 400) "a customer confirm carrying a delivery amount gave $($shopperAmount.Status), expected 400"
@@ -3616,7 +3638,7 @@ Require ((Same-Money $waived.Json.shippingAmount "0.00") -and (Same-Money $waive
 Require (((Get-OrderColumn $p9BId "delivery_agreed_amount") -match '^60') -and ((Get-OrderColumn $p9BId "delivery_price_source") -ceq "AGREED")) "the waiver changed the agreement that was made by phone"
 $p9BCash = Confirm-Money @{ orderId = $p9BId; method = "CASH"; gross = $p9Total } (New-Key "smoke-phone-b-money")
 Assert-Reply $p9BCash "staff confirming the waived total" 201
-Wait-OrderStatus $p9BId "PAID" 90 | Out-Null
+Wait-RecordedStatus $p9BId "PAID" 90 | Out-Null
 Assert-Reply (Invoke-Api POST "$gw/admin/orders/$p9BId/dispatch/pack" $mayaH @{}) "packing the phone delivery" 200
 $p9Ship = Invoke-Api POST "$gw/admin/orders/$p9BId/dispatch/ship" $mayaH @{}
 Assert-Reply $p9Ship "shipping the phone delivery (own delivery: no fare)" 200
@@ -3631,7 +3653,7 @@ $paperAt = (Get-Date).ToUniversalTime().AddHours(-48)
 $p9KeyC = New-Key "smoke-phone-c"
 $p9PaperBody = @{ kind = "LATE_PAPER"; caller = @{ name = "Natasha Phiri"; phone = "0966 000 222" }; lines = $p9Line; delivery = @{ mode = "PICKUP" }; occurredAt = (Format-Instant $paperAt)
                   backdateReason = "written on paper in the shop and typed in on Monday"; slipReference = "SMOKE-$saleTag"; expectedTotal = $p9Total }
-$noReason = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-c0") }) ($p9PaperBody + @{ backdateReason = $null })
+$noReason = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-phone-c0") }) (With-Fields $p9PaperBody @{ backdateReason = $null })
 Require (($noReason.Status -eq 400) -and "$($noReason.Json.type)".EndsWith("/backdate-reason-required")) "a paper sale with no reason gave $($noReason.Status) '$($noReason.Json.type)', expected 400 backdate-reason-required"
 $p9C = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = $p9KeyC }) $p9PaperBody
 Assert-Reply $p9C "recording the paper sale" 201
@@ -3645,9 +3667,9 @@ $voidWrong = Invoke-Api POST "$gw/admin/payments/confirmations/$($wrongDay.Json.
 Assert-Reply $voidWrong "voiding the wrongly dated confirmation" 200
 $rightDay = Confirm-Money @{ orderId = $p9CId; method = "CASH"; gross = $p9Total; arrivedAt = (Format-Instant $paperAt) } (New-Key "smoke-phone-c-rightday")
 Assert-Reply $rightDay "staff confirming the paper sale's cash on the day of the sale" 201
-Wait-OrderStatus $p9CId "PAID" 90 | Out-Null
+Wait-RecordedStatus $p9CId "PAID" 90 | Out-Null
 Require (Near-Instant (ConvertTo-UtcInstant (Invoke-Api GET "$recorded/$p9CId" $mayaH $null).Json.paidAt) $paperAt 2) "the paper sale should count on the day the money arrived, which is the day of the sale"
-$tooOld = Invoke-Api POST $recorded ($saraH + @{ "Idempotency-Key" = (New-Key "smoke-phone-c-old") }) ($p9PaperBody + @{ occurredAt = (Format-Instant ((Get-Date).ToUniversalTime().AddDays(-10))) })
+$tooOld = Invoke-Api POST $recorded ($saraH + @{ "Idempotency-Key" = (New-Key "smoke-phone-c-old") }) (With-Fields $p9PaperBody @{ occurredAt = (Format-Instant ((Get-Date).ToUniversalTime().AddDays(-10))) })
 Require ($tooOld.Status -eq 403) "a paper sale 10 days old recorded by sara (no BACKDATE_SALE) gave $($tooOld.Status), expected 403"
 Write-Host "    a paper sale 48 hours old recorded at its own date with its reason and slip; money keyed for another day HELD and never applied, voided and keyed again with the day of the sale -> PAID on that day; sara is refused a sale 10 days old" -ForegroundColor Gray
 
@@ -3656,7 +3678,7 @@ $p9KeyD = New-Key "smoke-phone-d"
 $p9D = Invoke-Api POST $recorded ($saraH + @{ "Idempotency-Key" = $p9KeyD }) $p9Body
 Assert-Reply $p9D "sara recording a phone sale" 201
 $p9DId = "$($p9D.Json.id)"
-$saraList = Invoke-Api GET "$recorded?q=Smoke" $saraH $null
+$saraList = Invoke-Api GET "${recorded}?q=Smoke" $saraH $null
 Assert-Reply $saraList "sara's list of recorded orders" 200
 Require (@(@($saraList.Json.content) | Where-Object { "$($_.id)" -ceq $p9DId }).Count -eq 1) "sara's list should hold the order she recorded"
 $saraText = (@($p9D.Json, $saraList.Json, (Invoke-Api GET "$recorded/$p9DId" $saraH $null).Json) | ForEach-Object { $_ | ConvertTo-Json -Depth 8 -Compress }) -join " "

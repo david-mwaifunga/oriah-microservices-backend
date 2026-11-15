@@ -20,6 +20,55 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-15 (MVP_PLAN Phase 9 complete: phone orders)
+
+Phase 9 of `MVP_PLAN.md` is built, tested, reviewed by Codex (design) and committed (**not pushed**). Proved live on the full container stack on 2026-11-15: the smoke test (new step 20h) passed on images rebuilt from the final committed code (catalog 7b7e308, order, checkout, shipping, notification, payment, inventory, gateway); its first runs failed only on bugs in the new script block (a hashtable merge, polling a phone order through the shopper's read, a question mark swallowed by a variable name), and no ERROR-level line appeared in any service log. **Staff can now record a sale for a caller with no account, live or from paper,
+and the books stay right: priced at the sale's own day, never edited, no cost or margin to the salesperson.** `oriah-web` was not changed (`docs/FRONTEND_WORK.md` lists what it must do).
+
+| What | Commits (`oriah-api`) |
+|---|---|
+| One 72-hour setting (payment reads order's), notification and the shared log handler made ready | `fa3ca72` |
+| The date and delivery rules (pure, 23 mutants killed), shipping's places read, a customer can never send a delivery amount | `4f96943` |
+| The database and the events for an order with no owner (V13) | `4e3923a` |
+| Recording a live or paper sale: pricing, idempotency, hold, tests | `4352f91` |
+| Money for a paper sale on the wrong day is held (`WRONG_DATE`: order V14, payment V7) | `6f70b20` |
+| Reading, searching, the receipt, cancelling, the box picker (catalog) | `99d23b0` |
+| The gateway paths and the dev salesperson `sara` | `e5e3734` |
+| Codex's review: a hidden `discount` refused; the owner's historical price (catalog V7, `BACKDATE_SALE` + reason) | `40ae945`, `7b7e308` |
+| 9.13 The smoke test (20h), error goldens, Postman, the plan, the frontend handover, CLAUDE.md, README, ARCHITECTURE, LOCAL_DEV, this entry | the closing commit |
+
+### How it works, in plain words
+
+- **Two kinds of sale, chosen by the person.** *Taking an order now* is dated now. *A sale from paper* is dated the day it really happened, however old, always with a reason, and is priced with the price and the
+  promotion of that day. Beyond 72 hours only the owner can key it. The server prices everything; the person types no price, discount or total, and reads the total to the caller, who is then charged exactly that.
+- **No account, no owner.** The order belongs to nobody but records who typed it, who the caller is and how to reach them. The database refuses a website order with no owner. A shopper can never see or touch a
+  phone order.
+- **A delivery agreed by phone** is the order's charge, kept as agreed; a customer can never send one (the shop's website price is the only price a customer gets); the owner can still waive it. Oriah's own driver is
+  never paid by the recipient. If the agreed price differs from the shop's own quote, a reason is written.
+- **Paper sales and the money's day.** A sale counts on the day it happened. If the money is keyed for another day, the shop holds it (nothing is sold, nothing is lost) and staff void it and key it again with the
+  right day, so a mistyped date cannot move a sale's profit into another month.
+- **What a salesperson sees** is built for them: what the caller owes, the discount, the delivery, the receipt (ours, never a tax invoice); never cost, margin or who did what. The caller's phone and address are
+  shown while the order is alive and hidden once it is delivered.
+
+### What Codex found, and what was done
+
+- **Design review: NOT SOUND, 7 serious findings**, every one adopted in r4 (see the plan): the one-hour guess became an explicit choice; mis-dated money is held; K0.00 orders are refused; automatic cancelling and the
+  erasure of a caller's details (which would have destroyed the only contact for money still owed) were cut; the duplicate guard, the slip's locks and a published-price column were cut.
+- **Code review: NOT SOUND, 5 findings.** (1) Hold money for a LIVE sale on another day too: dismissed (a live sale follows the money, the client's Q22; only paper is held). (2) No way for the owner to give a
+  piece a price from before its first price: built (`BACKDATE_SALE` + a written reason adds a historical price, today's price untouched; catalog V7). (3) A promotion by category is judged on the piece's category today:
+  a known limit, recorded. (4) Deploy payment before order (the new `WRONG_DATE` reason): recorded. (5) A `discount` sent by a shopper was silently ignored: now refused 400.
+
+### What is still open
+
+- An as-of promotion by category uses the piece's category today, so a sale made while it sat in another category can lose (or gain) a discount; product and shop-wide promotions are exact. Fix: version category membership.
+- Roll out payment (V7) before order (V14) wherever they are deployed apart.
+- A paper sale of a piece a web shopper has since held or paid for (inventory says insufficient stock; a paid collision is a Phase 12 return).
+- Phase 11 messages the caller from the phone kept on the order (never from an event) after an ORDER_ADMIN correction of a caller's details exists. Phase 10 books revenue by `paid_at` and flags a month changed by a
+  late sale. Phase 12's refund for a buyer with no account uses the caller kept on the order.
+- Still open from Phase 8: payment void and reference reuse while an order may have consumed the payment (a payment-to-order handshake).
+
+---
+
 ## CURRENT STATE — 2026-11-15 (MVP_PLAN Phase 8 complete: deliver)
 
 Phase 8 of `MVP_PLAN.md` is built, tested, reviewed by Codex (design and code) and committed (**not pushed**). Proved live on the full container stack on 2026-11-15: the smoke test passed on images rebuilt from the final committed code (`fbc093a`); its first run reached step 20e and failed only on lot pins that the new dispatch sale had moved (fixed in the script), and no ERROR-level line appeared in the order, checkout, inventory, catalog, shipping, notification or gateway logs. The OpenAPI gate is additions-only (no new waiver), six error goldens were added and Postman was regenerated. **A paid order can now be packed, sent and

@@ -611,29 +611,60 @@ packing and dispatch dates? 6. Wording of the pickup notices. 7. Own delivery on
 
 ### Phase 9 — Phone orders
 
-**Admin screens**
+**Built (backend, 2026-11-15); the frontend is not changed.** Staff (`SALES_AGENT`: job role `SALES`, and the owner and manager) record a sale taken by phone, WhatsApp or on paper for a caller
+with no account. All paths are `/api/v1/admin/orders/recorded...`; a **salesperson reads no landed cost or margin (Q29)**: never call `/admin/costs/**`, `/admin/pricing/**` or
+`/admin/orders/{id}` (ORDER_ADMIN) from these screens, and do not rely on hiding: the API refuses.
 
-- Record a phone order (SALES_AGENT, /api/v1/admin/orders/recorded/**). It captures the caller and recipient details (name, phone, delivery address or town), with channel PHONE and no account; recorded_by is the signed-in person.
-- The server prices the lines and promotions apply by themselves. There is no discount box and no typed price (Q12).
-- Delivery is either the published town price or a delivery agreed by phone or WhatsApp. The agreed one is keyed with its town, option and payer through the SALES_AGENT-only command and becomes the order's fixed delivery snapshot.
-- SALES screens show no landed cost or margin (Q29) and never call /admin/costs/**. The API enforces this; the screen must not rely on hiding.
-- Payment goes through Phase 7's confirmation, and the order 'keeps the price and promotion of the moment it was placed'.
-- The caller has no account to see a receipt, so staff must be able to view the order's receipt (our number, no VAT line) to pass it on. The admin order list shows each order's channel and, for a PHONE order, the caller's name. A SALES person cannot read /api/v1/admin/orders/** (ORDER_ADMIN), so the recorded order and its receipt need a read under /api/v1/admin/orders/recorded/**, which the plan does not name.
-- The box is proposed from the product's default; if it has run out, the screen says so and the person picks another (§4.2).
-- A phone order holds its pieces like any order: 10 minutes, and the 24-hour extension is written for 'a website customer' who submits a reference. Settle how long a phone order is held while the caller pays.
+**The "record a sale" screen**
 
-**Storefront**
+- **Choose the kind first:** *Taking an order now* (`LIVE_PHONE`) or *Typing in a sale from paper* (`LATE_PAPER`). For paper: the date it happened (`occurredAt`, any age; a date more than 72 hours
+  ago is 403 unless the person holds `BACKDATE_SALE`, so show it as "ask the owner"), **a reason (5 to 200 characters, always)** and the slip number if the paper has one.
+- **Caller:** name (always), phone (required for a delivery, optional for a counter pickup; typed any Zambian way: `097 123 4567`, `+260 97 ...`). **Lines:** a piece and a quantity each, and
+  the box: the product's default unless the person picks another from `GET /recorded/boxes` (`[{variantId, title, variantTitle, sku}]`, no price). **Delivery:** a pickup; or a delivery,
+  where the person picks an option and a town from `GET /recorded/delivery-places` (`{provinces[{id, name, towns[{id, name}]}], options[{code, name, kind}]}`, no prices), says who pays the courier
+  (`ORIAH_COLLECTS` or `RECIPIENT_PAYS`) and, for Oriah's charge, types the amount **agreed by phone** (`delivery.mode: "AGREED"`, `agreedAmount`); the shop's own published price is `mode: "PUBLISHED"`
+  (a live sale only). Own delivery can never be recipient-paid (the screen should not offer it). The recipient defaults to the caller; **the address line is required for a delivery**.
+- **There is no price, discount or total box (Q12).** Call `POST /recorded/preview` with the same body (the caller may be left out) as the person fills it in: it answers `{kind, occurredAt,
+  currency, lines[{title, quantity, unitPrice, discountPerPiece, lineTotal}], subtotal, discountAmount, delivery, total}`. Show the total, let the person read it to the caller, and send it as
+  `expectedTotal` when recording: **a different total is 409 `total-differs`** (it names the real total: re-read it to the caller). Promotions apply by themselves, priced as of the sale's own day.
+- **Record** with `POST /recorded` and a required `Idempotency-Key` (a UUID made when the form opens, **kept if the request is repeated**: a repeat is 200 with the same order). 201 answers the
+  order (`status CREATED`, `holdExpiresAt` ten minutes on): tell the person **to confirm the money now** (the existing payment confirmation screen, `POST /api/v1/admin/payments/confirmations`: cash, MTN,
+  Airtel, Zamtel or bank, with the day the money arrived). Money confirmed after the hold lapsed still pays the order if its pieces are free; if not, it is held for the caller.
+- **Errors, all with a plain `detail`:** 400 `invalid-contact` (a name or phone that cannot be read), `invalid-delivery`, `delivery-reason-required` (an agreed amount different from the shop's own quote needs
+  `agreedReason`, 5 to 200 characters, higher or lower), `invalid-occurred-at`, `backdate-reason-required`; 403 a paper sale older than 72 hours without `BACKDATE_SALE`; 409 `total-differs`,
+  `zero-total-not-supported` (a sale that comes to K0.00 cannot be recorded: a gift goes through the stock give-away screen), `no-price-at-date` (the piece had no price on that date: it cannot be recorded
+  at that date, **say so and name the piece; a sale is never priced at today's price**), `late-sale-delivery-must-be-agreed`, `delivery-place-not-offered` (the town or option is not on the list: **the owner
+  adds it**), `town-not-offered`, `insufficient-stock` (names each short piece or box: pick another box), `idempotency-key-reused`; 503 catalog, shipping or inventory did not answer (nothing was saved: try again).
 
-- None: 'Guest checkout stays out of scope', and online buyers still need an account (assumption 24). Checkout must keep never sending a delivery amount: 'a customer confirm carrying a delivery amount is refused'.
+**After recording**
+
+- **Find an order:** `GET /recorded?q=&status=&page=&size=` (`q`: the caller's phone in any spelling, a receipt number `OR-nnnnnn`, a slip number, or the first 3+ letters of a name; at most 50 a page,
+  newest first; a row is `{id, status, kind, occurredAt, placedAt, callerName, callerPhone (masked), total, currency, receiptNumber}`).
+- **One order:** `GET /recorded/{id}`: caller, recipient and address **while the order is alive** (a hold that lapsed still needs its caller rung: show the phone), lines, discount, delivery and its
+  source (`PUBLISHED` or `AGREED`), total, `receiptNumber`/`paidAt` once paid, and `dispatch{packedAt, dispatchedAt, deliveredAt}`; after DELIVERED the phone is masked and the recipient and address are
+  gone. **Show the channel and the caller's name in the admin order list** (`GET /api/v1/admin/orders` and `SalesQueues` gain `channel` for ORDER_ADMIN; the recorded list is the salesperson's own).
+- **The receipt for the caller:** `GET /recorded/{id}/receipt` (409 `receipt-not-ready` until paid): `{receiptNumber, paidAt, callerName, currency, lines[...], subtotal, discountAmount, delivery{optionName,
+  townName, payer, amount, note}, total, notice}`. It is OUR receipt, **never a tax invoice, no VAT line** (show the `notice`), has the caller's name only (no phone or street: it may be forwarded) and, for a
+  courier the recipient pays, says "you pay the courier directly: K0.00 on this receipt". Telling the caller it is ready is **manual until Phase 11**: staff ring them from the order's phone.
+- **Cancel** while it waits for money: `POST /recorded/{id}/cancel` (a paid order is 409: a paid sale is undone by a return, Phase 12). A lapsed (EXPIRED) order is NOT cancelled by sales: it may still be paid.
+- **A paper sale's money must carry the day of the sale.** If staff confirm it on another day, payment HOLDS it (`WRONG_DATE`: it appears in held money and in the settlements list) and the order is not paid:
+  **void that confirmation and key the money again with `arrivedAt` = the day of the sale** (the person confirming a sale older than 72 hours needs `BACKDATE_SALE`).
+- The packer's work list and slip (Phase 8) work for a phone order as for any: a pickup's slip carries the **caller's name** for the person to hand it to, never the phone.
 
 **What it breaks in oriah-web today**
 
-- Since Phase 0 the admin gate lets a SALES person in (`isStaff`: any of the 14 capabilities). What remains is that they see only 'Dashboard' in the sidebar, and every dashboard card except the product count reads 'Unavailable'.
-- No Playwright spec breaks. OrderSchema already tolerates a missing keycloakId.
+- **A `PHONE` order has no `keycloakId`:** `OrderSchema` must tolerate it (it already tolerates a missing one) and the admin order screens must show `channel`. A shopper never sees a phone order.
+- **Checkout must keep never sending a delivery amount:** a confirm body carrying `deliveryAmount`, `shippingAmount` or `total` is now **400** (it was ignored). Declare no such field.
+- No Playwright spec reaches the recorded-order screens.
 
-**Needs from the owner**
+**Needs from the owner** (none blocks the build; the plan lists them with the reasons)
 
-- Who takes phone orders once someone is hired with the SALES job role. Today the owner holds OWNER and does everything.
+1. Must a caller give a name and phone? (built: a name always; a phone for a delivery, optional for a pickup.) 2. May staff sell a piece that is priced but **not shown on the website** (built: yes, the staff
+price read ignores publication)? 3. How long may a late payment still be accepted, and when may a caller's details be erased (built: no limit on payment and no erasure: one decision, not two)?
+4. A paper sale older than the price's start: the owner (`BACKDATE_SALE`) can add an earlier price with a reason (built; `backdateReason` on the price save, a historical row): is that the way you want it? 5. A paper sale of a piece a web shopper has
+since held or paid for: who wins, and what is the shopper told? 6. Do paper receipts carry numbers (the slip is optional for now)? 7. Are K0.00 sales ever legitimate (refused now)? 8. May staff agree a delivery below or above the
+published price (built: yes, with a written reason either way)? 9. Do you sell over a counter or at a market (a "walk-in" label)? 10. May a phone order by a customer who has an account stay out of "My orders"?
+11. Who rings the caller when the parcel is ready, until messages exist? 12. Who adds a town or a bus-company option that is not on the list?
 
 ### Phase 10 — Finance: expenses, the ledger, the profit report
 

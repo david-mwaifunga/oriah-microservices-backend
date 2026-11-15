@@ -2243,6 +2243,20 @@ paid order cancelled before it gets its delivery charge back in full (Phase 12).
 
 ### Phase 9 — Phone orders
 
+> **Status: built, 2026-11-15.** Committed in `oriah-api` (not pushed), in slices 9.0 to 9.13: the pure rules `SaleDating` and `AgreedDelivery` and the one 72-hour setting (`fa3ca72`, `4f96943`),
+> notification and the shared handler made ready (`fa3ca72`), shipping's places read and the refusal of any delivery amount from a customer (`4f96943`), V13 and the events (`4e3923a`), recording a live
+> or paper sale (`4352f91`), `WRONG_DATE` (`6f70b20`), reads, receipt, cancel and the box picker (`99d23b0`), the gateway and `sara` (`e5e3734`), and the closing commit (smoke, goldens, Postman, these
+> documents). The design is `../.codex-tmp/plan-p9-r4.md` (r2 is a 153-agent panel's design, r3 decides its 11 completeness gaps, r4 folds in **Codex's design review: NOT SOUND, 7 P1**, all adopted).
+> Proved live on the full container stack on 2026-11-15: the smoke test (new step 20h) passed on images rebuilt from the final committed code (catalog 7b7e308, order, checkout, shipping, notification, payment, inventory, gateway); its first runs failed only on bugs in the new script block (a hashtable merge, polling a phone order through the shopper's read, a question mark swallowed by a variable name), and no ERROR-level line appeared in any service log.
+>
+> **What it delivers.** Sales staff record a sale for a caller with no account, live (priced now) or from paper (priced at its own day, always with a reason), the server prices it and the person confirms the
+> total they read out; a delivery agreed by phone is the order's charge, written once, and a customer can never send one; a salesperson reads no cost or margin; the receipt is ours, never a tax invoice.
+> **What Codex changed:** an explicit LIVE/LATE kind instead of a one-hour guess; money for a paper sale on another day is **held** (`WRONG_DATE`), never applied; K0.00 phone orders are refused; five pieces of
+> over-engineering were cut (a duplicate guard, the slip's locks, a published-price column, a retention sweep with automatic cancellation, a one-hour margin inside the 72). Its **code review** (NOT SOUND, 5 findings)
+> added the owner's historical-price remedy (`BACKDATE_SALE` + reason, catalog V7) and the refusal of a hidden `discount`. **Not built:** versioned category membership for as-of promotions (a historical category promotion
+> uses today's categories); a paper sale against a web shopper's hold; notification of the caller (Phase 11); walk-in and counter channels. Mutation checks: the pure rules and the entity (every mutant killed
+> or shown equivalent) and the record, pricing and read paths.
+
 Admin records an order for a caller with no account. `SALES_AGENT` role.
 Guest checkout stays out of scope.
 

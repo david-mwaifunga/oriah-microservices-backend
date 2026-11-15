@@ -901,7 +901,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"unitPrice\": 0.0,\n  \"currency\": \"\",\n  \"effectiveFrom\": \"2026-11-08T10:00:00Z\",\n  \"belowCostReason\": \"\",\n  \"acknowledgedFloor\": 0.0,\n  \"expectedPriceId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "raw": "{\n  \"unitPrice\": 0.0,\n  \"currency\": \"\",\n  \"effectiveFrom\": \"2026-11-08T10:00:00Z\",\n  \"belowCostReason\": \"\",\n  \"acknowledgedFloor\": 0.0,\n  \"expectedPriceId\": \"00000000-0000-0000-0000-000000000000\",\n  \"backdateReason\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1378,6 +1378,29 @@
               }
             },
             "description": "**Not routed by the gateway** -- internal to the services, so this calls catalog directly on port 8081.\n\nInternal. Read-only despite being a POST. One entry per requested id, in request order: found = false for an id that is no variant. A deleted product's variant is found and flagged productDeleted. Identity only, never a price."
+          }
+        },
+        {
+          "name": "The packaging a sale can go out in",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/admin/variants/packaging",
+              "host": [
+                "{{catalogUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "variants",
+                "packaging"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "**Not routed by the gateway** -- internal to the services, so this calls catalog directly on port 8081.\n\nInternal. Every active variant of a packaging product that is not deleted, by name and SKU. Identity only, never a price or a cost."
           }
         },
         {
@@ -3290,6 +3313,266 @@
           }
         },
         {
+          "name": "Recorded orders, newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "`q` finds by the caller's phone in any spelling (exact), a receipt number, a slip number (exact) or a name (a prefix of three letters or more); `status` narrows. At most 50 a page. A phone is masked in the list."
+          }
+        },
+        {
+          "name": "Record a sale for a caller with no account, and hold its pieces",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kind\": \"LIVE_PHONE\",\n  \"caller\": {\n    \"name\": \"\",\n    \"phone\": \"\"\n  },\n  \"lines\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1,\n      \"boxVariantId\": \"00000000-0000-0000-0000-000000000000\"\n    }\n  ],\n  \"delivery\": {\n    \"recipientName\": \"\",\n    \"recipientPhone\": \"\",\n    \"address\": {\n      \"line1\": \"\",\n      \"line2\": \"\",\n      \"city\": \"\",\n      \"state\": \"\",\n      \"postalCode\": \"\",\n      \"country\": \"\"\n    },\n    \"optionName\": \"\",\n    \"townName\": \"\"\n  },\n  \"recipient\": {\n    \"name\": \"\",\n    \"phone\": \"\"\n  },\n  \"address\": {\n    \"line1\": \"\",\n    \"line2\": \"\",\n    \"city\": \"\",\n    \"state\": \"\",\n    \"postalCode\": \"\",\n    \"country\": \"\"\n  },\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\",\n  \"slipReference\": \"\",\n  \"expectedTotal\": 0.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Staff say who is buying, what, how it goes and (for a paper sale) when; the server dates and prices everything itself (no price, discount or total can be typed) and the person confirms the total they read to the caller in `expectedTotal`. A repeat with the same `Idempotency-Key` and request is the same order (200); the pieces are held for ten minutes, and payment is the staff confirmation of money (`POST /api/v1/admin/payments/confirmations`)."
+          }
+        },
+        {
+          "name": "The boxes a sale can go out in",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded/boxes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded",
+                "boxes"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Catalog's packaging, by name and SKU (no price): what a salesperson picks from when the product's own box has run out. Read with the person's token."
+          }
+        },
+        {
+          "name": "Where Oriah can deliver and by what, with no price",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded/delivery-places",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded",
+                "delivery-places"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Shipping's own list of the towns and options that are switched on: what a salesperson picks from when a delivery is agreed by phone."
+          }
+        },
+        {
+          "name": "Price a sale to read the total to the caller, writing and holding nothing",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded",
+                "preview"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"kind\": \"LIVE_PHONE\",\n  \"caller\": {\n    \"name\": \"\",\n    \"phone\": \"\"\n  },\n  \"lines\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1,\n      \"boxVariantId\": \"00000000-0000-0000-0000-000000000000\"\n    }\n  ],\n  \"delivery\": {\n    \"recipientName\": \"\",\n    \"recipientPhone\": \"\",\n    \"address\": {\n      \"line1\": \"\",\n      \"line2\": \"\",\n      \"city\": \"\",\n      \"state\": \"\",\n      \"postalCode\": \"\",\n      \"country\": \"\"\n    },\n    \"optionName\": \"\",\n    \"townName\": \"\"\n  },\n  \"recipient\": {\n    \"name\": \"\",\n    \"phone\": \"\"\n  },\n  \"address\": {\n    \"line1\": \"\",\n    \"line2\": \"\",\n    \"city\": \"\",\n    \"state\": \"\",\n    \"postalCode\": \"\",\n    \"country\": \"\"\n  },\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\",\n  \"slipReference\": \"\",\n  \"expectedTotal\": 0.0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The same pricing as recording, with no key, no hold and no personal data needed. The `expectedTotal` of the body is ignored here."
+          }
+        },
+        {
+          "name": "One recorded order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "The caller's phone and the parcel's address are shown while the order is alive and withheld once it is delivered. A web order is 404."
+          }
+        },
+        {
+          "name": "Cancel a recorded order that is waiting for money",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded/:id/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded",
+                ":id",
+                "cancel"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Its hold goes and the recipient and address are forgotten; the caller is kept. A paid order is 409 (a paid sale is undone by a return, never a status change)."
+          }
+        },
+        {
+          "name": "The receipt to give the caller",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/recorded/:id/receipt",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "recorded",
+                ":id",
+                "receipt"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Ours, never a tax invoice, with no VAT line: the receipt number, the day it was paid, the caller's name only, every line and the total."
+          }
+        },
+        {
           "name": "Confirmed money that has not paid its sale",
           "request": {
             "method": "GET",
@@ -4546,6 +4829,28 @@
               "variable": []
             },
             "description": ""
+          }
+        },
+        {
+          "name": "Where Oriah can deliver and by what, with no prices (for staff agreeing a delivery by phone)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/shipping/places",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "shipping",
+                "places"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Every town and option that is switched on, whether or not a price is published for it. Shoppers are offered only published prices (`GET /towns`); this is the list a member of staff picks from when a delivery is agreed by phone or WhatsApp. No price appears in it."
           }
         },
         {

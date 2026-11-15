@@ -6,8 +6,8 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state (2026-11-15: Phase 8 complete; the **"Built in Phase 7 (Sell)"** and **"Built in Phase 8
-(Deliver)"** blocks below are the contract-level detail).
+state (2026-11-15: Phase 9 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
+(Deliver)"** and **"Built in Phase 9 (Phone orders)"** blocks below are the contract-level detail).
 
 ---
 
@@ -429,7 +429,7 @@ money** in `payment` → `order` settles it: the stock is sold and the order is 
   order is ended by the clock when inventory's `reservation.expired` was lost), and `hold-job` and
   `settlement-job`, each with `enabled` and a `delay` of 15000 ms. Payment's own watcher
   (`oriah.payment.watcher`) announces at most `max-emit-attempts` 10 times. Beside them:
-  `oriah.payment.card.enabled` (false) and `oriah.payment.backdate-window` (PT72H).
+  `oriah.payment.card.enabled` (false) and `oriah.payment.backdate-window` (PT72H; **since Phase 9 payment reads `oriah.sales.backdate-window` instead and its own key is gone**).
   `docs/ARCHITECTURE.md` explains each.
 
 ### Built in Phase 8 (Deliver): packing, sending and handing over a paid order
@@ -497,6 +497,72 @@ charge never changes (Q24).** The dispatch record is the line for refunds (Phase
   Phase 10, linked to the order); retention of recipient details; whether a swap after packing needs a re-pack; the payment-void handshake below. **Phase 12** must take `OrderLocks`
   for any cancellation edge and refuse while a swap is in flight. **Phase 10** adds `deliveryWaivedAmount` to `order.paid` as a compatible field.
 
+### Built in Phase 9 (Phone orders): recording a sale for a caller with no account
+
+Design: `../.codex-tmp/plan-p9-r4.md` (r4 wins over r3 over r2: r2 is a 153-agent panel's design, r3 decides its 11 completeness gaps, r4 folds in Codex's review, NOT SOUND
+with 7 P1). Slices 9.0 to 9.12 are code (`fa3ca72` to `e5e3734`, then the Codex-review fixes `40ae945` and `7b7e308`); 9.13 is the live proof and the documents. **Proved live on the full container stack on 2026-11-15: the smoke test (new step 20h) passed on images rebuilt from the final committed code (catalog 7b7e308, order, checkout, shipping, notification, payment, inventory, gateway); its first runs failed only on bugs in the new script block (a hashtable merge, polling a phone order through the shopper's read, a question mark swallowed by a variable name), and no ERROR-level line appeared in any service log.** The frontend is not changed
+(`docs/FRONTEND_WORK.md`, Phase 9, says what it must do).
+
+Staff (`SALES_AGENT`; the owner and the manager hold it too; job role `SALES`) record a sale taken by phone, WhatsApp or on paper for a **caller with no account**. The server dates
+and prices it, holds the pieces like any order, and payment is the existing staff confirmation. **Nobody types a price, a discount or a total (Q12); a customer can never send a delivery
+amount; a salesperson reads no landed cost or margin (Q29).**
+
+- **Two kinds, chosen by the person (never guessed from a date).** `LIVE_PHONE`: happening now, dated now (a typed date is 400). `LATE_PAPER`: written on paper and typed in later: dated at its
+  typed true date **of any age** and priced as of that date (the price AND the promotion of that day, through catalog's staff as-of read with the person's own token); a **reason of 5 to
+  200 characters is always required**; past 72 hours only `BACKDATE_SALE` may key it (403); the optional `slipReference` is a plain column. `SaleDating` (pure) and the one setting
+  `oriah.sales.backdate-window` (PT72H), which **payment now reads too** (it dropped its own `oriah.payment.backdate-window`). A paper sale's delivery is a pickup or an agreed amount, never
+  the published price (that is today's).
+- **The endpoints** (`/api/v1/admin/orders/recorded`, SALES_AGENT, gateway matcher already there): `POST` record (a required `Idempotency-Key`, 1 to 128 characters; 201, or 200 for a repeat);
+  `POST /preview` (no key, no hold, no caller needed: the total to read out); `GET` list (`q` = the caller's phone in any spelling (exact), a receipt number, a slip (exact) or a name
+  prefix of 3+ letters; `status`; at most 50 a page; phones masked); `GET /{id}`; `GET /{id}/receipt`; `POST /{id}/cancel` (CREATED only); `GET /delivery-places` (shipping's list, no price);
+  `GET /boxes` (catalog's packaging, no price). A web order is the same 404 as a missing one on all of them.
+- **The body** (`RecordOrderRequest`): `kind`, `caller{name, phone?}`, `lines[{variantId, quantity, boxVariantId?}]`, `delivery{mode PICKUP|PUBLISHED|AGREED, optionCode, townId, payer,
+  agreedAmount?, agreedReason?}`, `recipient?`, `address?`, `occurredAt?`, `backdateReason?`, `slipReference?`, **`expectedTotal` (required: the total the person read to the caller;
+  a different one is 409 `total-differs` naming the real total and nothing is held)**. `total`, `discount`, `shippingAmount` and a line's `unitPrice` and `discountPerPiece` exist only so a
+  body carrying one is **refused 400** (hidden from the contract). A caller's phone may be missing only for a pickup; for a delivery the recipient defaults to the caller and `address.line1`
+  is required (city defaults to the town). A phone is read the way Zambians type it and kept as `+260971234567` (`DeliveryContact`).
+- **Idempotency.** One key is used once **among recorded orders, whoever recorded them** (V13's unique index); the request is fingerprinted (`RequestHash`: everything that makes the
+  order, not the total read out nor the late reason); the same key and request is 200 with the order as recorded (answered BEFORE any date rule, price or call, so it holds after the price
+  moved), another request is 409 `idempotency-key-reused`. Pricing, shipping and inventory run outside any transaction; the order is written PENDING under one advisory lock, then held
+  (`OrderService.finishPlacement`, extracted unchanged from the web path).
+- **Delivery.** `PICKUP` K0; `PUBLISHED` the shop's town price (a live sale only; 409 `town-not-offered` when none); `AGREED` an amount agreed by phone, for a town and option from shipping's
+  `GET /api/v1/shipping/places` (409 `delivery-place-not-offered`), by `AgreedDelivery` (pure): Oriah's charge is more than K0.00 in whole ngwee up to `oriah.sales.max-fare`, a
+  recipient-paid courier is K0.00, **own delivery is never recipient-paid**; a `agreedReason` of 5 to 200 characters is required **whenever the amount differs from the shop's own quote for that
+  town** (threshold applied; higher or lower). Written once at recording (`delivery_agreed_amount`); `shipping_amount` is the live charge, so the owner's/manager's `DELIVERY_WAIVER`
+  still lowers it and leaves the agreement. A phone order that would cost nothing is 409 `zero-total-not-supported` (payment takes nothing below K0.01).
+- **The model (order V13).** `orders.keycloak_id` is nullable **only for `channel = 'PHONE'`**; the database holds every rule (`orders_owner_by_channel`, `orders_phone_record`,
+  `orders_late_reason`, `orders_agreed_delivery`, `orders_phone_delivery_whole`, `uq_orders_phone_idempotency`, ...). New columns: `channel`, `recorded_by` (from the token), `caller_name`,
+  `caller_phone`, `sale_kind`, `occurred_at` (when it happened; `placed_at` stays when it was keyed), `backdate_reason`, `slip_reference`, `request_hash`, `delivery_price_source`,
+  `delivery_agreed_amount`, `delivery_agreed_reason`. `Order.recorded` builds one; `Order.isOwnedBy` is null-safe, so a shopper's get, cancel or claim of a phone order is 404.
+  **Cancelling flushes the status first, then forgets the recipient and address (the caller stays: money may still arrive and need returning).**
+- **Money for a paper sale on the wrong day is HELD (order V14, payment V7, new reason `WRONG_DATE`).** A sale counts on the day it happened; if staff confirm the money of a `LATE_PAPER`
+  order on another **Lusaka calendar day** (`LusakaDay`), order answers it `UNSETTLED WRONG_DATE`, payment holds it for the caller, and staff **void it and key it again with the right
+  day**. A live sale follows the money (Q22) and is never held for a date.
+- **Events.** `order.created`, `order.shipped` and `order.paid` of a phone order gain a trailing NON_NULL `channel: PHONE` and `occurredAt` (the true sale date); `keycloakId` is null;
+  **nothing personal is in any event or log** (tested). Web events are byte-identical. Notification applies a PHONE event, writes no message and does not dead-letter it (a web order with no
+  owner IS refused); inventory and payment read such events as before (tests). **No new event type.**
+- **What sales staff read.** Allow-lists only (`RecordedOrderView`, `RecordedViews`), never `OrderResponse.forStaff`: no cost, margin, fare, recorder, login, reservation or price id (tested
+  by words). The caller's phone, the recipient and the address are shown while the order is alive (a hold that lapsed still needs its caller rung) and withheld after DELIVERED (the phone is
+  masked, `+2609*****567`). The receipt is **ours, never a tax invoice, no VAT line**, shows the caller's **name only**, every line and a sum that adds up, and says "you pay the courier
+  directly: K0.00 on this receipt" for a recipient-paid courier; 409 `receipt-not-ready` before payment. The packer's slip is unchanged.
+- **Other services.** shipping: `GET /api/v1/shipping/places` (USER or SALES_AGENT; no price). checkout and order: a body carrying `deliveryAmount`, `shippingAmount` or `total` is **400** (it used
+  to be ignored). catalog: `GET /api/v1/admin/variants/packaging` (SALES_AGENT, FULFILMENT_AGENT, CATALOG_ADMIN; identity only). The shared exception handler no longer logs a rejected
+  value, an unreadable body or an illegal argument's message (a caller's name or phone). Dev user `sara` (`SALES` + `USER`, password `password`) in `keycloak/dev/oriah-users-0.json`.
+- **Problem types added** (409 unless noted): `total-differs`, `zero-total-not-supported`, `no-price-at-date`, `late-sale-delivery-must-be-agreed`, `delivery-place-not-offered`,
+  `town-not-offered`, `receipt-not-ready`; 400 `invalid-contact`, `invalid-delivery`, `delivery-reason-required`, `invalid-status`. Settings: `oriah.sales.backdate-window` (shared),
+  `oriah.sales.max-fare` (also the ceiling of an agreed delivery). order's Feign client `catalogAsOf` has its own timeout (0.5 s / 4 s).
+- **Codex's code review (NOT SOUND, 5 findings) and what was done:** (1) `WRONG_DATE` for a LIVE sale too: **dismissed**, a live sale follows the money (Q22) and r4 holds only paper sales;
+  (2) the owner's historical-price remedy was missing: **built** (catalog commit `7b7e308`: `BACKDATE_SALE` + a `backdateReason` of 5 to 200 characters on `PUT .../pricing/variants/{id}/price`
+  with an `effectiveFrom` before the price in force adds a HISTORICAL row, any age, changing nothing about today's price, product or events; catalog V7 `variant_price.backdate_reason`;
+  `PriceHistory.resolve`); (3) **known limit:** an as-of promotion by CATEGORY uses the piece's CURRENT category membership and tree, so a historical category promotion can be lost
+  (or invented) if the product changed category since; a product-level or shop-wide promotion is exact; (4) **rollout order:** deploy payment (V7, the new `WRONG_DATE` reason)
+  BEFORE order (V14, the producer); (5) a body carrying `discount` is now refused 400 as well (checkout and order).
+- **Not built, recorded (plan-p9-r4):** versioned category membership for as-of promotions (above); a paper sale of a piece a web shopper has since held or paid for (inventory's plain `insufficient-stock`; a paid collision is a Phase 12 return); the duplicate guard,
+  the slip's racing locks, the retention sweep, any automatic cancellation of a lapsed order and a published-price column (cut by Codex's review); notification of the caller (Phase 11 reads
+  the phone from order by id, never from an event; an ORDER_ADMIN correction of a caller's details comes first); walk-in and counter channels; amending an order (cancel and record again).
+  **Phase 10:** books revenue by `paid_at`, flags a month whose figures changed after it was reported by a late sale, and reports agreed deliveries against the shop's quote.
+  **Phase 12:** a refund for a buyer with no account uses the caller kept on the order and payment's method and reference; cancelling a PAID order takes `OrderLocks`.
+
 ---
 
 ## Stack
@@ -522,8 +588,8 @@ allocator, receiving, invoices, and corrections of a received consignment's cost
 **inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads, since Phase 6 the boxes
 set aside for products and **since Phase 7 the reservations that hold stock for an order**; Flyway V1-V11; **catalog since Phase 6** holds the dated price
 history and the default box, and **since Phase 7 works out each piece's promotion**; Flyway V1-V6 (Phase 7 added none);
-**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver) **and since Phase 8 its dispatch** (the steps, the packer's list and slip, the recipient, the correction); Flyway V1-V12;
-**payment since Phase 7 records staff-confirmed money**; Flyway V1-V6; **promotion since Phase 7 keeps scoped, dated
+**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver) **and since Phase 8 its dispatch** (the steps, the packer's list and slip, the recipient, the correction) **and since Phase 9 the sales staff record for a caller with no account**; Flyway V1-V14;
+**payment since Phase 7 records staff-confirmed money**; Flyway V1-V7; **promotion since Phase 7 keeps scoped, dated
 promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
 `checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
 (host port 5445), so 12 of the 13 services own a database.
@@ -692,7 +758,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20g**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20h**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
 cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
@@ -771,6 +837,8 @@ users-file format), imported beside the realm in the dev stack only:
 - `maya` — password `password`; `OWNER` + `USER`
 - `dave` — password `password`; `DISPATCH` + `USER` (Phase 8): a packer, the account the smoke test uses to prove a packer reads
   the parcel without seeing money. Applied to a dev stack by the Keycloak volume reset below.
+- `sara` — password `password`; `SALES` + `USER` (Phase 9): a salesperson (`SALES_AGENT`, no `BACKDATE_SALE`, no cost), the account the smoke test uses to prove sales staff record a
+  sale and read no cost or margin. Applied to a dev stack by the Keycloak volume reset below.
 - `alice` — password `password`; **only `USER`**. The customer account the
   smoke test drives.
 
@@ -1084,6 +1152,8 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
 - `project-oriah-requirements-locked.md` — `docs/CLIENT_DECISIONS.md` is the
   baseline; tax = ZRA Smart Invoice, deferred past the MVP (core integration-ready);
   delivery per town; promotions per product, category or shop
+- `project-oriah-phase9-plan.md` — **the MVP plan's Phase 9 "Phone orders"**: the design files (plan-p9-r2/r3/r4), what Codex changed, what was built, what was cut or deferred and why.
+  Read it before touching recorded orders
 - `project-oriah-phase8-deliver.md` — **the MVP plan's Phase 8 "Deliver"**: the dispatch steps, the fare,
   who the parcel is for, the packer's slip, the box swap in flight; the design file, Codex's findings,
   traps and the hand-offs to Phases 9, 10 and 12. Read it before touching dispatch

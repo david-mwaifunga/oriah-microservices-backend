@@ -427,6 +427,34 @@ for a swap another request had completed; inventory now takes an advisory lock p
 **Personal data stays out of the event log.** Recipient name, phone and address are columns on the order, copied once at placement from the shopper's address, never in an event, a log
 line or an error body, corrected only by an order administrator before packing (the old values kept in `order_delivery_correction`), and nulled when the order is cancelled.
 
+## Recording a sale for a caller with no account (Phase 9, 2026-11-15)
+
+**The question.** A customer rings, says what they want and pays; or the shop sold something over the counter on paper and types it in two days later. There is no account to put the order under, and profit must
+stay right: the sale's day, its price, its promotion, its stock and its cost all belong to the day it happened.
+
+**An order may have no owner, but only the database says when.** `orders.keycloak_id` became nullable, and the rule "no owner only for the PHONE channel" is a CHECK in the database, with every other rule of a
+phone order (a recorder, a caller, a sale kind, a reason for a late date, an agreed delivery that fits, one key used once): no code path or future channel can store an ownerless web order. The entity refuses
+the same things first, in plain words, and `isOwnedBy` is null-safe so a shopper asking for a phone order gets the same 404 as for a missing one.
+
+**Two kinds of sale, chosen by the person.** A first design guessed "late" from how old the date was; Codex showed a paper sale keyed twenty minutes after a promotion ended would then be priced at today's price.
+So the person chooses: LIVE (dated now, a typed date is refused) or LATE_PAPER (dated and priced as of the typed day, always with a reason, and beyond the 72 hours of the client's rule only with BACKDATE_SALE).
+`SaleDating` is a pure rule; the 72-hour number is one setting that payment and order both read.
+
+**The server prices; the person confirms.** The person types no price, discount or total. Catalog's staff as-of read (with the person's own token: no machine role is widened) gives each piece's price and the
+promotion of that instant; the person reads the total to the caller and sends it back as `expectedTotal`, and a difference is refused with nothing held. A delivery agreed by phone is the one amount a person types;
+it enters only here, is written once, and a customer's request that carries one is refused outright (it used to be ignored).
+
+**The money must carry the day of the sale.** Payment dates the sale by the day the money arrived (Q22), and it does not know the order. If staff confirm a paper sale's money on another day, applying it would move
+the sale's revenue, cost and packaging into another month while its receipt says otherwise. So order answers it `UNSETTLED WRONG_DATE`, payment holds it for the caller, and staff void it and key it again. A live sale
+follows the money and is never held for a date. This is the one place order needed a new reason in payment's closed list (consumers first: payment's V7 ships with order's V14).
+
+**What leaves the building.** Nothing personal is in any event or log. The caller, recipient and address are columns on the order; events carry only `channel: PHONE` and the true sale date, trailing and absent on
+a web order so no consumer needed a new declaration; the shared exception handler no longer logs a rejected value. A salesperson reads allow-lists built for them (never an order administrator's view), so no cost,
+margin or staff identity can reach them (Q29); the caller's phone and the address are visible while the order is alive, because a lapsed hold still needs its caller rung, and withheld once it is delivered.
+
+**What was cut, on Codex's advice.** A duplicate-order guard, locks around a paper slip's number, a stored copy of the website's price, and automatic cancelling of lapsed orders with erasure of old callers' details:
+the last would have destroyed the only contact for money that can still arrive, because a lapsed order is still paid when its pieces are free.
+
 ## Who may do what, and quote-then-commit (Phase 0, 2026-11-09)
 
 Three decisions from Phase 0 of `MVP_PLAN.md`. Commits are in `oriah-api`
