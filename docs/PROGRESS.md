@@ -20,6 +20,57 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-15 (MVP_PLAN Phase 8 complete: deliver)
+
+Phase 8 of `MVP_PLAN.md` is built, tested, reviewed by Codex (design and code) and committed (**not pushed**). Proved live on the full container stack on 2026-11-15: the smoke test passed on images rebuilt from the final committed code (`fbc093a`); its first run reached step 20e and failed only on lot pins that the new dispatch sale had moved (fixed in the script), and no ERROR-level line appeared in the order, checkout, inventory, catalog, shipping, notification or gateway logs. The OpenAPI gate is additions-only (no new waiver), six error goldens were added and Postman was regenerated. **A paid order can now be packed, sent and
+delivered, and a pickup handed over, by a person who can read the parcel and no money.** `oriah-web` was not changed (`docs/FRONTEND_WORK.md` lists what it must do).
+
+| What | Commits (`oriah-api`) |
+|---|---|
+| The three pure rules (fare, dates, recipient), mutation-checked | `a37f196` |
+| Own delivery is never recipient-paid (shipping); pickup wording (notification) | `9d83dd3`, `61d0d65` |
+| 8.1 The box swap in flight, the order lock | `5b5b2cd` |
+| 8.3 Who the parcel is for: checkout, then order | `ef75d3c`, `3927c27` |
+| 8.4 The steps and the fare; the packer's list and slip; box names; correcting the details | `fddc7eb`, `c897bfd`, `b2b8f9c`, `a7821e7` |
+| 8.5 Gateway matcher and the dev packer `dave` | `349849c` |
+| Codex's findings fixed test-first | `884fbfd`, `fbc093a` |
+| 8.6 The smoke test, the plan, the frontend handover, CLAUDE.md, README, ARCHITECTURE, LOCAL_DEV, this entry | the closing commit |
+
+### How it works, in plain words
+
+- **Three steps, no new status.** Packed (the order is FULFILLED), dispatched (SHIPPED: the courier has the parcel; **from here a cancellation refunds goods only, not
+  delivery**) and delivered. A pickup is packed and handed over; it is never shipped. Each step records the true date (up to 72 hours back for anyone, further only with
+  `BACKDATE_SALE` and a reason), who, and the courier's reference. Asking the same step twice is safe.
+- **The courier fare** is typed at dispatch when Oriah pays a courier (K0.00 is a valid answer); a recipient-paid courier and Oriah's own delivery take none (fuel and the
+  driver are expenses, Phase 10). It is written once and travels only in `order.shipped`, for finance. **The delivery charge the shopper paid never changes.**
+- **Own delivery is always paid to Oriah with the order** (the client's rule: no driver carrying cash); Yango and the couriers may still be paid by the recipient.
+- **Who the parcel is for.** Checkout asks for a name and a phone for any delivery (a pickup takes none); the order keeps them and the address. A phone is read the way
+  Zambians write it (`097 123 4567`, `+260 97 ...`). An order administrator can correct them until the parcel is packed; a cancelled order forgets them.
+- **The packer reads no money.** A work list (to pack, packed, on the way) and a packing slip: who, where, by what, what is in the parcel and **which box**. No price, total,
+  discount, waiver or login. Once delivered, the person is hidden from the packer.
+- **A box swap can no longer slip past.** While a swap is with inventory the order cannot be packed or sent. If inventory cannot be reached it stays "in flight" until the same
+  swap is repeated; there is no button to abandon it (a runbook step after checking stock).
+
+### What Codex found, and what was done
+
+- **Design review: NOT SOUND, 12 findings**, all triaged into `plan-p8-r3.md` section D and built (the lock, the in-flight record, own delivery, the fare's scope).
+- **A real Phase 7 bug:** a payment void that arrived while a confirmation was being applied was honoured without asking inventory when the count of failed attempts was
+  zero; a crash between "stock sold" and "sale recorded" could mark a sold sale VOIDED. Inventory is now always asked. (`884fbfd`)
+- **Code review: NOT SOUND, one real race (fixed `fbc093a`):** two attempts at the same box swap, with one replacement box left, made the second say "short", which order takes
+  to mean nothing moved, so it dropped the guard of a swap that had happened. Inventory now serialises attempts per swap.
+- **Not changed, on purpose:** a fare can be guessed by a packer who cannot read it (the packer who typed it knows it; the cost of the guess is a few hundred thousand tries);
+  an own-delivery order that was recipient-paid before Phase 8 would still ship without a fare (nothing is live, so no such order exists outside the developer's stack).
+- **Phase 6 final review: SOUND WITH FIXES;** the two Claude-only fixes were confirmed correct; two findings on the below-cost acknowledgement were left as they are (staff-only).
+
+### What is still open
+
+- Payment void and reference reuse while an order may have consumed the payment (needs a payment-to-order handshake: a Phase 7 follow-up).
+- Phase 12 (refunds) must take `OrderLocks` and refuse while a swap is in flight; Phase 10 must add `deliveryWaivedAmount` to `order.paid` and book the fare from `order.shipped`.
+- The owner's questions are in `docs/FRONTEND_WORK.md` (Phase 8): packer corrections, re-pack after a swap, late fares, how long recipient details are kept, the 72-hour rule, the
+  pickup wording, own delivery only in Lusaka.
+
+---
+
 ## CURRENT STATE — 2026-11-14 (MVP_PLAN Phase 7 complete: sell)
 
 Phase 7 of `MVP_PLAN.md` is built, tested, reviewed by read-only panels, verified on the live stack and committed (**not pushed**). **A sale now works

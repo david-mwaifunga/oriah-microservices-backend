@@ -539,36 +539,75 @@ the consignment → **price** → optionally choose the default box (and set box
 - **The wording of two shopper notices** (see Storefront, Notifications): the placement notice says 'on its way to confirmation' although nothing is paid, and the cancellation notice says 'Any payment will be refunded', which no longer fits. Say whether to change them, and to what.
 - **Who may waive delivery** (as built: `OWNER` and `MANAGER`, because the manager role holds every capability but four) and whether a waiver should need a bigger reason or a limit. **Where the late-recorded paper sale is built**, since it is not in Phase 7; and the **walk-in channel** for a sale made face to face in the shop (Phase 9 adds only web and phone).
 - **How a shopper asks for a town that is not listed**, since no endpoint takes the request (a phone number or WhatsApp message in the checkout words is the simplest).
-- **How the delivery address and the town relate**, and whether a contact number is captured (none is today; a courier or Yango driver needs one).
-- **Small backend additions the order page needs, if the owner wants them:** the receipt number and the shopper's claim on the order answer; a notice that money of another amount arrived; a promotion name for shoppers; availability on the product list and in the bag (the product page already carries it); a staff list of holds; a `SALES_AGENT` list of orders still waiting for a reference, with a customer name or phone, so staff can find an order for a customer paying in cash without the shopper's help; a read of what each promotion covers, by name, for `CATALOG_ADMIN` alone.
+- **How the delivery address and the town relate** (nothing checks that the address city is the priced town). **A contact number is now captured at checkout** (Phase 8: `recipientName` and `recipientPhone`).
+- **Small backend additions the order page needs, if the owner wants them:** the shopper's claim on the order answer (the receipt number is on it since Phase 8); a notice that money of another amount arrived; a promotion name for shoppers; availability on the product list and in the bag (the product page already carries it); a staff list of holds; a `SALES_AGENT` list of orders still waiting for a reference, with a customer name or phone, so staff can find an order for a customer paying in cash without the shopper's help; a read of what each promotion covers, by name, for `CATALOG_ADMIN` alone.
 - **Screen decisions:** whether a shopper may cancel their own unpaid order from the order page; whether product cards, the product page and the bag show promotional prices; whether a sale that waits for a box (`BLOCKED_BOX`) needs a louder alert than the settlements list.
 
 ### Phase 8 — Deliver
 
-**Admin screens**
+**Built (backend, 2026-11-15); the frontend is not changed.** After staff confirm the money an order is PAID. A packer or driver (job role `DISPATCH`, capability
+`FULFILMENT_AGENT`; the owner and the manager hold it too) packs it, sends it by the option the shopper chose and records the courier fare when Oriah pays one,
+then marks it delivered; a pickup is packed and handed over. **The packer reads no money** (Q29).
 
-- Dispatch screen (FULFILMENT_AGENT, /api/v1/admin/orders/*/dispatch/**): pack, book own delivery, Yango or a courier, and record 'the fare Oriah pays'. The delivery charge is read-only: 'fixed before payment and never changes after', with no top-up and no ask-or-absorb.
-- A recipient-paid order shows RECIPIENT_PAYS and asks for no fare, because it creates 'neither delivery income nor a period expense'. Own delivery asks for no fare either, because its fuel and driver time are period expenses entered in Phase 10. 'Charged K150, paid K100' is how it 'shows in the books' (§1.4, Phase 10), not a rule for this screen. Showing the delivery charge beside the fare to a DISPATCH person shows a delivery margin, so settle that against Q29.
-- Self-collect goes FULFILLED → DELIVERED with no SHIPPED step (Part 3). Dispatch is 'the line for a refund', so the screen records it as a dated event, and refunds after it cover goods only.
-- A DISPATCH person gets 403 on the generic transition and on the ORDER_ADMIN orders list, so they need a list of orders to pack that a FULFILMENT_AGENT may read. The path matrix has per-order dispatch paths only.
-- The packer needs the delivery address, the recipient's name and a phone number. A web order stores only shippingAddressId; the address lives in customer, behind CUSTOMER_ADMIN, which DISPATCH lacks; and a shopper can delete an address after ordering. Settle a delivery snapshot on the order that the dispatch path can read, as Phase 9 stores one for phone orders.
-- A box swapped at packing is the Phase 7 box-swap amendment, dated to the payment. **It stays an `ORDER_ADMIN` action** (OWNER and MANAGER): `POST /api/v1/admin/orders/{id}/box-swaps` sits under the `ORDER_ADMIN` orders prefix, and a `FULFILMENT_AGENT` (DISPATCH) person does not hold that, so the packer would have to ask an owner or a manager unless the owner decides to give DISPATCH a capability for it (not settled). The swap needs the order `PAID` and not yet fulfilled (409 `box-swap-not-allowed` otherwise), so it must happen before the order is marked `FULFILLED`.
+**Admin screens (FULFILMENT_AGENT)**
 
-**Storefront**
+- **Work list** `GET /api/v1/admin/orders/dispatch/queue?stage=` with `stage` `TO_PACK` (the default), `PACKED` or `ON_THE_WAY` (anything else is 400): paid orders, oldest
+  payment first, at most 100. Reply `{stage, count, orders: [{orderId, receiptNumber, status, stage, optionName, payer, townName, recipientName, pieces, paidAt, packedAt,
+  dispatchedAt, packable}]}`; absent fields are left out. `packable: false` marks an order placed before Phase 8 that has no recipient or address kept (an order
+  administrator supplies them, below). A pickup has no `optionName`, `payer`, `townName` or `recipientName`.
+- **Packing slip** `GET /api/v1/admin/orders/{id}/dispatch`: `orderId, receiptNumber, status, stage, paidAt, selfCollect, fareDue, boxSwapInProgress,
+  delivery{optionCode, optionName, payer, townName, recipientName, recipientPhone, address{line1, line2, city, state, postalCode, country}}` (absent for a pickup, and
+  after DELIVERED except to an order administrator), `lines[{lineId, title, quantity, box{variantId, name}}]` (by title; `name` is catalog's, e.g. "Velvet box / Large"),
+  `boxNamesAvailable` and `boxNamesProblem` (`unavailable` or `forbidden`: show the box id and say names could not be read; the slip is still 200), `packedAt`,
+  `dispatchedAt`, `reference`, `farePaid` (only for someone who may see cost, COST_VIEWER), `deliveredAt`. **No total, price, discount, waiver, login or actor is ever on
+  it.** 409 `order-not-paid` for an unpaid or cancelled order. Show `boxSwapInProgress` loudly: a box swap is still with inventory, packing and shipping are refused.
+- **Steps**, each `POST /api/v1/admin/orders/{id}/dispatch/pack | ship | deliver` with a JSON body (`{}` is enough), each answering `{orderId, status, stage, packedAt,
+  dispatchedAt, deliveredAt, reference, farePaid?, replay}`:
+  - `pack` (PAID to FULFILLED); `ship` (FULFILLED to SHIPPED) with `reference` (optional: waybill, booking or bus receipt, letters, digits, space and `. / # -`, 1 to 40) and
+    `farePaid`; `deliver` (SHIPPED to DELIVERED; **a pickup is handed over, FULFILLED to DELIVERED, and is never shipped**).
+  - **The fare.** When Oriah pays the courier (`fareDue` on the slip) `farePaid` is required, in Kwacha, **K0.00 allowed** (the courier charged nothing); a negative one, one finer
+    than an ngwee or one above the ceiling (K5,000.00, `oriah.sales.max-fare`) is 400 `invalid-fare`/validation. When the recipient pays the courier, or it is Oriah's own
+    delivery, a fare is refused (409 `no-fare-for-this-delivery`): fuel and the driver's pay are expenses in Phase 10. It is written once; a mistake is corrected in finance.
+    **The delivery charge is never shown on this screen and never changes** (Q24).
+  - `occurredAt` (ISO-8601, optional): when it truly happened, default now, never in the future (five minutes' allowance) and never before the step it follows. Beyond 72 hours
+    back only someone holding BACKDATE_SALE (403 otherwise) with a `backdateReason` of 5 to 200 characters (400 `backdate-reason-required`). 400 `invalid-occurred-at`.
+  - **A repeat is safe:** the same step asked again with what was recorded is 200 with `replay: true`; with another fare, reference or time it is 409 (`already-recorded`,
+    `already-dispatched`) naming what stands.
+  - Other problems (all 409): `order-not-paid`, `dispatch-step-not-allowed` (out of order, or shipping a pickup), `delivery-details-missing`, `fare-required`,
+    `box-swap-in-progress` (the answer names `amendmentId`, `lineId`, `replacementBoxVariantId`, `reason` so the swap can be repeated exactly).
+- **Dispatch is the line for refunds**: before the DISPATCHED step a cancellation refunds delivery, from it goods only. Show it as a dated event.
+- **Correcting a recipient or address** `POST /api/v1/admin/orders/{id}/delivery-details` is **ORDER_ADMIN's** (owner and manager, never a packer): `{recipientName, recipientPhone,
+  address{line1, line2?, city, state?, postalCode?, country}, reason}` (the whole block is replaced; reason 5 to 200 characters); only a PAID order that is not packed (409
+  `delivery-details-locked` once packed, `order-not-paid`, `no-delivery-details` for a pickup). The previous details are kept in a history with who and why; nothing is published.
+- **The staff door is narrower:** `POST /api/v1/admin/orders/{id}/transition` now only cancels an unpaid order; FULFILLED, SHIPPED and DELIVERED are 409
+  `use-the-dispatch-steps`. The request enum keeps its eight values (the contract cannot show the narrowing).
+- A **box swap** (ORDER_ADMIN) may now happen until the parcel is dispatched (PAID or FULFILLED), not only before packing; it does not force a re-pack, so say "box changed" to the packer.
 
-- The order timeline must handle self-collect (FULFILLED → DELIVERED, with no 'Shipped' step) and show how the parcel comes: own delivery, Yango or a courier.
-- A recipient-paid order says the courier is paid on arrival and shows K0 delivery.
+**Storefront (checkout and order page)**
+
+- **Checkout must ask who the parcel is for.** `POST /api/v1/checkout/confirm` takes `recipientName` and `recipientPhone` (a phone typed any Zambian way: `097 123 4567`, `+260 97 ...`): **required for every delivered option, refused for a pickup** (400
+  with `fieldErrors` on those fields, in plain words). Both are kept tidied (`+260971234567`). Prefill them from the account name and the last order.
+- The order answer (shopper's and staff's) gains `receiptNumber` (`OR-nnnnnn`, closing the old gap), `paidAt` (the day the money arrived), `delivery{recipientName, recipientPhone,
+  address, optionName, townName}` (the shopper's own data) and `dispatch{packedAt, dispatchedAt, deliveredAt, reference}` (show the reference as the tracking reference). **Never the fare.**
+  A cancelled order shows no `delivery`. Declare every new key in the zod schemas: zod strips what it does not know.
+- **The timeline** must handle a pickup (CREATED, PAID, packed "ready to collect", handed over "collected", with no Shipped step) and show how the parcel comes: own delivery, Yango, a
+  named courier. A recipient-paid order says the courier is paid on arrival and shows K0 delivery. **Notices** (Phase 11 sends them): a packed pickup reads "ready to collect" and a
+  handed-over one "collected"; everything else is unchanged.
+- **Own delivery is always paid to Oriah with the order**: the town list no longer offers it to the recipient (only Yango and the couriers can be recipient-paid).
 
 **What it breaks in oriah-web today**
 
-- The admin orders 'Move to shipped' and 'Move to delivered' buttons (NEXT_STATE in AdminOrdersClient) must be reconciled with the dispatch step and with self-collect skipping SHIPPED.
-- The storefront StateTimeline (CREATED → PAID → FULFILLED → SHIPPED → DELIVERED) shows a Shipped step that a self-collected piece never reaches.
-- No Playwright spec reaches dispatch. admin-happy-path.spec.ts's single 'Move to' click is already broken by Phase 7.
+- The admin orders "Move to shipped" and "Move to delivered" buttons (NEXT_STATE in AdminOrdersClient) now get 409 `use-the-dispatch-steps`: replace them with the dispatch screen.
+- The storefront StateTimeline (CREATED, PAID, FULFILLED, SHIPPED, DELIVERED) shows a Shipped step a pickup never reaches.
+- The checkout `ConfirmBody` (`src/lib/checkout/quote.ts`) sends no recipient: every delivered confirm is now 400 until the form asks. `e2e/helpers/orders.ts` and the Playwright checkout specs need it too.
+- No Playwright spec reaches dispatch.
 
-**Needs from the owner**
+**Needs from the owner (none blocks the build)**
 
-- The couriers they actually use (Platinum, EMS, bus-company parcel services, Yango), and the towns where Oriah's own delivery is offered, each needing a published `OWN_DELIVERY` price (Phase 7 built the delivery prices; none is seeded).
-- Whether a DISPATCH person should be able to swap a box at packing: today only an owner or a manager can (the Phase 7 box swap is `ORDER_ADMIN`).
+1. May a packer ever correct a recipient or address (built: no, an order administrator only, and never once packed)? 2. Should a box swap after packing force an explicit re-pack?
+3. A fare that arrives after hand-over (Yango's final fare) or a booking fee paid before dispatch is a hand-keyed expense in Phase 10, not a correction: is that right?
+4. How long recipient details are kept (unpaid, delivered, and the correction history): Zambia's Data Protection Act 2021 applies and no policy exists. 5. Is the 72-hour rule right for
+packing and dispatch dates? 6. Wording of the pickup notices. 7. Own delivery only inside Lusaka (not enforced).
 
 ### Phase 9 — Phone orders
 
@@ -737,4 +776,4 @@ the consignment → **price** → optionally choose the default box (and set box
 - Between each backend phase and the frontend stage, the running admin, the storefront and the specs listed per phase stay broken. The plan accepts this ('a storefront that lags the backend for a while costs the business nothing'); a failing spec not on this list is a regression.
 - Storefront copy that describes a different business is listed under Phase 0 above, for the owner's own words. storefront-happy-path.spec.ts finds the hero by 'considered jewelry' and the link 'shop the collection', so changing the hero changes that spec.
 - Do not build, on any screen (§6): a discount box or promotion-code field, a typed or negotiated price, split or part payments, lay-by or pay-later, a gift-wrap charge, bundles sold as one set, a staff hold-for-customer, an awaiting-quote state, stock locations, currency conversion or dollar amounts, a bank-charge cost line, or a duty rate table.
-- Backend gaps the screens need that the plan does not yet name: an admin product list showing drafts and packaging (Phase 3); a costs reply carrying product titles, since BOOKKEEPER cannot read catalog's admin list (Phase 5); a source for the 'month's overhead share' that a pricing MANAGER without FINANCE_ADMIN can read (Phase 6); a channel for a walk-in shop sale (no phase builds it: the plan's order channel is web or phone, and Phase 9 adds phone; see Phase 7, Needs from the owner); a SALES_AGENT read of a recorded order and its receipt (Phase 9); a list of orders to pack, with a delivery address and phone a FULFILMENT_AGENT may read (Phase 8); and a capability for the markdown relisting (Phase 12). **Built in Phase 7, so no longer gaps:** the shopper's payment reference (`POST /api/v1/orders/{id}/payment-claim`), the SALES_AGENT list of orders awaiting payment, recording money that does not settle the sale and the list of money owed back (held money, `PAYMENT_ADMIN`), the per-option payer settings on a delivery price, and the capability for the box swap (`ORDER_ADMIN`; Phase 8 asks whether DISPATCH needs one).
+- Backend gaps the screens need that the plan does not yet name: an admin product list showing drafts and packaging (Phase 3); a costs reply carrying product titles, since BOOKKEEPER cannot read catalog's admin list (Phase 5); a source for the 'month's overhead share' that a pricing MANAGER without FINANCE_ADMIN can read (Phase 6); a channel for a walk-in shop sale (no phase builds it: the plan's order channel is web or phone, and Phase 9 adds phone; see Phase 7, Needs from the owner); a SALES_AGENT read of a recorded order and its receipt (Phase 9); a capability for the markdown relisting (Phase 12). **Built in Phase 7, so no longer gaps:** the shopper's payment reference (`POST /api/v1/orders/{id}/payment-claim`), the SALES_AGENT list of orders awaiting payment, recording money that does not settle the sale and the list of money owed back (held money, `PAYMENT_ADMIN`), the per-option payer settings on a delivery price, and the capability for the box swap (`ORDER_ADMIN`; Phase 8 asks whether DISPATCH needs one).

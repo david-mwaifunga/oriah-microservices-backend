@@ -46,8 +46,8 @@
 #      (oriah-quote/2: the promotion on each line is part of it), which must equal
 #      the digest this script works out on its own in PowerShell.
 #   [5b/20] Delivery is priced per TOWN, by admin, and never seeded. maya adds two
-#      towns (one priced, one not), publishes OWN_DELIVERY (K45.00, either party may
-#      pay) and YANGO (K60.00, the recipient pays) for the first; shipping's public
+#      towns (one priced, one not), publishes OWN_DELIVERY (K45.00, Oriah collects it
+#      with the order; the recipient never pays the driver, Q27) and YANGO (K60.00, the recipient pays) for the first; shipping's public
 #      list shows exactly that; a quote names the published price it used; a town
 #      nobody priced, a priced town with an unpriced option, and a payer a price does
 #      not offer are each 409 (town-not-offered, payer-not-offered); a delivered
@@ -1208,7 +1208,7 @@ Write-Host "[5b/20] Delivery is priced per TOWN, by admin; a town nobody priced 
 # figure and is never seeded (nothing transactional is), so this step makes its own: two towns of the Lusaka province
 # under a random name (a town is switched off, never deleted, so a run leaves them behind) -- one priced, one not -- and
 # two published prices for the first, each made the way admin makes one (a draft, then published against its version):
-#   OWN_DELIVERY  K45.00, Oriah may collect it with the order or the recipient may pay the courier on arrival
+#   OWN_DELIVERY  K45.00, Oriah collects it with the order (own delivery is income: the recipient never pays the driver, Q27)
 #   YANGO         K60.00, the recipient pays only (Oriah never collects it)
 # A published price is history and is never edited, so these prices stay as they are; a later run has towns of its own.
 $shipBase = "$gw/admin/shipping"
@@ -1232,7 +1232,7 @@ function Publish-DeliveryPrice($TownId, [string]$Option, [decimal]$Amount, [bool
     Require ("$($published.Json.status)" -ceq "PUBLISHED") "the $Option delivery price reads '$($published.Json.status)' after publishing, expected PUBLISHED"
     return $published.Json
 }
-$ownPrice = Publish-DeliveryPrice $townId "OWN_DELIVERY" 45.00 $true $true 1 2
+$ownPrice = Publish-DeliveryPrice $townId "OWN_DELIVERY" 45.00 $true $false 1 2
 $yangoPrice = Publish-DeliveryPrice $townId "YANGO" 60.00 $false $true 0 1
 
 # What the shop now offers, as the storefront reads it (a shopper's token: every other call here is public to signed-in users).
@@ -1247,7 +1247,7 @@ Require (@($offeredTowns | Where-Object { "$($_.id)" -ceq $bareTownId }).Count -
 $ownOffer = @(@($offeredHere[0].options) | Where-Object { "$($_.code)" -ceq "OWN_DELIVERY" })
 $yangoOffer = @(@($offeredHere[0].options) | Where-Object { "$($_.code)" -ceq "YANGO" })
 Require (($ownOffer.Count -eq 1) -and ($yangoOffer.Count -eq 1) -and (@($offeredHere[0].options).Count -eq 2) -and
-         (Same-Money $ownOffer[0].amount "45.00") -and ($ownOffer[0].allowsOriahCollects -eq $true) -and ($ownOffer[0].allowsRecipientPays -eq $true) -and
+         (Same-Money $ownOffer[0].amount "45.00") -and ($ownOffer[0].allowsOriahCollects -eq $true) -and ($ownOffer[0].allowsRecipientPays -eq $false) -and
          (Same-Money $yangoOffer[0].amount "60.00") -and ($yangoOffer[0].allowsOriahCollects -eq $false) -and ($yangoOffer[0].allowsRecipientPays -eq $true)) "the priced town's offer reads $($offeredHere[0] | ConvertTo-Json -Depth 4 -Compress), expected OWN_DELIVERY 45.00 (either may pay) and YANGO 60.00 (the recipient pays) and nothing else"
 
 # What delivery costs on goods worth $Goods when Oriah collects it: the published price, unless admin has set a free-delivery threshold the goods reach.
@@ -1262,9 +1262,15 @@ $quote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optio
 Assert-Reply $quote "shipping's quote for OWN_DELIVERY to the priced town" 200
 Require ((Same-Money $quote.Json.amount "$wantShip") -and (Same-Money $quote.Json.listAmount "45.00") -and ("$($quote.Json.payer)" -ceq "ORIAH_COLLECTS") -and
          ("$($quote.Json.priceId)" -ceq "$($ownPrice.id)") -and ("$($quote.Json.currency)" -ceq "ZMW")) "the OWN_DELIVERY quote reads $($quote.Json | ConvertTo-Json -Compress), expected amount $wantShip (list 45.00), payer ORIAH_COLLECTS (the default: Oriah collecting is offered), from price $($ownPrice.id)"
-$recipientQuote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "OWN_DELIVERY"; payer = "RECIPIENT_PAYS"; goodsTotal = [decimal]180.00 }
-Assert-Reply $recipientQuote "shipping's quote with the recipient paying the courier" 200
-Require ((Same-Money $recipientQuote.Json.amount "0.00") -and (Same-Money $recipientQuote.Json.listAmount "45.00") -and ("$($recipientQuote.Json.payer)" -ceq "RECIPIENT_PAYS")) "the RECIPIENT_PAYS quote reads $($recipientQuote.Json | ConvertTo-Json -Compress), expected amount 0.00 (the fare is still shown as list 45.00) and payer RECIPIENT_PAYS"
+$recipientQuote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "YANGO"; payer = "RECIPIENT_PAYS"; goodsTotal = [decimal]180.00 }
+Assert-Reply $recipientQuote "shipping's quote with the recipient paying the courier (Yango)" 200
+Require ((Same-Money $recipientQuote.Json.amount "0.00") -and (Same-Money $recipientQuote.Json.listAmount "60.00") -and ("$($recipientQuote.Json.payer)" -ceq "RECIPIENT_PAYS")) "the RECIPIENT_PAYS quote reads $($recipientQuote.Json | ConvertTo-Json -Compress), expected amount 0.00 (the fare is still shown as list 60.00) and payer RECIPIENT_PAYS"
+# Phase 8: Oriah's own delivery is income and is NEVER paid by the recipient (Q27: no driver cash float): the quote says so, and shipping refuses to
+# publish such a price.
+$ownRecipient = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ townId = $townId; optionCode = "OWN_DELIVERY"; payer = "RECIPIENT_PAYS"; goodsTotal = [decimal]180.00 }
+Require (($ownRecipient.Status -eq 409) -and "$($ownRecipient.Json.type)".EndsWith("/payer-not-offered") -and (@($ownRecipient.Json.offered) -ccontains "ORIAH_COLLECTS") -and (@($ownRecipient.Json.offered) -cnotcontains "RECIPIENT_PAYS")) "own delivery paid by the recipient gave $($ownRecipient.Status) '$($ownRecipient.Json.type)', expected 409 payer-not-offered offering ORIAH_COLLECTS only"
+$ownDraft = Invoke-Api POST "$gw/admin/shipping/prices" $mayaH @{ townId = $townId; optionCode = "OWN_DELIVERY"; amount = 45.00; allowsOriahCollects = $true; allowsRecipientPays = $true }
+Require (($ownDraft.Status -eq 409) -and "$($ownDraft.Json.type)".EndsWith("/own-delivery-is-oriah-collects")) "drafting an own-delivery price the recipient may pay gave $($ownDraft.Status) '$($ownDraft.Json.type)', expected 409 own-delivery-is-oriah-collects"
 $selfQuote = Invoke-Api POST "$gw/shipping/quote" $aliceH @{ optionCode = "SELF_COLLECT"; goodsTotal = [decimal]180.00 }
 Assert-Reply $selfQuote "shipping's quote for self-collect" 200
 Require (Same-Money $selfQuote.Json.amount "0.00") "self-collect should quote 0.00; got $($selfQuote.Json.amount)"
@@ -1686,7 +1692,7 @@ Add-ToCart $saleVariantId 1
 $dGoods = [decimal]90.00
 $dShip = Get-ExpectedShip $dGoods 45.00
 $dTotal = $dGoods + $dShip
-$deliveryBody = @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "ORIAH_COLLECTS"; shippingAddressId = $addrId }
+$deliveryBody = @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "ORIAH_COLLECTS"; shippingAddressId = $addrId; recipientName = "Mulenga Chanda"; recipientPhone = "097 123 4567" }
 $dPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json $deliveryBody)
 Require ((Same-Money $dPreview.subtotal "100.00") -and (Same-Money $dPreview.discount "10.00") -and (Same-Money $dPreview.shippingCost "$dShip") -and (Same-Money $dPreview.total "$dTotal")) "the delivered preview reads subtotal=$($dPreview.subtotal) discount=$($dPreview.discount) ship=$($dPreview.shippingCost) total=$($dPreview.total); expected 100.00, 10.00, $dShip (the published price: shipping's alone to work out), $dTotal"
 Require (("$($dPreview.deliveryOption)" -ceq "OWN_DELIVERY") -and ("$($dPreview.deliveryTownId)" -ceq $townId) -and ("$($dPreview.payer)" -ceq "ORIAH_COLLECTS")) "the delivered preview names option '$($dPreview.deliveryOption)' town '$($dPreview.deliveryTownId)' payer '$($dPreview.payer)', expected OWN_DELIVERY, $townId, ORIAH_COLLECTS"
@@ -1697,9 +1703,9 @@ Require ($dDigest -cne (Get-SaleDigest 1 "OWN_DELIVERY" $dShip)) "the digest doe
 $dNoPayer = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; shippingAddressId = $addrId })
 Require (("$($dNoPayer.payer)" -ceq "ORIAH_COLLECTS") -and ($dNoPayer.quoteDigest -ceq $dDigest)) "a delivered preview with no payer resolved to '$($dNoPayer.payer)' with digest $($dNoPayer.quoteDigest), expected ORIAH_COLLECTS and the same digest as above"
 # The recipient paying the courier: K0.00 on the order, the total is the goods alone, and the digest is another one.
-$rPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId })
+$rPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "YANGO"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId })
 Require ((Same-Money $rPreview.shippingCost "0.00") -and (Same-Money $rPreview.total "90.00") -and ("$($rPreview.payer)" -ceq "RECIPIENT_PAYS")) "the RECIPIENT_PAYS preview reads ship=$($rPreview.shippingCost) total=$($rPreview.total) payer=$($rPreview.payer), expected 0.00, 90.00, RECIPIENT_PAYS"
-$rDigest = Get-SaleDigest 1 "OWN_DELIVERY" 0 $townId "RECIPIENT_PAYS"
+$rDigest = Get-SaleDigest 1 "YANGO" 0 $townId "RECIPIENT_PAYS"
 Require (($rPreview.quoteDigest -ceq $rDigest) -and ($rDigest -cne $dDigest)) "the RECIPIENT_PAYS preview's digest $($rPreview.quoteDigest) is not the one this script works out ($rDigest), or it equals the Oriah-collects digest"
 # Yango is the recipient's to pay: with no payer named it resolves to that, at K0.00.
 $yPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json @{ deliveryOption = "YANGO"; deliveryTownId = $townId; shippingAddressId = $addrId })
@@ -1733,7 +1739,7 @@ Require (($ringSales.Count -eq 2) -and (($ringSales | Measure-Object -Property q
 # The same delivery with the recipient paying the courier: placed, K0.00 delivery on the order, the total is the goods alone; then cancelled.
 Clear-Cart
 Add-ToCart $saleVariantId 1
-$r2 = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-recipient") }) @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId; quoteDigest = $rPreview.quoteDigest }
+$r2 = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-recipient") }) @{ deliveryOption = "YANGO"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId; recipientName = "Mulenga Chanda"; recipientPhone = "0971234567"; quoteDigest = $rPreview.quoteDigest }
 Assert-Reply $r2 "confirming the recipient-pays order" 200
 $r2Id = "$($r2.Json.orderId)"
 $r2Order = Get-Order $r2Id
@@ -1788,7 +1794,7 @@ Require (("$($wRepeat.Json.orderId)" -ceq $wId) -and (Same-Money $wRepeat.Json.t
 # An order with no delivery to waive: the recipient pays the courier, so delivery is K0.00 already.
 Clear-Cart
 Add-ToCart $saleVariantId 1
-$nPlaced = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-nothing-to-waive") }) @{ deliveryOption = "OWN_DELIVERY"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId; quoteDigest = $rPreview.quoteDigest }
+$nPlaced = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-nothing-to-waive") }) @{ deliveryOption = "YANGO"; deliveryTownId = $townId; payer = "RECIPIENT_PAYS"; shippingAddressId = $addrId; recipientName = "Mulenga Chanda"; recipientPhone = "0971234567"; quoteDigest = $rPreview.quoteDigest }
 Assert-Reply $nPlaced "placing the recipient-pays order" 200
 $nId = "$($nPlaced.Json.orderId)"
 $nWaive = Invoke-Api POST "$gw/admin/orders/$nId/delivery-waiver" $mayaH @{ reason = $wReason }
@@ -1805,16 +1811,106 @@ foreach ($cancelId in @($wId, $nId)) {
 Wait-Stock $saleVariantId 9 0 | Out-Null
 Write-Host "    the owner waived K$dShip of delivery on a waiting order: K$dTotal became K$dGoods; a shopper 403, no token 401, a short reason 400; the shopper's own order shows the lower total and K$dShip saved but not who or why, staff's read shows both; a second waiver 409 delivery-already-waived; the same confirm repeated after the waiver answers the same order at K$dGoods; no delivery to waive 409, an unknown order 404, a PAID order 409 delivery-waiver-not-allowed with its total untouched" -ForegroundColor Gray
 
-Write-Host "[7/20] Admin: FULFILLED -> SHIPPED -> DELIVERED..." -ForegroundColor Cyan
-foreach ($t in @("FULFILLED","SHIPPED","DELIVERED")) {
-    $r = Invoke-RestMethod -Method POST `
-        -Uri "http://localhost:8080/api/v1/admin/orders/$orderId/transition" `
-        -Headers @{ Authorization="Bearer $maya" } `
-        -ContentType "application/json" `
-        -Body (ConvertTo-Json @{ targetStatus=$t })
-    if ($r.status -ne $t) { Write-Error "Transition to $t failed"; exit 1 }
+Write-Host "[7/20] Dispatch (Phase 8): the staff door to FULFILLED, SHIPPED and DELIVERED is closed; the sale order is packed and handed over (a pickup is never shipped)..." -ForegroundColor Cyan
+# The removal proof comes FIRST, while the order is still PAID: a refusal for an illegal edge would also be a 409, so only a PAID order proves the door itself is shut.
+foreach ($t in @("FULFILLED", "SHIPPED", "DELIVERED")) {
+    $door = Invoke-Api POST "$gw/admin/orders/$orderId/transition" $mayaH @{ targetStatus = $t }
+    Require (($door.Status -eq 409) -and "$($door.Json.type)".EndsWith("/use-the-dispatch-steps")) "the generic transition to $t gave $($door.Status) '$($door.Json.type)', expected 409 use-the-dispatch-steps"
 }
-Write-Host "    order DELIVERED" -ForegroundColor Gray
+Require ("$((Get-Order $orderId).status)" -ceq "PAID") "the closed door changed the sale order"
+$packA = Invoke-Api POST "$gw/admin/orders/$orderId/dispatch/pack" $mayaH @{}
+Assert-Reply $packA "packing the sale order" 200
+Require (("$($packA.Json.status)" -ceq "FULFILLED") -and ("$($packA.Json.stage)" -ceq "PACKED") -and ($packA.Json.replay -eq $false)) "packing the sale order answered $($packA.Json | ConvertTo-Json -Compress), expected FULFILLED, stage PACKED, no replay"
+$packAgain = Invoke-Api POST "$gw/admin/orders/$orderId/dispatch/pack" $mayaH @{}
+Require (($packAgain.Status -eq 200) -and ($packAgain.Json.replay -eq $true)) "packing again gave $($packAgain.Status) replay=$($packAgain.Json.replay), expected 200 with replay true"
+$shipA = Invoke-Api POST "$gw/admin/orders/$orderId/dispatch/ship" $mayaH @{}
+Require (($shipA.Status -eq 409) -and "$($shipA.Json.type)".EndsWith("/dispatch-step-not-allowed")) "shipping a pickup gave $($shipA.Status) '$($shipA.Json.type)', expected 409 dispatch-step-not-allowed"
+$handA = Invoke-Api POST "$gw/admin/orders/$orderId/dispatch/deliver" $mayaH @{}
+Assert-Reply $handA "handing the sale order over" 200
+Require ("$($handA.Json.status)" -ceq "DELIVERED") "the hand-over answered status '$($handA.Json.status)', expected DELIVERED"
+Write-Host "    the generic door answers 409 use-the-dispatch-steps for FULFILLED, SHIPPED and DELIVERED (the order stays PAID); pack -> FULFILLED (a repeat is a replay), ship a pickup 409, hand over -> DELIVERED" -ForegroundColor Gray
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------
+# Phase 8 (Deliver), live: the delivered orders of step 6i, a courier Oriah pays, the packer's work list and slip, and a packer (dave) who reads the
+# parcel without seeing money.
+# ---------------------------------------------------------------------------------------------------------------------------------------------
+function Get-OrderEventPayload($OrderId, [string]$Type) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-order", "psql", "-U", "orders", "-d", "orders", "-t", "-A", "-c",
+        "SELECT payload::text FROM outbox WHERE aggregate_type = 'order' AND aggregate_id = '$OrderId' AND event_type = '$Type' ORDER BY seq DESC LIMIT 1")
+    return (@($rows | Where-Object { $_ -match "\S" }) -join "").Trim()
+}
+
+Write-Host "[7b/20] Own delivery (Phase 8): the work list and slip, a correction of the recipient, no fare for our own driver, packed, shipped and delivered..." -ForegroundColor Cyan
+$queue = Invoke-Api GET "$gw/admin/orders/dispatch/queue" $mayaH $null
+Assert-Reply $queue "the packer's work list" 200
+$queueRow = @(@($queue.Json.orders) | Where-Object { $_ -and "$($_.orderId)" -ceq $dOrderId })
+Require (($queueRow.Count -eq 1) -and ($queueRow[0].packable -eq $true) -and ("$($queueRow[0].recipientName)" -ceq "Mulenga Chanda") -and ("$($queueRow[0].stage)" -ceq "TO_PACK")) "the work list should hold the paid own-delivery order $dOrderId once, packable, for Mulenga Chanda; it reads $($queueRow | ConvertTo-Json -Compress)"
+$badStage = Invoke-Api GET "$gw/admin/orders/dispatch/queue?stage=EVERYTHING" $mayaH $null
+Require ($badStage.Status -eq 400) "a stage that is not one gave $($badStage.Status), expected 400"
+# Only an order administrator corrects who a paid parcel is for, before it is packed; the previous details are kept, nothing is published.
+$aliceCorrect = Invoke-Api POST "$gw/admin/orders/$dOrderId/delivery-details" $aliceH @{ recipientName = "X Y"; recipientPhone = "0977654321"; address = @{ line1 = "x"; city = "x"; country = "ZM" }; reason = "not allowed" }
+Require ($aliceCorrect.Status -eq 403) "a shopper correcting delivery details gave $($aliceCorrect.Status), expected 403"
+$fixed = Invoke-Api POST "$gw/admin/orders/$dOrderId/delivery-details" $mayaH @{ recipientName = "Chanda Mulenga"; recipientPhone = "097 765 4321"; address = @{ line1 = "Stand 7 Freedom Way"; city = "Lusaka"; country = "ZM" }; reason = "the customer rang: another street and phone" }
+Assert-Reply $fixed "correcting the own-delivery order's recipient and address" 200
+Require (("$($fixed.Json.delivery.recipientPhone)" -ceq "+260977654321") -and ("$($fixed.Json.delivery.address.line1)" -ceq "Stand 7 Freedom Way")) "the corrected order reads delivery $($fixed.Json.delivery | ConvertTo-Json -Compress -Depth 4), expected +260977654321 and Stand 7 Freedom Way"
+$slipD = Invoke-Api GET "$gw/admin/orders/$dOrderId/dispatch" $mayaH $null
+Assert-Reply $slipD "the packing slip of the own-delivery order" 200
+Require (($slipD.Json.selfCollect -eq $false) -and ($slipD.Json.fareDue -eq $false) -and ("$($slipD.Json.delivery.recipientName)" -ceq "Chanda Mulenga") -and ("$($slipD.Json.delivery.optionName)" -ceq "Oriah delivery") -and (@($slipD.Json.lines).Count -ge 1)) "the slip reads $($slipD | ConvertTo-Json -Compress -Depth 6), expected a courier-free own delivery to Chanda Mulenga"
+Require (-not [string]::IsNullOrWhiteSpace("$($slipD.Json.lines[0].box.variantId)")) "the slip should name which box goes out (a box variant id): $($slipD.Json.lines[0] | ConvertTo-Json -Compress)"
+Require (($slipD.Json.boxNamesAvailable -eq $true) -and (-not [string]::IsNullOrWhiteSpace("$($slipD.Json.lines[0].box.name)"))) "the slip's box should be NAMED through catalog with maya's own token: boxNamesAvailable=$($slipD.Json.boxNamesAvailable) name='$($slipD.Json.lines[0].box.name)' problem='$($slipD.Json.boxNamesProblem)'"
+$packD = Invoke-Api POST "$gw/admin/orders/$dOrderId/dispatch/pack" $mayaH @{}
+Assert-Reply $packD "packing the own-delivery order" 200
+$lateFix = Invoke-Api POST "$gw/admin/orders/$dOrderId/delivery-details" $mayaH @{ recipientName = "Chanda Mulenga"; recipientPhone = "0977654321"; address = @{ line1 = "Stand 9 Freedom Way"; city = "Lusaka"; country = "ZM" }; reason = "after it was packed" }
+Require (($lateFix.Status -eq 409) -and "$($lateFix.Json.type)".EndsWith("/delivery-details-locked")) "correcting a packed order gave $($lateFix.Status) '$($lateFix.Json.type)', expected 409 delivery-details-locked"
+$ownFare = Invoke-Api POST "$gw/admin/orders/$dOrderId/dispatch/ship" $mayaH @{ farePaid = 40.00 }
+Require (($ownFare.Status -eq 409) -and "$($ownFare.Json.type)".EndsWith("/no-fare-for-this-delivery")) "a fare typed for our own driver gave $($ownFare.Status) '$($ownFare.Json.type)', expected 409 no-fare-for-this-delivery"
+$shipD = Invoke-Api POST "$gw/admin/orders/$dOrderId/dispatch/ship" $mayaH @{}
+Assert-Reply $shipD "shipping the own-delivery order" 200
+$deliverD = Invoke-Api POST "$gw/admin/orders/$dOrderId/dispatch/deliver" $mayaH @{}
+Assert-Reply $deliverD "delivering the own-delivery order" 200
+Require ("$($deliverD.Json.status)" -ceq "DELIVERED") "the own-delivery order reads '$($deliverD.Json.status)', expected DELIVERED"
+$shippedPayload = Get-OrderEventPayload $dOrderId "order.shipped"
+Require (($shippedPayload -match '"dispatch":\{') -and ($shippedPayload -notmatch 'farePaid') -and ($shippedPayload -match '"payer":"ORIAH_COLLECTS"')) "order.shipped for the own delivery should carry a dispatch with the payer and NO fare; it reads $shippedPayload"
+Require (($shippedPayload -notmatch 'Chanda') -and ($shippedPayload -notmatch '97765') -and ($shippedPayload -notmatch 'Freedom')) "order.shipped carries personal data: $shippedPayload"
+Write-Host "    the work list holds the paid order; a shopper's correction 403, maya's correction replaced the recipient and street (kept in a history), the slip is money-free and names the box; packed -> a correction is 409 locked; a fare for our own driver 409; shipped, delivered; order.shipped carries a dispatch with no fare and no personal data" -ForegroundColor Gray
+
+Write-Host "[7c/20] A courier Oriah pays (Phase 8): the fare is required at dispatch, recorded once, and is the only cost fact in order.shipped; the delivery charge never moves..." -ForegroundColor Cyan
+$platinumPrice = Publish-DeliveryPrice $townId "PLATINUM" 150.00 $true $false 1 3
+Clear-Cart
+Add-ToCart $saleVariantId 1
+$cGoods = [decimal]90.00
+$cShip = Get-ExpectedShip $cGoods 150.00
+$cTotal = $cGoods + $cShip
+$courierBody = @{ deliveryOption = "PLATINUM"; deliveryTownId = $townId; payer = "ORIAH_COLLECTS"; shippingAddressId = $addrId; recipientName = "Mulenga Chanda"; recipientPhone = "0971234567" }
+$cPreview = Invoke-RestMethod -Method POST -Uri "$gw/checkout/preview" -Headers $aliceH -ContentType "application/json" -Body (ConvertTo-Json $courierBody)
+$cDigest = Get-SaleDigest 1 "PLATINUM" $cShip $townId "ORIAH_COLLECTS"
+Require (($cPreview.quoteDigest -ceq $cDigest) -and (Same-Money $cPreview.total "$cTotal")) "the courier preview reads total=$($cPreview.total) digest=$($cPreview.quoteDigest), expected K$cTotal and this script's own digest $cDigest"
+$cPlaced = Invoke-Api POST "$gw/checkout/confirm" ($aliceH + @{ "Idempotency-Key" = (New-Key "smoke-confirm-courier") }) ($courierBody + @{ quoteDigest = $cPreview.quoteDigest })
+Assert-Reply $cPlaced "confirming the courier order" 200
+$cOrderId = "$($cPlaced.Json.orderId)"
+$cCash = Confirm-Money @{ orderId = $cOrderId; method = "CASH"; gross = $cTotal } (New-Key "smoke-money-courier")
+Assert-Reply $cCash "staff confirming cash for the courier order" 201
+Wait-OrderStatus $cOrderId "PAID" 90 | Out-Null
+$cBefore = Get-Order $cOrderId $aliceH
+Assert-Reply (Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/pack" $mayaH @{}) "packing the courier order" 200
+$noFare = Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/ship" $mayaH @{}
+Require (($noFare.Status -eq 409) -and "$($noFare.Json.type)".EndsWith("/fare-required")) "shipping a courier Oriah pays with no fare gave $($noFare.Status) '$($noFare.Json.type)', expected 409 fare-required"
+$tooBig = Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/ship" $mayaH @{ farePaid = 99999.00 }
+Require ($tooBig.Status -eq 400) "a fare of K99,999 gave $($tooBig.Status), expected 400 (a typo guard)"
+$shipC = Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/ship" $mayaH @{ farePaid = 100.00; reference = "WB-SMOKE-$saleTag" }
+Assert-Reply $shipC "shipping the courier order with its fare" 200
+Require (("$($shipC.Json.status)" -ceq "SHIPPED") -and (Same-Money $shipC.Json.farePaid "100.00") -and ("$($shipC.Json.reference)" -ceq "WB-SMOKE-$saleTag")) "shipping answered $($shipC.Json | ConvertTo-Json -Compress), expected SHIPPED, fare 100.00 (maya may see cost) and the reference"
+$shipCAgain = Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/ship" $mayaH @{ farePaid = 100.00 }
+Require (($shipCAgain.Status -eq 200) -and ($shipCAgain.Json.replay -eq $true)) "shipping again with the same fare gave $($shipCAgain.Status) replay=$($shipCAgain.Json.replay), expected 200 replay"
+$shipCOther = Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/ship" $mayaH @{ farePaid = 120.00 }
+Require (($shipCOther.Status -eq 409) -and "$($shipCOther.Json.type)".EndsWith("/already-dispatched")) "shipping again with ANOTHER fare gave $($shipCOther.Status) '$($shipCOther.Json.type)', expected 409 already-dispatched"
+$cAfter = Get-Order $cOrderId $aliceH
+Require ((Same-Money $cAfter.shippingAmount "$cShip") -and (Same-Money $cAfter.total "$cTotal") -and ("$($cAfter.deliveryPayer)" -ceq "ORIAH_COLLECTS") -and ("$($cAfter.deliveryOption)" -ceq "PLATINUM") -and ("$($cAfter.dispatch.reference)" -ceq "WB-SMOKE-$saleTag")) "the dispatch changed what the shopper was charged or lost the reference: $($cAfter | ConvertTo-Json -Compress -Depth 5)"
+Require ($cAfter.PSObject.Properties.Name -cnotcontains "farePaid") "the shopper's own answer carries the courier fare"
+$courierShipped = Get-OrderEventPayload $cOrderId "order.shipped"
+Require (($courierShipped -match '"farePaid":100\.00') -and ($courierShipped -match '"payer":"ORIAH_COLLECTS"') -and ($courierShipped -match '"dispatchedAt"')) "order.shipped should carry the dispatch with fare 100.00, the payer and the date; it reads $courierShipped"
+Write-Host "    PLATINUM K150 published and placed (K$cTotal), paid in cash; shipping without the fare 409 fare-required, K99,999 400, K100.00 + a reference -> SHIPPED (a repeat is a replay, another fare 409); the shopper's charge, payer and option are untouched; order.shipped alone carries the fare (K100.00)" -ForegroundColor Gray
 
 Write-Host "[8/20] Search index (Kafka-driven) finds product..." -ForegroundColor Cyan
 $searchHit = $false
@@ -1960,11 +2056,11 @@ Write-Host "    review posted; aggregate avg=5.0 count=1" -ForegroundColor Gray
 
 Write-Host "[10/20] /notifications/me shows the sale's order.* events..." -ForegroundColor Cyan
 # alice's notification log keeps every earlier run's too, so a count proves nothing: each check below is tied to an order id THIS run made. The
-# sale order was placed (order.created), paid (order.paid: the customer is told the payment was applied), then fulfilled, shipped and delivered
+# sale order was placed (order.created), paid (order.paid: the customer is told the payment was applied), then fulfilled (packed) and delivered (handed over: a pickup is never shipped)
 # at step 7; the order whose claim was rejected lapsed (order.expired); the one-ring order of step 4b was cancelled (order.cancelled).
 # order.payment_submitted and order.payment_unsettled are facts for staff, not messages: notification declares and ignores them.
 Refresh-Tokens
-$wantForSale = @("order.created", "order.paid", "order.fulfilled", "order.shipped", "order.delivered")
+$wantForSale = @("order.created", "order.paid", "order.fulfilled", "order.delivered")
 $missing = $wantForSale
 $expiredSeen = 0
 $cancelledSeen = 0
@@ -1987,7 +2083,7 @@ if (-not $notifsFound) {
     Write-Error "After 90 s alice's notifications for the sale order $orderId lack [$($missing -join ', ')]; order.expired seen for the rejected order ${orderBId}: $expiredSeen, order.cancelled seen for the cancelled order ${cancelledOrderId}: $cancelledSeen (Kafka, order to notification)"
     exit 1
 }
-Write-Host "    order.created, order.paid, order.fulfilled, order.shipped and order.delivered for the sale order; order.expired for the rejected one; order.cancelled for the cancelled one" -ForegroundColor Gray
+Write-Host "    order.created, order.paid, order.fulfilled and order.delivered (no order.shipped: a pickup) for the sale order; order.expired for the rejected one; order.cancelled for the cancelled one" -ForegroundColor Gray
 
 Write-Host "[11/20] Kafka product_index + 401 without token..." -ForegroundColor Cyan
 $rows = docker exec oriah-postgres-inventory psql -U inventory -d inventory -t -A -c `
@@ -3216,24 +3312,24 @@ try {
 
     # --- 5. the sale consignment's courier bill is corrected too: what the saga SOLD is re-costed ---------------
     # Step 2b's consignment (courier K36.00 shared by units, K1.00 a unit) is corrected to K72.00 (K2.00 a unit): the ring lands at K124.00 / 12 =
-    # 4 x K10.34 + 8 x K10.33, the small box at K36.00 / 12 = K3.00, the large box at K48.00 / 12 = K4.00, K208.00 in all. The three rings that orders A
-    # and D sold left the oldest slice, so they are re-costed to K10.34 (each at its own date); the lots are re-laid over what is left: ring 1 x K10.34 +
-    # 8 x K10.33, small box 11 x K3.00 (A's two came back at the swap, D's one is sold), large box 10 x K4.00 (A's two are sold).
+    # 4 x K10.34 + 8 x K10.33, the small box at K36.00 / 12 = K3.00, the large box at K48.00 / 12 = K4.00, K208.00 in all. The four rings that orders A,
+    # D and Phase 8's dispatch order sold left the oldest slice, so they are re-costed to K10.34 (each at its own date); the lots are re-laid over what is left: ring 8 x K10.33 (the K10.34 slice is all sold),
+    # small box 10 x K3.00 (A's two came back at the swap; D's one and the dispatch order's one are sold), large box 10 x K4.00 (A's two are sold).
     $saleFix = @{ fromRevision = 1; reason = "smoke: the sale consignment's courier bill was K72, not K36"; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 72.00 }) }
     $saleAmended = Invoke-Supplier "POST" "$procBase/consignments/$saleConsignmentId/amendments" $mayaH $saleFix
     if ($saleAmended.Status -ne 201 -or [int]$saleAmended.Json.revision -ne 2 -or -not (Same-Money $saleAmended.Json.allocation.landedTotal "208.00") -or @($saleAmended.Json.recutLines).Count -ne 3) {
         throw "correcting the sale consignment's courier bill gave $($saleAmended.Status), revision '$($saleAmended.Json.revision)', landed '$($saleAmended.Json.allocation.landedTotal)', $(@($saleAmended.Json.recutLines).Count) lines changed: expected 201, 2, 208.00 and 3: $($saleAmended.Json.detail)"
     }
-    $saleRingRecut = Wait-Until { $lots = Get-OpenLots $saleVariantId; if (Lots-Say $lots @("1@10.34", "8@10.33")) { $lots } } 120
-    if (-not $saleRingRecut) { $costFailures += "after the sale consignment's correction the sale ring's open lots are [$(Describe-Lots (Get-OpenLots $saleVariantId))] after 120 s, expected 1@10.34 + 8@10.33" }
-    $saleSmallRecut = Wait-Until { $lots = Get-OpenLots $saleSmallBoxId; if (Lots-Say $lots @("11@3.00")) { $lots } } 120
-    if (-not $saleSmallRecut) { $costFailures += "after the sale consignment's correction the small box's open lots are [$(Describe-Lots (Get-OpenLots $saleSmallBoxId))] after 120 s, expected 11@3.00" }
+    $saleRingRecut = Wait-Until { $lots = Get-OpenLots $saleVariantId; if (Lots-Say $lots @("8@10.33")) { $lots } } 120
+    if (-not $saleRingRecut) { $costFailures += "after the sale consignment's correction the sale ring's open lots are [$(Describe-Lots (Get-OpenLots $saleVariantId))] after 120 s, expected 8@10.33 (the 4 x K10.34 slice is all sold)" }
+    $saleSmallRecut = Wait-Until { $lots = Get-OpenLots $saleSmallBoxId; if (Lots-Say $lots @("10@3.00")) { $lots } } 120
+    if (-not $saleSmallRecut) { $costFailures += "after the sale consignment's correction the small box's open lots are [$(Describe-Lots (Get-OpenLots $saleSmallBoxId))] after 120 s, expected 10@3.00" }
     $saleLargeRecut = Wait-Until { $lots = Get-OpenLots $saleLargeBoxId; if (Lots-Say $lots @("10@4.00")) { $lots } } 120
     if (-not $saleLargeRecut) { $costFailures += "after the sale consignment's correction the large box's open lots are [$(Describe-Lots (Get-OpenLots $saleLargeBoxId))] after 120 s, expected 10@4.00" }
     $soldNow = @(Get-LedgerRows $saleVariantId "SALE")
     $soldWrong = @($soldNow | Where-Object { -not (Same-Money $_.unitCost "10.34") })
-    if ($soldNow.Count -ne 2 -or $soldWrong.Count -ne 0 -or (($soldNow | Measure-Object -Property qtyDelta -Sum).Sum -ne -3)) {
-        $costFailures += "after the correction the sale ring's live SALE ledger rows are [$((@($soldNow | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost)" })) -join ' | ')], expected two live rows, -3 pieces in all, every one re-costed to 10.34: what the saga sold is re-costed, the old rows stay on record"
+    if ($soldNow.Count -ne 3 -or $soldWrong.Count -ne 0 -or (($soldNow | Measure-Object -Property qtyDelta -Sum).Sum -ne -4)) {
+        $costFailures += "after the correction the sale ring's live SALE ledger rows are [$((@($soldNow | ForEach-Object { "$($_.qtyDelta)@$($_.unitCost)" })) -join ' | ')], expected three live rows, -4 pieces in all, every one re-costed to 10.34: what the saga sold is re-costed, the old rows stay on record"
     }
     Assert-Reconciled $saleVariantId "the sale ring"
     Assert-Reconciled $saleSmallBoxId "the small box"
@@ -3418,6 +3514,43 @@ if ($priceFailures.Count -gt 0) {
     exit 1
 }
 Write-Host "    the ring's price (K100, set before any stock existed) read BELOW the K1,502.90 cost with its history, listed as below cost, 403 to alice and 401 with no token; K1,400 with no reason 409 below-landed-cost with the floor, with a reason and the floor 200 recorded with who; a stale save 409; K1,510 OK; dollars 400; the shop shows the price in force; the default box added (floor K1,555.80, a ring refused as a box 400, the box refused for deletion 409 while the ring uses it); K1,580 OK, then the courier's bill corrected UP to K6,000 and the list shows the ring short by K27.98 (floor K1,607.98); 10 boxes set aside (201 refused with 200 available, alice 403), a 195-box write-off cut this product's 5 and named it, the take-back did not remake the promise, history ALLOCATE then WRITE_OFF_CUT, no mismatch; unpublished 200 DRAFT (404 in the shop, the boxes let go, a second unpublish 409), published again; a variant created with a price 400 and the old PATCH a 4xx" -ForegroundColor Gray
+
+Write-Host "[20g/20] A packer (dave: DISPATCH) reads the parcel and sees no money; he can reach nothing else of the shop's (Phase 8, Q29)..." -ForegroundColor Cyan
+try {
+    $daveToken = Get-Jwt "dave"
+} catch {
+    throw "dave cannot sign in: the dev user is in keycloak/dev/oriah-users-0.json and reaches Keycloak only after its volume is reset (docs: CLAUDE.md, Keycloak: docker compose rm -sf keycloak postgres-keycloak; docker volume rm default_postgres-keycloak-data; docker compose up -d keycloak; then restart order). $($_.Exception.Message)"
+}
+$daveH = @{ Authorization = "Bearer $daveToken" }
+$daveQueue = Invoke-Api GET "$gw/admin/orders/dispatch/queue?stage=ON_THE_WAY" $daveH $null
+Assert-Reply $daveQueue "dave's work list (on the way)" 200
+Require (@(@($daveQueue.Json.orders) | Where-Object { $_ -and "$($_.orderId)" -ceq $cOrderId }).Count -eq 1) "dave's ON_THE_WAY list should hold the courier order $cOrderId"
+$daveSlip = Invoke-Api GET "$gw/admin/orders/$cOrderId/dispatch" $daveH $null
+Assert-Reply $daveSlip "dave's packing slip" 200
+$moneyKeys = @("total", "subtotal", "shippingAmount", "discountAmount", "unitPrice", "keycloakId", "farePaid", "deliveryWaived", "paymentIntentId", "user:")
+$daveText = (@($daveQueue.Json, $daveSlip.Json) | ForEach-Object { $_ | ConvertTo-Json -Depth 8 -Compress }) -join " "
+foreach ($k in $moneyKeys) { Require ($daveText -cnotmatch [regex]::Escape($k)) "dave's work list or slip carries '$k': a packer must read no money, no login and no actor (Q29)" }
+Require (("$($daveSlip.Json.delivery.recipientName)" -ceq "Mulenga Chanda") -and ($daveSlip.Json.boxNamesAvailable -eq $true) -and (-not [string]::IsNullOrWhiteSpace("$($daveSlip.Json.lines[0].box.name)")) -and ($daveSlip.Json.fareDue -eq $true)) "dave's slip should say who, where, the box's NAME (resolved through catalog with dave's own token) and that a fare is due: $($daveSlip | ConvertTo-Json -Compress -Depth 6)"
+foreach ($no in @(
+    @{ M = "GET";  U = "$gw/admin/orders" },
+    @{ M = "GET";  U = "$gw/admin/orders/$cOrderId" },
+    @{ M = "POST"; U = "$gw/admin/orders/$cOrderId/transition"; B = @{ targetStatus = "CANCELLED" } },
+    @{ M = "POST"; U = "$gw/admin/orders/$cOrderId/box-swaps"; B = @{} },
+    @{ M = "POST"; U = "$gw/admin/orders/$cOrderId/delivery-waiver"; B = @{ reason = "not mine to give" } },
+    @{ M = "POST"; U = "$gw/admin/orders/$cOrderId/delivery-details"; B = @{} },
+    @{ M = "GET";  U = "$gw/admin/payments/confirmations" },
+    @{ M = "GET";  U = "$gw/admin/customers" },
+    @{ M = "GET";  U = "$gw/admin/costs/lots" },
+    @{ M = "GET";  U = "$gw/admin/orders/dispatch/anything-else" })) {
+    $denied = Invoke-Api $no.M $no.U $daveH $no.B
+    Require ($denied.Status -eq 403) "dave $($no.M) $($no.U) gave $($denied.Status), expected 403: a packer reaches the dispatch work and nothing else"
+}
+$daveDelivers = Invoke-Api POST "$gw/admin/orders/$cOrderId/dispatch/deliver" $daveH @{}
+Assert-Reply $daveDelivers "dave delivering the courier order" 200
+Require (("$($daveDelivers.Json.status)" -ceq "DELIVERED") -and ($daveDelivers.Json.PSObject.Properties.Name -cnotcontains "farePaid")) "dave's delivery answered $($daveDelivers.Json | ConvertTo-Json -Compress): DELIVERED, and no fare for a packer who may not see cost"
+$daveDelivered = Get-OrderEventPayload $cOrderId "order.delivered"
+Require (($daveDelivered -notmatch 'dispatch') -and ($daveDelivered -notmatch 'farePaid')) "order.delivered must not repeat the fare; it reads $daveDelivered"
+Write-Host "    dave read the work list and the slip (who, where, the box by name through his own token, a fare due) with no money, login or actor in them; ten doors answered 403; he delivered the order and was told no fare" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

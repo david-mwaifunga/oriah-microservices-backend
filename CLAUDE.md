@@ -6,8 +6,8 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state (2026-11-14: Phase 7 complete; the **"Built in Phase 7 (Sell)"** block below is the
-contract-level detail).
+state (2026-11-15: Phase 8 complete; the **"Built in Phase 7 (Sell)"** and **"Built in Phase 8
+(Deliver)"** blocks below are the contract-level detail).
 
 ---
 
@@ -369,8 +369,8 @@ money** in `payment` → `order` settles it: the stock is sold and the order is 
   (here and in payment's `GET /api/v1/admin/payments/confirmations/pending`) and counted by the
   `payment.confirmations.stuck` gauge, and payment logs an ERROR once it has announced it ten times
   unanswered. Nothing pushes an alert before Phase 11, so these lists are the alert.
-  A box swap, `POST /api/v1/admin/orders/{id}/box-swaps`, is ORDER_ADMIN's: only a PAID order that
-  has not been fulfilled can be swapped, `reason` is 10 to 200 characters, and a repeat with the
+  A box swap, `POST /api/v1/admin/orders/{id}/box-swaps`, is ORDER_ADMIN's: only a PAID or FULFILLED order (until it is dispatched; Phase 8 moved
+  the cut-off from packing) can be swapped, `reason` is 10 to 200 characters, and a repeat with the
   same `amendmentId` answers the same swap. The card `POST /orders/{id}/pay` is **removed**.
   **Delivery waiver:** `POST /api/v1/admin/orders/{id}/delivery-waiver {reason}` (`DELIVERY_WAIVER`,
   held by `OWNER` and `MANAGER`, like every capability but four; reason 5 to 200 characters) makes delivery free on **one order that is still
@@ -432,6 +432,71 @@ money** in `payment` → `order` settles it: the stock is sold and the order is 
   `oriah.payment.card.enabled` (false) and `oriah.payment.backdate-window` (PT72H).
   `docs/ARCHITECTURE.md` explains each.
 
+### Built in Phase 8 (Deliver): packing, sending and handing over a paid order
+
+Design: `../.codex-tmp/plan-p8-r3.md` (r3 is r2 plus an addendum that wins; r2's section 1 says what the eight-lens design panel changed; section D says what
+Codex's review changed). Slices 8.1 to 8.5 are code (`a37f196` to `a7821e7`, with the Codex findings in `884fbfd`); 8.6 is the live proof and the documents.
+**Proved live on the full container stack on 2026-11-15: the smoke test passed on images rebuilt from the final committed code (`fbc093a`); its first run reached step 20e and failed only on lot pins that the new dispatch sale had moved (fixed in the script), and no ERROR-level line appeared in the order, checkout, inventory, catalog, shipping, notification or gateway logs. The OpenAPI gate is additions-only (no new waiver), six error goldens were added and Postman was regenerated.** The frontend is not changed (`docs/FRONTEND_WORK.md`, Phase 8, says what it must now do).
+
+After staff confirm the money an order is PAID. A packer or driver (job role `DISPATCH`, capability `FULFILMENT_AGENT`, held by the owner and the manager too) packs it,
+sends it by the option the shopper chose recording the courier **fare** when Oriah pays one, and marks it delivered; a pickup is packed and handed over. **The delivery
+charge never changes (Q24).** The dispatch record is the line for refunds (Phase 12) and the source of the fare finance books (Phase 10). **The packer reads no money** (Q29).
+
+- **The steps (order, V11).** `POST /api/v1/admin/orders/{id}/dispatch/pack | ship | deliver` (FULFILMENT_AGENT; `{}` is a valid body): PACKED (PAID to FULFILLED),
+  DISPATCHED (FULFILLED to SHIPPED: the courier is engaged and the parcel handed over; **the refund line**), DELIVERED (SHIPPED to DELIVERED; **a pickup is handed over,
+  FULFILLED to DELIVERED, never shipped**: `OrderStatus` has the edge, `Order.transitionTo` allows it only for a pickup and refuses shipping one). One append-only
+  `order_dispatch_step` row per order and step, with the true date (`occurredAt`, default now, never in the future beyond five minutes, never before the step it
+  follows; beyond 72 hours back `BACKDATE_SALE` and a reason, `oriah.sales.backdate-window`), who, the courier `reference` and the `farePaid`. A step already recorded
+  answers 200 `replay: true` when everything sent matches, 409 `already-recorded` / `already-dispatched` otherwise. Every step takes the order's lock first (`OrderLocks`:
+  `SELECT ... FOR UPDATE`, then load). **The generic `POST .../transition` now only cancels** an unpaid order; FULFILLED, SHIPPED and DELIVERED are 409
+  `use-the-dispatch-steps` (the OpenAPI enum cannot show the narrowing).
+- **The fare** is a fact of the dispatch, keyed on the option sold and who pays (`FareRule`, pure): **required when Oriah pays a courier** (K0.00 is a real answer), refused
+  (409 `no-fare-for-this-delivery`) for a recipient-paid courier and for own delivery (fuel and the driver's pay are Phase 10 expenses), 400 `invalid-fare` beyond K0.00 to
+  K5,000.00 (`oriah.sales.max-fare`) or finer than an ngwee. Written once; a mistake is corrected in finance (Phase 10), never here. It never touches `shipping_amount`,
+  `total`, `delivery_payer` or `delivery_option`. **`order.shipped` alone carries it**, in a trailing `dispatch {dispatchedAt, farePaid?, payer}` (no recipient, address,
+  reference or reason); `order.fulfilled` and `order.delivered` keep their bytes but are dated to the keyed time. **No new event type**, so no consumer declaration.
+  `OrderEventLog.moved(...)` refuses SHIPPED, so a fact-less `order.shipped` cannot be appended. The shopper's own order answer never carries the fare, and the dispatch
+  steps' answer carries it only for a caller holding `COST_VIEWER`.
+- **Own delivery is never recipient-paid** (Q27: no driver cash float; it is income): shipping refuses to draft or edit such a price (409 `own-delivery-is-oriah-collects`),
+  reads an older published one as Oriah-collects only (and does not offer a price only the recipient could pay), and **order refuses it too** (the `Order` constructor and its
+  reading of a quote), so no channel, Phase 9's phone order included, can record one. Yango and the couriers may still be recipient-paid.
+- **Who the parcel is for (order V10, checkout).** `POST /api/v1/checkout/confirm` and order's placement take `recipientName` and `recipientPhone`: **required for every
+  delivered option, refused for a pickup** (400 with `fieldErrors`), judged by one shared rule (`DeliveryContact` in `oriah-quote`: a name needs a letter; a phone is read the
+  way Zambians type it, `097 123 4567`, `+260 (0) 97 ...`, `00260 ...`, and kept as `+260971234567`, anything unreadable refused in plain words). Checkout reads them first (a 4xx
+  from order reaches the shopper as a fault). Order copies the address lines from the address customer answers with (the shopper's own token, no new call) and the option's
+  and town's names from shipping's quote, onto the order, once: plain columns the entity never rewrites. A repeat for another recipient is refused like one for another address
+  (409 `idempotency-key-reused`, `live-order-has-another-address`). **Nothing personal is in any event or log** (tested), and **a cancelled order forgets them**. The quote digest
+  `oriah-quote/2` is unchanged.
+- **Correcting a recipient or address** `POST /api/v1/admin/orders/{id}/delivery-details` is **ORDER_ADMIN's** (never a packer), only while the order is PAID (409
+  `delivery-details-locked` once packed: the parcel is labelled), the whole block replaced, the old kept in an append-only `order_delivery_correction` (V12) with who and why.
+- **What the packer reads.** `GET /api/v1/admin/orders/dispatch/queue?stage=TO_PACK|PACKED|ON_THE_WAY` (FULFILMENT_AGENT, an exact gateway matcher; oldest payment first, at most
+  100; `packable` false for an order with no recipient or address) and `GET /api/v1/admin/orders/{id}/dispatch`, the packing slip (who, where, by what, the lines with their
+  **box named through catalog with the packer's own token**: catalog's variant lookup admits `FULFILMENT_AGENT`; a catalog failure never fails the slip, it says `boxNamesAvailable:
+  false`). **No total, price, discount, waiver, login or actor is on either**; the delivery block is withheld once the order is DELIVERED, except to an order administrator; the slip
+  is refused (409 `order-not-paid`) before anything personal is read for an unpaid or cancelled order; every read is logged (order id and who, no personal data). The order's own
+  answer (shopper and staff) gains `receiptNumber` (closing the old "no reply carries it" gap), `paidAt`, `delivery` and `dispatch{packedAt, dispatchedAt, deliveredAt, reference}`
+  (`DispatchViews`, one query per page).
+- **The box swap, reworked (order V9; Codex confirmed the Phase 7 hole).** A swap is asked of inventory between two short transactions. It now carries a **durable in-flight record**
+  (`order_box_swap_inflight`, one per order, never expires): while it stands, **no other swap, no packing, no shipping and no hand-over** (409 `box-swap-in-progress`, naming
+  the line, the box and the reason so the swap can be repeated exactly). It is cleared only when the swap is recorded, or when inventory refuses in a way that PROVES nothing
+  moved (its own `sale-line-not-found`, the 409s `not-a-box-sale`/`same-box`/`not-packaging`/`insufficient-stock`, a 400/401/403/422); a timeout, 5xx, 408/425/429, a bare 404,
+  `amendment-id-used`, `already-swapped` or an unknown 409 keep it. **The cut-off moves from packing to dispatch** (CLIENT_DECISIONS 4.2: "before dispatch"): PAID or FULFILLED may
+  swap, SHIPPED may not. A swap on a packed order does not force a re-pack (owner question). There is no endpoint to abandon a swap that can never finish: the row is cleared by
+  hand after checking inventory (ERROR is logged on every refused retry).
+- **Gateway and identity:** the exact matcher for the queue; dev user `dave` (`DISPATCH` + `USER`, password `password`, pinned id) in `keycloak/dev/oriah-users-0.json`, applied by
+  the Keycloak volume reset below.
+- **Notification:** a pickup's `order.fulfilled` reads "ready to collect" and its `order.delivered` "collected"; every other text is unchanged.
+- **A Phase 7 defect Codex found and this phase fixed:** a void that arrived while a confirmation was being applied was honoured without asking inventory when the count of failed
+  attempts was zero, but that count rises only after a failure, so a crash between "inventory sold" and "the sale was recorded" could mark a sold sale VOIDED. The driver now
+  always asks inventory.
+- **Problem types added** (409 unless noted): `use-the-dispatch-steps`, `order-not-paid`, `dispatch-step-not-allowed`, `delivery-details-missing`, `fare-required`,
+  `no-fare-for-this-delivery`, `already-recorded`, `already-dispatched`, `box-swap-in-progress`, `delivery-details-locked`, `no-delivery-details`,
+  `own-delivery-is-oriah-collects`; 400 `invalid-fare`, `invalid-occurred-at`, `backdate-reason-required`.
+- **Settings** (`oriah.sales`): `backdate-window` PT72H (the 72-hour rule, now also for dispatch steps), `max-fare` 5000.00.
+- **Not built, recorded (plan-p8-r3 section D, the owner's call or a later phase):** a fare that arrives after hand-over or a booking fee before dispatch (a hand-keyed expense in
+  Phase 10, linked to the order); retention of recipient details; whether a swap after packing needs a re-pack; the payment-void handshake below. **Phase 12** must take `OrderLocks`
+  for any cancellation edge and refuse while a swap is in flight. **Phase 10** adds `deliveryWaivedAmount` to `order.paid` as a compatible field.
+
 ---
 
 ## Stack
@@ -457,7 +522,7 @@ allocator, receiving, invoices, and corrections of a received consignment's cost
 **inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads, since Phase 6 the boxes
 set aside for products and **since Phase 7 the reservations that hold stock for an order**; Flyway V1-V11; **catalog since Phase 6** holds the dated price
 history and the default box, and **since Phase 7 works out each piece's promotion**; Flyway V1-V6 (Phase 7 added none);
-**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver); Flyway V1-V8;
+**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver) **and since Phase 8 its dispatch** (the steps, the packer's list and slip, the recipient, the correction); Flyway V1-V12;
 **payment since Phase 7 records staff-confirmed money**; Flyway V1-V6; **promotion since Phase 7 keeps scoped, dated
 promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
 `checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
@@ -627,7 +692,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20f**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20g**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
 cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
@@ -704,6 +769,8 @@ users-file format), imported beside the realm in the dev stack only:
 - `admin` — email admin@oriah.local, temporary password
   `ChangeMeOnFirstLogin!`, must change it at first sign-in; `OWNER` + `USER`
 - `maya` — password `password`; `OWNER` + `USER`
+- `dave` — password `password`; `DISPATCH` + `USER` (Phase 8): a packer, the account the smoke test uses to prove a packer reads
+  the parcel without seeing money. Applied to a dev stack by the Keycloak volume reset below.
 - `alice` — password `password`; **only `USER`**. The customer account the
   smoke test drives.
 
@@ -835,6 +902,10 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   `docs/MVP_PLAN.md` has the commits, the numbers every service must keep and
   what is accepted for the MVP.
 - **Open after Phase 7 (the owner's call, or a gap to close):**
+  - **Payment void and reference reuse while an order may have consumed the payment** (found by Codex in
+    the Phase 7 review; Phase 8 fixed the settlement-void half, `884fbfd`). A confirmation staff void frees
+    its (method, reference) so it can be keyed again, and `payment` does not ask `order` whether the order
+    already consumed it. Closing it needs a payment-to-order handshake: a Phase 7 follow-up, owner's call on timing.
   - **A shopper who mistypes the payment reference cannot correct it.** A second claim naming
     another reference is 409 `payment-already-submitted`. That does not block the payment: a claim
     is not money, and settlement never compares the claim's reference, so staff who find the real
@@ -850,10 +921,7 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
     K0.00. The database allows it (`total >= 0`) and nothing in `order` or `checkout` refuses it, but
     payment refuses a confirmation with a gross below K0.01, so such an order simply lapses. The
     design file calls it a Phase 9 / Phase 12 matter (Q10).
-  - **The receipt number cannot be read through the API.** It is stored on the paid order and
-    published in `order.paid` v2, but no order reply (the shopper's or staff's) carries it, and the
-    smoke test reads it from order's database. Adding it to the order replies is a backend change
-    that has to come before the frontend can show it.
+  - ✅ **The receipt number is on the order's answers since Phase 8** (`receiptNumber`, with `paidAt`).
 
 Follow-ups found during Phase 1 — **fixed 2026-11-10**:
 
@@ -974,9 +1042,8 @@ to match.
 - **`docs/PROGRESS.md`** — read **from the top**; it is newest-first. **No
   "Next exact action" line in it is live** — both remaining ones are completed
   history and are marked where they sit; one would destroy the finished
-  frontend if executed. Its topmost entry is dated 2026-11-13 and stops at Phase 6; Phase 7's
-  entry comes with slice 7.6, and until then the "Built in Phase 7 (Sell)" block above is the
-  current state.
+  frontend if executed. Its topmost entry is dated 2026-11-15 and covers Phase 8; the "Built in Phase 7 (Sell)" and
+  "Built in Phase 8 (Deliver)" blocks above are the contract-level detail.
 - **`docs/ARCHITECTURE.md`** — decisions and rationale. Accurate on *why*; its
   present-tense claims are frozen at their own dates and the stale ones are now
   marked inline.
@@ -1017,6 +1084,9 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
 - `project-oriah-requirements-locked.md` — `docs/CLIENT_DECISIONS.md` is the
   baseline; tax = ZRA Smart Invoice, deferred past the MVP (core integration-ready);
   delivery per town; promotions per product, category or shop
+- `project-oriah-phase8-deliver.md` — **the MVP plan's Phase 8 "Deliver"**: the dispatch steps, the fare,
+  who the parcel is for, the packer's slip, the box swap in flight; the design file, Codex's findings,
+  traps and the hand-offs to Phases 9, 10 and 12. Read it before touching dispatch
 - `project-oriah-phase7-sell.md` — **the MVP plan's Phase 7 "Sell"**: six slices, the
   design file (`.codex-tmp/plan-p7-FINAL.md`), the decisions that differ from the plan
   text, slice status and the traps found while building it. Read it before touching the
@@ -1036,8 +1106,8 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
   how procurement's memory limit was set
 - `project-oriah-codex-invocation.md` — codex is the CLI only (its MCP server was removed);
   single-quote the `-Command` string, no `-m`, effort high; a run counts only with exit 0 and a
-  non-empty `-o` file. `project-oriah-codex-usage-limit.md` — Codex is out until 2026-11-15
-  07:30; the Phase 6 final-state and Phase 7 reviews are owed
+  non-empty `-o` file. `project-oriah-codex-usage-limit.md` — Codex's usage limit ended 2026-11-15
+  07:30 and every owed review was run (results in `project-oriah-phase8-deliver.md`)
 - `project-oriah-heredoc-backslash-trap.md` — Bash heredocs eat a backslash
   level; use the Edit tool for regex changes
 - `project-oriah-ps51-script-traps.md`, `project-oriah-spring-test-traps.md` — traps that made

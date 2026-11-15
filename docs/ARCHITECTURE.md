@@ -397,6 +397,36 @@ and the below-cost list), repaying held money and correcting a paid confirmation
 
 ---
 
+## Delivering a paid order: three steps on the order, and why (Phase 8, 2026-11-15)
+
+**The question.** After staff confirm the money, someone packs the parcel, sends it and hands it over. What should the order record, and what must the person doing it be
+allowed to read?
+
+**No new status; a dated step instead.** `FULFILLED` already means packed and `SHIPPED` dispatched, so the three steps are rows in an append-only `order_dispatch_step`
+(one per order and step, with the true date, who and the courier reference). The order's status moves with the row in the same transaction, and the order's row lock
+(`OrderLocks`, `SELECT ... FOR UPDATE` then load) makes two packers, a repeat after a lost reply and a box swap queue behind each other. A repeat of a recorded step is
+a 200 `replay` only when it says the same thing. **Why not just the status:** refunds (Phase 12) need the *date* of dispatch, because before it delivery is refunded and after
+it only goods are; and the fare finance books (Phase 10) must hang on a dated fact.
+
+**The fare is a fact of the dispatch, not a change to the sale.** Keyed on the option sold and who pays (`FareRule`, a pure function), it is required when Oriah pays a courier,
+refused when the recipient pays or the delivery is Oriah's own, written once, and carried by one event, `order.shipped`, as a trailing object. A new event type would have to be
+declared by every consumer before the producer emits it; a trailing field on an existing one is compatible. **The delivery charge never moves (Q24)**: the shopper was told the
+price before paying, and a different amount after would be a debt Oriah has no way to collect.
+
+**The packer reads no money (Q29).** The work list and the slip are built from separate, narrow reads that never select a price column, so there is nothing to forget to hide.
+The slip names the box by asking catalog with the packer's own token (a catalog failure shows the box id, never fails the slip). The person's name, phone and address come off the
+packer's screen once the order is delivered.
+
+**A box must not change under a packer's hands.** A box swap asks inventory between two short local transactions, so a crash or timeout leaves it unknown whether inventory moved. A
+durable, never-expiring in-flight record (`order_box_swap_inflight`) refuses packing, sending and hand-over until the same swap is repeated and recorded. It is cleared early
+only when inventory's refusal *proves* nothing moved (a named business refusal, not a timeout or a bare 404). Codex found the one case where a duplicate request could get such a refusal
+for a swap another request had completed; inventory now takes an advisory lock per swap id, so duplicates are one swap and a repeat.
+
+**Own delivery is never recipient-paid** (shipping refuses to price it so, and order refuses to record it): the client does not want drivers carrying cash.
+
+**Personal data stays out of the event log.** Recipient name, phone and address are columns on the order, copied once at placement from the shopper's address, never in an event, a log
+line or an error body, corrected only by an order administrator before packing (the old values kept in `order_delivery_correction`), and nulled when the order is cancelled.
+
 ## Who may do what, and quote-then-commit (Phase 0, 2026-11-09)
 
 Three decisions from Phase 0 of `MVP_PLAN.md`. Commits are in `oriah-api`

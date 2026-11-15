@@ -134,6 +134,16 @@ CASES = [
      {"reason": "no"}),
     ("403-delivery-waiver-by-a-shopper", "POST", "/api/v1/admin/orders/" + MISSING + "/delivery-waiver", "user",
      {"reason": "golden: a shopper may not waive delivery"}),
+    # Phase 8 (deliver): the dispatch steps, the packer's list and slip, and the correction of delivery details. An order nobody has is 404 on each (nothing is
+    # written); a bad stage is refused before the database is read; a shopper holds none of the capabilities. "admin" (maya, OWNER) holds FULFILMENT_AGENT and ORDER_ADMIN.
+    ("404-pack-an-unknown-order", "POST", "/api/v1/admin/orders/" + MISSING + "/dispatch/pack", "admin", {}),
+    ("404-slip-of-an-unknown-order", "GET", "/api/v1/admin/orders/" + MISSING + "/dispatch", "admin", None),
+    ("404-correct-delivery-of-an-unknown-order", "POST", "/api/v1/admin/orders/" + MISSING + "/delivery-details", "admin",
+     {"recipientName": "Mulenga Chanda", "recipientPhone": "0971234567", "reason": "golden: no such order to correct",
+      "address": {"line1": "Plot 12 Great East Road", "city": "Lusaka", "country": "ZM"}}),
+    ("400-dispatch-queue-with-a-bad-stage", "GET", "/api/v1/admin/orders/dispatch/queue?stage=NOT_A_STAGE", "admin", None),
+    ("403-dispatch-queue-as-a-shopper", "GET", "/api/v1/admin/orders/dispatch/queue", "user", None),
+    ("403-pack-as-a-shopper", "POST", "/api/v1/admin/orders/" + MISSING + "/dispatch/pack", "user", {}),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

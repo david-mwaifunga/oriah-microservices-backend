@@ -6,10 +6,10 @@ Backend microservices for **Oriah Jewelry** — a curated jewelry and watch
 not manufacture, repair, resize or re-plate.
 
 **Claude sessions: read `CLAUDE.md` first**, then `docs/MVP_PLAN.md` for the
-current plan and `docs/PROGRESS.md` from the top (it is newest-first). Until
-slice 7.6 adds Phase 7's entry, PROGRESS's newest entry is Phase 6's, and the
-Phase 7 text in the plan predates the build: for the sale, read the "Built in
-Phase 7" block of `CLAUDE.md` and "The sale" in `docs/ARCHITECTURE.md`.
+current plan and `docs/PROGRESS.md` from the top (it is newest-first). PROGRESS's
+newest entry is Phase 8's (deliver). For the sale and its delivery, read the "Built in
+Phase 7" and "Built in Phase 8" blocks of `CLAUDE.md` and "The sale" and
+"Delivering a paid order" in `docs/ARCHITECTURE.md`.
 
 The storefront is `../oriah-web/` — **Next.js 15 + React 19 + TypeScript**, its
 own git repo, with its own `CLAUDE.md`. It is built and running, **but since

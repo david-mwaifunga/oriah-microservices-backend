@@ -2184,6 +2184,33 @@ What the core must keep true so Smart Invoice plugs in after the MVP
 
 ### Phase 8 — Deliver
 
+> **Status: built, 2026-11-15.** Committed in `oriah-api` (not pushed), in six slices: **8.1** order `5b5b2cd` (the box swap that cannot be forgotten); **8.2** the pure rules `a37f196`, shipping `9d83dd3` (own delivery is never recipient-paid), notification `61d0d65`; **8.3** checkout `ef75d3c` and order `3927c27` (who the parcel is for); **8.4** order `fddc7eb` (the three steps and the fare), `c897bfd` (the packer's list and slip), `b2b8f9c` (box names through catalog), `a7821e7` (correcting the recipient or address); **8.5** gateway and the dev packer `349849c`; the Codex findings `884fbfd` and `fbc093a`; **8.6** the smoke test, the documents and this block. The design is `../.codex-tmp/plan-p8-r3.md` (r2 is
+> the design after an eight-lens panel; r3's addendum wins). **Codex reviewed the design (NOT SOUND, 12 findings, all triaged into r3 section D) and the code (NOT SOUND:
+> one real race, fixed in `fbc093a`)**; it also found a real Phase 7 defect, a settlement void honoured without asking inventory, fixed in `884fbfd`. Every pure rule and
+> every slice's behaviour was mutation-checked (98 one-line mutants, each killed, shown equivalent or covered by another test). Proved live on the full container stack on 2026-11-15: the smoke test passed on images rebuilt from the final committed code (`fbc093a`); its first run reached step 20e and failed only on lot pins that the new dispatch sale had moved (fixed in the script), and no ERROR-level line appeared in the order, checkout, inventory, catalog, shipping, notification or gateway logs. The OpenAPI gate is additions-only (no new waiver), six error goldens were added and Postman was regenerated.
+>
+> **What it delivers.** After staff confirm the money an order is PAID; a packer or driver (`DISPATCH`, capability `FULFILMENT_AGENT`) packs it, sends it by the option
+> the shopper chose and **records the courier fare when Oriah pays one**, and marks it delivered; a pickup is packed and handed over. **The delivery charge never changes
+> (Q24) and the packer reads no money (Q29).** The dispatch record is the line for refunds (Phase 12) and the fare finance books (Phase 10).
+> - **Steps** (`POST /api/v1/admin/orders/{id}/dispatch/pack | ship | deliver`): one append-only row per step with the true date, who, the courier reference and the fare. No
+>   new order status: FULFILLED means packed, SHIPPED means dispatched (the refund line), DELIVERED; a pickup goes FULFILLED to DELIVERED and is never shipped. A repeat is safe
+>   (200 `replay`); the generic transition now only cancels.
+> - **The fare** is required when Oriah pays a courier (K0.00 is an answer), refused for a recipient-paid courier and for own delivery, written once, and carried only by
+>   `order.shipped` (`dispatch{dispatchedAt, farePaid, payer}`): **no new event type**, no recipient or address in any event.
+> - **Own delivery is never recipient-paid** (shipping and order both refuse it): the client's Q27, no driver cash float.
+> - **Who the parcel is for:** checkout and order take `recipientName` and `recipientPhone` (required for delivery, refused for a pickup, read the way Zambians type them),
+>   kept on the order with the address text, forgotten on a cancel; an order administrator can correct them until the parcel is packed (history kept).
+> - **What the packer reads:** a work list and a packing slip with the box named through catalog, and **no total, price, discount, waiver, login or actor**; the person is
+>   withheld once delivered. The order's own answer gains `receiptNumber`, `paidAt`, `delivery` and `dispatch`.
+> - **The box swap, reworked:** an in-flight record that never expires keeps a parcel from leaving in a box the books do not say; the cut-off is dispatch, not packing.
+> - **Gateway and identity:** the queue's exact matcher; dev packer `dave`.
+> - **Not built, recorded for the owner or a later phase:** a fare that arrives after hand-over or a booking fee before dispatch; retention of recipient details; whether a
+>   swap after packing needs a re-pack; **payment void + reference reuse while an order may already have consumed it (a payment-to-order handshake, a Phase 7 follow-up)**; no
+>   endpoint to abandon a swap that can never finish (a runbook step); Phase 12 must take `OrderLocks` and refuse while a swap is in flight; Phase 10 adds
+>   `deliveryWaivedAmount` to `order.paid`. Codex's Phase 6 review (SOUND WITH FIXES) left two findings unfixed on purpose: catalog trusts the floor a person says they
+>   acknowledged (staff-only, recorded with who) and its range stops short of a floor made of two K6 billion costs.
+> - `docs/FRONTEND_WORK.md` (Phase 8) says what the frontend must now do; the storefront is not changed.
+
 `SELF_COLLECT` · `OWN_DELIVERY` · `YANGO` · named couriers (Platinum, EMS,
 bus parcel). **Recipient-paid**, where the money never reaches Oriah, so it must
 be representable as neither revenue nor cost.

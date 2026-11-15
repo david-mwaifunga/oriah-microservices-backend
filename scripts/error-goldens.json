@@ -82,6 +82,26 @@
     "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as admin)",
     "status": 400
   },
+  "400-dispatch-queue-with-a-bad-stage": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "stage must be TO_PACK, PACKED or ON_THE_WAY",
+      "instance": "/api/v1/admin/orders/dispatch/queue",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/bad-request"
+    },
+    "request": "GET /api/v1/admin/orders/dispatch/queue?stage=NOT_A_STAGE  (as admin)",
+    "status": 400
+  },
   "400-malformed-uuid-path": {
     "contentType": "application/problem+json",
     "problem": {
@@ -348,6 +368,44 @@
     "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as user)",
     "status": 403
   },
+  "403-dispatch-queue-as-a-shopper": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/orders/dispatch/queue",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/orders/dispatch/queue  (as user)",
+    "status": 403
+  },
+  "403-pack-as-a-shopper": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/orders/<uuid>/dispatch/pack",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/dispatch/pack  (as user)",
+    "status": 403
+  },
   "403-pricing-list-as-plain-user": {
     "contentType": "application/problem+json",
     "problem": {
@@ -483,6 +541,26 @@
     "request": "POST /api/v1/admin/orders/<uuid>/box-swaps  (as admin)",
     "status": 404
   },
+  "404-correct-delivery-of-an-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/delivery-details",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/delivery-details  (as admin)",
+    "status": 404
+  },
   "404-delivery-waiver-on-an-unknown-order": {
     "contentType": "application/problem+json",
     "problem": {
@@ -501,6 +579,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as admin)",
+    "status": 404
+  },
+  "404-pack-an-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/dispatch/pack",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/dispatch/pack  (as admin)",
     "status": 404
   },
   "404-payment-claim-for-an-unknown-order": {
@@ -621,6 +719,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/shipping/rates  (as user)",
+    "status": 404
+  },
+  "404-slip-of-an-unknown-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/dispatch",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/orders/<uuid>/dispatch  (as admin)",
     "status": 404
   },
   "404-unknown-consignment": {

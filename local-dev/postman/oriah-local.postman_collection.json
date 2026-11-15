@@ -3259,6 +3259,37 @@
           }
         },
         {
+          "name": "The packer's work list: paid orders to pack, packed, or on the way",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/dispatch/queue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "dispatch",
+                "queue"
+              ],
+              "query": [
+                {
+                  "key": "stage",
+                  "value": "",
+                  "disabled": true,
+                  "description": "TO_PACK (default), PACKED or ON_THE_WAY"
+                }
+              ],
+              "variable": []
+            },
+            "description": "Oldest payment first, at most 100. A row says who the parcel is for, by what option and to which town, how many pieces, and whether it can be packed (an order placed before Phase 8 has no recipient or address kept and is marked not packable). No money, no logins."
+          }
+        },
+        {
           "name": "Confirmed money that has not paid its sale",
           "request": {
             "method": "GET",
@@ -3357,6 +3388,45 @@
           }
         },
         {
+          "name": "Correct who a paid order is for and where it goes, before it is packed",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/delivery-details",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "delivery-details"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipientName\": \"\",\n  \"recipientPhone\": \"\",\n  \"address\": {\n    \"line1\": \"\",\n    \"line2\": \"\",\n    \"city\": \"\",\n    \"state\": \"\",\n    \"postalCode\": \"\",\n    \"country\": \"\"\n  },\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Replaces the whole delivery block (nothing left out is kept); the previous details, who changed them and why are kept in an append-only history, and nothing is published. Only a PAID order that is not packed yet: once packed the label says where it goes. The option and the town the delivery was priced for are not changed here."
+          }
+        },
+        {
           "name": "Make delivery free on an order that is still waiting for a payment reference",
           "request": {
             "method": "POST",
@@ -3393,6 +3463,156 @@
               }
             },
             "description": "Delivery becomes K0.00 and the order's total falls by exactly what delivery would have cost; who, why, when and how much are kept on the order (delivery revenue given up, never goods revenue). Only an order that is CREATED with its pieces held and no money being applied: once a payment is claimed, being applied or made, the total cannot move. Staff must then confirm the new, lower total. One waiver per order."
+          }
+        },
+        {
+          "name": "The packing slip: who it is for, where it goes, what is in the parcel, and where the order stands",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/dispatch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "dispatch"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Only for an order that is paid. The delivery block (name, phone, address) is withheld once the order is delivered, except to an order administrator. No money, no logins, no actors; the fare only for a caller who may see cost (COST_VIEWER)."
+          }
+        },
+        {
+          "name": "Record that the order was delivered (SHIPPED to DELIVERED); a pickup is handed over (FULFILLED to DELIVERED)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/dispatch/deliver",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "dispatch",
+                "deliver"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "A pickup's hand-over is its dispatch, so it is refused while a box swap on the order is with inventory."
+          }
+        },
+        {
+          "name": "Pack a paid order (PAID to FULFILLED)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/dispatch/pack",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "dispatch",
+                "pack"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Records that the order was packed, at the time given (default now). A delivered order must have its recipient and address kept. A step already recorded answers 200 with replay: true when what you send matches, 409 otherwise."
+          }
+        },
+        {
+          "name": "Send a packed order (FULFILLED to SHIPPED), recording the courier fare when Oriah pays it",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/dispatch/ship",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "dispatch",
+                "ship"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"\",\n  \"farePaid\": 0.0,\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The parcel goes by the option the shopper chose. When Oriah pays the courier the fare it charged is required (K0.00 if nothing); when the recipient pays the courier, or it is Oriah's own delivery, a fare is refused. Never for a pickup (hand it over). Refused while a box swap on the order is with inventory. The delivery charge is never changed."
           }
         },
         {
@@ -3461,7 +3681,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"currency\": \"\",\n  \"items\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"title\": \"\",\n      \"quantity\": 1,\n      \"unitPrice\": 0.0\n    }\n  ],\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\",\n  \"quoteDigest\": \"\"\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"currency\": \"\",\n  \"items\": [\n    {\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"title\": \"\",\n      \"quantity\": 1,\n      \"unitPrice\": 0.0\n    }\n  ],\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\",\n  \"quoteDigest\": \"\",\n  \"recipientName\": \"\",\n  \"recipientPhone\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -4414,7 +4634,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\",\n  \"quoteDigest\": \"\"\n}",
+              "raw": "{\n  \"shippingAddressId\": \"00000000-0000-0000-0000-000000000000\",\n  \"deliveryOption\": \"\",\n  \"deliveryTownId\": \"00000000-0000-0000-0000-000000000000\",\n  \"payer\": \"\",\n  \"quoteDigest\": \"\",\n  \"recipientName\": \"\",\n  \"recipientPhone\": \"\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
