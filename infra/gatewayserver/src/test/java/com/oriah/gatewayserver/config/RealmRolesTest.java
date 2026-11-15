@@ -278,7 +278,7 @@ class RealmRolesTest {
     void theDevPeopleAreTheOnesTheTestsSignInAs() {
         Map<String, JsonNode> byName = users(devUsers).stream()
                 .collect(Collectors.toMap(u -> u.path("username").asText(), u -> u));
-        assertThat(byName).containsKeys("maya", "admin", "alice", "dave");
+        assertThat(byName).containsKeys("maya", "admin", "alice", "dave", "sara");
 
         // maya: every admin surface, AND a second customer in the smoke test's
         // money-path probes -- so USER as well. Imported users get no default
@@ -293,6 +293,10 @@ class RealmRolesTest {
         // who, where and what is in the parcel without seeing money (Q29) and can reach nothing else of the shop's.
         assertThat(realmRolesOf(byName.get("dave"))).containsExactlyInAnyOrder("DISPATCH", USER);
         assertThat(byName.get("dave").path("requiredActions").isMissingNode() || byName.get("dave").path("requiredActions").isEmpty()).isTrue();
+        // sara: a salesperson (Phase 9) and a customer account, nothing more: SALES_AGENT without BACKDATE_SALE, so the smoke test can prove she records a sale,
+        // is refused a paper sale older than 72 hours, and reaches no cost, no pricing and no order administration (Q29).
+        assertThat(realmRolesOf(byName.get("sara"))).containsExactlyInAnyOrder("SALES", USER);
+        assertThat(byName.get("sara").path("requiredActions").isMissingNode() || byName.get("sara").path("requiredActions").isEmpty()).isTrue();
     }
 
     @Test

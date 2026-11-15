@@ -69,6 +69,23 @@
         }
       ],
       "realmRoles": ["DISPATCH", "USER"]
+    },
+    {
+      "id": "8e1c4b7a-2d95-4c30-b6a1-9f0e3d5a7c12",
+      "username": "sara",
+      "enabled": true,
+      "email": "sara@oriah.local",
+      "emailVerified": true,
+      "firstName": "Sara",
+      "lastName": "Sales",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["SALES", "USER"]
     }
   ]
 }
