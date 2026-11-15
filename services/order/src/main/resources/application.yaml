@@ -137,6 +137,11 @@ spring:
           catalog:
             connect-timeout: 1000
             read-timeout: 3000
+          # The staff price read of a recorded sale (Phase 9): asked once per sale on the request thread with the person's token, never on the shopper's
+          # placement path (so it does not count in WritePathBudgetTest). One batch of at most 100 ids and a promotion lookup behind it: 0.5s to connect, 4s to answer.
+          catalogAsOf:
+            connect-timeout: 500
+            read-timeout: 4000
           # 0.5s to connect, 2s to answer: see "Where those 2s came from"
           # above. WritePathBudgetTest.shippingHasItsOwnTimeouts pins the
           # numbers; OutboundIdentityTest.aHangingShippingTimesOut shows a

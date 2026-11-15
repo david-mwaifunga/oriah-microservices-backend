@@ -17,6 +17,7 @@ import feign.RequestTemplate;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 
 /**
@@ -43,6 +44,19 @@ public final class SaleStubs {
     public static void shippingDelivers(ShippingClient shipping, String option, UUID town, String payer, String amount, String currency) {
         doAnswer(inv -> new ShippingClient.QuoteReply(town, "Kabwe", option, "Oriah delivery", payer, new BigDecimal(amount), currency, UUID.randomUUID()))
                 .when(shipping).quote(any());
+    }
+
+    /** Shipping's list of where Oriah can deliver and by what, with no price: this one town (in Copperbelt) and the four seeded options. */
+    public static void shippingPlaces(ShippingClient shipping, UUID town) {
+        doReturn(new ShippingClient.Places(List.of(new ShippingClient.Places.Province(UUID.randomUUID(), "Central", List.of(new ShippingClient.Places.Town(town, "Kabwe")))),
+                List.of(new ShippingClient.Places.Option("OWN_DELIVERY", "Oriah delivery", "OWN_DELIVERY"), new ShippingClient.Places.Option("YANGO", "Yango", "COURIER"),
+                        new ShippingClient.Places.Option("PLATINUM", "Platinum", "COURIER"), new ShippingClient.Places.Option("EMS", "EMS", "COURIER"))))
+                .when(shipping).places();
+    }
+
+    /** Shipping having no published price for what is asked: 409 town-not-offered, as it answers for a town nobody has priced. */
+    public static void shippingNotOffered(ShippingClient shipping) {
+        doThrow(feign(409, "{\"type\":\"https://oriah.dev/problems/town-not-offered\",\"title\":\"Conflict\",\"status\":409,\"detail\":\"not offered\"}")).when(shipping).quote(any());
     }
 
     /** Inventory holding whatever it is asked to hold, for ten minutes from now, with one box (BOX_VARIANT) per piece. */

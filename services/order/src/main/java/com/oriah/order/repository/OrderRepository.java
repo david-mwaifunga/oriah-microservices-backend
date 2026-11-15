@@ -23,6 +23,9 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
     @EntityGraph(attributePaths = "items")
     Optional<Order> findByKeycloakIdAndIdempotencyKey(String keycloakId, String idempotencyKey);
 
+    /** A recorded (phone) order by its Idempotency-Key: one key is used once among them, whoever recorded them (V13's unique index). */
+    Optional<Order> findByChannelAndIdempotencyKey(com.oriah.order.model.Channel channel, String idempotencyKey);
+
     /** The shopper's live order for this very bag (the quote's fingerprint), if one is still waiting for payment. */
     @EntityGraph(attributePaths = "items")
     Optional<Order> findFirstByKeycloakIdAndQuoteDigestAndStatusIn(String keycloakId, String quoteDigest,

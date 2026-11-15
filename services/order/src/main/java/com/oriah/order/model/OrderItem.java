@@ -79,6 +79,15 @@ public class OrderItem extends BaseEntity {
         this.boxLineId = UUID.randomUUID();
     }
 
+    /**
+     * The box the person recording a sale chose for this line (Phase 9), kept BEFORE inventory is asked so a hold finished later, under the same reservation
+     * id, asks for the same box. Inventory answers with the box it took and {@link #holdBox} remembers that one. Never called for a web order: its box is the
+     * product's default, which inventory picks.
+     */
+    public void requestBox(UUID boxVariantId) {
+        this.boxVariantId = boxVariantId;
+    }
+
     /** Remembers the box inventory chose for this line when it held the pieces. */
     void holdBox(UUID boxVariantId) {
         this.boxVariantId = boxVariantId;

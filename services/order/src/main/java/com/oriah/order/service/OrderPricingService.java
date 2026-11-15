@@ -153,60 +153,11 @@ public class OrderPricingService {
                                         e -> e,
                                         (a, b) -> a));
 
-        List<PricedLine> lines = new ArrayList<>();
-        BigDecimal subtotal = BigDecimal.ZERO.setScale(MONEY_SCALE);
-        BigDecimal discount = BigDecimal.ZERO.setScale(MONEY_SCALE);
-        String currency = null;
-        List<UUID> unsellable = new ArrayList<>();
-
-        // Iterated over the REQUEST's lines, not over the response's entries:
-        // two lines may name the same variant, and catalog was asked for
-        // distinct ids. Zipping the response back by index would silently drop
-        // the second line and undercharge by its whole value.
-        for (PlaceOrderRequest.LineItem item : req.items()) {
-            CatalogPricingClient.Entry entry = byVariant.get(item.variantId());
-            if (entry == null || !entry.isSellable()) {
-                unsellable.add(item.variantId());
-                continue;
-            }
-
-            String entryCurrency = entry.currency().toUpperCase();
-            if (currency == null) {
-                currency = entryCurrency;
-            } else if (!currency.equals(entryCurrency)) {
-                log.warn("Refusing order: lines mix {} and {}", currency, entryCurrency);
-                throw new MixedCurrencyException();
-            }
-
-            BigDecimal price = entry.unitPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
-            requireClaimHolds(item, price, entryCurrency, req.currency());
-
-            // A promotion takes a fixed amount off each PIECE, worked out by catalog and stored per line; it is named only where it discounts.
-            BigDecimal discountPerPiece = entry.discountOrZero().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
-            UUID promotionId = discountPerPiece.signum() > 0 ? entry.promotionId() : null;
-            lines.add(new PricedLine(item.variantId(), entry.productId(), entry.variantTitle(),
-                    item.quantity(), price, discountPerPiece, promotionId));
-            subtotal = subtotal.add(
-                    price.multiply(BigDecimal.valueOf(item.quantity()))
-                            .setScale(MONEY_SCALE, RoundingMode.HALF_UP));
-            discount = discount.add(
-                    discountPerPiece.multiply(BigDecimal.valueOf(item.quantity()))
-                            .setScale(MONEY_SCALE, RoundingMode.HALF_UP));
-        }
-
-        if (!unsellable.isEmpty()) {
-            log.warn("Refusing order: {} line(s) not sellable, variantIds={}",
-                    unsellable.size(), unsellable);
-            throw new BagNotPurchasableException(unsellable);
-        }
-
-        if (subtotal.compareTo(MAX_TOTAL) > 0) {
-            // No figure in the message: the cap is an implementation limit, and
-            // a caller who reached it learns nothing useful from the number.
-            log.error("Refusing order: repriced subtotal {} exceeds the {} the column holds",
-                    subtotal, MAX_TOTAL);
-            throw new TotalTooLargeException();
-        }
+        Goods goods = priceGoods(req.items().stream().map(i -> new Ask(i.variantId(), i.quantity(), i.unitPrice())).toList(), byVariant, req.currency());
+        List<PricedLine> lines = goods.lines();
+        BigDecimal subtotal = goods.subtotal();
+        BigDecimal discount = goods.discount();
+        String currency = goods.currency();
 
         // Delivery is priced by SHIPPING, for the town and payer the shopper
         // chose, on the goods after discount (that is what a free-delivery
@@ -241,6 +192,84 @@ public class OrderPricingService {
         return new PricedOrder(List.copyOf(lines), subtotal, currency, quote, collect ? null : delivery.optionName(), collect ? null : delivery.townName());
     }
 
+    /** One line asked for: the piece, how many, and (a shopper's order only) the price the caller CLAIMS, which can only cause a refusal. */
+    public record Ask(UUID variantId, int quantity, BigDecimal claimedUnitPrice) {
+    }
+
+    /** The lines as priced, with their sums: the subtotal at list prices, the discount (per piece, summed) and the one currency of every line. */
+    public record Goods(List<PricedLine> lines, BigDecimal subtotal, BigDecimal discount, String currency) {
+    }
+
+    /**
+     * Prices the lines asked for from catalog's answers, one line per ask in order (two lines may name one variant). Shared by a shopper's order (catalog's
+     * storefront read, now) and a recorded sale (catalog's staff read at the sale's date): the rules about a sellable entry, one currency, the list price, the
+     * promotion's discount per piece and the ceiling are the same whoever asks.
+     *
+     * @param claimedCurrency a currency the caller stated, checked against catalog's (null when none was)
+     * @throws BagNotPurchasableException  a line is not sellable -- 409
+     * @throws PriceClaimRejectedException a stated price or currency disagrees with catalog's -- 409
+     * @throws MixedCurrencyException      the lines are not all one currency -- 409
+     * @throws TotalTooLargeException      the sum exceeds the column -- 422
+     */
+    public Goods priceGoods(List<Ask> asked, Map<UUID, CatalogPricingClient.Entry> byVariant, String claimedCurrency) {
+        List<PricedLine> lines = new ArrayList<>();
+        BigDecimal subtotal = BigDecimal.ZERO.setScale(MONEY_SCALE);
+        BigDecimal discount = BigDecimal.ZERO.setScale(MONEY_SCALE);
+        String currency = null;
+        List<UUID> unsellable = new ArrayList<>();
+
+        // Iterated over the REQUEST's lines, not over the response's entries:
+        // two lines may name the same variant, and catalog was asked for
+        // distinct ids. Zipping the response back by index would silently drop
+        // the second line and undercharge by its whole value.
+        for (Ask item : asked) {
+            CatalogPricingClient.Entry entry = byVariant.get(item.variantId());
+            if (entry == null || !entry.isSellable()) {
+                unsellable.add(item.variantId());
+                continue;
+            }
+
+            String entryCurrency = entry.currency().toUpperCase();
+            if (currency == null) {
+                currency = entryCurrency;
+            } else if (!currency.equals(entryCurrency)) {
+                log.warn("Refusing order: lines mix {} and {}", currency, entryCurrency);
+                throw new MixedCurrencyException();
+            }
+
+            BigDecimal price = entry.unitPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+            requireClaimHolds(item, price, entryCurrency, claimedCurrency);
+
+            // A promotion takes a fixed amount off each PIECE, worked out by catalog and stored per line; it is named only where it discounts.
+            BigDecimal discountPerPiece = entry.discountOrZero().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+            UUID promotionId = discountPerPiece.signum() > 0 ? entry.promotionId() : null;
+            lines.add(new PricedLine(item.variantId(), entry.productId(), entry.variantTitle(),
+                    item.quantity(), price, discountPerPiece, promotionId));
+            subtotal = subtotal.add(
+                    price.multiply(BigDecimal.valueOf(item.quantity()))
+                            .setScale(MONEY_SCALE, RoundingMode.HALF_UP));
+            discount = discount.add(
+                    discountPerPiece.multiply(BigDecimal.valueOf(item.quantity()))
+                            .setScale(MONEY_SCALE, RoundingMode.HALF_UP));
+        }
+
+        if (!unsellable.isEmpty()) {
+            log.warn("Refusing order: {} line(s) not sellable, variantIds={}",
+                    unsellable.size(), unsellable);
+            throw new BagNotPurchasableException(unsellable);
+        }
+
+        if (subtotal.compareTo(MAX_TOTAL) > 0) {
+            // No figure in the message: the cap is an implementation limit, and
+            // a caller who reached it learns nothing useful from the number.
+            log.error("Refusing order: repriced subtotal {} exceeds the {} the column holds",
+                    subtotal, MAX_TOTAL);
+            throw new TotalTooLargeException();
+        }
+
+        return new Goods(List.copyOf(lines), subtotal, discount, currency);
+    }
+
     /**
      * The caller's stated price and currency, checked against catalog's.
      *
@@ -250,12 +279,12 @@ public class OrderPricingService {
      * formatting difference is not a money difference, and refusing one would
      * be a refusal nobody could act on.
      */
-    private void requireClaimHolds(PlaceOrderRequest.LineItem item,
+    private void requireClaimHolds(Ask item,
                                    BigDecimal catalogPrice,
                                    String catalogCurrency,
                                    String claimedCurrency) {
-        if (item.unitPrice() != null) {
-            BigDecimal claimed = item.unitPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        if (item.claimedUnitPrice() != null) {
+            BigDecimal claimed = item.claimedUnitPrice().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
             if (claimed.compareTo(catalogPrice) != 0) {
                 log.warn("Refusing order: variantId={} claimed at {} but catalog prices it at {}",
                         item.variantId(), claimed, catalogPrice);

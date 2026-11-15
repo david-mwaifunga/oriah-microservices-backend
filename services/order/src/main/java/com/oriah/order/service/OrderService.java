@@ -112,21 +112,34 @@ public class OrderService {
             // The same placement was made before (the same key, or the same bag still waiting for payment): that order, not a second hold.
             return new Placement(begun.order(), false);
         }
+        return new Placement(finishPlacement(begun.order(), actor), true);
+    }
+
+    /**
+     * Takes the hold of an order written PENDING and announces it: the second half of every placement, a shopper's and a recorded sale's alike (Phase 9
+     * extracted it unchanged). Not transactional, like {@link #placeOrder}: inventory is asked outside any transaction.
+     *
+     * @param pending the order as {@link OrderWriter} wrote it (or a placement that was never finished, found again by its repeat)
+     * @param actor   who placed it, {@code user:<keycloak subject>}
+     * @return the order, HELD and announced
+     * @throws SalesProblem inventory refused the hold (no stock, no box): the PENDING order is removed, it never existed
+     */
+    public Order finishPlacement(Order pending, String actor) {
         InventoryClient.Reservation reservation;
         try {
-            reservation = holds.hold(begun.order());
+            reservation = holds.hold(pending);
         } catch (SalesProblem refused) {
             // Inventory said no (no stock, no box): the PENDING order was never announced, so it never existed.
-            writer.discardPending(begun.order().id());
+            writer.discardPending(pending.id());
             throw refused;
         }
-        // Any other failure (inventory silent, an error of ours) leaves the PENDING order for the shopper's repeat, or the hold job, to finish.
+        // Any other failure (inventory silent, an error of ours) leaves the PENDING order for the repeat, or the hold job, to finish.
         try {
-            return new Placement(writer.markHeld(begun.order().id(), reservation, actor), true);
+            return writer.markHeld(pending.id(), reservation, actor);
         } catch (OrderWriter.PlacementAbandonedException abandoned) {
             // The hold job gave this placement up while inventory was answering. Nothing is placed; the hold just taken is given back (the job's own
-            // release may have come before it was taken), and the shopper asks again.
-            log.info("Placement of order {} was given up by the hold job while it was being finished: {}", begun.order().id(), abandoned.getMessage());
+            // release may have come before it was taken), and the caller asks again.
+            log.info("Placement of order {} was given up by the hold job while it was being finished: {}", pending.id(), abandoned.getMessage());
             try {
                 holds.release(reservation.reservationId());
             } catch (RuntimeException ignored) {

@@ -3,7 +3,10 @@ package com.oriah.order.client;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+import java.util.List;
+
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
@@ -19,6 +22,29 @@ public interface ShippingClient {
 
     @PostMapping("/api/v1/shipping/quote")
     QuoteReply quote(@RequestBody QuoteAsk body);
+
+    /**
+     * Where Oriah can deliver and by what, with no price (Phase 9): the towns and options that are switched on. A delivery agreed by phone is checked against
+     * it (the website offers only published prices; a phone caller may be in a town nobody has priced yet).
+     */
+    @GetMapping("/api/v1/shipping/places")
+    Places places();
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Places(List<Province> provinces, List<Option> options) {
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        public record Province(UUID id, String name, List<Town> towns) {
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        public record Town(UUID id, String name) {
+        }
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        public record Option(String code, String name, String kind) {
+        }
+    }
 
     /**
      * @param townId     the town the parcel goes to; absent for self-collect

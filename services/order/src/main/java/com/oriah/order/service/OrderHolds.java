@@ -50,7 +50,11 @@ public class OrderHolds {
 
     /** The order's lines, as inventory is asked for them: each under the order line's own id, its box under the box-line id minted with it. */
     static InventoryClient.ReserveAsk askFor(Order order) {
-        return askFor(order, order.reservationId(), false);
+        // A recorded order's box choice is on its lines before inventory is asked (null on every web order, where inventory picks the product's default).
+        List<InventoryClient.LineAsk> lines = order.items().stream()
+                .map(i -> new InventoryClient.LineAsk(i.id(), i.variantId(), i.productId(), i.quantity(), i.boxLineId(), i.boxVariantId()))
+                .toList();
+        return new InventoryClient.ReserveAsk(order.reservationId(), order.id(), lines, null);
     }
 
     /**

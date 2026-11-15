@@ -102,6 +102,7 @@ class OutboundIdentityTest {
         r.add("spring.cloud.openfeign.client.config.inventory.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.catalog.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.catalogLookup.url", WM::baseUrl);
+        r.add("spring.cloud.openfeign.client.config.catalogAsOf.url", WM::baseUrl);
         r.add("spring.cloud.openfeign.client.config.customer.url", WM::baseUrl);
         r.add("spring.security.oauth2.client.provider.keycloak.token-uri", () -> WM.baseUrl() + TOKEN_PATH);
         r.add("spring.security.oauth2.client.registration.oriah-admin.client-secret", () -> "test-secret");
@@ -265,6 +266,38 @@ class OutboundIdentityTest {
         var calls = WM.findAll(postRequestedFor(urlEqualTo("/api/v1/admin/variants/lookup")));
         assertThat(calls).hasSize(1);
         assertThat(authorizationOf(calls.get(0))).containsExactly("Bearer packer-token");
+    }
+
+    @Test
+    @DisplayName("catalog's staff price read (the as-of price of a recorded sale) receives the SALESPERSON's own token -- once, and never order's machine token; shipping's places list gets the machine token")
+    void aRecordedSaleAsksCatalogAsThePersonAndShippingAsTheService() throws Exception {
+        UUID town = UUID.randomUUID();
+        WM.stubFor(post(urlEqualTo("/api/v1/admin/variants/pricing-as-of")).willReturn(okJson(
+                "{\"at\":\"2026-11-15T10:00:00Z\",\"results\":[{\"variantId\":\"" + VARIANT + "\",\"status\":\"PRICED\",\"productId\":\"" + UUID.randomUUID()
+                        + "\",\"productTitle\":\"Aurelia\",\"variantTitle\":\"Aurelia 18k\",\"unitPrice\":100.00,\"currency\":\"ZMW\",\"priceId\":\"" + UUID.randomUUID()
+                        + "\",\"discountPerPiece\":0.00,\"netUnitPrice\":100.00}]}")));
+        WM.stubFor(get(urlEqualTo("/api/v1/shipping/places")).willReturn(okJson(
+                "{\"provinces\":[{\"id\":\"" + UUID.randomUUID() + "\",\"name\":\"Central\",\"towns\":[{\"id\":\"" + town + "\",\"name\":\"Kabwe\"}]}],"
+                        + "\"options\":[{\"code\":\"YANGO\",\"name\":\"Yango\",\"kind\":\"COURIER\"}]}")));
+        WM.stubFor(post(urlEqualTo(SHIPPING_QUOTE)).willReturn(com.github.tomakehurst.wiremock.client.WireMock.aResponse().withStatus(409).withHeader("Content-Type", "application/problem+json")
+                        .withBody("{\"type\":\"https://oriah.dev/problems/town-not-offered\",\"status\":409}")));
+        String body = "{\"kind\":\"LIVE_PHONE\",\"caller\":{\"name\":\"Mulenga Chanda\",\"phone\":\"0971234567\"},\"lines\":[{\"variantId\":\"" + VARIANT + "\",\"quantity\":1}],"
+                + "\"delivery\":{\"mode\":\"AGREED\",\"optionCode\":\"YANGO\",\"townId\":\"" + town + "\",\"payer\":\"ORIAH_COLLECTS\",\"agreedAmount\":50.00},"
+                + "\"address\":{\"line1\":\"Plot 12\",\"country\":\"ZM\"},\"expectedTotal\":150.00}";
+
+        var result = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/admin/orders/recorded")
+                .with(jwt().jwt(j -> j.tokenValue("sam-token").subject("kc-sam")).authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT")))
+                .header("Idempotency-Key", "identity-1").contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
+
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(201);
+        var asOf = WM.findAll(postRequestedFor(urlEqualTo("/api/v1/admin/variants/pricing-as-of")));
+        assertThat(asOf).hasSize(1);
+        assertThat(authorizationOf(asOf.get(0))).containsExactly("Bearer sam-token");
+        var places = WM.findAll(getRequestedFor(urlEqualTo("/api/v1/shipping/places")));
+        assertThat(places).hasSize(1);
+        assertThat(authorizationOf(places.get(0))).containsExactly("Bearer machine-token");
+        var holds = WM.findAll(postRequestedFor(urlEqualTo(RESERVE)));
+        assertThat(authorizationOf(holds.get(0))).containsExactly("Bearer machine-token");
     }
 
     @Test
