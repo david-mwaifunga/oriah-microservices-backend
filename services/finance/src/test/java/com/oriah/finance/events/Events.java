@@ -262,4 +262,148 @@ final class Events {
         return new EventContext(UUID.randomUUID(), "consignment.period_costs", "consignment", consignment.toString(), revision, 200L, occurredAt, occurredAt.plusSeconds(1),
                 "user:kc-maya", "procurement", 1);
     }
+
+    // ------------------------------------------------------------------ inventory
+
+    /** One row of the stock ledger as inventory announces it. */
+    static final class Stock {
+        long movementId = 1000 + (System.nanoTime() % 1_000_000);
+        UUID actionId = UUID.randomUUID();
+        String actionKind = "SALE";
+        String reason = "SALE";
+        String role = "ORIGINAL";
+        String kind = "SELLABLE";
+        UUID productId = UUID.randomUUID();
+        int qtyDelta = -1;
+        String unitCost = "100.00";
+        boolean estimated = false;
+        Long reversesMovementId;
+        Long replacesMovementId;
+        UUID reversesActionId;
+        String reversesReason;
+        Instant occurredAt = Instant.parse("2026-10-10T10:00:00Z");
+        final Map<String, Object> overrides = new LinkedHashMap<>();
+
+        Stock movement(long v) { movementId = v; return this; }
+        Stock action(UUID v) { actionId = v; return this; }
+        Stock sale(String kind, int qty, String cost) { actionKind = "SALE"; reason = "SALE"; this.kind = kind; qtyDelta = qty; unitCost = cost; return this; }
+        Stock writeOff(String reason, int qty, String cost) { actionKind = "WRITE_OFF"; this.reason = reason; qtyDelta = qty; unitCost = cost; return this; }
+        Stock takeBack(String reversesReason, int qty, String cost) {
+            actionKind = "TAKE_BACK"; reason = "TAKEN_BACK"; qtyDelta = qty; unitCost = cost; this.reversesReason = reversesReason; reversesActionId = UUID.randomUUID();
+            reversesMovementId = 1L; return this;
+        }
+        Stock role(String v) { role = v; return this; }
+        Stock product(UUID v) { productId = v; return this; }
+        Stock estimated() { estimated = true; return this; }
+        Stock at(String instant) { occurredAt = Instant.parse(instant); return this; }
+        Stock set(String field, Object value) { overrides.put(field, value); return this; }
+
+        EventContext context() {
+            return new EventContext(UUID.randomUUID(), "stock.cost_recorded", "stock_action", actionId.toString(), 1, movementId, occurredAt, occurredAt.plusSeconds(2),
+                    "user:kc-maya", "inventory", 1);
+        }
+
+        byte[] body() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("movementId", movementId);
+            m.put("actionId", actionId);
+            m.put("actionKind", actionKind);
+            m.put("reason", reason);
+            m.put("role", role);
+            m.put("variantId", UUID.randomUUID());
+            m.put("lotId", UUID.randomUUID());
+            m.put("consignmentLineId", UUID.randomUUID());
+            m.put("kind", kind);
+            m.put("productId", productId);
+            m.put("qtyDelta", qtyDelta);
+            m.put("unitCost", k(unitCost));
+            m.put("currency", "ZMW");
+            m.put("estimated", estimated);
+            if (reversesMovementId != null) {
+                m.put("reversesMovementId", reversesMovementId);
+            }
+            if (replacesMovementId != null) {
+                m.put("replacesMovementId", replacesMovementId);
+            }
+            if (reversesActionId != null) {
+                m.put("reversesActionId", reversesActionId);
+                m.put("reversesReason", reversesReason);
+            }
+            m.put("recordedAt", occurredAt.plusSeconds(2));
+            m.putAll(overrides);
+            return bytes(m);
+        }
+    }
+
+    // ------------------------------------------------------------------ consignments, products, orders
+
+    static byte[] consignmentLine(UUID consignment, UUID line, Integer revision, boolean estimated, String landed, boolean supplier) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("consignmentId", consignment);
+        m.put("consignmentReference", "C-000045");
+        m.put("consignmentLineId", line);
+        m.put("variantId", UUID.randomUUID());
+        m.put("sku", "RING-1");
+        m.put("productTitle", "Aurelia Ring");
+        m.put("variantTitle", "Aurelia Ring - M");
+        m.put("kind", "SELLABLE");
+        m.put("supplierId", supplier ? UUID.randomUUID() : null);
+        m.put("supplierName", supplier ? "Dubai Gold" : null);
+        m.put("receivedAt", Instant.parse("2026-10-01T08:00:00Z"));
+        m.put("isEstimated", estimated);
+        m.put("currency", "ZMW");
+        m.put("quantity", 7);
+        m.put("goodsTotal", k("10500.00"));
+        m.put("sharedCost", k("202.90"));
+        m.put("landedTotal", k(landed));
+        m.put("slices", List.of(Map.of("quantity", 7, "unitCost", k("1528.99"))));
+        m.put("linePosition", 1);
+        if (revision != null) {
+            m.put("revision", revision);
+            m.put("reason", "the courier was K500");
+            m.put("amendedAt", Instant.parse("2026-10-05T08:00:00Z"));
+        }
+        return bytes(m);
+    }
+
+    static EventContext lineContext(String type, UUID line, long seq) {
+        return new EventContext(UUID.randomUUID(), type, "consignment_line", line.toString(), seq, 300L + seq, Instant.parse("2026-10-01T08:00:00Z"),
+                Instant.parse("2026-10-01T08:00:01Z"), "user:kc-maya", "procurement", 1);
+    }
+
+    static byte[] product(UUID id, String title, String kind) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", id);
+        m.put("title", title);
+        m.put("tags", List.of());
+        m.put("productType", "RING");
+        m.put("status", "ACTIVE");
+        m.put("variants", List.of());
+        m.put("kind", kind);
+        return bytes(m);
+    }
+
+    static byte[] productDeleted(UUID id) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", id);
+        return bytes(m);
+    }
+
+    static EventContext productContext(String type, UUID id, long seq) {
+        return new EventContext(UUID.randomUUID(), type, "product", id.toString(), seq, 400L + seq, Instant.parse("2026-10-01T08:00:00Z"), Instant.parse("2026-10-01T08:00:01Z"),
+                "user:kc-maya", "catalog", 1);
+    }
+
+    static byte[] orderCreated(UUID order, String channel) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("orderId", order);
+        m.put("keycloakId", channel == null ? "kc-alice-0001" : null);
+        m.put("newStatus", "CREATED");
+        m.put("total", k("100.00"));
+        m.put("currency", "ZMW");
+        if (channel != null) {
+            m.put("channel", channel);
+        }
+        return bytes(m);
+    }
 }
