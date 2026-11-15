@@ -594,21 +594,45 @@ class SettlementSagaTest extends SaleTestBase {
     }
 
     @Test
-    @DisplayName("a void that arrives before any attempt reached inventory is honoured without asking it anything")
-    void aVoidBeforeAnyAttemptIsHonouredWithoutAsking() throws Exception {
+    @DisplayName("a void is honoured only after inventory is asked, EVEN when no attempt is recorded: a count of zero cannot prove inventory was never reached (a crash after it sold, before the sale was recorded)")
+    void aVoidIsAlwaysCheckedWithInventory() throws Exception {
         UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
         doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
         UUID confirmation = confirmed(id, "4500.00");
-        // the state a crash between "recorded" and "asked inventory" leaves: nothing was attempted
+        // the state a crash after "inventory sold" and before "recorded" leaves: no failure was ever counted
         jdbc.update("UPDATE order_settlement SET attempts = 0 WHERE confirmation_id = ?", confirmation);
+        doReturn(new InventoryClient.Reservation(reservation, id, "HELD", Instant.now(), Instant.now().plusSeconds(600), null, List.of()))
+                .when(inventory).reservation(reservation);
 
         voided(confirmation, id);
         dueNow(confirmation);
         job.run();
 
         assertThat(settlement(confirmation).get("reason")).isEqualTo("VOIDED");
-        verify(inventory, never()).reservation(any());
+        verify(inventory, times(1)).reservation(reservation);
         verify(inventory, times(1)).consume(any(), any());
+    }
+
+    @Test
+    @DisplayName("a void with no attempt recorded, whose pieces inventory HAS sold, does not undo the sale: the order is paid and the void is flagged for staff")
+    void aVoidWithNoRecordedAttemptDoesNotUndoASaleThatHappened() throws Exception {
+        UUID id = heldOrder();
+        UUID reservation = (UUID) row(id).get("reservation_id");
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+        UUID confirmation = confirmed(id, "4500.00");
+        jdbc.update("UPDATE order_settlement SET attempts = 0 WHERE confirmation_id = ?", confirmation);
+        doReturn(new InventoryClient.Reservation(reservation, id, "CONSUMED", Instant.now(), Instant.now(), Instant.now(), List.of()))
+                .when(inventory).reservation(reservation);
+        SaleStubs.inventorySells(inventory);
+
+        voided(confirmation, id);
+        dueNow(confirmation);
+        job.run();
+
+        assertThat(row(id).get("status")).as("the pieces were sold: unselling them is not possible").isEqualTo("PAID");
+        assertThat(settlement(confirmation).get("state")).isEqualTo("DONE");
+        assertThat(settlement(confirmation).get("voided_at")).as("flagged for staff").isNotNull();
     }
 
     @Test

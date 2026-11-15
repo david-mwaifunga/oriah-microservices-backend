@@ -92,11 +92,16 @@ public class BoxSwapService {
      * or a 409 nobody has heard of may mean it happened: those leave the swap in flight.
      */
     static boolean provesNothingMoved(int status, String code) {
+        if (status == 404) {
+            // Only inventory's own "no such sale line": a bare 404 may come from anything between (a proxy, an old build) and proves nothing.
+            return "sale-line-not-found".equals(code);
+        }
         if (status == 409) {
             return DEFINITE_REFUSALS.contains(code);
         }
-        // Any other 4xx (a 404 included: no such sale line) was refused before inventory moved anything.
-        return status >= 400 && status < 500;
+        // The request was refused before it was looked at: malformed, not authenticated, not allowed, not processable. A 408, 425 or 429 is a
+        // timeout or a rate limit that anything on the way can produce after inventory has already acted: it proves nothing.
+        return status == 400 || status == 401 || status == 403 || status == 422;
     }
 
     private static String codeOf(FeignException e, Map<String, Object> problem) {
@@ -118,7 +123,7 @@ public class BoxSwapService {
             });
             return refused;
         }
-        if (e.status() >= 400 && e.status() < 500) {
+        if (e.status() >= 400 && e.status() < 500 && e.status() != 408 && e.status() != 425 && e.status() != 429) {
             log.error("inventory REFUSED order's box swap with {}: {}", e.status(), e.contentUTF8());
             return new UpstreamRejectedException("inventory refused order's box swap with " + e.status());
         }

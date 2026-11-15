@@ -276,6 +276,11 @@ public class Order extends BaseEntity {
         if ("RECIPIENT_PAYS".equals(deliveryPayer) && shippingAmount != null && shippingAmount.signum() != 0) {
             throw new IllegalArgumentException("a courier the recipient pays costs nothing on this order");
         }
+        if ("OWN_DELIVERY".equals(deliveryOption) && "RECIPIENT_PAYS".equals(deliveryPayer)) {
+            // Oriah's own delivery is income, and a driver carrying the customer's cash is a float nobody wants (CLIENT_DECISIONS Q27). Shipping never
+            // prices it that way; the order refuses it too, so no channel (a phone order, Phase 9) can record one.
+            throw new IllegalArgumentException("Oriah's own delivery is paid to Oriah with the order, never by the recipient on arrival");
+        }
         this.deliveryTownId = deliveryTownId;
         this.deliveryPayer = deliveryPayer;
         if (deliveryOption == null || !deliveryOption.matches(Quote.DELIVERY_OPTION_PATTERN)) {

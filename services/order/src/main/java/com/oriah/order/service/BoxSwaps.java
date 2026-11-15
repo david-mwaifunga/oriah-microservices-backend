@@ -200,9 +200,11 @@ public class BoxSwaps {
     }
 
     private static SalesProblem inProgress(InFlight flight) {
+        // Everything a person needs to repeat the swap EXACTLY (an amendment id alone is not enough: the request names the line, the box and the reason).
         return new SalesProblem(HttpStatus.CONFLICT, "box-swap-in-progress",
                 "a box swap on this order was asked of inventory and has not been finished: repeat that swap (the same request) to finish it before anything else is done to the order")
-                .with("amendmentId", flight.amendmentId().toString()).with("startedAt", flight.startedAt().toString());
+                .with("amendmentId", flight.amendmentId().toString()).with("startedAt", flight.startedAt().toString())
+                .with("lineId", flight.itemId().toString()).with("replacementBoxVariantId", flight.newBoxVariantId().toString()).with("reason", flight.reason());
     }
 
     private InFlight inFlight(UUID orderId) {

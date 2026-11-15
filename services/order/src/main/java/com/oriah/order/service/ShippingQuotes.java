@@ -83,6 +83,10 @@ public class ShippingQuotes {
             log.error("shipping quoted payer {} with cost {} for {}: unusable", resolvedPayer, cost, option);
             throw new UpstreamRejectedException("shipping quoted an unusable payer");
         }
+        if ("OWN_DELIVERY".equals(option) && "RECIPIENT_PAYS".equals(resolvedPayer)) {
+            log.error("shipping quoted Oriah's own delivery as paid by the recipient: refusing (Q27: own delivery is income, there is no driver cash float)");
+            throw new UpstreamRejectedException("shipping quoted own delivery as recipient-paid");
+        }
         return new Delivery(cost, reply.townId(), resolvedPayer, reply.townName(), reply.optionName());
     }
 }

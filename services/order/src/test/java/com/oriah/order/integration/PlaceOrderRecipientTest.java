@@ -211,6 +211,26 @@ class PlaceOrderRecipientTest extends SaleTestBase {
         assertThat(repository.count()).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("Oriah's own delivery is income and is never paid by the recipient: a quote that says otherwise is refused (500, shipping's fault), and nothing is placed")
+    void ownDeliveryIsNeverRecipientPaid() throws Exception {
+        theShopperHasAnAddressBook();
+        SaleStubs.shippingDelivers(shipping, "OWN_DELIVERY", TOWN, "RECIPIENT_PAYS", "0.00", "ZMW");
+        String body = "{\"shippingAddressId\":\"" + ADDRESS + "\",\"currency\":\"ZMW\",\"deliveryOption\":\"OWN_DELIVERY\",\"deliveryTownId\":\"" + TOWN
+                + "\",\"payer\":\"RECIPIENT_PAYS\",\"recipientName\":\"" + NAME + "\",\"recipientPhone\":\"" + PHONE_TYPED + "\",\"quoteDigest\":\""
+                + QuoteDigest.of(new Quote(List.of(new QuoteLine(RING, 1, new BigDecimal("4500.00"), new BigDecimal("0.00"), null)), "ZMW", "OWN_DELIVERY",
+                        new BigDecimal("0.00"), TOWN, "RECIPIENT_PAYS")) + "\","
+                + "\"items\":[{\"variantId\":\"" + RING + "\",\"title\":\"x\",\"quantity\":1,\"unitPrice\":4500.00}]}";
+
+        MvcResult refused = place(body, null);
+
+        assertThat(refused.getResponse().getStatus()).as(refused.getResponse().getContentAsString()).isEqualTo(500);
+        assertThat(repository.count()).isZero();
+        assertThatThrownBy(() -> new com.oriah.order.model.Order("kc", UUID.randomUUID(), "ZMW", "OWN_DELIVERY", BigDecimal.ZERO, TOWN, "RECIPIENT_PAYS"))
+                .as("the order itself refuses it, whichever channel records it (a phone order, Phase 9)")
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("own delivery");
+    }
+
     // ------------------------------------------------------------------ never in an event, never in a log
 
     @Test

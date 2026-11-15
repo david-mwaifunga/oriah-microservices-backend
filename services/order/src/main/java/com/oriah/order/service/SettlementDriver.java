@@ -68,19 +68,18 @@ public class SettlementDriver {
             return;
         }
         if (s.voidedAt() != null) {
-            boolean honoured = true;
-            if (s.attempts() > 0) {
-                // An earlier attempt may have reached inventory and SOLD the pieces, with the reply lost: a retry cannot tell from the failure alone. A sale
-                // that happened cannot be undone, so it is carried on to PAID (SettlementService.paid flags the voided money for staff); a hold that was not
-                // sold lets the void stand. Not knowing is no reason to decide: ask again later.
-                try {
-                    InventoryClient.Reservation hold = holds.find(s.reservationId());
-                    honoured = hold == null || !"CONSUMED".equals(hold.status());
-                } catch (RuntimeException unknown) {
-                    log.warn("Confirmation {} is voided, but inventory could not say whether its pieces were sold: asking again later", confirmationId);
-                    settlements.retryLater(confirmationId, backoff(s.attempts()));
-                    return;
-                }
+            // Always ask inventory, whatever the count of failed attempts says: that count goes up only AFTER a failure, so a crash between "inventory sold"
+            // and "the sale was recorded" leaves it at zero with the pieces already sold. A sale that happened cannot be undone, so it is carried on to PAID
+            // (SettlementService.paid flags the voided money for staff); a hold that was not sold lets the void stand. Not knowing is no reason to decide:
+            // ask again later.
+            boolean honoured;
+            try {
+                InventoryClient.Reservation hold = holds.find(s.reservationId());
+                honoured = hold == null || !"CONSUMED".equals(hold.status());
+            } catch (RuntimeException unknown) {
+                log.warn("Confirmation {} is voided, but inventory could not say whether its pieces were sold: asking again later", confirmationId);
+                settlements.retryLater(confirmationId, backoff(s.attempts()));
+                return;
             }
             if (honoured) {
                 // Voided before the pieces were sold: never applied.

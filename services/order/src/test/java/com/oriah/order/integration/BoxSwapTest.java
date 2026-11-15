@@ -427,6 +427,10 @@ class BoxSwapTest extends SaleTestBase {
             "409, already-swapped,                  409",
             "409, a-refusal-nobody-has-heard-of,    409",
             "409, ,                                 409",
+            "408, ,                                 503",
+            "425, ,                                 503",
+            "429, ,                                 503",
+            "404, ,                                 404",
     })
     @DisplayName("an answer that does not prove inventory moved nothing leaves the swap in flight, and nothing is recorded")
     void anUncertainAnswerKeepsTheSwapInFlight(int status, String type, int answered) throws Exception {
@@ -485,6 +489,9 @@ class BoxSwapTest extends SaleTestBase {
         assertThat(problem.get("type").asText()).endsWith("/box-swap-in-progress");
         assertThat(problem.get("amendmentId").asText()).as("it names the swap to resume").isEqualTo(amendment.toString());
         assertThat(problem.get("startedAt").asText()).isNotBlank();
+        assertThat(problem.get("lineId").asText()).as("everything a person needs to repeat the swap exactly").isEqualTo(line.toString());
+        assertThat(problem.get("replacementBoxVariantId").asText()).isEqualTo(REPLACEMENT.toString());
+        assertThat(problem.get("reason").asText()).isEqualTo(REASON);
         MvcResult shipped = handOver(id);
         assertThat(shipped.getResponse().getStatus()).isEqualTo(409);
         assertThat(json.readTree(shipped.getResponse().getContentAsString()).get("type").asText()).endsWith("/box-swap-in-progress");

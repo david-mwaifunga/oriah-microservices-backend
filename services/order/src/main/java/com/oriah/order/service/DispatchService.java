@@ -98,6 +98,8 @@ public class DispatchService {
             throw new SalesProblem(HttpStatus.CONFLICT, "delivery-details-missing", "this order has no recipient or delivery address kept (it was placed before "
                     + "they were taken): it cannot be packed until they are corrected");
         }
+        // The packer packs the box the slip names: a swap that is with inventory may change it, so packing waits for it to be finished.
+        swaps.requireNoneInFlight(orderId);
         Dated when = DispatchDates.check(requestedAt, order.paidAt(), Instant.now(), backdateWindow, caller.mayBackdate(), backdateReason);
         insert(orderId, Step.PACKED, when, caller, null, null);
         OrderStatus previous = order.status();

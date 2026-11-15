@@ -385,6 +385,22 @@ class DispatchStepsTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("an order cannot be PACKED while a box swap on it is with inventory either: the packer would pack the old box while inventory moves the new one")
+    void aSwapInFlightHoldsBackPacking() throws Exception {
+        UUID id = paidDelivery("YANGO", "ORIAH_COLLECTS", "150.00");
+        UUID line = jdbc.queryForObject("SELECT id FROM order_items WHERE order_id = ?", UUID.class, id);
+        jdbc.update("INSERT INTO order_box_swap_inflight (order_id, amendment_id, item_id, new_box_variant_id, reason, requested_by, started_at) "
+                + "VALUES (?, ?, ?, ?, 'a swap that was never finished', 'user:kc-maya', now())", id, UUID.randomUUID(), line, UUID.randomUUID());
+
+        MvcResult refused = step(id, "pack", "{}");
+
+        assertThat(refused.getResponse().getStatus()).isEqualTo(409);
+        assertThat(type(refused)).endsWith("/box-swap-in-progress");
+        assertThat(row(id).get("status")).isEqualTo("PAID");
+        assertThat(steps(id)).isEmpty();
+    }
+
+    @Test
     @DisplayName("an order cannot be shipped while a box swap on it is with inventory: 409 box-swap-in-progress, and nothing is recorded")
     void aSwapInFlightHoldsBackShipping() throws Exception {
         UUID id = paidDelivery("YANGO", "ORIAH_COLLECTS", "150.00");
