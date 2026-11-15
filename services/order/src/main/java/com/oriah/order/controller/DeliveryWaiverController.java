@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.order.dto.OrderResponse;
+import com.oriah.order.service.DispatchViews;
 import com.oriah.order.service.OrderService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -55,8 +56,10 @@ public class DeliveryWaiverController {
     }
 
     private final OrderService orders;
+    private final DispatchViews views;
 
-    public DeliveryWaiverController(OrderService orders) {
+    public DeliveryWaiverController(OrderService orders, DispatchViews views) {
+        this.views = views;
         this.orders = orders;
     }
 
@@ -74,6 +77,6 @@ public class DeliveryWaiverController {
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{id}/delivery-waiver")
     public OrderResponse waive(@AuthenticationPrincipal Jwt jwt, @PathVariable("id") UUID id, @Valid @RequestBody WaiveDeliveryRequest body) {
-        return OrderResponse.forStaff(orders.waiveDelivery(id, body.reason(), Actor.of(jwt)));
+        return views.staff(orders.waiveDelivery(id, body.reason(), Actor.of(jwt)));
     }
 }

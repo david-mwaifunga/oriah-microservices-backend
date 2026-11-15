@@ -25,6 +25,7 @@ import com.oriah.order.dto.PlaceOrderRequest;
 import com.oriah.order.dto.SubmitPaymentRequest;
 import com.oriah.order.model.Order;
 import com.oriah.order.service.OrderClaimService;
+import com.oriah.order.service.DispatchViews;
 import com.oriah.order.service.OrderService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -55,8 +56,10 @@ public class OrderController {
 
     private final OrderService service;
     private final OrderClaimService claimService;
+    private final DispatchViews views;
 
-    public OrderController(OrderService service, OrderClaimService claimService) {
+    public OrderController(OrderService service, OrderClaimService claimService, DispatchViews views) {
+        this.views = views;
         this.service = service;
         this.claimService = claimService;
     }
@@ -78,7 +81,7 @@ public class OrderController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id,
             @Valid @RequestBody SubmitPaymentRequest body) {
-        return OrderResponse.from(claimService.submit(jwt.getSubject(), id, body.method(), body.reference(), Actor.of(jwt)));
+        return views.shopper(claimService.submit(jwt.getSubject(), id, body.method(), body.reference(), Actor.of(jwt)));
     }
 
     @Operation(operationId = "place", summary = "Place an order")
@@ -113,7 +116,7 @@ public class OrderController {
         return (placement.created()
                 ? ResponseEntity.created(URI.create("/api/v1/orders/" + o.id()))
                 : ResponseEntity.ok().location(URI.create("/api/v1/orders/" + o.id())))
-                .body(OrderResponse.from(o));
+                .body(views.shopper(o));
     }
 
     @Operation(operationId = "mine", summary = "The caller's orders, paged")
@@ -125,7 +128,7 @@ public class OrderController {
     public ResponseEntity<Page<OrderResponse>> mine(
             @AuthenticationPrincipal Jwt jwt,
             @PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(service.findMine(jwt.getSubject(), pageable).map(OrderResponse::from));
+        return ResponseEntity.ok(views.shopper(service.findMine(jwt.getSubject(), pageable)));
     }
 
     /**
@@ -153,7 +156,7 @@ public class OrderController {
             @PathVariable("id") UUID id) {
         return service.findById(id)
                 .filter(o -> o.keycloakId().equals(jwt.getSubject()))
-                .map(OrderResponse::from)
+                .map(views::shopper)
                 .orElseThrow(() -> unknownOrder(id));
     }
 
@@ -170,7 +173,7 @@ public class OrderController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable("id") UUID id) {
         return service.cancel(jwt.getSubject(), id, Actor.of(jwt))
-                .map(OrderResponse::from)
+                .map(views::shopper)
                 .orElseThrow(() -> unknownOrder(id));
     }
 

@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.oriah.order.dto.OrderResponse;
 import com.oriah.observability.ResourceNotFoundException;
 import com.oriah.order.dto.TransitionRequest;
+import com.oriah.order.service.DispatchViews;
 import com.oriah.order.service.OrderService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -49,8 +50,10 @@ import jakarta.validation.Valid;
 public class AdminOrderController {
 
     private final OrderService service;
+    private final DispatchViews views;
 
-    public AdminOrderController(OrderService service) {
+    public AdminOrderController(OrderService service, DispatchViews views) {
+        this.views = views;
         this.service = service;
     }
 
@@ -61,7 +64,7 @@ public class AdminOrderController {
                     schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping
     public ResponseEntity<Page<OrderResponse>> list(@PageableDefault(size = 20) Pageable pageable) {
-        return ResponseEntity.ok(service.findAll(pageable).map(OrderResponse::forStaff));
+        return ResponseEntity.ok(views.staff(service.findAll(pageable)));
     }
 
     /**
@@ -96,7 +99,7 @@ public class AdminOrderController {
     @GetMapping("/{id}")
     public OrderResponse get(@PathVariable("id") UUID id) {
         return service.findById(id)
-                .map(OrderResponse::forStaff)
+                .map(views::staff)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
 
@@ -130,7 +133,7 @@ public class AdminOrderController {
             @Valid @RequestBody TransitionRequest body) {
         // The member of staff is the actor the event log records.
         return service.transition(id, body.targetStatus(), Actor.of(jwt))
-                .map(OrderResponse::forStaff)
+                .map(views::staff)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", "id", id.toString()));
     }
 }

@@ -199,6 +199,11 @@ public class BoxSwaps {
         }
     }
 
+    /** Whether a swap on this order is with inventory (or never finished). */
+    public boolean isInFlight(UUID orderId) {
+        return inFlight(orderId) != null;
+    }
+
     private static SalesProblem inProgress(InFlight flight) {
         // Everything a person needs to repeat the swap EXACTLY (an amendment id alone is not enough: the request names the line, the box and the reason).
         return new SalesProblem(HttpStatus.CONFLICT, "box-swap-in-progress",

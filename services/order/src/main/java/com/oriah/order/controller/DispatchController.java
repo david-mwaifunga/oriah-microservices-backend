@@ -9,6 +9,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.oriah.money.NgweeAmount;
 import com.oriah.order.model.OrderStatus;
+import com.oriah.order.service.DispatchReadService;
 import com.oriah.order.service.DispatchService;
 import com.oriah.order.service.DispatchService.Caller;
 
@@ -95,9 +97,24 @@ public class DispatchController {
     }
 
     private final DispatchService dispatch;
+    private final DispatchReadService reads;
 
-    public DispatchController(DispatchService dispatch) {
+    public DispatchController(DispatchService dispatch, DispatchReadService reads) {
         this.dispatch = dispatch;
+        this.reads = reads;
+    }
+
+    @Operation(operationId = "packingSlip", summary = "The packing slip: who it is for, where it goes, what is in the parcel, and where the order stands",
+            description = "Only for an order that is paid. The delivery block (name, phone, address) is withheld once the order is delivered, except to an order "
+                    + "administrator. No money, no logins, no actors; the fare only for a caller who may see cost (COST_VIEWER).")
+    @ApiResponse(responseCode = "200", description = "The slip")
+    @ApiResponse(responseCode = "404", description = "No such order",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "order-not-paid",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @GetMapping
+    public DispatchReadService.Slip slip(@AuthenticationPrincipal Jwt jwt, Authentication authentication, @PathVariable("id") UUID id) {
+        return reads.slip(id, new DispatchReadService.Viewer(Actor.of(jwt), has(authentication, "ROLE_COST_VIEWER"), has(authentication, "ROLE_ORDER_ADMIN")));
     }
 
     @Operation(operationId = "packOrder", summary = "Pack a paid order (PAID to FULFILLED)",
@@ -155,8 +172,10 @@ public class DispatchController {
 
     /** Who is acting and what they may do: read from the signed-in person's authorities, on the request thread. */
     private static Caller caller(Jwt jwt, Authentication authentication) {
-        boolean backdate = authentication.getAuthorities().stream().anyMatch(a -> "ROLE_BACKDATE_SALE".equals(a.getAuthority()));
-        boolean cost = authentication.getAuthorities().stream().anyMatch(a -> "ROLE_COST_VIEWER".equals(a.getAuthority()));
-        return new Caller(Actor.of(jwt), backdate, cost);
+        return new Caller(Actor.of(jwt), has(authentication, "ROLE_BACKDATE_SALE"), has(authentication, "ROLE_COST_VIEWER"));
+    }
+
+    private static boolean has(Authentication authentication, String authority) {
+        return authentication.getAuthorities().stream().anyMatch(a -> authority.equals(a.getAuthority()));
     }
 }
