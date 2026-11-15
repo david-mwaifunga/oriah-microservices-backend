@@ -122,7 +122,8 @@ public class ProfitReportService {
         List<WrittenOff> writtenOff = jdbc.query("SELECT coalesce(reason, 'UNKNOWN'), sum(amount) FROM ledger_entry WHERE account = 'STOCK_OUT' AND effect_month = ? AND recorded_at <= ? "
                 + "GROUP BY reason ORDER BY reason", (rs, n) -> new WrittenOff(rs.getString(1), rs.getBigDecimal(2)), first, cut);
 
-        return new ProfitReportResponse(ym.toString(), asOf, "ZMW", lines, writtenOff, expenseLines(first, cut), memo(ym, first, cut), null, status(first, cut));
+        return new ProfitReportResponse(ym.toString(), asOf, "ZMW", lines, writtenOff, expenseLines(first, cut), memo(ym, first, cut, expenses), disclosure(first, cut, cogs.add(stockOut)),
+                status(first, cut));
     }
 
     private List<ExpenseLine> expenseLines(LocalDate first, Timestamp cut) {
@@ -145,7 +146,7 @@ public class ProfitReportService {
         return out;
     }
 
-    private Memo memo(YearMonth ym, LocalDate first, Timestamp cut) {
+    private Memo memo(YearMonth ym, LocalDate first, Timestamp cut, BigDecimal expenses) {
         BigDecimal waived = nz(jdbc.queryForObject("SELECT sum(amount) FROM ledger_entry WHERE account = 'MEMO_DELIVERY_WAIVED' AND effect_month = ? AND recorded_at <= ?", BigDecimal.class, first, cut));
         LocalDate next = first.plusMonths(1);
         BigDecimal held = nz(jdbc.queryForObject("SELECT sum(amount) FROM ledger_entry WHERE account = 'MEMO_HELD_MONEY' AND effect_day < ? AND recorded_at <= ?", BigDecimal.class, next, cut));
@@ -153,7 +154,60 @@ public class ProfitReportService {
         Instant end = calendar.endOf(ym);
         Integer late = jdbc.queryForObject("SELECT count(*) FROM sale WHERE channel = 'PHONE' AND sale_occurred_at IS NOT NULL AND arrived_at >= ? AND arrived_at < ? AND created_at <= ? "
                 + "AND (sale_occurred_at < ? OR sale_occurred_at >= ?)", Integer.class, Timestamp.from(start), Timestamp.from(end), cut, Timestamp.from(start), Timestamp.from(end));
-        return new Memo(waived, held, late == null ? 0 : late, null, statementLines(first, cut), null);
+        return new Memo(waived, held, late == null ? 0 : late, agreedDeliveries(start, end, cut), statementLines(first, cut), overhead(start, end, cut, expenses));
+    }
+
+    private ProfitReportResponse.AgreedDeliveries agreedDeliveries(Instant start, Instant end, Timestamp cut) {
+        return jdbc.queryForObject("""
+                SELECT count(*), coalesce(sum(agreed_amount), 0), coalesce(sum(quoted_amount), 0), coalesce(sum(quoted_amount - agreed_amount) FILTER (WHERE quoted_amount IS NOT NULL), 0),
+                       count(*) FILTER (WHERE quoted_amount IS NULL)
+                  FROM sale WHERE delivery_price_source = 'AGREED' AND arrived_at >= ? AND arrived_at < ? AND created_at <= ?""",
+                (rs, n) -> new ProfitReportResponse.AgreedDeliveries(rs.getInt(1), rs.getBigDecimal(2), rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getInt(5)),
+                Timestamp.from(start), Timestamp.from(end), cut);
+    }
+
+    private ProfitReportResponse.Overhead overhead(Instant start, Instant end, Timestamp cut, BigDecimal expenses) {
+        Long pieces = jdbc.queryForObject("SELECT coalesce(sum(l.quantity), 0) FROM sale_line l JOIN sale s ON s.confirmation_id = l.confirmation_id WHERE s.arrived_at >= ? AND s.arrived_at < ? AND s.created_at <= ?",
+                Long.class, Timestamp.from(start), Timestamp.from(end), cut);
+        long n = pieces == null ? 0 : pieces;
+        return new ProfitReportResponse.Overhead(expenses, n, n == 0 ? null : expenses.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP));
+    }
+
+    // ------------------------------------------------------------------ the estimated opening stock
+
+    private ProfitReportResponse.Disclosure disclosure(LocalDate first, Timestamp cut, BigDecimal costThisMonth) {
+        BigDecimal estimated = nz(jdbc.queryForObject("SELECT sum(amount) FROM ledger_entry WHERE effect_month = ? AND recorded_at <= ? AND estimated AND account IN ('COGS_GOODS', 'COGS_PACKAGING', 'STOCK_OUT')",
+                BigDecimal.class, first, cut));
+        Integer saleLines = jdbc.queryForObject("""
+                SELECT count(*) FROM (SELECT sale_line_id FROM ledger_entry WHERE effect_month = ? AND recorded_at <= ? AND estimated AND account IN ('COGS_GOODS', 'COGS_PACKAGING')
+                   AND sale_line_id IS NOT NULL GROUP BY sale_line_id HAVING sum(amount) <> 0) t""", Integer.class, first, cut);
+        BigDecimal held = nz(jdbc.queryForObject("""
+                SELECT sum(f.landed_total - coalesce(c.cost, 0))
+                  FROM (SELECT DISTINCT ON (consignment_line_id) consignment_line_id, landed_total, is_estimated FROM consignment_line_fact ORDER BY consignment_line_id, revision DESC) f
+                  LEFT JOIN (SELECT consignment_line_id, sum(amount) AS cost FROM ledger_entry WHERE source = 'STOCK_COST' AND recorded_at <= ? GROUP BY consignment_line_id) c
+                    ON c.consignment_line_id = f.consignment_line_id WHERE f.is_estimated""", BigDecimal.class, cut));
+        BigDecimal share = costThisMonth.signum() == 0 ? BigDecimal.ZERO.setScale(4) : estimated.divide(costThisMonth, 4, RoundingMode.HALF_UP);
+        boolean approximate = estimated.signum() != 0 || held.signum() > 0;
+        String banner = "";
+        if (estimated.signum() != 0) {
+            banner = "K" + money(estimated) + " of the K" + money(costThisMonth) + " of cost this month comes from estimated opening-stock costs, so margins this month are approximate.";
+        } else if (held.signum() > 0) {
+            banner = "Some opening stock is still on the shelf at an estimated cost: when it sells, that month will read as approximate.";
+        }
+        return new ProfitReportResponse.Disclosure(approximate, estimated, costThisMonth, share, saleLines == null ? 0 : saleLines, held, banner, estimatedStock());
+    }
+
+    /** The standing list: every consignment line whose latest announced revision is an estimate (day-one stock costed from the old book). */
+    public List<ProfitReportResponse.EstimatedLine> estimatedStock() {
+        return jdbc.query("""
+                SELECT consignment_line_id, consignment_reference, sku, quantity, landed_total FROM (
+                   SELECT DISTINCT ON (consignment_line_id) * FROM consignment_line_fact ORDER BY consignment_line_id, revision DESC) f
+                 WHERE is_estimated ORDER BY received_at, consignment_line_id""",
+                (rs, n) -> new ProfitReportResponse.EstimatedLine(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getInt(4), rs.getBigDecimal(5)));
+    }
+
+    private static String money(BigDecimal amount) {
+        return new java.text.DecimalFormat("#,##0.00", java.text.DecimalFormatSymbols.getInstance(java.util.Locale.ROOT)).format(amount);
     }
 
     private List<StatementLine> statementLines(LocalDate first, Timestamp cut) {
@@ -189,7 +243,84 @@ public class ProfitReportService {
                 SELECT sum(abs(net)) FROM (SELECT account, sum(amount) AS net FROM ledger_entry WHERE product_id IS NULL AND effect_month = ? AND recorded_at <= ?
                    AND account IN ('REVENUE_GOODS', 'DISCOUNTS', 'COGS_GOODS', 'COGS_PACKAGING', 'STOCK_OUT') GROUP BY account) t""", BigDecimal.class, first, cut));
         boolean catchUp = Boolean.TRUE.equals(complete);
-        return new Status(false, null, null, false, 0, ZERO, errors, warnings, catchUp, notTied, errors > 0 || !catchUp || notTied.signum() != 0);
+        List<Object[]> last = jdbc.query("SELECT issue_no, as_of, issued_at FROM report_issue WHERE month = ? AND issued_at <= ? ORDER BY issue_no DESC LIMIT 1",
+                (rs, n) -> new Object[] {rs.getInt(1), rs.getTimestamp(2), rs.getTimestamp(3)}, first, cut);
+        boolean issued = !last.isEmpty();
+        long changed = 0;
+        BigDecimal effect = ZERO;
+        if (issued) {
+            Timestamp issuedAsOf = (Timestamp) last.get(0)[1];
+            changed = jdbc.queryForObject("SELECT count(*) FROM ledger_entry WHERE effect_month = ? AND recorded_at > ? AND recorded_at <= ?", Long.class, first, issuedAsOf, cut);
+            effect = nz(jdbc.queryForObject("""
+                    SELECT sum(l.amount * a.profit_sign) FROM ledger_entry l JOIN ledger_account a ON a.code = l.account
+                     WHERE l.effect_month = ? AND l.recorded_at > ? AND l.recorded_at <= ? AND a.profit_sign <> 0 AND l.account <> 'TAX_ENTERED'""", BigDecimal.class, first, issuedAsOf, cut));
+        }
+        return new Status(issued, issued ? (Integer) last.get(0)[0] : null, issued ? ((Timestamp) last.get(0)[2]).toInstant() : null, changed > 0, changed, effect, errors, warnings, catchUp, notTied,
+                errors > 0 || !catchUp || notTied.signum() != 0);
+    }
+
+    // ------------------------------------------------------------------ the rows behind a figure
+
+    private static final Map<String, List<String>> LINES = Map.ofEntries(
+            Map.entry("goodsAtListPrice", List.of("REVENUE_GOODS")), Map.entry("discountsGiven", List.of("DISCOUNTS")),
+            Map.entry("goodsAfterDiscounts", List.of("REVENUE_GOODS", "DISCOUNTS")), Map.entry("costOfGoodsGoods", List.of("COGS_GOODS")),
+            Map.entry("costOfGoodsPackaging", List.of("COGS_PACKAGING")), Map.entry("costOfGoodsSold", List.of("COGS_GOODS", "COGS_PACKAGING")),
+            Map.entry("grossProfit", List.of("REVENUE_GOODS", "DISCOUNTS", "COGS_GOODS", "COGS_PACKAGING")), Map.entry("deliveryCharges", List.of("REVENUE_DELIVERY")),
+            Map.entry("stockWrittenOff", List.of("STOCK_OUT")), Map.entry("expenses", List.of("EXPENSE")), Map.entry("turnoverTaxEntered", List.of("TAX_ENTERED")));
+
+    /** The ledger rows behind the month's figures, newest first; {@code line} is one of the report's line keys. */
+    public com.oriah.finance.dto.EntryPage entries(String month, String line, String product, String category, String orderId, boolean changedSinceIssue, String asOfText, int page, int size) {
+        if (page < 0 || size < 1 || size > MAX_SIZE) {
+            throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-page", "page is 0 or more and size is 1 to " + MAX_SIZE);
+        }
+        YearMonth ym = parse(month);
+        Instant asOf = asOf(asOfText);
+        Timestamp cut = Timestamp.from(asOf);
+        StringBuilder where = new StringBuilder("WHERE effect_month = ? AND recorded_at <= ?");
+        List<Object> args = new ArrayList<>(List.of(ym.atDay(1), cut));
+        if (line != null && !line.isBlank()) {
+            List<String> accounts = LINES.get(line);
+            if (accounts == null) {
+                throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-line", "'" + line + "' is not a line whose rows can be listed: " + String.join(", ", new TreeMap<>(LINES).keySet()));
+            }
+            where.append(" AND account IN (").append(String.join(",", accounts.stream().map(a -> "'" + a + "'").toList())).append(")");
+        }
+        if (product != null && !product.isBlank()) {
+            where.append(" AND product_id = ?");
+            args.add(uuid(product, "product"));
+        }
+        if (category != null && !category.isBlank()) {
+            where.append(" AND category = ?");
+            args.add(category);
+        }
+        if (orderId != null && !orderId.isBlank()) {
+            where.append(" AND order_id = ?");
+            args.add(uuid(orderId, "orderId"));
+        }
+        if (changedSinceIssue) {
+            where.append(" AND recorded_at > coalesce((SELECT as_of FROM report_issue WHERE month = ? AND issued_at <= ? ORDER BY issue_no DESC LIMIT 1), 'infinity'::timestamptz)");
+            args.add(ym.atDay(1));
+            args.add(cut);
+        }
+        long total = jdbc.queryForObject("SELECT count(*) FROM ledger_entry " + where, Long.class, args.toArray());
+        List<Object> page_args = new ArrayList<>(args);
+        page_args.add(size);
+        page_args.add((long) page * size);
+        List<com.oriah.finance.dto.EntryResponse> items = jdbc.query("""
+                SELECT entry_id, entry_key, account, category, reason, amount, effect_day, recorded_at, source, product_id, order_id, confirmation_id, movement_id, estimated, actor
+                  FROM ledger_entry""" + " " + where + " ORDER BY recorded_at DESC, entry_id DESC LIMIT ? OFFSET ?",
+                (rs, n) -> new com.oriah.finance.dto.EntryResponse(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getBigDecimal(6), rs.getDate(7).toLocalDate(),
+                        rs.getTimestamp(8).toInstant(), rs.getString(9), rs.getObject(10, UUID.class), rs.getObject(11, UUID.class), rs.getObject(12, UUID.class), (Long) rs.getObject(13),
+                        rs.getBoolean(14), rs.getString(15)), page_args.toArray());
+        return new com.oriah.finance.dto.EntryPage(items, page, size, total);
+    }
+
+    private static UUID uuid(String text, String what) {
+        try {
+            return UUID.fromString(text);
+        } catch (IllegalArgumentException e) {
+            throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-" + what, what + " is an id");
+        }
     }
 
     private int openAnomalies(String severity) {
@@ -201,11 +332,14 @@ public class ProfitReportService {
     // ------------------------------------------------------------------ by product
 
     public ProductReportResponse products(String month, String asOfText, int page, int size) {
+        YearMonth ym = parse(month);
+        return products(ym, asOf(asOfText), page, size);
+    }
+
+    ProductReportResponse products(YearMonth ym, Instant asOf, int page, int size) {
         if (page < 0 || size < 1 || size > MAX_SIZE) {
             throw new FinanceProblem(HttpStatus.BAD_REQUEST, "invalid-page", "page is 0 or more and size is 1 to " + MAX_SIZE);
         }
-        YearMonth ym = parse(month);
-        Instant asOf = asOf(asOfText);
         LocalDate first = ym.atDay(1);
         Timestamp cut = Timestamp.from(asOf);
         Map<UUID, BigDecimal[]> byProduct = new LinkedHashMap<>();
