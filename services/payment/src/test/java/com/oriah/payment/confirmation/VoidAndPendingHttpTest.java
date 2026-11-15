@@ -124,6 +124,8 @@ class VoidAndPendingHttpTest {
         assertThat(events).extracting(e -> e.get("event_type")).containsExactly("payment.confirmed", "payment.voided");
         assertThat(events.get(1).get("actor")).isEqualTo("user:kc-sam");
         assertThat((String) events.get(1).get("payload")).contains("\"outcome\":\"PENDING\"").contains("\"reason\":\"" + WHY + "\"").contains("\"net\":990.00");
+        Instant arrived = jdbc.queryForObject("SELECT arrived_at FROM payment_confirmation WHERE id = ?", java.sql.Timestamp.class, id).toInstant();
+        assertThat((String) events.get(1).get("payload")).as("the day the money arrived, so finance reverses the fee in the month it posted").endsWith("\"arrivedAt\":\"" + arrived + "\"}");
 
         UUID corrected = mtn(UUID.randomUUID(), reference, "1000.00");
         assertThat(corrected).isNotEqualTo(id);

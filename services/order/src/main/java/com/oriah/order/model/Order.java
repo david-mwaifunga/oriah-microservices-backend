@@ -84,6 +84,10 @@ public class Order extends BaseEntity {
     @Column(name = "delivery_agreed_reason", length = 200, updatable = false)
     private String deliveryAgreedReason;
 
+    /** What the shop's own published price for this town and option was when a LIVE delivery was agreed (finance reports the concession); null when there was none. */
+    @Column(name = "delivery_quoted_amount", updatable = false)
+    private BigDecimal deliveryQuotedAmount;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private OrderStatus status;
@@ -425,8 +429,14 @@ public class Order extends BaseEntity {
             order.deliveryPriceSource = "AGREED";
             order.deliveryAgreedAmount = sale.agreedAmount().setScale(2, RoundingMode.UNNECESSARY);
             order.deliveryAgreedReason = sale.agreedReason() == null ? null : sale.agreedReason().strip();
-        } else if (sale.agreedReason() != null) {
-            throw new IllegalArgumentException("A reason for an agreed delivery needs an agreed delivery.");
+            if (sale.quotedAmount() != null) {
+                if (sale.quotedAmount().signum() < 0) {
+                    throw new IllegalArgumentException("The shop's quote for an agreed delivery is not negative.");
+                }
+                order.deliveryQuotedAmount = sale.quotedAmount().setScale(2, RoundingMode.UNNECESSARY);
+            }
+        } else if (sale.agreedReason() != null || sale.quotedAmount() != null) {
+            throw new IllegalArgumentException("A reason or a quote for an agreed delivery needs an agreed delivery.");
         }
         order.recordedBy = sale.recordedBy();
         order.callerName = sale.callerName().strip();
@@ -451,6 +461,7 @@ public class Order extends BaseEntity {
     public String deliveryPriceSource() { return deliveryPriceSource; }
     public BigDecimal deliveryAgreedAmount() { return deliveryAgreedAmount; }
     public String deliveryAgreedReason() { return deliveryAgreedReason; }
+    public BigDecimal deliveryQuotedAmount() { return deliveryQuotedAmount; }
 
     /**
      * Whether this shopper owns the order. A recorded order is owned by nobody, so it is no shopper's: {@code null}-safe, because the one place an owner is

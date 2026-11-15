@@ -30,7 +30,8 @@ import com.oriah.order.model.OrderStatus;
 @JsonPropertyOrder({"orderId", "keycloakId", "previousStatus", "newStatus", "total", "currency", "subtotal", "shippingAmount", "discountAmount",
         "deliveryOption", "paymentIntentId", "lines",
         "confirmationId", "receiptNumber", "arrivedAt", "recordedAt", "paymentMethod", "paymentGross", "paymentFee", "paymentNet",
-        "deliveryTownId", "deliveryPayer", "republished", "channel", "occurredAt"})
+        "deliveryTownId", "deliveryPayer", "republished", "channel", "occurredAt",
+        "deliveryWaivedAmount", "deliveryPriceSource", "deliveryAgreedAmount", "deliveryQuotedAmount"})
 public record OrderPaidEvent(
         UUID orderId,
         String keycloakId,
@@ -66,7 +67,22 @@ public record OrderPaidEvent(
          * personal travels with it: never the caller, the recorder, a phone, an address or free text.
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        java.time.Instant occurredAt
+        java.time.Instant occurredAt,
+        /**
+         * Only when staff gave the delivery up (a waiver, Phase 7): what delivery WOULD have cost. The sale's {@code shippingAmount} is then K0.00; this is the delivery
+         * revenue the shop gave away, which finance keeps off the profit but shows. Never who or why. Absent on every order that paid its delivery.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        BigDecimal deliveryWaivedAmount,
+        /** Only on a phone order: {@code PUBLISHED} (the shop's town price) or {@code AGREED} (agreed by phone). */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String deliveryPriceSource,
+        /** Only on an agreed delivery: the amount agreed (the delivery charge, written once, before any waiver). */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        BigDecimal deliveryAgreedAmount,
+        /** Only on a LIVE agreed delivery where the shop had a published price: what the shop would have charged. Absent for a late paper sale or no published price. */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        BigDecimal deliveryQuotedAmount
 ) {
     public static final String TYPE = "order.paid";
     public static final int SCHEMA_VERSION = 2;
@@ -107,7 +123,11 @@ public record OrderPaidEvent(
                 payment.confirmationId(), order.receiptNumber(), payment.arrivedAt(), payment.recordedAt(), payment.method(), stored(payment.gross()),
                 stored(payment.fee()), stored(payment.net()), order.deliveryTownId(), order.deliveryPayer(), republished,
                 order.channel() == Channel.PHONE ? order.channel().name() : null,
-                order.channel() == Channel.PHONE ? order.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS) : null);
+                order.channel() == Channel.PHONE ? order.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS) : null,
+                stored(order.deliveryWaivedAmount()),
+                order.channel() == Channel.PHONE ? order.deliveryPriceSource() : null,
+                order.channel() == Channel.PHONE ? stored(order.deliveryAgreedAmount()) : null,
+                order.channel() == Channel.PHONE ? stored(order.deliveryQuotedAmount()) : null);
     }
 
     private static Line line(OrderItem item) {

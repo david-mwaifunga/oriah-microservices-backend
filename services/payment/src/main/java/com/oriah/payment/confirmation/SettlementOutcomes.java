@@ -33,7 +33,7 @@ public class SettlementOutcomes {
     /** The reason kept on a SETTLED confirmation that had been voided before order's answer arrived: a disagreement a person must put right. */
     public static final String SETTLED_AFTER_VOID = "SETTLED_AFTER_VOID";
 
-    private record Row(UUID orderId, BigDecimal gross, String currency, String outcome, String outcomeReason, boolean voided) {
+    private record Row(UUID orderId, BigDecimal gross, String currency, String outcome, String outcomeReason, boolean voided, Instant arrivedAt) {
     }
 
     private final JdbcTemplate jdbc;
@@ -106,7 +106,7 @@ public class SettlementOutcomes {
         jdbc.update("""
                 INSERT INTO held_money (id, confirmation_id, order_id, reason, owed_gross, currency, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, 'OWED', ?)""", UUID.randomUUID(), confirmationId, row.orderId(), reason, row.gross(), row.currency(), Timestamp.from(now));
-        events.held(confirmationId, row.orderId(), reason, row.gross(), row.currency(), now, "system:payment");
+        events.held(confirmationId, row.orderId(), reason, row.gross(), row.currency(), now, row.arrivedAt(), "system:payment");
         log.info("Confirmation {} held for the customer: {} {} owed ({})", confirmationId, row.gross().toPlainString(), row.currency(), reason);
     }
 
@@ -121,11 +121,11 @@ public class SettlementOutcomes {
             return null;
         }
         return jdbc.query("""
-                SELECT c.order_id, c.gross, c.currency, c.outcome, c.outcome_reason,
+                SELECT c.order_id, c.gross, c.currency, c.outcome, c.outcome_reason, c.arrived_at,
                        EXISTS (SELECT 1 FROM payment_confirmation_void v WHERE v.confirmation_id = c.id) AS voided
                   FROM payment_confirmation c WHERE c.id = ?""",
                 (rs, n) -> new Row(rs.getObject("order_id", UUID.class), rs.getBigDecimal("gross"), rs.getString("currency"), rs.getString("outcome"),
-                        rs.getString("outcome_reason"), rs.getBoolean("voided")), confirmationId).stream().findFirst().orElse(null);
+                        rs.getString("outcome_reason"), rs.getBoolean("voided"), rs.getTimestamp("arrived_at").toInstant()), confirmationId).stream().findFirst().orElse(null);
     }
 
     private Instant now() {

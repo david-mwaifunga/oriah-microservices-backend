@@ -98,7 +98,7 @@ public class RecordedOrderService {
         requireTheTotalTheyRead(req, priced);
 
         RecordedSale sale = new RecordedSale(who.actor(), contacts.callerName(), contacts.callerPhone(), req.kind(), when, dated.reason(), req.slipReference(),
-                hash, priced.delivery().agreedAmount(), priced.delivery().agreedReason());
+                hash, priced.delivery().agreedAmount(), priced.delivery().agreedReason(), priced.delivery().quotedAmount());
         OrderWriter.DeliveryDetails details = priced.isPickup() ? null : deliveryDetails(req, contacts, priced);
         RecordedOrderWriter.Begun begun = writer.begin(key, sale, priced, req, details);
         if (!begun.created()) {

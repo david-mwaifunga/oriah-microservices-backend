@@ -274,6 +274,22 @@ class OrderEventConsumerTest {
         assertThat(told(orderId).keycloakId()).isEqualTo("kc-alice");
     }
 
+    @Test
+    @DisplayName("order.paid with Phase 10's trailing delivery fields (waived, price source, agreed, quoted) is told exactly as before: the shopper hears nothing about the shop's own bookkeeping")
+    void thePhase10DeliveryFieldsAreIgnored() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        Map<String, Object> payload = new java.util.HashMap<>(Map.of("orderId", orderId.toString(), "keycloakId", "kc-alice", "newStatus", "PAID", "total", "10",
+                "currency", "ZMW"));
+        payload.put("deliveryWaivedAmount", "150.00");
+        payload.put("deliveryPriceSource", "AGREED");
+        payload.put("deliveryAgreedAmount", "60.00");
+        payload.put("deliveryQuotedAmount", "100.00");
+
+        send("order.paid", orderId, payload);
+
+        assertThat(told(orderId).keycloakId()).isEqualTo("kc-alice");
+    }
+
     private void send(String eventType, UUID orderId, Map<String, Object> payload) throws Exception {
         inputDestination.send(Relayed.orderEvent(eventType, orderId, 1, objectMapper.writeValueAsBytes(payload)),
                 "oriah.order");

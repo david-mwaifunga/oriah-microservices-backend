@@ -43,15 +43,15 @@ public class ConfirmationEvents {
 
     @Transactional(propagation = Propagation.MANDATORY)
     public void voided(UUID confirmationId, UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net, String currency,
-                       String outcome, String reason, String voidedBy, Instant voidedAt) {
+                       String outcome, String reason, String voidedBy, Instant voidedAt, Instant arrivedAt) {
         append(CONFIRMATION, confirmationId, PaymentVoidedEvent.TYPE, voidedAt, voidedBy,
-                new PaymentVoidedEvent(confirmationId, orderId, method, reference, gross, fee, net, currency, outcome, reason, voidedBy, voidedAt));
+                new PaymentVoidedEvent(confirmationId, orderId, method, reference, gross, fee, net, currency, outcome, reason, voidedBy, voidedAt, arrivedAt));
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
-    public void held(UUID confirmationId, UUID orderId, String reason, BigDecimal owedGross, String currency, Instant heldAt, String actor) {
+    public void held(UUID confirmationId, UUID orderId, String reason, BigDecimal owedGross, String currency, Instant heldAt, Instant arrivedAt, String actor) {
         append(CONFIRMATION, confirmationId, PaymentHeldEvent.TYPE, heldAt, actor,
-                new PaymentHeldEvent(confirmationId, orderId, reason, owedGross, currency, heldAt));
+                new PaymentHeldEvent(confirmationId, orderId, reason, owedGross, currency, heldAt, arrivedAt));
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

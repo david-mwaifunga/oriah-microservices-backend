@@ -115,6 +115,24 @@ class OrderEventContractTest {
     }
 
     @Test
+    @DisplayName("a delivery the shop gave up (a waiver) is on order.paid as a trailing field: the charge on the sale is K0.00 and the amount given up is named, with no who or why")
+    void paidSaysAWaivedDelivery() {
+        Order order = new Order(CUSTOMER, UUID.randomUUID(), "ZMW", "OWN_DELIVERY", new BigDecimal("150.00"), TOWN, "ORIAH_COLLECTS");
+        ReflectionTestUtils.setField(order, "id", ORDER_ID);
+        order.addItem(RING, RING_PRODUCT, "Aurelia 18k Gold Band / Ring Size M", 1, new BigDecimal("1250"), new BigDecimal("0.00"), null);
+        order.startHold("a".repeat(64), null);
+        order.markHeld(Instant.parse("2026-11-12T07:50:00Z"), Instant.parse("2026-11-12T08:00:00Z"), java.util.Map.of());
+        order.waiveDelivery("user:kc-owner", "a regular customer", Instant.parse("2026-11-12T07:55:00Z"));
+        order.beginSettlement(CONFIRMATION);
+        order.settle(CONFIRMATION, Instant.parse("2026-11-12T08:00:00Z"), "OR-000124");
+
+        String json = EventJson.write(OrderPaidEvent.of(order, OrderStatus.CREATED, MONEY, false));
+
+        assertThat(json).contains("\"shippingAmount\":0.00").endsWith(",\"republished\":false,\"deliveryWaivedAmount\":150.00}");
+        assertThat(json).doesNotContain("kc-owner").doesNotContain("regular customer");
+    }
+
+    @Test
     @DisplayName("order.paid starts with version 1's twelve fields in version 1's order, so a consumer reading version 1 (notification) reads it unchanged")
     void paidKeepsVersionOnesFieldsFirst() {
         String json = EventJson.write(OrderPaidEvent.of(paidOrder(), OrderStatus.CREATED, MONEY, false));

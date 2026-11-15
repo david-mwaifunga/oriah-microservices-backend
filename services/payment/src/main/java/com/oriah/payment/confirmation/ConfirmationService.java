@@ -162,11 +162,11 @@ public class ConfirmationService {
             throw new IllegalArgumentException("a void needs a reason of 10 to 200 characters, written for the person who reads the books");
         }
         // The row is locked first: two people voiding at once are taken one after the other, and the second finds it voided.
-        record Locked(UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net, String currency, String outcome) {
+        record Locked(UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net, String currency, String outcome, Instant arrivedAt) {
         }
-        Locked row = jdbc.query("SELECT order_id, method, reference, gross, fee, net, currency, outcome FROM payment_confirmation WHERE id = ? FOR UPDATE",
+        Locked row = jdbc.query("SELECT order_id, method, reference, gross, fee, net, currency, outcome, arrived_at FROM payment_confirmation WHERE id = ? FOR UPDATE",
                         (rs, n) -> new Locked(rs.getObject("order_id", UUID.class), rs.getString("method"), rs.getString("reference"), rs.getBigDecimal("gross"),
-                                rs.getBigDecimal("fee"), rs.getBigDecimal("net"), rs.getString("currency"), rs.getString("outcome")), id)
+                                rs.getBigDecimal("fee"), rs.getBigDecimal("net"), rs.getString("currency"), rs.getString("outcome"), rs.getTimestamp("arrived_at").toInstant()), id)
                 .stream().findFirst().orElseThrow(() -> new PaymentProblem(HttpStatus.NOT_FOUND, "confirmation-not-found", "there is no confirmation " + id));
         if (jdbc.queryForObject("SELECT count(*) FROM payment_confirmation_void WHERE confirmation_id = ?", Long.class, id) > 0) {
             throw new PaymentProblem(HttpStatus.CONFLICT, "already-voided", "confirmation " + id + " was already voided");
@@ -181,7 +181,7 @@ public class ConfirmationService {
         // The reference is freed, so the corrected confirmation can use it. The money held for this confirmation, if any, is closed with it.
         jdbc.update("UPDATE payment_confirmation SET reference_key = NULL WHERE id = ?", id);
         jdbc.update("UPDATE held_money SET status = 'VOIDED', voided_at = ? WHERE confirmation_id = ? AND status = 'OWED'", Timestamp.from(now), id);
-        events.voided(id, row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.outcome(), why, staff.actor(), now);
+        events.voided(id, row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.outcome(), why, staff.actor(), now, row.arrivedAt());
         log.info("Confirmation {} voided by {} ({}): {}", id, staff.actor(), row.outcome(), why);
         return get(id);
     }

@@ -98,6 +98,17 @@ class SettlementOutcomesTest {
     }
 
     @Test
+    @DisplayName("payment.held carries the day the money ARRIVED (not the day payment learned it could not pay), so money that came in at 23:59 on the 31st is owed from March")
+    void heldIsDatedByArrival() {
+        UUID held = confirmed(UUID.randomUUID());
+        outcomes.unsettled(held, "WRONG_AMOUNT");
+
+        String payload = jdbc.queryForObject("SELECT payload::text FROM outbox WHERE aggregate_id = ? AND event_type = 'payment.held'", String.class, held.toString());
+        java.time.Instant arrived = jdbc.queryForObject("SELECT arrived_at FROM payment_confirmation WHERE id = ?", java.sql.Timestamp.class, held).toInstant();
+        assertThat(payload).endsWith("\"arrivedAt\":\"" + arrived + "\"}");
+    }
+
+    @Test
     @DisplayName("a voided confirmation is not held: it stays PENDING, no money is owed and no payment.held is announced")
     void aVoidedConfirmationIsNotHeld() {
         UUID id = confirmed(UUID.randomUUID());

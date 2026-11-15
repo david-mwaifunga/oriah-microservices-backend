@@ -228,7 +228,7 @@ abstract class SaleTestBase {
         paymentEvents.accept(message("payment_confirmation", confirmation, "payment.voided", 1,
                 "{\"confirmationId\":\"" + confirmation + "\",\"orderId\":\"" + order + "\",\"method\":\"MTN\",\"reference\":\"MP261113\",\"gross\":4500.00,"
                         + "\"fee\":45.00,\"net\":4455.00,\"currency\":\"ZMW\",\"outcome\":\"PENDING\",\"reason\":\"keyed against the wrong order\","
-                        + "\"voidedBy\":\"Sam Phiri\",\"voidedAt\":\"2026-11-12T08:10:00Z\"}", "payment"));
+                        + "\"voidedBy\":\"Sam Phiri\",\"voidedAt\":\"2026-11-12T08:10:00Z\",\"arrivedAt\":\"2026-11-12T08:00:00Z\"}", "payment"));
     }
 
     void rejected(UUID claim, UUID order) {

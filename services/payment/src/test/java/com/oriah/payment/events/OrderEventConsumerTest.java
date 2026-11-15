@@ -178,6 +178,18 @@ class OrderEventConsumerTest {
     }
 
     @Test
+    @DisplayName("order.paid with Phase 10's trailing delivery fields (waived, price source, agreed, quoted) settles its confirmation exactly as before")
+    void thePhase10DeliveryFieldsAreIgnored() {
+        UUID order = UUID.randomUUID();
+        UUID confirmation = confirmed(order, "1000.00");
+
+        deliver("order.paid", 2, order, "{\"orderId\":\"" + order + "\",\"confirmationId\":\"" + confirmation + "\",\"republished\":false,"
+                + "\"deliveryWaivedAmount\":150.00,\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00,\"deliveryQuotedAmount\":100.00}");
+
+        assertThat(outcome(confirmation)).isEqualTo("SETTLED");
+    }
+
+    @Test
     @DisplayName("order.paid in its first version names no confirmation: it is read and ignored")
     void versionOneIsIgnored() {
         UUID order = UUID.randomUUID();

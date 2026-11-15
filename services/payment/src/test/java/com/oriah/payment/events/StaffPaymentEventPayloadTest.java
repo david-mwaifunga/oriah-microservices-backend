@@ -74,10 +74,10 @@ class StaffPaymentEventPayloadTest {
     }
 
     @Test
-    @DisplayName("payment.voided, exactly: what was voided, what had become of it, who and why")
+    @DisplayName("payment.voided, exactly: what was voided, what had become of it, who and why, and (last) the day the money arrived, which is the month its fee posted in")
     void paymentVoided() {
         String json = EventJson.write(new PaymentVoidedEvent(CONFIRMATION, ORDER, "MTN", "MP2411ABC", new BigDecimal("1000.00"),
-                new BigDecimal("10.00"), new BigDecimal("990.00"), "ZMW", "HELD", "keyed against the wrong order", "user:kc-sam", KEYED));
+                new BigDecimal("10.00"), new BigDecimal("990.00"), "ZMW", "HELD", "keyed against the wrong order", "user:kc-sam", KEYED, ARRIVED));
 
         assertThat(json).isEqualTo("{"
                 + "\"confirmationId\":\"11111111-1111-1111-1111-111111111111\","
@@ -91,14 +91,15 @@ class StaffPaymentEventPayloadTest {
                 + "\"outcome\":\"HELD\","
                 + "\"reason\":\"keyed against the wrong order\","
                 + "\"voidedBy\":\"user:kc-sam\","
-                + "\"voidedAt\":\"2026-11-10T08:15:30.123456Z\""
+                + "\"voidedAt\":\"2026-11-10T08:15:30.123456Z\","
+                + "\"arrivedAt\":\"2026-11-09T07:30:00Z\""
                 + "}");
     }
 
     @Test
-    @DisplayName("payment.held, exactly: owed to the customer, never revenue, and carrying no fee")
+    @DisplayName("payment.held, exactly: owed to the customer, never revenue, carrying no fee, and (last) the day the money arrived, which is the month it is owed from")
     void paymentHeld() {
-        String json = EventJson.write(new PaymentHeldEvent(CONFIRMATION, ORDER, "WRONG_AMOUNT", new BigDecimal("1000.00"), "ZMW", KEYED));
+        String json = EventJson.write(new PaymentHeldEvent(CONFIRMATION, ORDER, "WRONG_AMOUNT", new BigDecimal("1000.00"), "ZMW", KEYED, ARRIVED));
 
         assertThat(json).isEqualTo("{"
                 + "\"confirmationId\":\"11111111-1111-1111-1111-111111111111\","
@@ -106,7 +107,8 @@ class StaffPaymentEventPayloadTest {
                 + "\"reason\":\"WRONG_AMOUNT\","
                 + "\"owedGross\":1000.00,"
                 + "\"currency\":\"ZMW\","
-                + "\"heldAt\":\"2026-11-10T08:15:30.123456Z\""
+                + "\"heldAt\":\"2026-11-10T08:15:30.123456Z\","
+                + "\"arrivedAt\":\"2026-11-09T07:30:00Z\""
                 + "}");
     }
 }

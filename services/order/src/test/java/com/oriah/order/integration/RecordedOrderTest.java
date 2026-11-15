@@ -366,6 +366,24 @@ class RecordedOrderTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("a delivery agreed by phone keeps the shop's own quote beside the agreed amount (the concession finance reports); no quote when the shop had none, and none for a late paper sale")
+    void anAgreedDeliveryKeepsTheShopsQuote() throws Exception {
+        // no published price for this town at first: nothing to compare with
+        JsonNode noQuote = ok(record(sales(), "k-nq", agreedBody("OWN_DELIVERY", "ORIAH_COLLECTS", "60.00", null, "4560.00")), 201);
+        SaleStubs.shippingDelivers(shipping, "OWN_DELIVERY", TOWN, "ORIAH_COLLECTS", "100.00", "ZMW");   // now the shop's own quote is K100.00
+        JsonNode quoted = ok(record(sales(), "k-q", agreedBody("OWN_DELIVERY", "ORIAH_COLLECTS", "60.00", "a regular customer who lives nearby", "4560.00")
+                .replace("Mulenga Chanda", "Chipo Banda")), 201);
+        String late = agreedBody("OWN_DELIVERY", "ORIAH_COLLECTS", "60.00", "agreed on the day", "4560.00").replace("\"kind\":\"LIVE_PHONE\"",
+                "\"kind\":\"LATE_PAPER\",\"occurredAt\":\"" + Instant.now().minusSeconds(3600) + "\",\"backdateReason\":\"written on paper an hour ago\"")
+                .replace("Mulenga Chanda", "Mwila Zulu");
+        JsonNode paper = ok(record(sales(), "k-late", late), 201);
+
+        assertThat(row(UUID.fromString(noQuote.get("id").asText())).get("delivery_quoted_amount")).isNull();
+        assertThat((BigDecimal) row(UUID.fromString(quoted.get("id").asText())).get("delivery_quoted_amount")).isEqualByComparingTo("100.00");
+        assertThat(row(UUID.fromString(paper.get("id").asText())).get("delivery_quoted_amount")).as("a published price is today's, not the day of a past sale").isNull();
+    }
+
+    @Test
     @DisplayName("a pickup carries no recipient and no address: either one with a pickup is 400")
     void aPickupTakesNoRecipient() throws Exception {
         String withRecipient = pickupBody("k-pr", "4500.00").replace("\"expectedTotal\"", "\"recipient\":{\"name\":\"A B\",\"phone\":\"0971234567\"},\"expectedTotal\"");

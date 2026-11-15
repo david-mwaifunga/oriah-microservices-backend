@@ -18,7 +18,15 @@ import java.time.Instant;
  * @param requestHash    64 hex characters: the request this order was made from
  * @param agreedAmount   the delivery charge agreed by phone, or null when the delivery is the shop's published price
  * @param agreedReason   why the agreed amount differs from the shop's quote, or null
+ * @param quotedAmount   the shop's own published price for that town and option at the moment of a LIVE agreed delivery, or null (none published, a late paper
+ *                       sale, or not an agreed delivery): finance reports what was conceded against it
  */
 public record RecordedSale(String recordedBy, String callerName, String callerPhone, SaleKind kind, Instant occurredAt, String backdateReason, String slipReference,
-                           String requestHash, BigDecimal agreedAmount, String agreedReason) {
+                           String requestHash, BigDecimal agreedAmount, String agreedReason, BigDecimal quotedAmount) {
+
+    /** A sale with no quote to keep: a published or pickup delivery, or an agreed one with nothing to compare against. */
+    public RecordedSale(String recordedBy, String callerName, String callerPhone, SaleKind kind, Instant occurredAt, String backdateReason, String slipReference,
+                        String requestHash, BigDecimal agreedAmount, String agreedReason) {
+        this(recordedBy, callerName, callerPhone, kind, occurredAt, backdateReason, slipReference, requestHash, agreedAmount, agreedReason, null);
+    }
 }

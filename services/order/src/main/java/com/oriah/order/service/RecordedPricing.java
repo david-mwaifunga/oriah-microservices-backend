@@ -72,9 +72,12 @@ public class RecordedPricing {
         this.maxCharge = maxCharge;
     }
 
-    /** How the delivery is charged, as the order will keep it. {@code agreedAmount} and {@code agreedReason} only for an agreed delivery. */
+    /**
+     * How the delivery is charged, as the order will keep it. {@code agreedAmount} and {@code agreedReason} only for an agreed delivery; {@code quotedAmount}
+     * only for a LIVE agreed one where the shop had a published price (what the shop would have charged, which finance reports the concession against).
+     */
     public record DeliveryPriced(String source, String optionCode, String optionName, UUID townId, String townName, String payer, BigDecimal amount,
-                                 BigDecimal agreedAmount, String agreedReason) {
+                                 BigDecimal agreedAmount, String agreedReason, BigDecimal quotedAmount) {
     }
 
     /** The sale as priced: its lines, the delivery, and the shared quote whose total is the one formula everywhere. */
@@ -162,7 +165,7 @@ public class RecordedPricing {
                 if (d.optionCode() != null || d.townId() != null || d.payer() != null || d.agreedAmount() != null || d.agreedReason() != null) {
                     throw invalid("a pickup takes no delivery option, town, payer or amount");
                 }
-                yield new DeliveryPriced("PUBLISHED", null, null, null, null, null, BigDecimal.ZERO.setScale(2), null, null);
+                yield new DeliveryPriced("PUBLISHED", null, null, null, null, null, BigDecimal.ZERO.setScale(2), null, null, null);
             }
             case PUBLISHED -> {
                 if (kind == SaleKind.LATE_PAPER) {
@@ -179,7 +182,7 @@ public class RecordedPricing {
                             "the shop has no published price for this town and option: agree the delivery instead (delivery mode AGREED)");
                 }
                 yield new DeliveryPriced("PUBLISHED", d.optionCode(), quoted.optionName(), quoted.townId() != null ? quoted.townId() : d.townId(), quoted.townName(),
-                        quoted.payer(), quoted.amount(), null, null);
+                        quoted.payer(), quoted.amount(), null, null, null);
             }
             case AGREED -> {
                 requireDelivering(d);
@@ -191,7 +194,7 @@ public class RecordedPricing {
                     reference = quoted == null ? null : quoted.amount();
                 }
                 String reason = AgreedDelivery.reasonFor(charge, reference, d.agreedReason());
-                yield new DeliveryPriced("AGREED", d.optionCode(), place.option().name(), d.townId(), place.town().name(), d.payer(), charge, charge, reason);
+                yield new DeliveryPriced("AGREED", d.optionCode(), place.option().name(), d.townId(), place.town().name(), d.payer(), charge, charge, reason, reference);
             }
         };
     }

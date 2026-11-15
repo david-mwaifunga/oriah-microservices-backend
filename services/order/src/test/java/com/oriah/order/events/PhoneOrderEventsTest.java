@@ -34,8 +34,9 @@ class PhoneOrderEventsTest {
 
     private static Order phoneOrder(SaleKind kind) {
         String reason = kind == SaleKind.LATE_PAPER ? "the paper note was in the drawer" : null;
+        // a late paper sale is never compared with today's published price, so it keeps no quote; a live one keeps the shop's K100.00
         RecordedSale sale = new RecordedSale("user:kc-sam", CALLER, PHONE, kind, kind == SaleKind.LATE_PAPER ? SOLD : Instant.now(), reason, "P-17", "a".repeat(64),
-                new BigDecimal("60.00"), "a regular customer");
+                new BigDecimal("60.00"), "a regular customer", kind == SaleKind.LIVE_PHONE ? new BigDecimal("100.00") : null);
         Order order = Order.recorded(sale, "ZMW", "OWN_DELIVERY", new BigDecimal("60.00"), TOWN, "ORIAH_COLLECTS");
         ReflectionTestUtils.setField(order, "id", ORDER_ID);
         order.addItem(RING, "Aurelia 18k / Ring Size M", 1, new BigDecimal("4500.00"));
@@ -84,7 +85,34 @@ class PhoneOrderEventsTest {
     void paidSaysPhoneAndWhen() {
         String json = EventJson.write(OrderPaidEvent.of(phoneOrder(SaleKind.LATE_PAPER), OrderStatus.CREATED, MONEY, false));
 
-        assertThat(json).contains("\"keycloakId\":null").endsWith("\"republished\":false,\"channel\":\"PHONE\",\"occurredAt\":\"2026-11-12T09:30:00.123456Z\"}");
+        assertThat(json).contains("\"keycloakId\":null").contains("\"republished\":false,\"channel\":\"PHONE\",\"occurredAt\":\"2026-11-12T09:30:00.123456Z\",");
+    }
+
+    @Test
+    @DisplayName("order.paid of a delivery agreed by phone then says where the price came from, what was agreed, and the shop's own quote (finance's concession report); a late sale has no quote")
+    void paidSaysTheAgreedDelivery() {
+        String live = EventJson.write(OrderPaidEvent.of(phoneOrder(SaleKind.LIVE_PHONE), OrderStatus.CREATED, MONEY, false));
+        String late = EventJson.write(OrderPaidEvent.of(phoneOrder(SaleKind.LATE_PAPER), OrderStatus.CREATED, MONEY, false));
+
+        assertThat(live).endsWith(",\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00,\"deliveryQuotedAmount\":100.00}");
+        assertThat(late).endsWith(",\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00}");
+    }
+
+    @Test
+    @DisplayName("a published delivery of a phone order says only its source; a web order says none of the four new fields")
+    void aPublishedDeliveryAndAWebOrder() {
+        RecordedSale sale = new RecordedSale("user:kc-sam", CALLER, PHONE, SaleKind.LIVE_PHONE, Instant.now(), null, null, "b".repeat(64), null, null, null);
+        Order published = Order.recorded(sale, "ZMW", "OWN_DELIVERY", new BigDecimal("100.00"), TOWN, "ORIAH_COLLECTS");
+        published.addItem(RING, "Aurelia 18k / Ring Size M", 1, new BigDecimal("4500.00"));
+        Order web = new Order("kc-alice", null, "ZMW", "SELF_COLLECT", new BigDecimal("0.00"));
+        web.addItem(RING, "Aurelia 18k / Ring Size M", 1, new BigDecimal("4500.00"));
+
+        String json = EventJson.write(OrderPaidEvent.of(published, OrderStatus.CREATED, MONEY, false));
+        String webJson = EventJson.write(OrderPaidEvent.of(web, OrderStatus.CREATED, MONEY, false));
+
+        assertThat(json).endsWith(",\"deliveryPriceSource\":\"PUBLISHED\"}");
+        assertThat(webJson).doesNotContain("deliveryPriceSource").doesNotContain("deliveryAgreedAmount").doesNotContain("deliveryQuotedAmount")
+                .doesNotContain("deliveryWaivedAmount");
     }
 
     @Test
