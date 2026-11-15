@@ -15,16 +15,195 @@ spring:
       accept-float-as-int: false
 
   cloud:
+    function:
+      # Every consumer must be listed, or it is not bound: one live consumer per topic finance reads, and ONE replay consumer for the catch-up's answers.
+      definition: orderEvents;paymentEvents;inventoryEvents;procurementEvents;productEvents;priceEvents;financeReplay
     stream:
-      # Finance reads every other service's events through the Inbox and produces none. The consumers, their bindings and the catch-up are declared in the slice
-      # that completes the last applier: until then the inbox stays off, so an event can never be marked as applied by something that did not apply it.
       default:
         contentType: application/json
+      bindings:
+        orderEvents-in-0:
+          destination: oriah.order
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
+        paymentEvents-in-0:
+          destination: oriah.payment
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
+        inventoryEvents-in-0:
+          destination: oriah.inventory
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
+        procurementEvents-in-0:
+          destination: oriah.procurement
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
+        productEvents-in-0:
+          destination: catalog.product
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
+        priceEvents-in-0:
+          destination: catalog.price
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
+        financeReplay-in-0:
+          destination: oriah.replay.finance
+          group: finance
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            # A refusal fails the same way every time and retrying cannot change it: an event that breaks a promise it makes (IllegalArgumentException), a body Jackson cannot
+            # read, or one that contradicts what finance already holds (IllegalStateException). It goes to the dead-letter topic on its first delivery, and the money behind it
+            # waits only for as long as it takes to look. (Plain keys, not "[...]": Spring Cloud Stream's defaults lookup rejects a bracketed key with capitals.)
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              java.lang.IllegalStateException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
       kafka:
+        default:
+          producer:
+            # Finance SENDS one thing: the replay request to each producer at start. A send must return only once Kafka has the record, or the request would look sent when
+            # it never was and nothing would ever answer it: the catch-up refuses to start without it.
+            sync: true
         binder:
-          # Overridden in application-docker.yaml to the in-network broker. The localhost default is the Kafka HOST listener, which is what a developer running
-          # finance from the IDE reaches.
+          # Overridden in application-docker.yaml to the in-network broker. The localhost default is the Kafka HOST listener, which is what a developer running finance from
+          # the IDE reaches.
           brokers: localhost:9092
+          # How long one send may wait for Kafka (a replay request). Kept short so a stopped broker fails the start quickly and loudly; the module checks they fit.
+          producer-properties:
+            max.block.ms: 10000
+            request.timeout.ms: 5000
+            delivery.timeout.ms: 10000
+        bindings:
+          orderEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.order.dlq.finance
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms.
+                max.poll.records: 1
+          paymentEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.payment.dlq.finance
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms.
+                max.poll.records: 1
+          inventoryEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.inventory.dlq.finance
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms.
+                max.poll.records: 1
+          procurementEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: oriah.procurement.dlq.finance
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms.
+                max.poll.records: 1
+          productEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: catalog.product.dlq.finance
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms.
+                max.poll.records: 1
+          priceEvents-in-0:
+            consumer:
+              startOffset: earliest
+              enable-dlq: true
+              dlq-name: catalog.price.dlq.finance
+              configuration:
+                # One event per poll: a poll then holds one try of one event, well inside max.poll.interval.ms.
+                max.poll.records: 1
+          financeReplay-in-0:
+            consumer:
+              enable-dlq: true
+              dlq-name: oriah.replay.finance.dlq.finance
+              configuration:
+                max.poll.records: 1
 
   security:
     oauth2:
@@ -56,6 +235,19 @@ eureka:
       defaultZone: http://localhost:8761/eureka/
   instance:
     prefer-ip-address: true
+
+# ---------------------------------------------------------------------------
+# The event log convention (shared/oriah-events). Finance only RECEIVES: it reads every other service's outbox and produces nothing. The Inbox records each event finance
+# applies (processed_event) and the newest seq per aggregate (processed_aggregate) in the same transaction as its effect, so a redelivered event never applies twice.
+oriah.events.inbox.enabled: true
+# The topics finance reads through the Inbox. The module dead-letters their bindings itself and never commits an event until its dead-letter topic has it; the service refuses to
+# start if a topic listed here is read by no input binding (a typo) or by more than one. (The catalog.price topic is bound although finance reads no price: it is declared and
+# ignored, so a producer's whole log can be replayed and a price is never an undeclared surprise.)
+oriah.events.inbox.topics: oriah.order,oriah.payment,oriah.inventory,oriah.procurement,catalog.product,catalog.price
+# Finance started after every producer had been running, and Kafka keeps messages only for a while, so at start it asks each producer to send its whole history again, to
+# oriah.replay.finance (financeReplay-in-0). Each event applies exactly once, whichever stream brings it first; outbox_catch_up (V3) remembers how far each replay got.
+oriah.events.inbox.catch-up.consumer: finance
+oriah.events.inbox.catch-up.producers: order,payment,inventory,procurement,catalog
 
 # ---------------------------------------------------------------------------
 # Local fallback for GET /api/v1/admin/finance/contact-info.
