@@ -210,7 +210,7 @@ public class DeliveryAdminService {
     @Transactional
     public PriceView draftPrice(UUID townId, String optionCode, BigDecimal amount, boolean allowsOriahCollects, boolean allowsRecipientPays,
                                 Integer etaDaysMin, Integer etaDaysMax, String actor) {
-        checkPrice(amount, allowsOriahCollects, allowsRecipientPays, etaDaysMin, etaDaysMax);
+        checkPrice(optionCode, amount, allowsOriahCollects, allowsRecipientPays, etaDaysMin, etaDaysMax);
         if (count("SELECT count(*) FROM town WHERE id = ?", townId) == 0) {
             throw new ShippingProblem(HttpStatus.NOT_FOUND, "town-not-found", "there is no town " + townId);
         }
@@ -241,8 +241,8 @@ public class DeliveryAdminService {
     @Transactional
     public PriceView editDraft(UUID priceId, BigDecimal amount, boolean allowsOriahCollects, boolean allowsRecipientPays, Integer etaDaysMin,
                                Integer etaDaysMax, long version, String actor) {
-        lockDraft(priceId, version);
-        checkPrice(amount, allowsOriahCollects, allowsRecipientPays, etaDaysMin, etaDaysMax);
+        PriceRow draft = lockDraft(priceId, version);
+        checkPrice(draft.optionCode(), amount, allowsOriahCollects, allowsRecipientPays, etaDaysMin, etaDaysMax);
         jdbc.update("""
                 UPDATE delivery_price SET amount = ?, allows_oriah_collects = ?, allows_recipient_pays = ?, eta_days_min = ?, eta_days_max = ?, version = version + 1
                  WHERE id = ?""", amount, allowsOriahCollects, allowsRecipientPays, etaDaysMin, etaDaysMax, priceId);
@@ -344,7 +344,13 @@ public class DeliveryAdminService {
         return found;
     }
 
-    private static void checkPrice(BigDecimal amount, boolean allowsOriahCollects, boolean allowsRecipientPays, Integer etaDaysMin, Integer etaDaysMax) {
+    private static void checkPrice(String optionCode, BigDecimal amount, boolean allowsOriahCollects, boolean allowsRecipientPays, Integer etaDaysMin,
+                                   Integer etaDaysMax) {
+        if (DeliveryOfferService.OWN_DELIVERY.equals(optionCode) && allowsRecipientPays) {
+            // Oriah's own delivery is income, and a driver carrying the customer's cash is a float nobody wants (CLIENT_DECISIONS Q27).
+            throw new ShippingProblem(HttpStatus.CONFLICT, "own-delivery-is-oriah-collects",
+                    "Oriah's own delivery is paid to Oriah with the order, never to the driver on arrival: offer it to Oriah-collects only");
+        }
         Ngwee.require(amount, "the delivery price");
         if (amount.signum() < 0) {
             throw new IllegalArgumentException("a delivery price cannot be negative");

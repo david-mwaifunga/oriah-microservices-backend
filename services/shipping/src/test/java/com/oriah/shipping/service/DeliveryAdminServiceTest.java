@@ -220,6 +220,36 @@ class DeliveryAdminServiceTest {
         admin.draftPrice(town.id(), "YANGO", new BigDecimal("0.00"), true, false, null, null, ADMIN);   // a free delivery to a town is allowed
     }
 
+    // ---------------------------------------------------------------- own delivery is never paid by the recipient (Phase 8; Q27)
+
+    @Test
+    @DisplayName("Oriah's own delivery is income and has no driver cash float (Q27): a price that lets the RECIPIENT pay it is refused, on a draft and on an edit; Oriah-collects is fine, and a courier may still be paid by the recipient")
+    void ownDeliveryIsNeverRecipientPaid() {
+        TownView town = freshTown();
+
+        for (boolean[] offered : new boolean[][] {{true, true}, {false, true}}) {
+            assertThatThrownBy(() -> admin.draftPrice(town.id(), "OWN_DELIVERY", new BigDecimal("45.00"), offered[0], offered[1], null, null, ADMIN))
+                    .satisfies(e -> {
+                        assertThat(problem(e).status().value()).isEqualTo(409);
+                        assertThat(problem(e).code()).isEqualTo("own-delivery-is-oriah-collects");
+                    });
+        }
+        assertThat(admin.prices(town.id(), "OWN_DELIVERY", null)).as("a refused draft is not kept").isEmpty();
+
+        PriceView own = admin.draftPrice(town.id(), "OWN_DELIVERY", new BigDecimal("45.00"), true, false, null, null, ADMIN);
+        assertThat(own.allowsRecipientPays()).isFalse();
+        assertThatThrownBy(() -> admin.editDraft(own.id(), new BigDecimal("45.00"), true, true, null, null, own.version(), ADMIN)).satisfies(e -> {
+            assertThat(problem(e).status().value()).isEqualTo(409);
+            assertThat(problem(e).code()).isEqualTo("own-delivery-is-oriah-collects");
+        });
+        assertThat(admin.prices(town.id(), "OWN_DELIVERY", "DRAFT").get(0).allowsRecipientPays()).as("the draft is as it was").isFalse();
+        assertThat(admin.editDraft(own.id(), new BigDecimal("50.00"), true, false, null, null, own.version(), ADMIN).amount()).isEqualByComparingTo("50.00");
+
+        PriceView yango = admin.draftPrice(town.id(), "YANGO", new BigDecimal("60.00"), false, true, null, null, ADMIN);
+        assertThat(yango.allowsRecipientPays()).as("Yango and the couriers may still be paid by the recipient").isTrue();
+        assertThat(admin.editDraft(yango.id(), new BigDecimal("60.00"), true, true, null, null, yango.version(), ADMIN).allowsRecipientPays()).isTrue();
+    }
+
     // ---------------------------------------------------------------- the free-delivery threshold
 
     @Test

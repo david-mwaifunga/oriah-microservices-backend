@@ -41,6 +41,8 @@ public class DeliveryOfferService {
     public static final String RECIPIENT_PAYS = "RECIPIENT_PAYS";
     /** The customer collects the piece from Oriah, at no charge. The code the shopper's choice is carried by, from preview through confirm to the order. */
     public static final String SELF_COLLECT = "SELF_COLLECT";
+    /** Oriah's own driver: its charge is income, and it is never paid to the driver on arrival (CLIENT_DECISIONS Q27: no driver cash float). */
+    public static final String OWN_DELIVERY = "OWN_DELIVERY";
     private static final String CURRENCY = "ZMW";
 
     /** Self-collect: always offered, at no charge, outside the town matrix. */
@@ -91,11 +93,14 @@ public class DeliveryOfferService {
                 (rs, n) -> new Row(rs.getObject("province_id", UUID.class), rs.getString("province_name"), rs.getObject("town_id", UUID.class),
                         rs.getString("town_name"),
                         new OptionOffer(rs.getString("code"), rs.getString("option_name"), rs.getString("kind"), rs.getBigDecimal("amount"),
-                                rs.getBoolean("allows_oriah_collects"), rs.getBoolean("allows_recipient_pays"),
+                                rs.getBoolean("allows_oriah_collects"), recipientMayPay(rs.getString("code"), rs.getBoolean("allows_recipient_pays")),
                                 (Integer) rs.getObject("eta_days_min"), (Integer) rs.getObject("eta_days_max"))));
         Map<UUID, ProvinceOffer> provinces = new LinkedHashMap<>();
         Map<UUID, TownOffer> towns = new LinkedHashMap<>();
         for (Row r : rows) {
+            if (!r.option().allowsOriahCollects() && !r.option().allowsRecipientPays()) {
+                continue;   // a price nobody may pay (an old own-delivery price that only the recipient could) is not offered
+            }
             ProvinceOffer province = provinces.computeIfAbsent(r.provinceId(), id -> new ProvinceOffer(id, r.provinceName(), new ArrayList<>()));
             TownOffer town = towns.get(r.townId());
             if (town == null) {
@@ -166,7 +171,7 @@ public class DeliveryOfferService {
                     .with("townId", townId).with("optionCode", option);
         }
         boolean oriahOffered = (Boolean) price.get("oriah");
-        boolean recipientOffered = (Boolean) price.get("recipient");
+        boolean recipientOffered = recipientMayPay(option, (Boolean) price.get("recipient"));
         String chosen = payer != null ? payer : (oriahOffered ? ORIAH_COLLECTS : RECIPIENT_PAYS);
         if ((chosen.equals(ORIAH_COLLECTS) && !oriahOffered) || (chosen.equals(RECIPIENT_PAYS) && !recipientOffered)) {
             List<String> offered = new ArrayList<>();
@@ -193,6 +198,14 @@ public class DeliveryOfferService {
         }
         return new Quote(townId, (String) town.get("name"), option, (String) price.get("optionName"), chosen, amount, CURRENCY, list, free,
                 (Integer) price.get("etaMin"), (Integer) price.get("etaMax"), (UUID) price.get("id"));
+    }
+
+    /**
+     * Whether the recipient may pay the courier for this option, given what its published price says: never for Oriah's own delivery, whatever an
+     * older price row says (a price made before the rule existed is history, and cannot be changed).
+     */
+    static boolean recipientMayPay(String optionCode, boolean priceAllowsIt) {
+        return priceAllowsIt && !OWN_DELIVERY.equals(optionCode);
     }
 
     private BigDecimal threshold() {

@@ -201,6 +201,27 @@ class DeliveryHttpTest {
         mvc.perform(get(ADMIN + "/prices").with(shippingAdmin()).param("townId", town)).andExpect(jsonPath("$", hasSize(0)));
     }
 
+    @Test
+    @DisplayName("Oriah's own delivery cannot be offered to a recipient who pays (Q27): a draft or an edit that tries is 409 own-delivery-is-oriah-collects and changes nothing")
+    void ownDeliveryIsNeverRecipientPaid() throws Exception {
+        String town = field(newTown(), "$.id");
+
+        mvc.perform(post(ADMIN + "/prices").with(shippingAdmin()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"townId\":\"" + town + "\",\"optionCode\":\"OWN_DELIVERY\",\"amount\":45.00,\"allowsRecipientPays\":true}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.type").value("https://oriah.dev/problems/own-delivery-is-oriah-collects"));
+        mvc.perform(get(ADMIN + "/prices").with(shippingAdmin()).param("townId", town)).andExpect(jsonPath("$", hasSize(0)));
+
+        MvcResult draft = mvc.perform(post(ADMIN + "/prices").with(shippingAdmin()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"townId\":\"" + town + "\",\"optionCode\":\"OWN_DELIVERY\",\"amount\":45.00}")).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.allowsRecipientPays").value(false)).andReturn();
+        String price = field(draft, "$.id");
+        mvc.perform(put(ADMIN + "/prices/" + price).with(shippingAdmin()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"amount\":45.00,\"allowsRecipientPays\":true,\"version\":0}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.type").value("https://oriah.dev/problems/own-delivery-is-oriah-collects"));
+        mvc.perform(get(ADMIN + "/prices").with(shippingAdmin()).param("townId", town)).andExpect(jsonPath("$[0].allowsRecipientPays").value(false))
+                .andExpect(jsonPath("$[0].version").value(0));
+    }
+
     // ---------------------------------------------------------------- admin: the threshold
 
     @Test

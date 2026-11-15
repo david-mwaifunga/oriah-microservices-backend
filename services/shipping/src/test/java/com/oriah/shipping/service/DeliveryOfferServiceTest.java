@@ -44,6 +44,9 @@ class DeliveryOfferServiceTest {
     @Autowired
     private DeliveryOfferService offers;
 
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
     @MockitoBean
     @SuppressWarnings("unused")
     private JwtDecoder jwtDecoder;
@@ -253,5 +256,65 @@ class DeliveryOfferServiceTest {
         assertThat(after.amount()).isEqualByComparingTo("90.00");
         assertThat(after.priceId()).isEqualTo(second.id());
         assertThat(admin.prices(town.id(), "PLATINUM", "SUPERSEDED")).extracting(PriceView::id).containsExactly(first.id());
+    }
+
+    // ---------------------------------------------------------------- own delivery is never paid by the recipient (Phase 8; Q27)
+
+    /** A price published BEFORE the rule existed (a developer's database): written straight in, since the service no longer lets one be made. */
+    private UUID publishedBeforeTheRule(TownView town, boolean oriah, boolean recipient) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO delivery_price (id, town_id, option_code, amount, allows_oriah_collects, allows_recipient_pays, status, created_by, published_at, published_by)
+                VALUES (?, ?, 'OWN_DELIVERY', 45.00, ?, ?, 'PUBLISHED', 'test:before-the-rule', now(), 'test:before-the-rule')""", id, town.id(), oriah, recipient);
+        return id;
+    }
+
+    @Test
+    @DisplayName("an own-delivery price that once let the recipient pay still never lets them: it is offered as Oriah-collects only, and a quote for the recipient paying is 409 payer-not-offered")
+    void anOldOwnDeliveryPriceNeverLetsTheRecipientPay() {
+        TownView town = freshTown();
+        publishedBeforeTheRule(town, true, true);
+
+        var offered = offeredTown(offers.offers(), town).options().get(0);
+        assertThat(offered.code()).isEqualTo("OWN_DELIVERY");
+        assertThat(offered.allowsOriahCollects()).isTrue();
+        assertThat(offered.allowsRecipientPays()).as("the published row says yes; the rule says no").isFalse();
+
+        assertThatThrownBy(() -> offers.quote(town.id(), "OWN_DELIVERY", "RECIPIENT_PAYS", GOODS, "ZMW")).satisfies(e -> {
+            assertThat(problem(e).status().value()).isEqualTo(409);
+            assertThat(problem(e).code()).isEqualTo("payer-not-offered");
+            assertThat(problem(e).properties()).containsEntry("offered", java.util.List.of("ORIAH_COLLECTS"));
+        });
+        Quote oriah = offers.quote(town.id(), "OWN_DELIVERY", null, GOODS, "ZMW");
+        assertThat(oriah.payer()).isEqualTo("ORIAH_COLLECTS");
+        assertThat(oriah.amount()).isEqualByComparingTo("45.00");
+    }
+
+    @Test
+    @DisplayName("an old own-delivery price that only the recipient could pay is not offered at all, and a quote for it says nothing is offered")
+    void anOldRecipientOnlyOwnDeliveryPriceIsNotOffered() {
+        TownView town = freshTown();
+        publishedBeforeTheRule(town, false, true);
+
+        assertThat(offeredTown(offers.offers(), town)).as("nobody may pay it, so it is not offered").isNull();
+        assertThatThrownBy(() -> offers.quote(town.id(), "OWN_DELIVERY", null, GOODS, "ZMW")).satisfies(e -> {
+            assertThat(problem(e).status().value()).isEqualTo(409);
+            assertThat(problem(e).code()).isEqualTo("payer-not-offered");
+        });
+    }
+
+    @Test
+    @DisplayName("the recipient can still pay a courier: Yango offered to the recipient only is offered and quoted K0 on the order")
+    void aCourierMayStillBeRecipientPaid() {
+        TownView town = freshTown();
+        publish(town, "YANGO", "60.00", false, true);
+
+        var yango = offeredTown(offers.offers(), town).options().get(0);
+        assertThat(yango.allowsRecipientPays()).isTrue();
+        assertThat(yango.allowsOriahCollects()).isFalse();
+        Quote quote = offers.quote(town.id(), "YANGO", null, GOODS, "ZMW");
+        assertThat(quote.payer()).isEqualTo("RECIPIENT_PAYS");
+        assertThat(quote.amount()).isEqualByComparingTo("0.00");
+        assertThat(quote.listAmount()).isEqualByComparingTo("60.00");
     }
 }

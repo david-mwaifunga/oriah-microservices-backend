@@ -140,7 +140,8 @@ public class AdminShippingController {
     @Operation(operationId = "draftPrice", summary = "Draft a price for a town and option (a customer sees nothing until it is published)")
     @ApiResponse(responseCode = "201", description = "The draft")
     @ApiResponse(responseCode = "404", description = "town-not-found, option-not-found", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409", description = "draft-exists (names the draft)", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "draft-exists (names the draft); own-delivery-is-oriah-collects (Oriah's own delivery is never paid by the recipient)",
+            content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/prices")
     public ResponseEntity<PriceView> draftPrice(@Valid @RequestBody CreatePriceRequest request, @AuthenticationPrincipal Jwt jwt) {
         return ResponseEntity.status(HttpStatus.CREATED).body(admin.draftPrice(request.townId(), request.optionCode(), request.amount(),
@@ -149,7 +150,8 @@ public class AdminShippingController {
     }
 
     @Operation(operationId = "editDraftPrice", summary = "Edit a draft price (a published price cannot be edited: draft a new one)")
-    @ApiResponse(responseCode = "409", description = "price-published, stale-version", content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "price-published, stale-version, own-delivery-is-oriah-collects",
+            content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "200", description = "The edited draft")
     @PutMapping("/prices/{priceId}")
     public PriceView editDraft(@PathVariable("priceId") UUID priceId, @Valid @RequestBody EditPriceRequest request, @AuthenticationPrincipal Jwt jwt) {
