@@ -2,16 +2,29 @@ package com.oriah.order.integration;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.RequestPostProcessor;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.oriah.order.SaleStubs;
@@ -20,6 +33,7 @@ import com.oriah.order.client.InventoryClient;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -66,6 +80,34 @@ class BoxSwapTest extends SaleTestBase {
     private long amendments(UUID orderId) {
         return jdbc.queryForObject("SELECT count(*) FROM order_box_amendment WHERE order_id = ?", Long.class, orderId);
     }
+
+    /** The swap on this order that has been asked of inventory and not yet recorded here (at most one), as the database holds it. */
+    private List<Map<String, Object>> inflight(UUID orderId) {
+        return jdbc.queryForList("SELECT * FROM order_box_swap_inflight WHERE order_id = ?", orderId);
+    }
+
+    private MvcResult transition(UUID orderId, String target) throws Exception {
+        return mvc.perform(post("/api/v1/admin/orders/" + orderId + "/transition").with(manager()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"targetStatus\":\"" + target + "\"}")).andReturn();
+    }
+
+    /** Inventory swapping whatever it is asked to, but first doing {@code whileAsked}: what happens while the swap is in flight. */
+    private void inventorySwapsWhile(Executable whileAsked) {
+        doAnswer(inv -> {
+            whileAsked.execute();
+            InventoryClient.SwapAsk ask = inv.getArgument(0);
+            return new InventoryClient.BoxSwap(ask.amendmentId(), ask.orderId(), ask.productId(), ask.originalSaleLineId(), ask.replacementSaleLineId(),
+                    ask.replacementBoxVariantId(), 1, Instant.parse(ARRIVED), Instant.now(), ask.reason(), false);
+        }).when(inventory).swapBox(any());
+    }
+
+    private static String refusal(int status, String type) {
+        return type == null || type.isBlank() ? null
+                : "{\"type\":\"https://oriah.dev/problems/" + type + "\",\"title\":\"Conflict\",\"status\":" + status + ",\"detail\":\"inventory said " + type + "\"}";
+    }
+
+    @Autowired
+    private PlatformTransactionManager transactions;
 
     // ------------------------------------------------------------------ a swap
 
@@ -172,11 +214,14 @@ class BoxSwapTest extends SaleTestBase {
         assertThat(silent.getResponse().getStatus()).isEqualTo(503);
         assertThat(amendments(id)).isZero();
         assertThat(item(line).get("box_variant_id")).as("unchanged").isEqualTo(SaleStubs.BOX_VARIANT);
+        assertThat(inflight(id)).as("inventory may have done it: the swap stays in flight until it is recorded").hasSize(1);
+        assertThat(inflight(id).get(0).get("amendment_id")).isEqualTo(amendment);
 
         SaleStubs.inventorySwaps(inventory);
         MvcResult retry = swap(manager(), id, line, REPLACEMENT, REASON, amendment);
 
         assertThat(retry.getResponse().getStatus()).isEqualTo(200);
+        assertThat(inflight(id)).as("recorded: no longer in flight").isEmpty();
         assertThat(amendments(id)).isEqualTo(1);
         ArgumentCaptor<InventoryClient.SwapAsk> asked = ArgumentCaptor.forClass(InventoryClient.SwapAsk.class);
         verify(inventory, times(2)).swapBox(asked.capture());
@@ -193,11 +238,13 @@ class BoxSwapTest extends SaleTestBase {
         doThrow(SaleStubs.feign(503, null)).when(inventory).swapBox(any());
         MvcResult silent = swap(manager(), id, line, REPLACEMENT, REASON, null);
         assertThat(silent.getResponse().getStatus()).isEqualTo(503);
+        assertThat(inflight(id)).as("the swap with its minted id stays in flight").hasSize(1);
 
         SaleStubs.inventorySwaps(inventory);
         MvcResult retry = swap(manager(), id, line, REPLACEMENT, REASON, null);
 
         assertThat(retry.getResponse().getStatus()).as(retry.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(inflight(id)).isEmpty();
         assertThat(amendments(id)).isEqualTo(1);
         ArgumentCaptor<InventoryClient.SwapAsk> asked = ArgumentCaptor.forClass(InventoryClient.SwapAsk.class);
         verify(inventory, times(2)).swapBox(asked.capture());
@@ -250,21 +297,35 @@ class BoxSwapTest extends SaleTestBase {
     }
 
     @Test
-    @DisplayName("an order that is not paid, or is already fulfilled, or is being settled, cannot change its box: 409")
-    void onlyAPaidOrderNotYetFulfilled() throws Exception {
+    @DisplayName("a box can change until the parcel is dispatched: a PAID or a FULFILLED (packed) order may swap; an unpaid, a settling, a SHIPPED and a DELIVERED one may not (409)")
+    void swapsAreAllowedUntilDispatch() throws Exception {
         SaleStubs.inventorySwaps(inventory);
         UUID unpaid = heldOrder();
-        UUID fulfilled = heldOrder(2);
-        confirmed(fulfilled, "9000.00");
-        jdbc.update("UPDATE orders SET status = 'FULFILLED' WHERE id = ?", fulfilled);
-        UUID settling = heldOrder(3);
+        UUID paid = heldOrder(2);
+        confirmed(paid, "9000.00");
+        UUID packed = heldOrder(3);
+        confirmed(packed, "13500.00");
+        jdbc.update("UPDATE orders SET status = 'FULFILLED' WHERE id = ?", packed);
+        UUID shipped = heldOrder(4);
+        confirmed(shipped, "18000.00");
+        jdbc.update("UPDATE orders SET status = 'SHIPPED' WHERE id = ?", shipped);
+        UUID delivered = heldOrder(5);
+        confirmed(delivered, "22500.00");
+        jdbc.update("UPDATE orders SET status = 'DELIVERED' WHERE id = ?", delivered);
+        UUID settling = heldOrder(6);
         jdbc.update("UPDATE orders SET status = 'PAID', settling_confirmation_id = ? WHERE id = ?", UUID.randomUUID(), settling);
 
-        for (UUID order : new UUID[] {unpaid, fulfilled, settling}) {
+        for (UUID order : new UUID[] {paid, packed}) {
+            MvcResult result = swap(manager(), order, lineOf(order), REPLACEMENT, REASON, null);
+            assertThat(result.getResponse().getStatus()).as(order + " " + result.getResponse().getContentAsString()).isEqualTo(200);
+        }
+        for (UUID order : new UUID[] {unpaid, shipped, delivered, settling}) {
             MvcResult result = swap(manager(), order, lineOf(order), REPLACEMENT, REASON, null);
             assertThat(result.getResponse().getStatus()).as(order.toString()).isEqualTo(409);
         }
-        verify(inventory, never()).swapBox(any());
+        verify(inventory, times(2)).swapBox(any());
+        assertThat(json.readTree(swap(manager(), shipped, lineOf(shipped), REPLACEMENT, REASON, null).getResponse().getContentAsString()).get("type").asText())
+                .endsWith("/box-swap-not-allowed");
     }
 
     @Test
@@ -322,5 +383,298 @@ class BoxSwapTest extends SaleTestBase {
                 .hasMessageContaining("append-only");
         assertThatThrownBy(() -> jdbc.update("DELETE FROM order_box_amendment WHERE order_id = ?", id)).hasMessageContaining("append-only");
         assertThat(amendments(id)).isEqualTo(1);
+    }
+
+    // ------------------------------------------------------------------ a swap in flight (Phase 8, slice 8.1)
+    //
+    // A swap is asked of inventory between two short transactions, with no connection held. For that window the order carries a DURABLE record -- one per
+    // order -- that the swap is in flight. It is cleared only when the swap is recorded here, or when inventory refuses in a way that proves it moved nothing.
+    // While it stands, the order cannot be shipped and no OTHER swap can start: a parcel must never leave with one box while the books say another.
+
+    @Test
+    @DisplayName("while inventory is being asked the swap is IN FLIGHT -- one durable record names it -- and once the swap is recorded here that record is gone")
+    void aSwapIsInFlightWhileInventoryIsAsked() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        UUID amendment = UUID.randomUUID();
+        AtomicReference<List<Map<String, Object>>> seen = new AtomicReference<>();
+        inventorySwapsWhile(() -> seen.set(inflight(id)));
+
+        MvcResult done = swap(manager(), id, line, REPLACEMENT, REASON, amendment);
+
+        assertThat(done.getResponse().getStatus()).as(done.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(seen.get()).as("one record, while inventory was being asked").hasSize(1);
+        Map<String, Object> flight = seen.get().get(0);
+        assertThat(flight.get("amendment_id")).isEqualTo(amendment);
+        assertThat(flight.get("item_id")).isEqualTo(line);
+        assertThat(flight.get("new_box_variant_id")).isEqualTo(REPLACEMENT);
+        assertThat(flight.get("reason")).isEqualTo(REASON);
+        assertThat(flight.get("requested_by")).isEqualTo("user:kc-maya");
+        assertThat(flight.get("started_at")).isNotNull();
+        assertThat(inflight(id)).as("recorded: nothing is in flight any more").isEmpty();
+        assertThat(amendments(id)).isEqualTo(1);
+    }
+
+    @ParameterizedTest(name = "inventory says {0} {1}: it may have happened, so the swap stays in flight (the answer is {2})")
+    @CsvSource({
+            "503, ,                                 503",
+            "500, ,                                 503",
+            "502, ,                                 503",
+            "-1,  ,                                 503",
+            "409, amendment-id-used,                409",
+            "409, already-swapped,                  409",
+            "409, a-refusal-nobody-has-heard-of,    409",
+            "409, ,                                 409",
+    })
+    @DisplayName("an answer that does not prove inventory moved nothing leaves the swap in flight, and nothing is recorded")
+    void anUncertainAnswerKeepsTheSwapInFlight(int status, String type, int answered) throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        doThrow(SaleStubs.feign(status, refusal(status, type))).when(inventory).swapBox(any());
+
+        MvcResult result = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(answered);
+        assertThat(inflight(id)).as("it may have happened: it stays in flight").hasSize(1);
+        assertThat(amendments(id)).isZero();
+        assertThat(item(line).get("box_variant_id")).as("unchanged").isEqualTo(SaleStubs.BOX_VARIANT);
+    }
+
+    @ParameterizedTest(name = "inventory says {0} {1}: that proves it moved nothing, so the swap is over (the answer is {2})")
+    @CsvSource({
+            "404, sale-line-not-found,  404",
+            "409, not-a-box-sale,       409",
+            "409, same-box,             409",
+            "409, not-packaging,        409",
+            "409, insufficient-stock,   409",
+            "400, ,                     500",
+            "403, ,                     500",
+            "422, ,                     500",
+    })
+    @DisplayName("a refusal that proves inventory moved nothing ends the swap: nothing stays in flight, and the same swap can be asked again")
+    void aDefiniteRefusalEndsTheSwap(int status, String type, int answered) throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        doThrow(SaleStubs.feign(status, refusal(status, type))).when(inventory).swapBox(any());
+
+        MvcResult result = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(answered);
+        assertThat(inflight(id)).as("nothing moved: nothing is in flight").isEmpty();
+        assertThat(amendments(id)).isZero();
+
+        SaleStubs.inventorySwaps(inventory);
+        assertThat(swap(manager(), id, line, REPLACEMENT, REASON, null).getResponse().getStatus()).as("the swap can be asked again").isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("a swap inventory never answered keeps its order from shipping and from any OTHER swap, until the same swap is repeated and recorded")
+    void anUnansweredSwapBlocksUntilItIsResumed() throws Exception {
+        UUID id = paidOrder();
+        jdbc.update("UPDATE orders SET status = 'FULFILLED' WHERE id = ?", id);
+        UUID line = lineOf(id);
+        UUID amendment = UUID.randomUUID();
+        doThrow(SaleStubs.feign(503, null)).when(inventory).swapBox(any());
+        assertThat(swap(manager(), id, line, REPLACEMENT, REASON, amendment).getResponse().getStatus()).isEqualTo(503);
+
+        MvcResult other = swap(manager(), id, line, UUID.randomUUID(), "a different box, asked while the first is unresolved", null);
+        assertThat(other.getResponse().getStatus()).isEqualTo(409);
+        JsonNode problem = json.readTree(other.getResponse().getContentAsString());
+        assertThat(problem.get("type").asText()).endsWith("/box-swap-in-progress");
+        assertThat(problem.get("amendmentId").asText()).as("it names the swap to resume").isEqualTo(amendment.toString());
+        assertThat(problem.get("startedAt").asText()).isNotBlank();
+        MvcResult shipped = transition(id, "SHIPPED");
+        assertThat(shipped.getResponse().getStatus()).isEqualTo(409);
+        assertThat(json.readTree(shipped.getResponse().getContentAsString()).get("type").asText()).endsWith("/box-swap-in-progress");
+        assertThat(row(id).get("status")).as("not shipped").isEqualTo("FULFILLED");
+        verify(inventory, times(1)).swapBox(any());
+
+        SaleStubs.inventorySwaps(inventory);
+        assertThat(swap(manager(), id, line, REPLACEMENT, REASON, amendment).getResponse().getStatus()).as("the same swap resumes").isEqualTo(200);
+
+        assertThat(inflight(id)).isEmpty();
+        assertThat(amendments(id)).isEqualTo(1);
+        assertThat(transition(id, "SHIPPED").getResponse().getStatus()).as("now nothing is in flight").isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("an order cannot be shipped while a swap on it is with inventory, and can be once the swap is recorded: the race, through today's staff door")
+    void aSwapWithInventoryBlocksShipping() throws Exception {
+        UUID id = paidOrder();
+        jdbc.update("UPDATE orders SET status = 'FULFILLED' WHERE id = ?", id);
+        UUID line = lineOf(id);
+        AtomicReference<MvcResult> shippedMeanwhile = new AtomicReference<>();
+        inventorySwapsWhile(() -> shippedMeanwhile.set(transition(id, "SHIPPED")));
+
+        MvcResult done = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(done.getResponse().getStatus()).as(done.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(shippedMeanwhile.get().getResponse().getStatus()).as(shippedMeanwhile.get().getResponse().getContentAsString()).isEqualTo(409);
+        assertThat(json.readTree(shippedMeanwhile.get().getResponse().getContentAsString()).get("type").asText()).endsWith("/box-swap-in-progress");
+        assertThat(row(id).get("status")).isEqualTo("FULFILLED");
+        assertThat(item(line).get("box_variant_id")).isEqualTo(REPLACEMENT);
+
+        assertThat(transition(id, "SHIPPED").getResponse().getStatus()).isEqualTo(200);
+        assertThat(row(id).get("status")).isEqualTo("SHIPPED");
+    }
+
+    @Test
+    @DisplayName("a second, different swap asked while the first is still with inventory is 409 box-swap-in-progress, and inventory is asked once")
+    void oneSwapAtATime() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        AtomicReference<MvcResult> second = new AtomicReference<>();
+        AtomicReference<Object> firstAmendment = new AtomicReference<>();
+        inventorySwapsWhile(() -> {
+            firstAmendment.set(inflight(id).get(0).get("amendment_id"));
+            second.set(swap(manager(), id, line, UUID.randomUUID(), "another box entirely, asked at the same time", null));
+        });
+
+        MvcResult first = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(first.getResponse().getStatus()).as(first.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(second.get().getResponse().getStatus()).as(second.get().getResponse().getContentAsString()).isEqualTo(409);
+        JsonNode problem = json.readTree(second.get().getResponse().getContentAsString());
+        assertThat(problem.get("type").asText()).endsWith("/box-swap-in-progress");
+        assertThat(problem.get("amendmentId").asText()).isEqualTo(firstAmendment.get().toString());
+        verify(inventory, times(1)).swapBox(any());
+        assertThat(amendments(id)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("the same swap sent twice at once (a double click) is asked of inventory under one amendment id and recorded once")
+    void aDoubleSubmitIsOneSwap() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        UUID amendment = UUID.randomUUID();
+        AtomicBoolean inside = new AtomicBoolean();
+        AtomicReference<MvcResult> twin = new AtomicReference<>();
+        inventorySwapsWhile(() -> {
+            if (inside.compareAndSet(false, true)) {
+                twin.set(swap(manager(), id, line, REPLACEMENT, REASON, amendment));
+            }
+        });
+
+        MvcResult first = swap(manager(), id, line, REPLACEMENT, REASON, amendment);
+
+        assertThat(first.getResponse().getStatus()).as(first.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(twin.get().getResponse().getStatus()).as(twin.get().getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(amendments(id)).as("one swap").isEqualTo(1);
+        assertThat(inflight(id)).isEmpty();
+        ArgumentCaptor<InventoryClient.SwapAsk> asked = ArgumentCaptor.forClass(InventoryClient.SwapAsk.class);
+        verify(inventory, times(2)).swapBox(asked.capture());
+        assertThat(asked.getAllValues()).extracting(InventoryClient.SwapAsk::amendmentId).containsOnly(amendment);
+        assertThat(asked.getAllValues()).extracting(InventoryClient.SwapAsk::replacementSaleLineId).containsOnly(asked.getAllValues().get(0).replacementSaleLineId());
+        assertThat(item(line).get("box_variant_id")).isEqualTo(REPLACEMENT);
+        assertThat(item(line).get("box_line_id")).isEqualTo(asked.getValue().replacementSaleLineId());
+    }
+
+    @Test
+    @DisplayName("the id of a swap in flight cannot be used for another swap: 409 amendment-id-used, and inventory is not asked again")
+    void anInFlightIdIsNotReusedForAnotherSwap() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        UUID amendment = UUID.randomUUID();
+        doThrow(SaleStubs.feign(503, null)).when(inventory).swapBox(any());
+        assertThat(swap(manager(), id, line, REPLACEMENT, REASON, amendment).getResponse().getStatus()).isEqualTo(503);
+
+        MvcResult other = swap(manager(), id, line, UUID.randomUUID(), REASON, amendment);
+        MvcResult reworded = swap(manager(), id, line, REPLACEMENT, "the customer chose the velvet box after all", amendment);
+
+        for (MvcResult result : new MvcResult[] {other, reworded}) {
+            assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(409);
+            assertThat(json.readTree(result.getResponse().getContentAsString()).get("type").asText()).endsWith("/amendment-id-used");
+        }
+        verify(inventory, times(1)).swapBox(any());
+        assertThat(inflight(id)).as("the swap in flight is untouched").hasSize(1);
+    }
+
+    @Test
+    @DisplayName("the line takes the new box only if it still carries the box line the swap was made from; inventory's swap is recorded either way, never lost")
+    void theLineChangesOnlyFromTheBoxTheSwapWasMadeFrom() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        UUID elsewhere = UUID.randomUUID();
+        inventorySwapsWhile(() -> jdbc.update("UPDATE order_items SET box_line_id = ? WHERE id = ?", elsewhere, line));
+
+        MvcResult done = swap(manager(), id, line, REPLACEMENT, REASON, null);
+
+        assertThat(done.getResponse().getStatus()).as(done.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(item(line).get("box_line_id")).as("the line is not overwritten").isEqualTo(elsewhere);
+        assertThat(item(line).get("box_variant_id")).isEqualTo(SaleStubs.BOX_VARIANT);
+        assertThat(amendments(id)).as("inventory moved the stock, so the swap is recorded").isEqualTo(1);
+        assertThat(inflight(id)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a swap judges the order AFTER whoever else is changing it has finished: an order shipped at that very moment is refused, never swapped from a stale look")
+    void aSwapWaitsForTheOrderLock() throws Exception {
+        UUID id = paidOrder();
+        UUID line = lineOf(id);
+        CountDownLatch holding = new CountDownLatch(1);
+        Thread other = new Thread(() -> new TransactionTemplate(transactions).executeWithoutResult(tx -> {
+            jdbc.queryForObject("SELECT id FROM orders WHERE id = ? FOR UPDATE", UUID.class, id);
+            holding.countDown();
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            jdbc.update("UPDATE orders SET status = 'SHIPPED' WHERE id = ?", id);
+        }));
+        other.start();
+        assertThat(holding.await(20, TimeUnit.SECONDS)).isTrue();
+
+        MvcResult result = swap(manager(), id, line, REPLACEMENT, REASON, null);
+        other.join();
+
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(409);
+        assertThat(json.readTree(result.getResponse().getContentAsString()).get("type").asText()).endsWith("/box-swap-not-allowed");
+        verify(inventory, never()).swapBox(any());
+        assertThat(inflight(id)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a shipment judges the order AFTER whoever else is changing it has finished: a swap planned at that very moment stops it, never a shipment from a stale look")
+    void aShipmentWaitsForTheOrderLock() throws Exception {
+        UUID id = paidOrder();
+        jdbc.update("UPDATE orders SET status = 'FULFILLED' WHERE id = ?", id);
+        UUID line = lineOf(id);
+        CountDownLatch holding = new CountDownLatch(1);
+        Thread other = new Thread(() -> new TransactionTemplate(transactions).executeWithoutResult(tx -> {
+            jdbc.queryForObject("SELECT id FROM orders WHERE id = ? FOR UPDATE", UUID.class, id);
+            holding.countDown();
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            jdbc.update("INSERT INTO order_box_swap_inflight (order_id, amendment_id, item_id, new_box_variant_id, reason, requested_by, started_at) "
+                    + "VALUES (?, ?, ?, ?, ?, 'user:kc-maya', now())", id, UUID.randomUUID(), line, REPLACEMENT, REASON);
+        }));
+        other.start();
+        assertThat(holding.await(20, TimeUnit.SECONDS)).isTrue();
+
+        MvcResult result = transition(id, "SHIPPED");
+        other.join();
+
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(409);
+        assertThat(json.readTree(result.getResponse().getContentAsString()).get("type").asText()).endsWith("/box-swap-in-progress");
+        assertThat(row(id).get("status")).isEqualTo("FULFILLED");
+    }
+
+    @Test
+    @DisplayName("the database allows one swap in flight per order, and holds the reason to 10 to 200 characters")
+    void theInFlightRecordHoldsItsRules() {
+        UUID order = UUID.randomUUID();
+        String sql = "INSERT INTO order_box_swap_inflight (order_id, amendment_id, item_id, new_box_variant_id, reason, requested_by, started_at) "
+                + "VALUES (?, ?, ?, ?, ?, 'user:kc-maya', now())";
+
+        jdbc.update(sql, order, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "a good enough reason");
+
+        assertThatThrownBy(() -> jdbc.update(sql, order, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "another good reason")).isInstanceOf(DuplicateKeyException.class);
+        assertThatThrownBy(() -> jdbc.update(sql, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "short")).isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> jdbc.update(sql, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), "x".repeat(201))).isInstanceOf(DataIntegrityViolationException.class);
+        jdbc.update("DELETE FROM order_box_swap_inflight WHERE order_id = ?", order);
     }
 }

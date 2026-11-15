@@ -41,19 +41,25 @@ public class OrderService {
     private final OrderWriter writer;
     private final OrderHolds holds;
     private final AddressOwnership addresses;
+    private final OrderLocks locks;
+    private final BoxSwaps swaps;
 
     public OrderService(OrderRepository repository,
                         OrderEventLog events,
                         OrderPricingService pricing,
                         OrderWriter writer,
                         OrderHolds holds,
-                        AddressOwnership addresses) {
+                        AddressOwnership addresses,
+                        OrderLocks locks,
+                        BoxSwaps swaps) {
         this.repository = repository;
         this.events = events;
         this.pricing = pricing;
         this.writer = writer;
         this.holds = holds;
         this.addresses = addresses;
+        this.locks = locks;
+        this.swaps = swaps;
     }
 
     /**
@@ -209,8 +215,9 @@ public class OrderService {
      */
     @Transactional
     public Optional<Order> transition(UUID orderId, OrderStatus targetStatus, String actor) {
-        // The order is looked up FIRST: one that does not exist is a 404 whatever is asked of it.
-        return repository.findById(orderId).map(o -> {
+        // The order is looked up FIRST: one that does not exist is a 404 whatever is asked of it. It is looked up under its row lock (Phase 8): a box
+        // swap and this move queue behind each other, and whichever is second judges the order as the first left it.
+        return locks.lock(orderId).map(o -> {
             if (!OrderStatus.adminMayRequest(targetStatus)) {
                 // Only money makes an order PAID (the settlement saga), only a lapsed hold or a rejected claim makes it EXPIRED, only the shopper's claim
                 // makes it PAYMENT_SUBMITTED. A person asking for one of them would skip the money, the stock and the receipt.
@@ -218,7 +225,12 @@ public class OrderService {
                         + (targetStatus == OrderStatus.PAID ? "only a confirmed payment makes an order paid"
                         : "it is set by the shopper's claim, or by the hold lapsing or a rejected claim"));
             }
-            return move(requireNotBeingSettled(o), targetStatus, actor);
+            requireNotBeingSettled(o);
+            if (targetStatus == OrderStatus.SHIPPED && o.status().canTransitionTo(OrderStatus.SHIPPED)) {
+                // A parcel must never leave with one box while the books say another: a swap that is with inventory (or never finished) stops it.
+                swaps.requireNoneInFlight(o.id());
+            }
+            return move(o, targetStatus, actor);
         });
     }
 

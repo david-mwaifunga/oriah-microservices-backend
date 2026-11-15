@@ -27,6 +27,10 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Safe to repeat. The amendment id is the idempotency key shared with inventory, and the sale line the replacement is sold under is DERIVED from it,
  * so a retry after a lost reply (inventory did the swap, order never heard) asks for exactly the same swap, which inventory answers once.
+ *
+ * <p>While inventory is being asked the swap is IN FLIGHT ({@link BoxSwaps}): a durable record that keeps the order from shipping and from any other swap.
+ * It is cleared when the swap is recorded, or when inventory refuses in a way that proves it moved nothing; any other answer leaves it, and the way out is
+ * to repeat the swap.
  */
 @Service
 @Slf4j
@@ -34,6 +38,8 @@ public class BoxSwapService {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final String PROBLEM_PREFIX = "https://oriah.dev/problems/";
+    /** The 409s from inventory that say it did not move the box (see {@link #provesNothingMoved}). */
+    private static final java.util.Set<String> DEFINITE_REFUSALS = java.util.Set.of("not-a-box-sale", "same-box", "not-packaging", "insufficient-stock");
 
     private final BoxSwaps swaps;
     private final InventoryClient inventory;
@@ -53,7 +59,7 @@ public class BoxSwapService {
      * @param actor       {@code user:<keycloak subject>} of the member of staff
      */
     public Swap swap(UUID orderId, UUID lineId, UUID newBoxVariantId, String reason, UUID amendmentId, String actor) {
-        Planned planned = swaps.plan(orderId, lineId, newBoxVariantId, reason, amendmentId);
+        Planned planned = swaps.plan(orderId, lineId, newBoxVariantId, reason, amendmentId, actor);
         if (planned.recorded() != null) {
             return planned.recorded();
         }
@@ -65,16 +71,44 @@ public class BoxSwapService {
             done = inventory.swapBox(new InventoryClient.SwapAsk(amendment, orderId, plan.productId(), plan.oldBoxLineId(), replacementLine,
                     newBoxVariantId, plan.reason()));
         } catch (FeignException e) {
-            throw refused(e);
+            Map<String, Object> problem = problem(e);
+            String code = codeOf(e, problem);
+            RuntimeException refusal = refused(e, problem, code);
+            if (provesNothingMoved(e.status(), code)) {
+                swaps.abandon(plan);
+            } else {
+                log.error("Order {}: box swap {} was asked of inventory and the answer ({}{}) does not say it did not happen: it stays IN FLIGHT -- the order "
+                        + "cannot be shipped until the same swap is repeated and recorded", orderId, amendment, e.status(), code.isEmpty() ? "" : " " + code);
+            }
+            throw refusal;
         }
         return swaps.record(plan, replacementLine, done == null ? null : done.occurredAt(), actor);
     }
 
-    private RuntimeException refused(FeignException e) {
+    /**
+     * Whether inventory's refusal PROVES it moved nothing, so the swap is over and the order is free again. Only a refusal that names a reason it did not
+     * (or could not) start is trusted: the box is not a box, the same box, not packaging, no stock, no such sale line, or a request refused before it was
+     * looked at (a 4xx that is not a 409). A timeout, a server error, an amendment id inventory says it has used, a line it says it has already swapped,
+     * or a 409 nobody has heard of may mean it happened: those leave the swap in flight.
+     */
+    static boolean provesNothingMoved(int status, String code) {
+        if (status == 409) {
+            return DEFINITE_REFUSALS.contains(code);
+        }
+        // Any other 4xx (a 404 included: no such sale line) was refused before inventory moved anything.
+        return status >= 400 && status < 500;
+    }
+
+    private static String codeOf(FeignException e, Map<String, Object> problem) {
+        String type = problem.get("type") instanceof String t ? t : "";
+        if (type.startsWith(PROBLEM_PREFIX)) {
+            return type.substring(PROBLEM_PREFIX.length());
+        }
+        return e.status() == 404 ? "not-found" : (e.status() == 409 ? "box-swap-refused" : "");
+    }
+
+    private RuntimeException refused(FeignException e, Map<String, Object> problem, String code) {
         if (e.status() == 404 || e.status() == 409) {
-            Map<String, Object> problem = problem(e);
-            String type = problem.get("type") instanceof String t ? t : "";
-            String code = type.startsWith(PROBLEM_PREFIX) ? type.substring(PROBLEM_PREFIX.length()) : (e.status() == 404 ? "not-found" : "box-swap-refused");
             String detail = problem.get("detail") instanceof String d ? d : "inventory could not swap the box";
             SalesProblem refused = new SalesProblem(HttpStatus.valueOf(e.status()), code, detail);
             problem.forEach((k, v) -> {
