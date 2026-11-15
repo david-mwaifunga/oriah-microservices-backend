@@ -256,6 +256,10 @@ never by hand, or your database stops matching everyone else's — nothing that 
 hand-written — creating it through the admin endpoints is what proves they
 work — and the Keycloak database is Keycloak's alone.
 
+**Finance (Phase 10) reads history when it starts.** Run `finance` from IntelliJ like the others (profile `local`, port 8094, database `finance` on 5446). Its first start asks every other service for its
+whole event history over Kafka (`localhost:9092`, the HOST listener), so start the producers first and the books are complete only when `GET /api/v1/admin/finance/status` says `catchUpComplete: true` (sign in as
+`maya` or `admin`; only `FINANCE_ADMIN` reads it). After an event it refused has been fixed, `POST /api/v1/admin/finance/catch-up/reverify` and restart finance: it asks again, and an event already applied is applied once.
+
 ## Postman
 
 Import `local-dev/postman/oriah-local.postman_collection.json` and

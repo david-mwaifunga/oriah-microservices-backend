@@ -259,6 +259,8 @@ class PaymentApplierTest {
         assertThat(jdbc.queryForObject("SELECT effect_day FROM ledger_entry WHERE entry_key = ?", java.sql.Date.class, "held:" + known).toLocalDate()).isEqualTo(LocalDate.parse("2026-10-14"));
         assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_entry WHERE entry_key = ?", Long.class, "held:" + unknown)).as("no day to book it on yet").isZero();
         assertThat(open("held-without-arrival-date", unknown)).as("and it says it is waiting").isTrue();
+        assertThat(jdbc.queryForObject("SELECT severity FROM anomaly_log WHERE code = 'held-without-arrival-date' AND subject = ? ORDER BY id LIMIT 1", String.class, unknown.toString()))
+                .as("an error: a month cannot be reported while money is held with no day to book it on").isEqualTo("ERROR");
 
         confirm(unknown, order, "10.00", ARRIVED, 1);
 

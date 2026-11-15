@@ -134,7 +134,7 @@ public class FeeDerivation {
         if (arrived == null) {
             // An event written before the field existed, and the confirmation has not been heard of yet: the day it was learned could be another month, and a row is never moved.
             // Wait: the confirmation, when it arrives, derives this again and books it on the day the money arrived.
-            anomalies.raise("held-without-arrival-date", conf.toString(), Severity.WARN, Map.of("confirmationId", conf.toString()), ctx.eventId());
+            anomalies.raise("held-without-arrival-date", conf.toString(), Severity.ERROR, Map.of("confirmationId", conf.toString()), ctx.eventId());
             return null;
         }
         anomalies.autoResolve("held-without-arrival-date", conf.toString());

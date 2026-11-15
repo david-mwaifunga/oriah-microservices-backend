@@ -668,6 +668,67 @@ published price (built: yes, with a written reason either way)? 9. Do you sell o
 
 ### Phase 10 — Finance: expenses, the ledger, the profit report
 
+> **Built 2026-11-15/16 (backend only: `oriah-web` is not changed).** The new `finance` service (port 8094) answers everything below under `/api/v1/admin/finance/**`; **every call needs `FINANCE_ADMIN` and nothing else**
+> (the owner and the `BOOKKEEPER` job role hold it; **`MANAGER` does not, so a manager sees no profit, expense or tax**; a salesperson, a packer and a shopper get 403, no token 401). The gateway routes the prefix to
+> `finance`. Amounts are Kwacha strings-or-numbers with two decimals, never a "net". A write takes a required `Idempotency-Key` (1 to 128 characters; missing is 400 `idempotency-key-required`): **201 the first time,
+> 200 with the same answer for the same request and key again, 409 `idempotency-key-reused` for another request with a used key.** Every refusal is `application/problem+json` with a `type` ending in the names below.
+> **To add to `oriah-web`'s `scripts/codegen.mjs` `SERVICES`: `finance`** (the OpenAPI is at `/v3/api-docs/finance`; it was left out so the frontend stays untouched while backend phases are built).
+>
+> **Expenses** (`ExpensePage`/`ExpenseResponse`): `GET /expense-categories` (the closed list: the 13 headings a person may type, each saying whether it needs an order, a provider or a confirmation, and two that
+> only the system posts: `PAYMENT_CHARGES`, `CONSIGNMENT_PERIOD_COST`), `POST /expenses {category, amount, expenseDate, description, linkedOrderId?, linkedConfirmationId?, provider?, reason?}` (the amount is above K0.00 and a
+> whole number of ngwee, 400 otherwise; the day is a Lusaka day not in the future; a phone-like number in ANY typed text (description, reason, note, reference) is 400 `no-phone-numbers`; `provider` is a plain code (MTN, AIRTEL, ZAMTEL, BANK: letters only, kept in capitals; anything else is 400 `invalid-provider`) and `BANK_MOBILE_ACCOUNT_FEES` needs it, `COURIER_FARE` an
+> order that was dispatched and has no fare standing yet (409 `fare-already-posted`: correct the one that stands), `PAYMENT_CHARGES_ADJUSTMENT` a confirmation and a reason; a heading the system posts is 409 `category-posted-from-source`), `GET /expenses?month&category&source&includeReversed&page&size`,
+> `GET /expenses/{id}`, `POST /expenses/{id}/reversal {reason}` and `POST /expenses/{id}/correction {reason, ...the fields that change}` (a reversal plus a new entry in one step; **there is no edit and no delete**;
+> a correction that changes nothing is 400 `correction-changes-nothing`; a posted row is 409 `expense-posted-from-source`; a second reversal 409 `expense-already-reversed`). **Typing into a month that was already
+> reported needs a `reason` (400 `reason-required-for-issued-month`) and the month is then flagged changed.**
+> **Taxes:** `GET /tax-types`, `POST /tax-entries {taxType: TURNOVER_TAX, forMonth, amount, paidOn, reference?, reason?}`, `GET /tax-entries?month`, `GET /tax-entries/{id}`, `.../reversal`, `.../correction`; a customs charge
+> (duty, surtax, import VAT) is 400 `customs-charge-not-a-tax-entry`, any other unknown tax 400 `unknown-tax`. Nothing calculates the tax. **Provider statement check:** `POST /statement-checks {month, method, statementFees,
+> note?}`, `GET /statement-checks?month` (all, oldest first) and `/latest?month` (the latest per provider): what the statement says against what finance recorded, to the ngwee.
+> **The profit report** (`ProfitReport`): `GET /reports/profit/{month}?asOf=` (a month is `2026-10`; `asOf` reproduces the report as finance knew it then, never in the future), `GET /reports/profit?from&to&asOf` (at most 24
+> months), `GET /reports/profit/{month}/products?page&size` (gross profit by product; **the products add up exactly to the shop's gross profit**, with a checksum, write-offs in a column of their own, and
+> "not tied to a product" on a line of its own, never hidden), `GET /reports/profit/{month}/entries?line&product&category&orderId&changedSinceIssue&asOf&page&size` (the ledger rows behind any figure: click a number, see its rows),
+> `GET /reports/estimated-stock` (the standing list of estimated opening-stock cost lines). **Its lines, in these words:** 1 Goods sold, at list price; 2 Less: discounts given; 3 Revenue from goods, after discounts; 4 Cost of goods sold: goods; 5 Cost of goods sold: packaging; 6 Cost of goods sold; 7 **Gross profit**; 8 Delivery charges collected; 9 Stock written off or given away, at cost (the reasons listed under `writtenOff`); 10 Expenses (by heading, `posted` and `typedIn` side by side; the courier fares paid are among them); 11 **Profit before turnover tax**; 12 Turnover tax entered for the month; 13 **Profit after turnover tax**. Below the lines: the `memo` (delivery given
+> up by waiver, held money at month end, late-keyed sales, agreed deliveries against the shop's own quote, the statement checks, overhead per piece sold) and the `disclosure` (how much of the month's cost is an
+> estimate, in words in `banner`, with the sums, and what is still on the shelf at an estimated cost) and the `status` (`issued`, `changedSinceIssue` with `changedEntries` and `changedEffectOnProfit`, `openErrors`,
+> `openWarnings`, `catchUpComplete`, `notTiedToProduct`, **`doNotRelyYet`: show a banner and do not let the owner read the figures as final while it is true**).
+> **"I have reported this month":** `POST /reports/profit/{month}/issue {acknowledgeIncomplete?, note?}` stores the whole month (lines, products, disclosure) as it is now; **409 `month-not-finished` until 72 hours
+> after the month ends** (`oriah.finance.issue-grace`); **409 `books-incomplete` (with `reasons[]`) while an error is open, the catch-up is running or a cost is not tied to a product, unless `acknowledgeIncomplete: true`**;
+> a second issue of a month that changed needs a `note` (400 `issue-note-required`); `GET /reports/profit/{month}/issues` lists every time it was reported. After an issue, anything that changes that month sets
+> `changedSinceIssue` and `entries?changedSinceIssue=true` lists exactly what changed.
+> **Can the books be trusted? (a screen of its own):** `GET /status` (per producer: `replayedThrough`, `completedThrough`, `complete`; `catchUpComplete`, `openErrors`, `openWarnings`, `skippedFacts`, `ledgerEntries`; counts only,
+> never an amount), `GET /anomalies?status=OPEN|ALL` (each: `id`, `code`, `subject`, `severity` ERROR/WARN, `status` OPEN/ACKNOWLEDGED/RESOLVED, `detail` of ids, codes and amounts the system worked out), `POST /anomalies/{id}/ack
+> {note}` (a note of 5 to 200 characters, kept with who wrote it; 409 `anomaly-not-open` when it was already acknowledged, resolved, or has happened again since (acknowledge the newer one), 404 `anomaly-not-found`), and
+> `POST /catch-up/reverify {producer?}` (reads a producer's whole history again **at finance's next start**: 400 `unknown-producer`; show it as "takes effect at the next start"). An event finance refuses is parked, never
+> dropped, and shows as an `event-refused` error that closes itself when the event later applies.
+> **Admin screens to build:** Expenses (list, add, reverse, correct), Taxes and statement checks, the monthly profit report with its drill-down and "I have reported this month", gross profit by product, and the status and
+> anomaly list; a sidebar entry for `FINANCE_ADMIN`. **What it breaks in `oriah-web`:** nothing is removed; the dashboard's "Captured revenue" card (payment's summary) still shows a second revenue figure that will
+> disagree with the profit report: decide whether it reads the report or goes. No Playwright spec breaks.
+>
+> **Questions for the owner, in plain words (none blocks the build; the screens follow the design as built):**
+> 1. **Delivery and gross profit.** The delivery charge you collect (say K150 on a K1,000 ring) is revenue. The report shows **gross profit on goods only**, so "profit by product" adds up exactly to the shop's gross profit, and
+>    puts the delivery charge on its own line just below (line 8), with the courier fares paid among the expenses. Profit before turnover tax counts both. Or should delivery be folded into gross profit?
+> 2. **Expense headings.** Is the list right (rent and utilities, salaries and casual help, airtime/data/internet, marketing, software, packing supplies bought as an expense, market stall fees, delivery fuel, driver pay,
+>    monthly bank and mobile-money account fees, courier fare for one order, other)? Payment charges, the courier fares recorded at dispatch and the monthly bills on a consignment are filled in by the system.
+> 3. **"I have reported this month".** After it, anything that later changes that month shows a warning and exactly what changed. It cannot be used until three days after the month ends (so late-keyed sales are in) and is
+>    refused while the books show a problem unless you accept the problem and say so. OK?
+> 4. **Cancelling a mistake.** Counted in the month it was originally counted (with a note of when we did it), or in the month you cancel it? The design uses the original month.
+> 5. **An expense or tax typed into a month you already reported** asks for a reason and marks the month. OK?
+> 6. **A courier fare that arrives late, or a booking fee paid before dispatch.** Type it as a normal expense linked to the order, or correct the fare we recorded? Both are possible; a keyed fare is refused when a posted
+>    one stands (409 `fare-already-posted`).
+> 7. **Who sees profit.** Only the owner and the bookkeeper (`FINANCE_ADMIN`). The manager sees none of it. Right?
+> 8. **A customs charge tagged as a "bill for the month" on a consignment** is refused (it belongs in the cost of the goods). Agree?
+> 9. **Agreed delivery prices against the shop's own price.** The order now keeps the quote the shop's table would have charged, from this change on; older phone orders show none. The memo says how much was conceded. Enough?
+> 10. **Money that was voided and later turns out to have paid a sale.** It is flagged as an error for you to look at; reopening the sale is Phase 12's. OK?
+> 11. **Provider statement check.** The bookkeeper types each provider's monthly fee total from its statement and sees the gap against what the system recorded; the tolerance is exactly K0.00. OK?
+> 12. **Delivery waivers made before this change** carry no amount in the old records; they count from now on. OK?
+> 13. **Packaging written off** is listed under the packaging product, not under any jewelry product. OK?
+> 14. **Estimated opening stock.** The report says in words how much of the month's cost came from an estimate and how much is still on the shelf. Enough, or a stronger mark per product?
+> 16. **A fee on money held for a customer.** If a K1,000 payment with a K10 fee is held because the amount was wrong, the K10 shows as a cost that month. Will you give back K1,000 or K990 when refunds are built?
+> 17. **Monthly overhead beside a suggested price.** The report shows the month's expenses, the pieces sold and the plain per-piece figure, for information. Is that what you want, or another way of sharing the bills?
+> 18. **A report of prices accepted below cost.** The record exists (catalog's price history); the report is not built. Do you want it?
+> 19. **Moving a cost between "part of the goods" and "a bill for the month" after pieces were sold.** Under the rule decided in Phase 5, the cost of pieces already sold is re-cut at each sale's own date, so an earlier
+>     month's cost of goods can move (the month is flagged as changed). Should only the pieces still on the shelf take the change instead?
+
 **Admin screens**
 
 - Expenses screen (FINANCE_ADMIN, /api/v1/admin/finance/**), append-only: add, reverse, correct (a reversal plus a new entry) and re-classify the same way. There is no edit or delete button, or 'an expense can vanish from a month already reported'.

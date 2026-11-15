@@ -271,7 +271,7 @@ class ExpenseHttpTest {
         UUID group = jdbc.queryForObject("SELECT correction_group FROM expense WHERE expense_id = ?::uuid", UUID.class, corrected.get("id").asText());
         assertThat(group).as("the new row carries the group of its correction").isNotNull();
         assertThat(jdbc.queryForList("SELECT kind FROM expense WHERE correction_group = ? ORDER BY kind", String.class, group))
-                .as("the group is exactly the reversal of the original and the new row").hasSize(2).contains("REVERSAL");
+                .as("the group is exactly the reversal of the original and the new row").containsExactlyInAnyOrder("ADD", "REVERSAL");
         assertThat(type(ok(send(PATH + "/" + corrected.get("id").asText() + "/correction", key(), "{\"reason\":\"just looking again\"}", bookkeeper()), 400))).endsWith("/correction-changes-nothing");
     }
 

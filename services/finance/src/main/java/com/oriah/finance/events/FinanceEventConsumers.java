@@ -5,7 +5,7 @@ import java.util.function.Consumer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.Message;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.events.CatchUp;
 import com.oriah.events.EventHeaders;
@@ -28,38 +28,38 @@ import lombok.extern.slf4j.Slf4j;
 public class FinanceEventConsumers {
 
     @Bean
-    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Live(inbox, dispatcher, refusals);
+    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Live(inbox, dispatcher, refusals, transactions);
     }
 
     @Bean
-    public Consumer<Message<byte[]>> paymentEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Live(inbox, dispatcher, refusals);
+    public Consumer<Message<byte[]>> paymentEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Live(inbox, dispatcher, refusals, transactions);
     }
 
     @Bean
-    public Consumer<Message<byte[]>> inventoryEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Live(inbox, dispatcher, refusals);
+    public Consumer<Message<byte[]>> inventoryEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Live(inbox, dispatcher, refusals, transactions);
     }
 
     @Bean
-    public Consumer<Message<byte[]>> procurementEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Live(inbox, dispatcher, refusals);
+    public Consumer<Message<byte[]>> procurementEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Live(inbox, dispatcher, refusals, transactions);
     }
 
     @Bean
-    public Consumer<Message<byte[]>> productEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Live(inbox, dispatcher, refusals);
+    public Consumer<Message<byte[]>> productEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Live(inbox, dispatcher, refusals, transactions);
     }
 
     @Bean
-    public Consumer<Message<byte[]>> priceEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Live(inbox, dispatcher, refusals);
+    public Consumer<Message<byte[]>> priceEvents(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Live(inbox, dispatcher, refusals, transactions);
     }
 
     @Bean
-    public Consumer<Message<byte[]>> financeReplay(CatchUp catchUp, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
-        return new Replay(catchUp, dispatcher, refusals);
+    public Consumer<Message<byte[]>> financeReplay(CatchUp catchUp, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
+        return new Replay(catchUp, dispatcher, refusals, transactions);
     }
 
     /** Inner handlers, so {@code @Transactional} goes through the proxy (a {@code @Bean} method on this class does not). */
@@ -67,24 +67,31 @@ public class FinanceEventConsumers {
         private final Inbox inbox;
         private final FinanceDispatcher dispatcher;
         private final RefusalRecorder refusals;
+        private final TransactionTemplate transactions;
 
-        Live(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
+        Live(Inbox inbox, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
             this.inbox = inbox;
             this.dispatcher = dispatcher;
             this.refusals = refusals;
+            this.transactions = transactions;
         }
 
+        /**
+         * The transaction is run HERE, not by an annotation, so that a failure to begin it or to commit it (which happens outside any code of ours) is caught as well, and the failure is
+         * written down after the transaction has rolled back, in one of its own.
+         */
         @Override
-        @Transactional
         public void accept(Message<byte[]> message) {
             try {
-                String type = String.valueOf(message.getHeaders().get(EventHeaders.EVENT_TYPE));
-                if (FinanceInbox.SNAPSHOTS.contains(type)) {
-                    inbox.onceInOrder(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
-                } else {
-                    inbox.once(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
-                }
-                refusals.applied(String.valueOf(message.getHeaders().get(EventHeaders.EVENT_ID)));
+                transactions.executeWithoutResult(status -> {
+                    String type = String.valueOf(message.getHeaders().get(EventHeaders.EVENT_TYPE));
+                    if (FinanceInbox.SNAPSHOTS.contains(type)) {
+                        inbox.onceInOrder(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
+                    } else {
+                        inbox.once(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
+                    }
+                    refusals.applied(String.valueOf(message.getHeaders().get(EventHeaders.EVENT_ID)));
+                });
             } catch (RuntimeException e) {
                 recordRefusal(refusals, message, e);
                 throw e;
@@ -96,24 +103,27 @@ public class FinanceEventConsumers {
         private final CatchUp catchUp;
         private final FinanceDispatcher dispatcher;
         private final RefusalRecorder refusals;
+        private final TransactionTemplate transactions;
 
-        Replay(CatchUp catchUp, FinanceDispatcher dispatcher, RefusalRecorder refusals) {
+        Replay(CatchUp catchUp, FinanceDispatcher dispatcher, RefusalRecorder refusals, TransactionTemplate transactions) {
             this.catchUp = catchUp;
             this.dispatcher = dispatcher;
             this.refusals = refusals;
+            this.transactions = transactions;
         }
 
         @Override
-        @Transactional
         public void accept(Message<byte[]> message) {
             try {
-                String type = String.valueOf(message.getHeaders().get(EventHeaders.EVENT_TYPE));
-                if (FinanceInbox.SNAPSHOTS.contains(type)) {
-                    catchUp.onceInOrder(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
-                } else {
-                    catchUp.once(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
-                }
-                refusals.applied(String.valueOf(message.getHeaders().get(EventHeaders.EVENT_ID)));
+                transactions.executeWithoutResult(status -> {
+                    String type = String.valueOf(message.getHeaders().get(EventHeaders.EVENT_TYPE));
+                    if (FinanceInbox.SNAPSHOTS.contains(type)) {
+                        catchUp.onceInOrder(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
+                    } else {
+                        catchUp.once(FinanceInbox.FINANCE, message.getHeaders(), () -> dispatcher.apply(message));
+                    }
+                    refusals.applied(String.valueOf(message.getHeaders().get(EventHeaders.EVENT_ID)));
+                });
             } catch (RuntimeException e) {
                 recordRefusal(refusals, message, e);
                 throw e;

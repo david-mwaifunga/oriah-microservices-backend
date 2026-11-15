@@ -42,7 +42,7 @@ import com.oriah.finance.exception.FinanceProblem;
  * below gross profit, so the table by product adds up exactly to gross profit with no delivery row.
  */
 @Service
-@Transactional(readOnly = true)
+@Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
 public class ProfitReportService {
 
     static final int MAX_MONTHS = 24;

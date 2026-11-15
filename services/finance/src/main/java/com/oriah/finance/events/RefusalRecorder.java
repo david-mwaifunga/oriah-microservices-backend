@@ -19,13 +19,16 @@ import com.oriah.finance.ledger.AnomalyService.Severity;
 public class RefusalRecorder {
 
     private final AnomalyService anomalies;
+    private final com.oriah.finance.ledger.Locks locks;
 
-    public RefusalRecorder(AnomalyService anomalies) {
+    public RefusalRecorder(AnomalyService anomalies, com.oriah.finance.ledger.Locks locks) {
         this.anomalies = anomalies;
+        this.locks = locks;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void refused(String eventId, String type, String producer, Throwable why) {
+        locks.writer();   // like every writer: a month being reported waits for it, so an error written down is never stamped before the report's moment and committed after it
         anomalies.raise("event-refused", eventId, Severity.ERROR, Map.of("type", type, "producer", producer, "failure", why.getClass().getSimpleName()), null);
     }
 

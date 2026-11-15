@@ -8,6 +8,10 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionSystemException;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.events.CatchUp;
 import com.oriah.events.EventHeaders;
@@ -21,6 +25,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Whatever goes wrong applying an event, the books say so. An event that breaks a promise (IllegalArgument/IllegalState) was always written down as an open error; but a failure of
@@ -29,6 +34,12 @@ import static org.mockito.Mockito.verify;
  * and the original failure still goes on to Kafka's retry and dead-letter handling.
  */
 class FinanceConsumerFailureTest {
+
+    private static TransactionTemplate transactions() {
+        PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
+        when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+        return new TransactionTemplate(manager);
+    }
 
     private static Message<byte[]> message() {
         return MessageBuilder.withPayload(new byte[0]).setHeader(EventHeaders.EVENT_ID, "00000000-0000-0000-0000-000000000001").setHeader(EventHeaders.EVENT_TYPE, "order.paid")
@@ -42,7 +53,7 @@ class FinanceConsumerFailureTest {
         RefusalRecorder refusals = mock(RefusalRecorder.class);
         RuntimeException failure = new DataIntegrityViolationException("value too long");
         doThrow(failure).when(inbox).once(any(), any(Map.class), any());
-        FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(inbox, mock(FinanceDispatcher.class), refusals);
+        FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(inbox, mock(FinanceDispatcher.class), refusals, transactions());
 
         assertThatThrownBy(() -> live.accept(message())).isSameAs(failure);
 
@@ -56,7 +67,7 @@ class FinanceConsumerFailureTest {
         RefusalRecorder refusals = mock(RefusalRecorder.class);
         RuntimeException failure = new CannotCreateTransactionException("the database is away");
         doThrow(failure).when(catchUp).once(any(), any(Map.class), any());
-        FinanceEventConsumers.Replay replay = new FinanceEventConsumers.Replay(catchUp, mock(FinanceDispatcher.class), refusals);
+        FinanceEventConsumers.Replay replay = new FinanceEventConsumers.Replay(catchUp, mock(FinanceDispatcher.class), refusals, transactions());
 
         assertThatThrownBy(() -> replay.accept(message())).isSameAs(failure);
 
@@ -71,9 +82,32 @@ class FinanceConsumerFailureTest {
         RuntimeException failure = new DataIntegrityViolationException("value too long");
         doThrow(failure).when(inbox).once(any(), any(Map.class), any());
         doThrow(new IllegalStateException("the anomaly log is away too")).when(refusals).refused(any(), any(), any(), any());
-        FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(inbox, mock(FinanceDispatcher.class), refusals);
+        FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(inbox, mock(FinanceDispatcher.class), refusals, transactions());
 
         assertThatThrownBy(() -> live.accept(message())).isSameAs(failure);
+    }
+
+    @Test
+    @DisplayName("a transaction that cannot even begin, or cannot commit, is a failure too: it happens outside the handler's own code and is written down all the same")
+    void aFailureOfTheTransactionItselfIsWrittenDown() {
+        for (boolean atCommit : new boolean[] {false, true}) {
+            PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
+            RuntimeException failure;
+            if (atCommit) {
+                failure = new TransactionSystemException("commit failed");
+                when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
+                doThrow(failure).when(manager).commit(any());
+            } else {
+                failure = new CannotCreateTransactionException("the database is away");
+                when(manager.getTransaction(any())).thenThrow(failure);
+            }
+            RefusalRecorder refusals = mock(RefusalRecorder.class);
+            FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(mock(Inbox.class), mock(FinanceDispatcher.class), refusals, new TransactionTemplate(manager));
+
+            assertThatThrownBy(() -> live.accept(message())).isSameAs(failure);
+
+            verify(refusals).refused(eq("00000000-0000-0000-0000-000000000001"), eq("order.paid"), eq("order"), eq(failure));
+        }
     }
 
     @Test
@@ -81,7 +115,7 @@ class FinanceConsumerFailureTest {
     void aSuccessIsNotAFailure() {
         Inbox inbox = mock(Inbox.class);
         RefusalRecorder refusals = mock(RefusalRecorder.class);
-        FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(inbox, mock(FinanceDispatcher.class), refusals);
+        FinanceEventConsumers.Live live = new FinanceEventConsumers.Live(inbox, mock(FinanceDispatcher.class), refusals, transactions());
 
         live.accept(message());
 

@@ -6,8 +6,8 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state (2026-11-15: Phase 9 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
-(Deliver)"** and **"Built in Phase 9 (Phone orders)"** blocks below are the contract-level detail).
+state (2026-11-16: Phase 10 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
+(Deliver)"**, **"Built in Phase 9 (Phone orders)"** and **"Built in Phase 10 (Finance)"** blocks below are the contract-level detail).
 
 ---
 
@@ -565,6 +565,64 @@ amount; a salesperson reads no landed cost or margin (Q29).**
   **Phase 10:** books revenue by `paid_at`, flags a month whose figures changed after it was reported by a late sale, and reports agreed deliveries against the shop's quote.
   **Phase 12:** a refund for a buyer with no account uses the caller kept on the order and payment's method and reference; cancelling a PAID order takes `OrderLocks`.
 
+### Built in Phase 10 (Finance): the books, and the profit report
+
+Design: `../.codex-tmp/plan-p10-FINAL.md` (its amendments A1 to A16 win over `plan-p10-final-wf.md`, a 17-agent design run; it folds in **Codex's design review, NOT SOUND with 8 P1**, all adopted or answered).
+Slices 10.0 to 10.11 are in the 14 commits `ac90b42` to `2ac03ee` and after (nothing pushed). **Proved live:** see the status block in `docs/MVP_PLAN.md` Phase 10. The frontend is not changed (`docs/FRONTEND_WORK.md`,
+Phase 10, says what it must do and carries the owner's questions in plain words).
+
+A new service, **`finance`** (port 8094, Postgres host port 5446, database, user and password `finance`, Flyway V1 to V3, **JdbcTemplate only: no JPA**, 14th service, 13th with a database). It **produces no events**; it reads
+every other service's outbox (`oriah.order`, `oriah.payment`, `oriah.inventory`, `oriah.procurement`, `catalog.product`, `catalog.price`) through the Inbox **live and replayed from the beginning** (consumer `finance`, replay
+topic `oriah.replay.finance`, dead letters `<topic>.dlq.finance`; the catch-up asks every producer for its whole history at start and `outbox_catch_up` remembers how far each got). A new event type is declared by finance
+before any producer emits it (it ignores `price.set`, `reservation.*`, `box.swapped` and the rest it has no use for). **Every `/api/v1/admin/finance/**` call needs `FINANCE_ADMIN` only, at the gateway and in the service**
+(`HandlerRolesTest` walks every handler; the owner and the `BOOKKEEPER` hold it, **the manager does not**, so a manager sees no profit).
+
+- **The ledger (V1).** One append-only table, `ledger_entry`, **signed and single-entry** (the amount is in the account's natural direction; a reversal is the same row negative and names the entry it reverses, which a database
+  trigger holds to the same account, heading and day, and `uq_ledger_reversed_once` to once). The database refuses UPDATE, DELETE and TRUNCATE. `effect_day` is the Lusaka day a thing counts on (`BusinessCalendar`),
+  `effect_month` is **generated** from it, and **`recorded_at` is finance's own clock** (`clock_timestamp()` after the ledger lock is held): "what finance knew at T" is `recorded_at <= T` and nothing the producers' clocks say
+  decides any cut (the producer's own time is kept in `source_recorded_at`, for audit). The accounts, stock-out reasons, expense headings and taxes are closed lists in the database. A zero amount is allowed only for a
+  stock-cost row (an estimated K0 lot sold still counts). **Locks, in this order:** the ledger lock (shared for every writer, **exclusive for the issuer**), then the confirmation lock, then the order lock.
+- **What is booked, and from which fact** (each applied once, in any order, replay equal to live; whatever depends on several facts is **derived from all the facts after each one lands**, `FeeDerivation`): **a sale** from
+  `order.paid` (v2; goods at list price, discounts, delivery charged, the waiver, by the day the money arrived; a mismatch between the lines and the totals is refused), **the courier fare** from `order.shipped`,
+  **payment charges** from `payment.confirmed` / `voided` / `held` (a void takes the fee back, held money is dated by its `arrivedAt`), **the month's bills on a consignment** from `consignment.period_costs`
+  (a re-tag or a corrected amount undoes the old rows and re-books both on the day of the amendment), and **the cost of every stock movement** from `stock.cost_recorded` (a sale's goods and its box, write-offs and
+  give-aways with their reason, recuts, estimated lots). **Nothing personal is read from any event** (every inbound DTO is an allow-list) and nothing personal is stored.
+- **What an event refused does.** An event that breaks a promise it makes is parked on its dead-letter topic (never dropped, never retried: `IllegalArgumentException` is not retryable) and written down as an
+  **`event-refused` error in the anomaly log, which closes itself when the event later applies.** The log is append-only (`RAISE`, `ACK`, `AUTO_RESOLVE`; open means the latest row is a RAISE, so it can reopen); the other
+  errors are `unattributed-product` (a stock cost inventory could not tie to a product), `customs-as-period` and the like. **The catch-up runs only at start**: after a poison is fixed, `POST /catch-up/reverify` marks a
+  producer's catch-up not started and **the next start of finance asks again** (an event already applied is applied once, whichever stream brings it).
+- **Expenses and tax, by hand, append-only** (V1): add, reverse, correct (a reversal plus a new entry), re-classify; no edit, no delete; 13 headings a person may type (`GET /expense-categories`), two only the system
+  posts; typing into a month that was already reported needs a reason. **Turnover tax is entered by hand from a closed list that refuses duty, surtax and import VAT** (they are costs of goods: 400
+  `customs-charge-not-a-tax-entry`) and nothing calculates it. **A statement check** (`/statement-checks`) puts a provider's own monthly fee total beside what finance recorded, to the ngwee. Every write is idempotent
+  (`Idempotency-Key`, table `idempotency`). There is **no `payee`** and a phone-like number in any free text is refused (`FreeText`).
+- **The profit report** (`ProfitReportService`): lines 1 to 13 in the words the client reads (goods at list price, discounts, revenue after discounts, cost of goods: goods and packaging, **gross profit** on goods only,
+  delivery charges collected, stock written off or given away at cost, expenses, **profit before turnover tax**, turnover tax entered, profit after it), the memo (delivery given up by waivers, held money at month end,
+  late-keyed sales, agreed deliveries against the shop's own quote, statement checks, overhead per piece), the **estimated opening-stock disclosure** (in words, with the sums), and `status.doNotRelyYet`. **Gross profit by
+  product** adds up exactly to the shop's gross profit (a property test), with an "not tied to a product" row, never hidden. `asOf` reproduces any report as finance knew it then.
+  **A month is "reported" by `POST .../issue`**: it stores the whole computed month (the evidence), is refused until 72 hours after the month ends (`oriah.finance.issue-grace`) and while the books are incomplete (an open
+  error, a catch-up running, a cost not tied to a product) unless the person accepts the problem, and after it any entry that lands in that month sets `changedSinceIssue` (`entries?changedSinceIssue=true` lists
+  exactly what changed). Phase 9's hand-off ("flag a month changed by a late sale") is this flag.
+- **Changes in the producers** (all trailing and compatible; no old event's bytes changed): `order.paid` gains `deliveryWaivedAmount`, `deliveryPriceSource`, `deliveryAgreedAmount` and `deliveryQuotedAmount` (the
+  quote the shop's table would have charged, order V15, null for an order recorded before or with no published price); `payment.voided` and `payment.held` gain `arrivedAt`; procurement publishes
+  **`consignment.period_costs`** (V8 marker table `period_cost_event`, a back-fill, and a PERIOD customs line is now refused); inventory publishes **`stock.cost_recorded`** for every movement, just before commit
+  (`StockCostEvents`, V12 marker `stock_cost_event`, a back-fill, the product attributed by inventory). Order and inventory declare the new types before anyone emits them.
+- **Rollout order:** declare the new event types (order, inventory) before the producers emit them; deploy payment, order (V15), procurement (V8) and inventory (V12) **before finance**; the back-fills run before
+  finance's first start (they are idempotent); finance's first start replays every outbox from the beginning, so its books are complete only when `GET /status` says `catchUpComplete`.
+- **Reviewed (2026-11-16): Codex's code review (NOT SOUND, 4 P1) and a six-lens panel (19 agents, skeptics on every finding) found, and commits `d44af3d` and the one after it fixed test-first (17 tests red, then green; Codex's second pass found a failure of the transaction itself escaping the record, which is now caught outside it):** a failure of
+  ANY kind applying an event is written down (before, only refusals were, so a constraint error could dead-letter a sale with "0 open errors"); every table a report cuts by time is stamped with the clock at the
+  insert and the default cut is the database's, so an issued month reproduces exactly; the stored issue keeps every product row; the status of an old report is the status then; the statement reconciliation counts a
+  payment-charge adjustment; every typed string is screened for phone numbers and a provider is a code; racing reversals answer 409; **a courier fare is counted once** (any standing fare, under the order lock);
+  held money waits for its arrival day, is checked against its confirmation and keeps no reason text; a log line carries the status and type, never the message. **Left as recorded limits:** the 401 of a missing token has no
+  body (platform-wide: every service copies one `SecurityConfig`); an estimated K0 lot would not show in the disclosure (procurement refuses a K0 cost, so only a sub-ngwee remainder slice could make one); the
+  held value in an old report's disclosure, its product titles and the catch-up state read as finance holds them now (the stored issue freezes what it showed; Codex's second pass flagged these as versioned-fact work, not done); events written before Phase 10 never get the new trailing fields (their waivers,
+  voids and holds read "not recorded" and fall back to the day they were learned).
+- **Known limits, recorded (not defects):** a CAPITALIZE to PERIOD re-tag after pieces were sold re-cuts those pieces' cost under Phase 5's rule (each sale keeps its own date), so an earlier month's cost of goods can
+  move (the month is flagged changed; owner question Q19); `consignment_line_fact` and the estimated list are global (not per month); the catch-up runs only at start; held money's fee counts as a cost that month (Q16);
+  no balance sheet, no double entry (cut: nothing was asked for it); refunds, returns and cancel-after-pay are Phase 12's (finance's `StockReasonMap` and declarations need them then); the card path's
+  `payment.succeeded`/`failed` are ignored while it is off (Phase 13).
+- **Hand-offs.** Phase 11: nothing consumes finance (it produces nothing). Phase 12: add the refund, return and cancel-after-pay events to finance's declarations and appliers, map `RELISTED_MARKED_DOWN`, and
+  re-run the replay test. Phase 13: book the card path's revenue and fees. Phase 14: the computed turnover-tax line replaces the hand entry as line 12.
+
 ---
 
 ## Stack
@@ -583,7 +641,7 @@ amount; a salesperson reads no landed cost or margin (Q29).**
 
 ### Services
 
-**13 domain services:** catalog, inventory, cart, checkout, order, payment,
+**14 domain services:** catalog, inventory, cart, checkout, order, payment,
 promotion, shipping, customer, review, search, notification, **procurement**
 (Phases 2 and 4: suppliers, purchase orders, consignments with the landed-cost
 allocator, receiving, invoices, and corrections of a received consignment's cost; Flyway V1-V7;
@@ -594,7 +652,7 @@ history and the default box, and **since Phase 7 works out each piece's promotio
 **payment since Phase 7 records staff-confirmed money**; Flyway V1-V7; **promotion since Phase 7 keeps scoped, dated
 promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
 `checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
-(host port 5445), so 12 of the 13 services own a database.
+(host port 5445), so 12 of the first 13 services own a database; **`finance` (Phase 10) is the 14th and owns one too, so 13 of the 14.**
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -697,7 +755,7 @@ connections and the Postman collection (`local-dev/postman/`, generated from
 the services' OpenAPI by `scripts/local-dev/postman_from_openapi.py`).
 
 ```powershell
-.\scripts\dev-stack.ps1      # 13 Postgres, Keycloak, Kafka, Redis, SeaweedFS
+.\scripts\dev-stack.ps1      # 14 Postgres, Keycloak, Kafka, Redis, SeaweedFS
 ```
 
 Then run **1. Platform (local)** and **2. All services (local)** from `.run/`.
@@ -720,9 +778,9 @@ docker compose up -d
 powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 ```
 
-**~40 containers:** 13 Postgres instances (host ports 5433–5445: procurement's is 5444, shipping's is 5445 since Phase 7, and Keycloak's is 5443), Keycloak,
+**~41 containers:** 14 Postgres instances (host ports 5433–5446: finance's is 5446 since Phase 10, procurement's is 5444, shipping's is 5445 since Phase 7, and Keycloak's is 5443), Keycloak,
 Kafka, Redis, SeaweedFS + its init job, Prometheus, Grafana, Loki, Tempo,
-Alloy, the 3 infra modules, all 13 domain services (ports 8081–8093), and `oriah-web`.
+Alloy, the 3 infra modules, all 14 domain services (ports 8081–8094), and `oriah-web`.
 
 The stack lives in `docker-compose/default/docker-compose.yml` with shared
 fragments in `docker-compose/common-config.yml`; the root `docker-compose.yml`
@@ -748,8 +806,8 @@ and fetches every 10 s, so only **committed** changes reach the containers, with
 out (the smoke test needed five runs; Playwright needs `--timeout=180000`): see
 Phase 2's status block in `docs/MVP_PLAN.md`.
 
-> ⚠️ **`docker compose down -v` destroys all thirteen Postgres volumes** — the
-> twelve domain databases *and* Keycloak's own (`postgres-keycloak`, added
+> ⚠️ **`docker compose down -v` destroys all fourteen Postgres volumes** — the
+> thirteen domain databases *and* Keycloak's own (`postgres-keycloak`, added
 > 2026-11-08 so logins survive a restart; `scripts/keycloak-persistence-test.ps1`
 > proves it). The realm is imported **only when it does not yet exist in that
 > database**, so in development a realm edit to
@@ -760,7 +818,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20h**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20i**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
 cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
@@ -858,7 +916,7 @@ docker compose up -d keycloak
 ```
 
 Then **restart `order`** — its cached machine token was signed by the old
-keys. Never `down -v` (that wipes all thirteen databases); never a console edit
+keys. Never `down -v` (that wipes all fourteen databases); never a console edit
 (it drifts from the committed files). Both files are imported only when the
 realm does not yet exist.
 
