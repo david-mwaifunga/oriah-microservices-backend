@@ -369,6 +369,7 @@ public class ConsignmentService {
         ConsignmentResponse response = respond(consignment);
         // Last: it takes the outbox's lock, which is held until commit.
         events.consignmentReceived(consignment, outcome, suppliersOf(consignment, inIt), actor());
+        events.periodCosts(consignment, 1, null, null, consignment.costLines(), List.of(), receivedAt, actor());
         log.info("Received consignment id={} lines={} landed={}", id, consignment.lines().size(), outcome.landedTotal());
         return response;
     }
@@ -464,6 +465,7 @@ public class ConsignmentService {
         // Last: it takes the outbox's lock, which is held until commit.
         events.consignmentAmended(consignment, outcome, suppliersOf(consignment, orders.findByConsignment(id)), actor(), revision,
                 reason, estimated, changed, amendedAt);
+        events.periodCosts(consignment, revision, amendedAt, reason, costs, previous.costs(), amendedAt, actor());
         log.info("Amended consignment id={} to revision {}: {} of {} lines changed, landed={}", id, revision, changed.size(),
                 lines.size(), outcome.landedTotal());
         return new AmendmentResponse(revision, reason, typist, amendedAt, estimated,

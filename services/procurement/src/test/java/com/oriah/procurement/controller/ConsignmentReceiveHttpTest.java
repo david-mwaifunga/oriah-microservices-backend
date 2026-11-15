@@ -505,8 +505,8 @@ class ConsignmentReceiveHttpTest {
     }
 
     @Test
-    @DisplayName("a cost that is a bill for the month is not an event: the lines are")
-    void periodCostsEmitNothingExtra() throws Exception {
+    @DisplayName("a cost that is a bill for the month is announced once, apart from the lines (consignment.period_costs, Phase 10): the two lines are still two events")
+    void periodCostsAreAnnouncedApartFromTheLines() throws Exception {
         Shipment shipment = shipment("{\"costType\":\"PORT_INCIDENTALS\",\"amount\":40.00,\"basis\":\"UNITS\","
                 + "\"treatment\":\"PERIOD\"}");
         List<String> lines = lineIds(shipment.consignment());
@@ -514,9 +514,11 @@ class ConsignmentReceiveHttpTest {
         receive(shipment.consignment()).andExpect(status().isOk());
 
         assertThat(events(lines)).hasSize(2);
-        // Not under any other aggregate either: nothing in the outbox mentions this consignment but its two lines.
+        // Its own aggregate (the consignment, not a line): the two lines and the one announcement of the bill are all the outbox says of this consignment.
         assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE payload::text LIKE ?", Long.class,
-                "%" + shipment.consignment() + "%")).isEqualTo(2);
+                "%" + shipment.consignment() + "%")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox WHERE aggregate_type = 'consignment' AND aggregate_id = ? AND event_type = 'consignment.period_costs'",
+                Long.class, shipment.consignment())).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT total_period FROM allocation_revision", BigDecimal.class))
                 .isEqualByComparingTo("40.00");
         assertThat(jdbc.queryForObject("SELECT inputs::text FROM allocation_revision", String.class))

@@ -473,6 +473,10 @@ public class Consignment extends BaseEntity {
                     + "(basis DIRECT), never pooled and spread");
         }
         CostTreatment treatment = input.treatment() != null ? input.treatment() : CostTreatment.CAPITALIZE;
+        if (type.isCustoms() && treatment == CostTreatment.PERIOD) {
+            throw new IllegalArgumentException(where + " (" + type + "): duty, surtax and import VAT are paid at clearance and reach profit through the cost "
+                    + "of the goods, never as a bill for the month: they ride on the goods (CAPITALIZE)");
+        }
         String note = checkedText(input.note(), MAX_COST_NOTE, where + ": note");
         if (chargesBasis == ChargesBasis.DUTY_PAID && type.isCustoms() && amount.signum() > 0) {
             throw new IllegalArgumentException(where + " (" + type + "): the charges basis is DUTY_PAID, so the "
