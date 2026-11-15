@@ -227,12 +227,20 @@ public class OrderEventConsumer {
                         " for " + payload.total().toPlainString() + " " + payload.currency());
                 case "order.paid"      -> new Template("Payment received — thank you!",
                         "Your payment for order " + payload.orderId() + " was successful.");
-                case "order.fulfilled" -> new Template("Your order is being prepared",
-                        "Order " + payload.orderId() + " has been fulfilled and is awaiting shipment.");
+                // An order the shopper collects is packed and handed over across the counter: nothing is ever shipped or delivered to them (Phase 8). An
+                // order that records no delivery option (placed before Phase 7) gets the courier wording, never a guess that it was collected.
+                case "order.fulfilled" -> "SELF_COLLECT".equals(payload.deliveryOption())
+                        ? new Template("Your order is ready to collect",
+                                "Order " + payload.orderId() + " is packed and ready for you to collect.")
+                        : new Template("Your order is being prepared",
+                                "Order " + payload.orderId() + " has been fulfilled and is awaiting shipment.");
                 case "order.shipped"   -> new Template("Your order has shipped",
                         "Order " + payload.orderId() + " is on its way to you.");
-                case "order.delivered" -> new Template("Your order has been delivered",
-                        "Order " + payload.orderId() + " was delivered. We hope you love it.");
+                case "order.delivered" -> "SELF_COLLECT".equals(payload.deliveryOption())
+                        ? new Template("Your order has been collected",
+                                "Order " + payload.orderId() + " was collected. We hope you love it.")
+                        : new Template("Your order has been delivered",
+                                "Order " + payload.orderId() + " was delivered. We hope you love it.");
                 case "order.cancelled" -> new Template("Your order was cancelled",
                         "Order " + payload.orderId() + " has been cancelled. Any payment will be refunded.");
                 // Reads no figure on purpose: an expiry's snapshot is not guaranteed to carry totals.

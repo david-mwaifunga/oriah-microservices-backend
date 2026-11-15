@@ -176,6 +176,58 @@ class OrderEventConsumerTest {
         }
     }
 
+    // ------------------------------------------------------------------ what the shopper is told when the order is packed and handed over (Phase 8)
+
+    private com.oriah.notification.model.NotificationLog told(UUID orderId) {
+        return repository.findAll().stream().filter(l -> orderId.equals(l.orderId())).findFirst().orElseThrow();
+    }
+
+    private void sendStatus(String eventType, UUID orderId, String newStatus, String deliveryOption) throws Exception {
+        send(eventType, orderId, Map.of("orderId", orderId.toString(), "keycloakId", "kc-bob", "newStatus", newStatus, "total", "10", "currency", "ZMW",
+                "deliveryOption", deliveryOption));
+    }
+
+    @Test
+    @DisplayName("an order that goes by courier keeps its wording: packed is 'being prepared ... awaiting shipment', delivered is 'has been delivered'")
+    void anOrderThatIsDeliveredKeepsItsWording() throws Exception {
+        UUID packed = UUID.randomUUID();
+        UUID arrived = UUID.randomUUID();
+        UUID onItsWay = UUID.randomUUID();
+        sendStatus("order.fulfilled", packed, "FULFILLED", "YANGO");
+        sendStatus("order.delivered", arrived, "DELIVERED", "OWN_DELIVERY");
+        sendStatus("order.shipped", onItsWay, "SHIPPED", "PLATINUM");
+
+        assertThat(told(packed).subject()).isEqualTo("Your order is being prepared");
+        assertThat(told(packed).body()).contains("has been fulfilled and is awaiting shipment");
+        assertThat(told(arrived).subject()).isEqualTo("Your order has been delivered");
+        assertThat(told(arrived).body()).contains("was delivered. We hope you love it.");
+        assertThat(told(onItsWay).subject()).isEqualTo("Your order has shipped");
+        assertThat(told(onItsWay).body()).contains("is on its way to you.");
+    }
+
+    @Test
+    @DisplayName("an order the shopper collects is 'ready to collect' when it is packed and 'collected' when it is handed over: nothing is shipped or delivered to them")
+    void aCollectedOrderIsToldReadyAndCollected() throws Exception {
+        UUID packed = UUID.randomUUID();
+        UUID handedOver = UUID.randomUUID();
+        sendStatus("order.fulfilled", packed, "FULFILLED", "SELF_COLLECT");
+        sendStatus("order.delivered", handedOver, "DELIVERED", "SELF_COLLECT");
+
+        assertThat(told(packed).subject()).isEqualTo("Your order is ready to collect");
+        assertThat(told(packed).body()).contains("ready for you to collect").doesNotContain("shipment").doesNotContain("shipped");
+        assertThat(told(handedOver).subject()).isEqualTo("Your order has been collected");
+        assertThat(told(handedOver).body()).contains("was collected").doesNotContain("delivered");
+    }
+
+    @Test
+    @DisplayName("an order with no recorded delivery option (placed before Phase 7) is told the courier wording, never a guess that it was collected")
+    void anUnknownOptionIsToldTheCourierWording() throws Exception {
+        UUID packed = UUID.randomUUID();
+        send("order.fulfilled", packed, Map.of("orderId", packed.toString(), "keycloakId", "kc-bob", "newStatus", "FULFILLED", "total", "10", "currency", "ZMW"));
+
+        assertThat(told(packed).subject()).isEqualTo("Your order is being prepared");
+    }
+
     private void send(String eventType, UUID orderId, Map<String, Object> payload) throws Exception {
         inputDestination.send(Relayed.orderEvent(eventType, orderId, 1, objectMapper.writeValueAsBytes(payload)),
                 "oriah.order");
