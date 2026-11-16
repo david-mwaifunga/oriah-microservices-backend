@@ -40,10 +40,11 @@ public class MessageStore {
      * @param attempts        tries so far
      * @param maybeHandedOver true once a try handed the body over and got no answer
      * @param staffTo         only on a staff row: the shop mailbox it is for
+     * @param audience        only on a staff row: the group that mailbox belongs to, MONEY or COST
      */
     public record Due(UUID id, RecipientKind recipientKind, UUID orderId, String keycloakId, String eventType, String subject, String body,
                       Long eventSeq, int attempts, boolean maybeHandedOver, Instant sendBefore, String staffTo, UUID alertId,
-                      String alertNotice) {
+                      String alertNotice, String audience) {
 
         /** Never the words or a mailbox: this is what a log line would print. */
         @Override
@@ -78,17 +79,35 @@ public class MessageStore {
     }
 
     /**
-     * Takes a row for one try: counts the try and puts the row out of everybody's reach until the lease runs out.
+     * Takes a row for one try: counts the try and puts the row out of everybody's reach until the lease runs out. {@code now} must be the
+     * moment of THIS claim, never the start of a pass: the lease has to cover the send that follows.
      *
-     * @return the row's new number of tries; empty when the row is no longer waiting or somebody else has it
+     * <p>A row at or past its deadline is never taken: the sweep ends it, nobody sends it.
+     *
+     * @return the row's new number of tries; empty when the row is no longer waiting, is past its deadline, or somebody else has it
      */
     public OptionalInt claim(UUID id, Instant now, Duration lease) {
         List<Integer> attempts = jdbc.query("""
                 UPDATE notification_log
                    SET attempts = attempts + 1, last_attempt_at = ?, next_attempt_at = ?
-                 WHERE id = ? AND status = 'RECORDED' AND next_attempt_at <= ?
-                RETURNING attempts""", (row, n) -> row.getInt(1), Timestamp.from(now), Timestamp.from(now.plus(lease)), id, Timestamp.from(now));
+                 WHERE id = ? AND status = 'RECORDED' AND next_attempt_at <= ? AND (send_before IS NULL OR send_before > ?)
+                RETURNING attempts""", (row, n) -> row.getInt(1), Timestamp.from(now), Timestamp.from(now.plus(lease)), id, Timestamp.from(now),
+                Timestamp.from(now));
         return attempts.isEmpty() ? OptionalInt.empty() : OptionalInt.of(attempts.getFirst());
+    }
+
+    /**
+     * A mail server took a message whose claim no longer holds the row (the send outlasted its lease and somebody else ended the row or took
+     * it for a try of their own). It WAS sent, and the row must say so: "failed" or "waiting" would be untrue, and a waiting row would go
+     * out again.
+     *
+     * @return whether the row was changed (false when it already reads sent)
+     */
+    public boolean sentAfterItsClaimWasLost(UUID id, Instant now, boolean shortForm) {
+        return jdbc.update("""
+                UPDATE notification_log
+                   SET status = 'SENT', status_reason = NULL, status_at = ?, sent_at = ?, next_attempt_at = NULL, short_form = ?, last_error = NULL
+                 WHERE id = ? AND status <> 'SENT' AND status <> 'BY_HAND'""", Timestamp.from(now), Timestamp.from(now), shortForm, id) == 1;
     }
 
     /** The mail server took it. @return false when this claim no longer holds the row */
@@ -229,6 +248,6 @@ public class MessageStore {
         return new Due(row.getObject("id", UUID.class), RecipientKind.valueOf(row.getString("recipient_kind")), row.getObject("order_id", UUID.class),
                 row.getString("keycloak_id"), row.getString("event_type"), row.getString("subject"), row.getString("body"), eventSeq,
                 row.getInt("attempts"), row.getBoolean("maybe_handed_over"), sendBefore == null ? null : sendBefore.toInstant(),
-                row.getString("staff_to"), row.getObject("alert_id", UUID.class), row.getString("alert_notice"));
+                row.getString("staff_to"), row.getObject("alert_id", UUID.class), row.getString("alert_notice"), row.getString("audience"));
     }
 }

@@ -120,6 +120,18 @@ class EmailModeGuardTest {
     }
 
     @Test
+    @DisplayName("a From name with a line break or another control character is refused, live or not: it would write a header of its own into every email")
+    void aFromNameThatCouldWriteAHeaderIsRefused() {
+        assertThatThrownBy(() -> build(new FakeEnv(), Map.of("oriah.notification.email.transport", "catcher",
+                "oriah.notification.email.from-name", "Oriah Jewelry\r\nBcc: someone@elsewhere.example.org")))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("oriah.notification.email.from-name");
+        assertThatThrownBy(() -> build(live(), Map.of("oriah.notification.email.from-name", "Oriah\tJewelry")))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("oriah.notification.email.from-name");
+        assertThat(build(live(), Map.of("oriah.notification.email.from-name", "Oriah Jewelry (Lusaka)")).smtp().fromName())
+                .isEqualTo("Oriah Jewelry (Lusaka)");
+    }
+
+    @Test
     @DisplayName("a transport setting that is neither 'none' nor 'catcher' is refused")
     void anUnknownTransportIsRefused() {
         assertThatThrownBy(() -> build(new FakeEnv(), Map.of("oriah.notification.email.transport", "smtp")))
@@ -294,7 +306,18 @@ class EmailModeGuardTest {
         assertThat(build(live().with("ORIAH_NOTIFICATION_SEND_PAUSED", "true"), Map.of()).canSend()).isFalse();
         assertThat(build(new FakeEnv().with("ORIAH_NOTIFICATION_SEND_PAUSED", "true"), CATCHER).canSend()).isFalse();
         assertThat(build(live(), Map.of()).paused()).isFalse();
-        assertThat(build(live().with("ORIAH_NOTIFICATION_SEND_PAUSED", "yes"), Map.of()).paused()).isFalse();
+        assertThat(build(live().with("ORIAH_NOTIFICATION_SEND_PAUSED", "false"), Map.of()).paused()).isFalse();
+        assertThat(build(live().with("ORIAH_NOTIFICATION_SEND_PAUSED", "  "), Map.of()).paused()).isFalse();
+    }
+
+    @ParameterizedTest(name = "ORIAH_NOTIFICATION_SEND_PAUSED={0} refuses the start")
+    @ValueSource(strings = {"yes", "TRUE", "True", "1", "on", "paused"})
+    @DisplayName("the pause switch never fails open: a word that is neither true nor false refuses the start, so 'I stopped the emails' is never silently untrue")
+    void aMisspelledPauseRefusesTheStart(String word) {
+        assertThatThrownBy(() -> build(live().with("ORIAH_NOTIFICATION_SEND_PAUSED", word), Map.of()))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("ORIAH_NOTIFICATION_SEND_PAUSED");
+        assertThatThrownBy(() -> build(new FakeEnv().with("ORIAH_NOTIFICATION_SEND_PAUSED", word), CATCHER))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("ORIAH_NOTIFICATION_SEND_PAUSED");
     }
 
     @Test

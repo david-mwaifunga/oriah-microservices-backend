@@ -463,6 +463,87 @@ class MessageDispatcherTest {
         assertThat(transport.handedOver()).hasSize(2);
     }
 
+    @Test
+    @DisplayName("two unanswered sends are the mail server's trouble: the dispatcher goes quiet and 'emails are not going out' can be judged")
+    void twoUnansweredSendsCountAsTheServersTrouble() {
+        for (String owner : List.of("kc-a", "kc-b", "kc-c")) {
+            knows(owner, owner + "@oriah.local", true);
+            waiting(owner, "order.paid");
+        }
+        transport.thenAnswer(SendResult.uncertain(), SendResult.uncertain());
+
+        dispatcher().run();
+
+        assertThat(health.state().failingSince()).as("mail health learns of it").isEqualTo(START);
+        assertThat(health.state().quietAt(START.plusSeconds(30))).isTrue();
+        dispatcher().run();
+        assertThat(transport.handedOver()).as("nothing more is handed over during the quiet time").hasSize(2);
+    }
+
+    // ---- a server that refuses everybody ---------------------------------------------------------------------------------------------------------
+
+    private int emailDownAlerts(String state) {
+        return jdbc.queryForObject("SELECT count(*) FROM staff_alert WHERE kind = 'EMAIL_DOWN' AND subject_id = 'email' AND state = ?", Integer.class, state);
+    }
+
+    @Test
+    @DisplayName("three refusals in a row for three different people is the mail server refusing everybody: it is listed, the pass ends, and what still waits is kept, not failed")
+    void aServerThatRefusesEverybodyKeepsTheRestOfTheQueue() {
+        List<UUID> ids = new java.util.ArrayList<>();
+        for (String owner : List.of("kc-a", "kc-b", "kc-c", "kc-d", "kc-e")) {
+            knows(owner, owner + "@oriah.local", true);
+            ids.add(waiting(owner, "order.paid"));
+        }
+        // A sending account that may not send as the shop's address: the server signs it in and then refuses every recipient.
+        transport.whileSending(email -> clock.advance(Duration.ofSeconds(1)));
+        transport.thenAnswer(SendResult.refused(SendResult.ADDRESS_REFUSED), SendResult.refused(SendResult.ADDRESS_REFUSED),
+                SendResult.refused(SendResult.ADDRESS_REFUSED), SendResult.refused(SendResult.ADDRESS_REFUSED));
+
+        dispatcher().run();
+
+        assertThat(ids.subList(0, 3)).extracting(this::status).containsOnly("FAILED/ADDRESS_REFUSED");
+        assertThat(transport.handedOver()).as("the pass ends when the third different person is refused").hasSize(3);
+        assertThat(emailDownAlerts("OPEN")).isEqualTo(1);
+
+        dispatcher().run();
+        assertThat(transport.handedOver()).hasSize(4);
+        assertThat(status(ids.get(3))).as("while everybody is being refused, a refusal is not believed: the message waits").isEqualTo("RECORDED");
+        assertThat(nextTry(ids.get(3))).isAfter(clock.instant());
+        assertThat(status(ids.get(4))).as("and the pass ended again").isEqualTo("RECORDED");
+        assertThat(row(ids.get(4)).get("attempts")).isEqualTo(0);
+
+        // The account is put right: the next message is taken, and the alert ends by itself.
+        dispatcher().run();
+        assertThat(status(ids.get(4))).isEqualTo("SENT");
+        assertThat(emailDownAlerts("OPEN")).isZero();
+        clock.advance(Duration.ofMinutes(2));
+        dispatcher().run();
+        assertThat(status(ids.get(3))).isEqualTo("SENT");
+    }
+
+    @Test
+    @DisplayName("refusals that are not everybody raise nothing: one person refused three times, or an accepted message among the last three")
+    void refusalsThatAreNotEverybodyRaiseNothing() {
+        knows("kc-a", "a@oriah.local", true);
+        transport.whileSending(email -> clock.advance(Duration.ofSeconds(1)));
+        waiting("kc-a", "order.paid");
+        waiting("kc-a", "order.paid");
+        waiting("kc-a", "order.paid");
+        transport.thenAnswer(SendResult.refused(SendResult.ADDRESS_REFUSED), SendResult.refused(SendResult.ADDRESS_REFUSED),
+                SendResult.refused(SendResult.ADDRESS_REFUSED));
+        dispatcher().run();
+        assertThat(emailDownAlerts("OPEN")).as("one bad address, three messages").isZero();
+
+        for (String owner : List.of("kc-b", "kc-c", "kc-d")) {
+            knows(owner, owner + "@oriah.local", true);
+            waiting(owner, "order.paid");
+        }
+        transport.thenAnswer(SendResult.refused(SendResult.ADDRESS_REFUSED), SendResult.accepted(), SendResult.refused(SendResult.ADDRESS_REFUSED));
+        dispatcher().run();
+        assertThat(emailDownAlerts("OPEN")).as("the server took one of the last three").isZero();
+        assertThat(transport.handedOver()).hasSize(6);
+    }
+
     // ---- the deadline ------------------------------------------------------------------------------------------------------------------------
 
     @Test
@@ -511,6 +592,66 @@ class MessageDispatcherTest {
         first.get(20, TimeUnit.SECONDS);
         assertThat(status(id)).isEqualTo("SENT");
         assertThat(transport.sawATransaction()).isFalse();
+    }
+
+    @Test
+    @DisplayName("on a slow mail server every message is claimed at its own time: the lease of the third still covers its send, and each is marked sent when it was sent")
+    void aSlowBatchClaimsEachRowAtItsOwnTime() {
+        knows("kc-alice", "alice@oriah.local", true);
+        List<UUID> ids = List.of(waiting("kc-alice", "order.paid"), waiting("kc-alice", "order.paid"), waiting("kc-alice", "order.paid"));
+        Duration slow = Duration.ofSeconds(90);
+        List<Duration> leaseLeftWhenTheSendBegan = new java.util.ArrayList<>();
+        transport.whileSending(email -> {
+            leaseLeftWhenTheSendBegan.add(Duration.between(clock.instant(), nextTry(email.rowId())));
+            clock.advance(slow);
+        });
+
+        dispatcher().run();
+
+        assertThat(transport.handedOver()).hasSize(3);
+        assertThat(leaseLeftWhenTheSendBegan).as("each row is out of everybody else's reach for a whole lease from the moment ITS send begins")
+                .containsOnly(settings.send().lease());
+        assertThat(ids).extracting(id -> ((Timestamp) row(id).get("sent_at")).toInstant())
+                .as("and it is marked sent at the time the server took it, not at the time the pass began")
+                .containsExactly(START.plus(slow), START.plus(slow.multipliedBy(2)), START.plus(slow.multipliedBy(3)));
+    }
+
+    @Test
+    @DisplayName("a message past its deadline is never claimed: the sweep ends it, nobody sends it")
+    void aRowPastItsDeadlineIsNeverClaimed() {
+        UUID id = waiting("kc-alice", "order.paid");
+
+        assertThat(store.claim(id, START.plus(Duration.ofHours(6)), Duration.ofMinutes(3))).as("at its deadline").isEmpty();
+        assertThat(store.claim(id, START.plus(Duration.ofHours(7)), Duration.ofMinutes(3))).as("after its deadline").isEmpty();
+        assertThat(row(id).get("attempts")).isEqualTo(0);
+        assertThat(store.claim(id, START.plus(Duration.ofHours(5)), Duration.ofMinutes(3))).as("before its deadline").hasValue(1);
+    }
+
+    @Test
+    @DisplayName("a message the server took is marked sent even if its claim was lost meanwhile: 'failed' or 'waiting' would be untrue, and it must not go again")
+    void anAcceptedSendWhoseClaimWasLostIsStillMarkedSent(CapturedOutput output) {
+        knows("kc-alice", "alice@oriah.local", true);
+        knows("kc-carol", "carol@oriah.local", true);
+        UUID endedMeanwhile = waiting("kc-alice", "order.paid");
+        UUID takenBySomebodyElse = waiting("kc-carol", "order.paid");
+        transport.whileSending(email -> {
+            if (email.rowId().equals(endedMeanwhile)) {
+                // The send hung for longer than the lease and past the deadline; another dispatcher's sweep ended the row.
+                jdbc.update("UPDATE notification_log SET status = 'FAILED', status_reason = 'GAVE_UP', status_at = now(), next_attempt_at = NULL WHERE id = ?",
+                        endedMeanwhile);
+            } else {
+                // The lease ran out during the send and another dispatcher claimed the row for a try of its own.
+                jdbc.update("UPDATE notification_log SET attempts = attempts + 1 WHERE id = ?", takenBySomebodyElse);
+            }
+        });
+
+        dispatcher().run();
+
+        assertThat(status(endedMeanwhile)).isEqualTo("SENT");
+        assertThat(status(takenBySomebodyElse)).isEqualTo("SENT");
+        assertThat(row(endedMeanwhile).get("sent_at")).isNotNull();
+        assertThat(output.getAll()).as("it is said, by the id only: a second copy may have gone out")
+                .contains("Message " + endedMeanwhile + " was taken by the mail server after its claim was lost");
     }
 
     @Test

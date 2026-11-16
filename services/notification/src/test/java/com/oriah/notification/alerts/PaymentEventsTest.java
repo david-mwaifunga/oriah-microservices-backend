@@ -185,6 +185,53 @@ class PaymentEventsTest {
         return timestamp == null ? null : ((Timestamp) timestamp).toInstant();
     }
 
+    // ---- two consumers, one order of locks ---------------------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("order's 'paid' takes the confirmation's row BEFORE it touches the claim alert, as payment's facts do: two consumers that lock in one order cannot deadlock")
+    void theOrderConsumerLocksTheConfirmationBeforeTheClaimAlert() throws Exception {
+        claim();
+        confirmed(1);
+        org.springframework.transaction.support.TransactionTemplate tx = new org.springframework.transaction.support.TransactionTemplate(transactions);
+        java.util.concurrent.CountDownLatch held = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            // A fact from payment for this confirmation is being applied: its transaction holds the confirmation's row.
+            java.util.concurrent.Future<?> paymentSide = pool.submit(() -> tx.executeWithoutResult(status -> {
+                jdbc.query("SELECT 1 FROM confirmation_watch WHERE confirmation_id = ? FOR UPDATE", row -> { }, confirmationId);
+                held.countDown();
+                try {
+                    release.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(held.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            java.util.concurrent.Future<?> orderSide = pool.submit(this::orderPaid);
+            long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+            while (jdbc.queryForObject("SELECT count(*) FROM pg_locks WHERE NOT granted", Integer.class) == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(50);
+            }
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_locks WHERE NOT granted", Integer.class)).as("order's side is waiting").isEqualTo(1);
+
+            // While order's side waits for the confirmation it must not be holding the claim alert, which payment's side takes next.
+            org.assertj.core.api.Assertions.assertThatCode(() -> tx.executeWithoutResult(status -> jdbc.query(
+                    "SELECT 1 FROM staff_alert WHERE kind = 'PAYMENT_TO_CONFIRM' AND subject_id = ? FOR UPDATE NOWAIT", row -> { }, orderId.toString())))
+                    .as("the claim alert is free while order's 'paid' waits for the confirmation").doesNotThrowAnyException();
+
+            release.countDown();
+            paymentSide.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            orderSide.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(alerts("PAYMENT_TO_CONFIRM")).singleElement().satisfies(alert ->
+                    assertThat(alert).containsEntry("state", "RESOLVED").containsEntry("resolved_how", "PAID"));
+            assertThat(jdbc.queryForMap("SELECT paid_at FROM confirmation_watch WHERE confirmation_id = ?", confirmationId).get("paid_at")).isNotNull();
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     // ---- stuck -----------------------------------------------------------------------------------------------------------------------------
 
     @Test
@@ -301,6 +348,41 @@ class PaymentEventsTest {
     }
 
     @Test
+    @DisplayName("after days with the service away, staff get ONE 'still not completed', not one for every day that was missed")
+    void afterDaysAwayStaffGetOneReminderNotOnePerMissedDay() {
+        confirmed(2);
+        clock.advance(Duration.ofMinutes(1));
+        dispatcher().run();
+
+        // The first reminder was due after five hours; nothing ran for three days and two hours after that.
+        clock.set(START.plus(Duration.ofHours(5 + 74)));
+        dispatcher().run();
+        dispatcher().run();
+        dispatcher().run();
+
+        assertThat(rows("SETTLEMENT_STUCK", "REMINDER")).as("one reminder, to each of the two mailboxes").hasSize(2);
+        assertThat(at(stuck().get("remind_at"))).as("the next one keeps the daily hour and lies ahead").isEqualTo(START.plus(Duration.ofHours(5 + 96)));
+    }
+
+    @Test
+    @DisplayName("the last note of an alert that closed by the clock is written even if the service stopped right after closing it")
+    void theLastNoteIsWrittenEvenIfTheServiceStoppedAfterTheClose() {
+        confirmed(2);
+        clock.advance(Duration.ofMinutes(1));
+        dispatcher().run();
+        clock.set(START.plus(Duration.ofDays(14)));
+        // The close was committed and the service stopped before the note was written: what an earlier pass left behind.
+        jdbc.update("UPDATE staff_alert SET state = 'RESOLVED', resolved_how = 'BY_CLOCK', resolved_at = ?, remind_at = NULL WHERE kind = 'SETTLEMENT_STUCK'",
+                Timestamp.from(clock.instant()));
+
+        dispatcher().run();
+        dispatcher().run();
+
+        assertThat(rows("SETTLEMENT_STUCK", "CLOSING")).as("said once, to each of the two mailboxes").hasSize(2)
+                .allSatisfy(row -> assertThat(row.get("subject")).isEqualTo("We have stopped reminding you - order " + code));
+    }
+
+    @Test
     @DisplayName("a sale still waiting after two weeks gets a last note and is closed as never answered; an answer that comes even later still says 'sorted'")
     void aSaleStillWaitingAfterTwoWeeksGetsALastNote() {
         confirmed(2);
@@ -407,6 +489,23 @@ class PaymentEventsTest {
         voided();
 
         assertThat(alerts("PAYMENT_TO_CONFIRM")).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("a cancelled record does not reopen the claim while other money for the order still waits for its answer, or after other money paid it")
+    void otherMoneyForTheOrderKeepsTheClaimClosed() {
+        claim();
+        confirmed(1);
+        UUID otherMoney = UUID.randomUUID();
+        Instant fact = clock.instant().minusSeconds(1);
+        watch.confirmed(otherMoney, orderId, "MTN", new java.math.BigDecimal("180.00"), "ZMW", 1, fact, clock.instant());
+
+        voided();
+        assertThat(alerts("PAYMENT_TO_CONFIRM")).as("the second record is still waiting for order's answer").hasSize(1);
+
+        watch.paid(otherMoney, orderId, fact, clock.instant());
+        held("ALREADY_PAID");
+        assertThat(alerts("PAYMENT_TO_CONFIRM")).as("the order is paid by the second record").hasSize(1);
     }
 
     // ---- what is read, refused and ignored -----------------------------------------------------------------------------------------------------

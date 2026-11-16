@@ -70,6 +70,22 @@ class EmailWiringTest {
     }
 
     @Test
+    @DisplayName("the word that makes a stack live is read from the process environment only: the same word as a Spring property changes nothing")
+    void aSpringPropertyCannotMakeTheStackLive() {
+        new ApplicationContextRunner()
+                .withPropertyValues("ORIAH_NOTIFICATION_LIVE=true", "oriah.notification.live=true", "ORIAH_SMTP_HOST=smtp.shop-mail.example.org")
+                .withSystemProperties("ORIAH_NOTIFICATION_LIVE=true")
+                .withBean(NotificationSettings.class, () -> TestSettings.shippedWith(Map.of("oriah.notification.email.transport", "catcher")))
+                .withUserConfiguration(SystemProcessEnv.class, EmailConfig.class)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(ProcessEnv.class)).as("the real reader of the environment").isInstanceOf(SystemProcessEnv.class);
+                    assertThat(context.getBean(EmailSetup.class).mode()).isEqualTo(Mode.CATCHER);
+                    assertThat(context.getBean(MessageTransport.class)).isInstanceOf(SandboxedTransport.class);
+                });
+    }
+
+    @Test
     @DisplayName("live, the transport is the real one")
     void liveUsesTheRealTransport() {
         with(live(), Map.of()).run(context -> {

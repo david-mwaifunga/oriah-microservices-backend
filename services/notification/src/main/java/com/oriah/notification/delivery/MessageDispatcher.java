@@ -52,7 +52,16 @@ import com.oriah.notification.text.MessageTexts;
  * A refused address ends that message. A mailbox that cannot take mail just now puts that message back on the ladder (1, 5, 15, 60 minutes,
  * then hourly) and nothing else changes. A failure of the mail server ITSELF fails no message: the message goes back on the ladder, the pass
  * ENDS (the next message would fail the same way), and nothing is handed over for a quiet time that doubles with each failure in a row. A send
- * whose answer never came is tried at most once more, not before the longest wait, and then ends as "outcome unknown".
+ * whose answer never came is tried at most once more, not before the longest wait, and then ends as "outcome unknown"; two of those in one
+ * pass count as the server's trouble. When the last three messages tried were refused for three different people, the server is refusing
+ * EVERYBODY (a sending account that may not send as the shop's address, say): that is listed for staff, the pass ends, and until a message
+ * is accepted again a refusal is not believed: the message waits and is tried again.
+ *
+ * <h2>Every message at its own time</h2>
+ * A slow mail server can make one pass last many minutes. So the clock is read again for every message, when it is taken and when its
+ * answer has come: the lease runs from the moment the send begins, and "sent at", the wait before the next try and the quiet time are counted
+ * from the answer. A message is looked at twice: before it is taken (so nothing is taken needlessly) and again once it is ours, because
+ * whoever ended its alert in between saw no try and will say nothing more.
  *
  * <h2>At least once</h2>
  * A message is never marked sent before a mail server took it, so a stop at the wrong moment sends a second copy rather than none. A copy is
@@ -87,7 +96,11 @@ public class MessageDispatcher {
     /** Messages a mail server took whose record could not be written yet. */
     private final Map<UUID, Accepted> acceptedNotRecorded = new ConcurrentHashMap<>();
 
-    private record Accepted(int claimed, Instant at, boolean shortForm) {
+    /**
+     * @param alertId the alert a staff row is about, which this acceptance makes "told"; null for other rows
+     * @param digest  whether it is a below-cost digest, whose pieces this acceptance makes "told"
+     */
+    private record Accepted(int claimed, Instant at, boolean shortForm, UUID alertId, boolean digest) {
     }
 
     public MessageDispatcher(MessageStore store, ContactBook contacts, OrderRefs orderRefs, DispatchHealth health, StaffAlerts alerts,
@@ -110,25 +123,30 @@ public class MessageDispatcher {
         NotificationSettings.Send send = settings.send();
         step("writing down what was already sent", this::recordWhatWasAccepted);
         // The alert clock first: a reminder written now is sent in this same pass, and an alert that just closed is not emailed.
-        step("reminding of, closing and re-telling alerts", () -> watch.sayLastNotes(alerts.clock(now), now));
+        step("reminding of, closing and re-telling alerts", () -> alerts.clock(now));
+        step("saying the last note of alerts that closed by the clock", () -> watch.sayLastNotes(now));
         step("ending the messages whose time has passed", () -> store.sweep(now, send.lease()));
         handedOverThisPass = 0;
         step("sending the messages that wait", () -> sendWhatWaits(now));
-        step("judging whether email works", () -> judgeMailHealth(now));
+        step("judging whether email works", () -> judgeMailHealth(clock.instant()));
     }
 
-    private void sendWhatWaits(Instant now) {
+    private void sendWhatWaits(Instant passBegan) {
         int unanswered = 0;
-        for (Due row : store.due(now, settings.send().batchSize())) {
+        for (Due row : store.due(passBegan, settings.send().batchSize())) {
             if (acceptedNotRecorded.containsKey(row.id())) {
                 continue;
             }
             try {
-                Pass pass = one(row, now);
-                if (pass == Pass.UNANSWERED) {
-                    unanswered++;
+                // Each message at its own time: a slow server makes a pass last minutes, and a lease counted from the pass's start would
+                // have run out before the send it is there to cover had even begun.
+                Pass pass = one(row, clock.instant());
+                if (pass == Pass.UNANSWERED && ++unanswered >= UNANSWERED_SENDS_THAT_END_A_PASS) {
+                    // Two sends in a row with no answer: nobody can say what is wrong, but it is the server's trouble, not two bad messages.
+                    health.serverFailed(clock.instant(), settings.send().serverQuiet(), settings.send().serverQuietMax());
+                    return;
                 }
-                if (pass == Pass.END || unanswered >= UNANSWERED_SENDS_THAT_END_A_PASS) {
+                if (pass == Pass.END) {
                     return;
                 }
             } catch (RuntimeException failure) {
@@ -189,8 +207,11 @@ public class MessageDispatcher {
         if (row.recipientKind() == RecipientKind.STAFF) {
             // A digest names several alerts (the pieces newly below cost); it has "ended" when every one of them has cleared.
             boolean ended = DIGEST.equals(row.alertNotice()) ? store.everyPieceOfTheDigestHasCleared(row.id()) : store.alertResolved(row.alertId());
+            // The list as it is configured NOW: a row written down for a mailbox that was since taken off the list is not sent to it.
+            List<String> group = "COST".equals(row.audience()) ? setup.costRecipients() : setup.moneyRecipients();
+            boolean onTheList = row.staffTo() != null && group.stream().anyMatch(row.staffTo()::equalsIgnoreCase);
             return SendDecision.forStaff(new StaffFacts(row.alertNotice(), row.staffTo(), ended,
-                    row.alertId() != null && store.newerNotice(row.id())), setup);
+                    row.alertId() != null && store.newerNotice(row.id()), onTheList), setup);
         }
         if (row.recipientKind() != RecipientKind.SHOPPER) {
             throw new IllegalStateException("words for a caller are sent by a person, never by the dispatcher");
@@ -216,6 +237,14 @@ public class MessageDispatcher {
         }
         int claimed = claim.getAsInt();
 
+        // The row is ours now. Look once more: whoever ended its alert (or learnt that its order was paid) before this moment saw no try of
+        // it and will say nothing more, so it must not go; whoever does so from here on sees the try that was just counted.
+        if (decide(row, now) instanceof NotSent after) {
+            store.notSentAfterClaim(row.id(), claimed, after.reason(), now);
+            log.info("Message {} ({}) is not sent: {}", row.id(), row.eventType(), after.reason());
+            return Pass.GO_ON;
+        }
+
         SendResult result;
         handedOverThisPass++;
         try {
@@ -224,46 +253,47 @@ public class MessageDispatcher {
             // A transport never throws. If one does, nothing is known about the message: treat it as the server's trouble.
             result = SendResult.serverTryLater(SendResult.OTHER);
         }
+        // The moment of the answer: a send may have taken a minute and more.
+        Instant answered = clock.instant();
 
         switch (result.outcome()) {
             case ACCEPTED -> {
-                recordSent(row.id(), new Accepted(claimed, now, send.shortForm()));
+                recordSent(row.id(), new Accepted(claimed, answered, send.shortForm(), row.alertId(), DIGEST.equals(row.alertNotice())));
                 step("noting that the mail server works", () -> {
                     health.serverWorked();
-                    alerts.emailWorks(now);
-                    if (row.alertId() != null) {
-                        // "Told" means a mail server took it: only now have staff been told of this alert.
-                        alerts.accepted(row.alertId(), now);
-                    } else if (DIGEST.equals(row.alertNotice())) {
-                        store.stampThePiecesOfTheDigest(row.id(), now);
-                    }
+                    alerts.emailWorks(answered);
                 });
                 return Pass.GO_ON;
             }
             case REFUSED -> {
-                if (SendResult.SANDBOX.equals(result.code())) {
-                    store.notSentAfterClaim(row.id(), claimed, StatusReason.SANDBOX, now);
-                } else {
-                    store.fail(row.id(), claimed, StatusReason.ADDRESS_REFUSED, result.code(), now);
-                    step("noting a refused address", () -> afterARefusedAddress(row, now));
-                }
                 log.warn("Message {} ({}) was refused: {}", row.id(), row.eventType(), result.code());
-                return Pass.GO_ON;
+                if (SendResult.SANDBOX.equals(result.code())) {
+                    store.notSentAfterClaim(row.id(), claimed, StatusReason.SANDBOX, answered);
+                    return Pass.GO_ON;
+                }
+                if (alerts.emailIsListedAsDown()) {
+                    // The server has been refusing everybody (or has only just come back): this refusal says nothing about this address.
+                    // The message waits and is tried again; the next one would fare the same, so the pass ends.
+                    store.retryLater(row.id(), claimed, answered.plus(waitAfter(claimed)), result.code());
+                    return Pass.END;
+                }
+                store.fail(row.id(), claimed, StatusReason.ADDRESS_REFUSED, result.code(), answered);
+                return everybodyIsBeingRefused(row, answered) ? Pass.END : Pass.GO_ON;
             }
             case RECIPIENT_TRY_LATER -> {
-                store.retryLater(row.id(), claimed, now.plus(waitAfter(claimed)), result.code());
+                store.retryLater(row.id(), claimed, answered.plus(waitAfter(claimed)), result.code());
                 return Pass.GO_ON;
             }
             case SERVER_TRY_LATER -> {
-                store.retryLater(row.id(), claimed, now.plus(waitAfter(claimed)), result.code());
-                health.serverFailed(now, timing.serverQuiet(), timing.serverQuietMax());
+                store.retryLater(row.id(), claimed, answered.plus(waitAfter(claimed)), result.code());
+                health.serverFailed(answered, timing.serverQuiet(), timing.serverQuietMax());
                 log.warn("The mail server could not be used ({}); nothing more is sent in this pass", result.code());
                 return Pass.END;
             }
             case UNCERTAIN -> {
-                Instant oneMoreTry = now.plus(timing.backoff().getLast());
+                Instant oneMoreTry = answered.plus(timing.backoff().getLast());
                 if (row.maybeHandedOver() || !oneMoreTry.isBefore(row.sendBefore())) {
-                    store.fail(row.id(), claimed, StatusReason.OUTCOME_UNKNOWN, result.code(), now);
+                    store.fail(row.id(), claimed, StatusReason.OUTCOME_UNKNOWN, result.code(), answered);
                 } else {
                     store.uncertain(row.id(), claimed, oneMoreTry);
                 }
@@ -277,13 +307,26 @@ public class MessageDispatcher {
     /**
      * A refused address is usually one bad address. Two cases are more than that and are listed for staff: a refused ALERT mailbox (an alert
      * that cannot reach its reader), and three refusals in a row for three different recipients (a mail server that refuses everybody).
+     *
+     * @return whether the server is refusing everybody: the pass then ends, and further refusals are not believed until a message is accepted
      */
-    private void afterARefusedAddress(Due row, Instant now) {
-        if (row.recipientKind() == RecipientKind.STAFF && alerts.alertMailboxRefused(now)) {
-            log.error("An alert mailbox was refused by the mail server (message {}); alerts may not reach it by email until it is corrected", row.id());
-        }
-        if (store.theLastThreeRecipientsWereAllRefused() && alerts.emailIsDown(now, now)) {
-            log.error("Emails are not going out: the mail server refused the last three recipients, each a different one");
+    private boolean everybodyIsBeingRefused(Due row, Instant now) {
+        try {
+            if (row.recipientKind() == RecipientKind.STAFF && alerts.alertMailboxRefused(now)) {
+                log.error("An alert mailbox was refused by the mail server (message {}); alerts may not reach it by email until it is corrected",
+                        row.id());
+            }
+            if (!store.theLastThreeRecipientsWereAllRefused()) {
+                return false;
+            }
+            if (alerts.emailIsDown(now, now)) {
+                log.error("Emails are not going out: the mail server refused the last three recipients, each a different one. "
+                        + "Messages still waiting are kept and tried again");
+            }
+            return true;
+        } catch (RuntimeException failure) {
+            log.error("A dispatcher pass failed while noting a refused address ({}); the rest of the pass goes on", failure.getClass().getSimpleName());
+            return false;
         }
     }
 
@@ -337,7 +380,7 @@ public class MessageDispatcher {
     private void recordSent(UUID id, Accepted accepted) {
         for (int attempt = 1; attempt <= TRIES_TO_RECORD_A_SEND; attempt++) {
             try {
-                store.markSent(id, accepted.claimed(), accepted.at(), accepted.shortForm());
+                writeDown(id, accepted);
                 acceptedNotRecorded.remove(id);
                 return;
             } catch (RuntimeException failure) {
@@ -352,10 +395,26 @@ public class MessageDispatcher {
 
     private void recordWhatWasAccepted() {
         acceptedNotRecorded.forEach((id, accepted) -> {
-            // If another dispatcher took the row meanwhile this changes nothing, and there is nothing more this one can do about it.
-            store.markSent(id, accepted.claimed(), accepted.at(), accepted.shortForm());
+            writeDown(id, accepted);
             acceptedNotRecorded.remove(id);
         });
+    }
+
+    /**
+     * Everything that follows from "a mail server took this message", safe to repeat: the row reads sent, and the alert it is about (or the
+     * pieces its digest names) counts as told, because "told" means a mail server took it. If the claim no longer holds the row (the send
+     * outlasted its lease), the row still reads sent: that is what happened, and a row left waiting would go out again.
+     */
+    private void writeDown(UUID id, Accepted accepted) {
+        if (!store.markSent(id, accepted.claimed(), accepted.at(), accepted.shortForm())
+                && store.sentAfterItsClaimWasLost(id, accepted.at(), accepted.shortForm())) {
+            log.warn("Message {} was taken by the mail server after its claim was lost: it is marked sent, and a second copy may have gone out", id);
+        }
+        if (accepted.alertId() != null) {
+            alerts.accepted(accepted.alertId(), accepted.at());
+        } else if (accepted.digest()) {
+            store.stampThePiecesOfTheDigest(id, accepted.at());
+        }
     }
 
     private static void pause() {

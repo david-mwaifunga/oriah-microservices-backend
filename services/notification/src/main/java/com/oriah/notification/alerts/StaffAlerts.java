@@ -150,11 +150,14 @@ public class StaffAlerts {
     /** Ends the open alert about this thing, if there is one. @return whether one was open */
     public boolean resolve(Kind kind, String subjectId, String how, Instant now) {
         if (kind == Kind.PAYMENT_TO_CONFIRM && !"MONEY_RECORDED".equals(how)) {
-            // A claim alert that stepped aside when money was recorded now gets its real ending (the order was paid, expired, cancelled).
-            jdbc.update("""
-                    UPDATE staff_alert SET resolved_how = ?
-                     WHERE kind = 'PAYMENT_TO_CONFIRM' AND subject_id = ? AND state = 'RESOLVED' AND resolved_how = 'MONEY_RECORDED'""",
-                    how, subjectId);
+            // The order's real ending (paid, expired, cancelled). It ends the open claim alert AND gives a claim alert that had stepped aside
+            // when money was recorded its real ending, in ONE statement: if the other consumer is stepping the alert aside at this very
+            // moment, this statement waits for it and then still matches the row, whichever of the two states it finds.
+            return jdbc.update("""
+                    UPDATE staff_alert SET state = 'RESOLVED', resolved_at = COALESCE(resolved_at, ?), resolved_how = ?, remind_at = NULL
+                     WHERE kind = 'PAYMENT_TO_CONFIRM' AND subject_id = ?
+                       AND (state = 'OPEN' OR (state = 'RESOLVED' AND resolved_how = 'MONEY_RECORDED'))""",
+                    Timestamp.from(now), how, subjectId) > 0;
         }
         return jdbc.update("""
                 UPDATE staff_alert SET state = 'RESOLVED', resolved_at = ?, resolved_how = ?, remind_at = NULL
@@ -332,6 +335,29 @@ public class StaffAlerts {
         resolve(Kind.EMAIL_DOWN, "email", "RECOVERED", now);
     }
 
+    /** Whether "emails are not going out" stands right now. While it does, a refused recipient is not believed (the server refuses everybody). */
+    public boolean emailIsListedAsDown() {
+        return newest(Kind.EMAIL_DOWN, "email").map(Stored::open).orElse(false);
+    }
+
+    /**
+     * The alerts of one kind that closed by the clock and whose last note was never written. Found from what is stored, not from what a pass
+     * remembers: if the service stops between closing an alert and writing its note, the next pass still writes it.
+     */
+    public List<Closed> closedByTheClockWithNoLastNote(Kind kind) {
+        return jdbc.query("""
+                SELECT a.id, a.kind, a.subject_id FROM staff_alert a
+                 WHERE a.kind = ? AND a.state = 'RESOLVED' AND a.resolved_how = 'BY_CLOCK'
+                   AND NOT EXISTS (SELECT 1 FROM notification_log m WHERE m.alert_id = a.id AND m.alert_notice = 'CLOSING')
+                 ORDER BY a.resolved_at, a.id LIMIT ?""",
+                (row, n) -> new Closed(row.getObject(1, UUID.class), Kind.valueOf(row.getString(2)), row.getString(3)), kind.name(), ALERTS_A_PASS);
+    }
+
+    /** One notice of an alert to every mailbox of its group, all or none: for the scheduled jobs, which have no transaction of their own. */
+    public void tellInOneTransaction(UUID alertId, Kind kind, String notice, int tellNo, Text words, Instant now) {
+        each(alertId, () -> tell(alertId, kind, notice, tellNo, words, now, null, now));
+    }
+
     /** The mail server refused one of the alert mailboxes. It stays listed for a day. @return whether this call raised it */
     public boolean alertMailboxRefused(Instant now) {
         return transaction.execute(tx -> raise(new NewAlert(Kind.EMAIL_DOWN, "alert-mailbox", null, MessageTexts.alertMailboxRefused(), null, null,
@@ -372,7 +398,7 @@ public class StaffAlerts {
         for (Reminder reminder : due) {
             each(reminder.id(), () -> {
                 // One statement takes the reminder, so two instances reminding together write one set of rows.
-                Instant next = nextReminder(reminder);
+                Instant next = nextReminder(reminder, now);
                 int taken = jdbc.update("""
                         UPDATE staff_alert SET reminders_sent = reminders_sent + 1, remind_at = ?
                          WHERE id = ? AND state = 'OPEN' AND remind_at = ?""", timestamp(next), reminder.id(), Timestamp.from(reminder.remindAt()));
@@ -386,12 +412,19 @@ public class StaffAlerts {
     /**
      * When an alert is reminded of again after this reminder. "Money recorded but the sale has not completed" repeats every
      * {@code alerts.settlement.remind-every} until it closes; a payment claim is reminded of once.
+     *
+     * <p>The next one always lies AHEAD of now, at the same hour of the day as before: after days with the service away, staff get one
+     * reminder, not one for every day that was missed, seconds apart.
      */
-    private Instant nextReminder(Reminder reminder) {
+    private Instant nextReminder(Reminder reminder, Instant now) {
         if (reminder.kind() != Kind.SETTLEMENT_STUCK) {
             return null;
         }
-        Instant next = reminder.remindAt().plus(settings.alerts().settlement().remindEvery());
+        Duration every = settings.alerts().settlement().remindEvery();
+        Instant next = reminder.remindAt().plus(every);
+        while (!next.isAfter(now)) {
+            next = next.plus(every);
+        }
         return reminder.closesAt() == null || next.isBefore(reminder.closesAt()) ? next : null;
     }
 

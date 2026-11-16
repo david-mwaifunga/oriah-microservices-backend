@@ -96,8 +96,9 @@ public final class SendDecision {
      * @param notice        which notice of its alert it is: FIRST, AGAIN, REMINDER, SORTED, CLOSING (or DIGEST, which names several alerts)
      * @param alertResolved the alert it is about has ended
      * @param newerNotice   a newer first notice, re-telling or reminder of the same alert for the same mailbox has been written
+     * @param onTheList     the row's mailbox is still on the list of its group, as configured now
      */
-    public record StaffFacts(String notice, String staffTo, boolean alertResolved, boolean newerNotice) {
+    public record StaffFacts(String notice, String staffTo, boolean alertResolved, boolean newerNotice, boolean onTheList) {
     }
 
     private static final Set<String> SAID_AFTER_THE_END = Set.of("SORTED", "CLOSING");
@@ -105,7 +106,8 @@ public final class SendDecision {
 
     /**
      * In this order: no mail server or all email paused; the alert has already ended (only "sorted" and the last note are said after the end);
-     * a newer notice of the same alert has been written; no mailbox on the row; a mailbox that could be real on a stack that is not live.
+     * a newer notice of the same alert has been written; no mailbox on the row, or a mailbox the owner has since taken off the list (an alert
+     * written down for somebody who has left the shop must not still reach them); a mailbox that could be real on a stack that is not live.
      */
     public static Decision forStaff(StaffFacts facts, EmailSetup setup) {
         if (!setup.canSend()) {
@@ -117,7 +119,7 @@ public final class SendDecision {
         if (facts.newerNotice() && ONLY_THE_NEWEST_GOES.contains(facts.notice())) {
             return new NotSent(StatusReason.SUPERSEDED);
         }
-        if (facts.staffTo() == null) {
+        if (facts.staffTo() == null || !facts.onTheList()) {
             return new NotSent(StatusReason.NO_RECIPIENT_CONFIGURED);
         }
         if (setup.mode() != EmailSetup.Mode.LIVE && !SandboxGate.mayLeaveASandbox(facts.staffTo())) {

@@ -66,7 +66,11 @@ public final class EmailModeGuard {
      */
     public static EmailSetup build(ProcessEnv env, NotificationSettings settings) {
         timings(settings);
-        boolean paused = "true".equals(env.get(PAUSED));
+        if (settings.email().fromName().chars().anyMatch(Character::isISOControl)) {
+            // A line break in the name would write a header of its own into every email (a hidden copy to somebody, say).
+            throw refused("oriah.notification.email.from-name must not hold a line break or any other control character");
+        }
+        boolean paused = paused(env);
         String supportLine = trimmed(env.get(SUPPORT_LINE));
         return "true".equals(env.get(LIVE)) ? live(env, settings, supportLine, paused) : notLive(env, settings, supportLine, paused);
     }
@@ -215,6 +219,21 @@ public final class EmailModeGuard {
             throw refused(variable + " is required on a live stack");
         }
         return value;
+    }
+
+    /**
+     * The switch that stops all email must never fail open: "TRUE", "yes" or "1" would otherwise leave email running while the person who set
+     * it believes it stopped. So anything but exactly true, exactly false or nothing refuses the start.
+     */
+    private static boolean paused(ProcessEnv env) {
+        String word = trimmed(env.get(PAUSED));
+        if (word == null || word.equals("false")) {
+            return false;
+        }
+        if (word.equals("true")) {
+            return true;
+        }
+        throw refused(PAUSED + " must be exactly 'true' (no email is sent) or 'false', in small letters");
     }
 
     private static String trimmed(String text) {

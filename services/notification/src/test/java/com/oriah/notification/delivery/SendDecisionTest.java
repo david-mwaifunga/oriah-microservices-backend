@@ -37,6 +37,68 @@ class SendDecisionTest {
         return SendDecision.forShopper(new ShopperFacts(type, contact, false, false, false), setup, NOW, RECHECK);
     }
 
+    // ---- an alert email to a shop mailbox -------------------------------------------------------------------------------------------------------
+
+    private static SendDecision.Decision staff(String notice, String mailbox, boolean ended, boolean newer, boolean onTheList, EmailSetup setup) {
+        return SendDecision.forStaff(new SendDecision.StaffFacts(notice, mailbox, ended, newer, onTheList), setup);
+    }
+
+    @Test
+    @DisplayName("an alert email goes to its mailbox; with no mail server or while paused it does not")
+    void anAlertGoesToItsMailbox() {
+        assertThat(staff("FIRST", "alerts-money@oriah.local", false, false, true, setup(Mode.CATCHER, false)))
+                .isEqualTo(new Send("alerts-money@oriah.local", false));
+        assertThat(staff("FIRST", "alerts-money@oriah.local", false, false, true, setup(Mode.OFF, false))).isEqualTo(new NotSent(StatusReason.SENDING_OFF));
+        assertThat(staff("FIRST", "alerts-money@oriah.local", false, false, true, setup(Mode.LIVE, true))).isEqualTo(new NotSent(StatusReason.SENDING_OFF));
+    }
+
+    @Test
+    @DisplayName("on a stack that is not live an alert mailbox that could be real is never handed over; live, it is")
+    void anAlertMailboxThatCouldBeRealStaysInTheSandbox() {
+        assertThat(staff("FIRST", "owner@oriahjewelry.co.zm", false, false, true, setup(Mode.CATCHER, false))).isEqualTo(new NotSent(StatusReason.SANDBOX));
+        assertThat(staff("DIGEST", "owner@example.com", false, false, true, setup(Mode.CATCHER, false))).isEqualTo(new NotSent(StatusReason.SANDBOX));
+        assertThat(staff("FIRST", "owner@oriahjewelry.co.zm", false, false, true, setup(Mode.LIVE, false)))
+                .isEqualTo(new Send("owner@oriahjewelry.co.zm", false));
+    }
+
+    @Test
+    @DisplayName("once an alert has ended only 'sorted' and the last note are still said")
+    void onlySortedAndTheLastNoteAreSaidAfterTheEnd() {
+        for (String notice : List.of("FIRST", "AGAIN", "REMINDER", "DIGEST")) {
+            assertThat(staff(notice, "alerts-money@oriah.local", true, false, true, setup(Mode.CATCHER, false))).as(notice)
+                    .isEqualTo(new NotSent(StatusReason.ALERT_RESOLVED));
+        }
+        for (String notice : List.of("SORTED", "CLOSING")) {
+            assertThat(staff(notice, "alerts-money@oriah.local", true, false, true, setup(Mode.CATCHER, false))).as(notice)
+                    .isEqualTo(new Send("alerts-money@oriah.local", false));
+        }
+    }
+
+    @Test
+    @DisplayName("of a first notice, a re-telling and a reminder only the newest goes; 'sorted' and the last note are never overtaken")
+    void onlyTheNewestNoticeGoes() {
+        for (String notice : List.of("FIRST", "AGAIN", "REMINDER")) {
+            assertThat(staff(notice, "alerts-money@oriah.local", false, true, true, setup(Mode.CATCHER, false))).as(notice)
+                    .isEqualTo(new NotSent(StatusReason.SUPERSEDED));
+        }
+        for (String notice : List.of("SORTED", "CLOSING")) {
+            assertThat(staff(notice, "alerts-money@oriah.local", false, true, true, setup(Mode.CATCHER, false))).as(notice)
+                    .isEqualTo(new Send("alerts-money@oriah.local", false));
+        }
+    }
+
+    @Test
+    @DisplayName("a row with no mailbox, or for a mailbox that is no longer on the alert list, is not sent")
+    void aMailboxThatIsNotOnTheListIsNotSentTo() {
+        assertThat(staff("FIRST", null, false, false, true, setup(Mode.CATCHER, false))).isEqualTo(new NotSent(StatusReason.NO_RECIPIENT_CONFIGURED));
+        assertThat(staff("FIRST", "left-the-shop@oriah.local", false, false, false, setup(Mode.CATCHER, false)))
+                .isEqualTo(new NotSent(StatusReason.NO_RECIPIENT_CONFIGURED));
+        assertThat(staff("SORTED", "left-the-shop@oriah.local", true, false, false, setup(Mode.LIVE, false)))
+                .isEqualTo(new NotSent(StatusReason.NO_RECIPIENT_CONFIGURED));
+    }
+
+    // ---- a message to a customer ---------------------------------------------------------------------------------------------------------------
+
     @Test
     @DisplayName("a confirmed address gets the full words")
     void aVerifiedShopperGetsTheFullWords() {

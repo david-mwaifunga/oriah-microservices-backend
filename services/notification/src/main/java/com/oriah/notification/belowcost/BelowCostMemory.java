@@ -115,9 +115,16 @@ public class BelowCostMemory {
                                     WHERE p.alert_id = a.id AND m.status = 'RECORDED')
                    AND NOT EXISTS (SELECT 1 FROM staff_alert told
                                     WHERE told.kind = 'BELOW_COST' AND told.subject_id = a.subject_id AND told.emailed_at > ?)
+                   AND NOT EXISTS (SELECT 1 FROM below_cost_digest_piece p JOIN notification_log m ON m.digest_id = p.digest_id
+                                    WHERE p.alert_id = a.id AND m.recorded_at > ?)
+                   AND (SELECT count(DISTINCT p.digest_id) FROM below_cost_digest_piece p WHERE p.alert_id = a.id) <= ?
                  ORDER BY a.raised_at, a.summary""",
                 (row, n) -> new Untold(row.getObject(1, UUID.class), nameFrom(row.getString(2))),
-                Timestamp.from(now.minus(settings.belowCost().quietFor())));
+                Timestamp.from(now.minus(settings.belowCost().quietFor())),
+                // A digest that could not be delivered (a refused mailbox, mail down for longer than a digest is worth sending) is written
+                // again, but like any other alert: not before alerts.retell-after, and alerts.retell-max times at most. Without this a
+                // refused cost mailbox would be written to on every round, for ever.
+                Timestamp.from(now.minus(settings.alerts().retellAfter())), settings.alerts().retellMax());
         if (untold.isEmpty()) {
             return;
         }

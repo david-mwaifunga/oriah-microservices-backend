@@ -141,13 +141,14 @@ public class ConfirmationWatch {
     /**
      * The last note of each "money recorded but the sale has not completed" alert that just closed by the clock: after two weeks of reminders
      * nobody answered, and an alert about money already taken must not end in silence. Called by the dispatcher right after the alert clock.
+     *
+     * <p>What is owed is read from what is stored (closed by the clock, no last note yet), so a stop between the close and the note loses
+     * nothing: the next pass writes it.
      */
-    public void sayLastNotes(List<StaffAlerts.Closed> closed, Instant now) {
-        for (StaffAlerts.Closed alert : closed) {
-            if (alert.kind() == Kind.SETTLEMENT_STUCK) {
-                Watch watch = read(UUID.fromString(alert.subjectId()));
-                alerts.tell(alert.id(), Kind.SETTLEMENT_STUCK, "CLOSING", 1, MessageTexts.settlementNeverAnswered(money(watch)), now, null, now);
-            }
+    public void sayLastNotes(Instant now) {
+        for (StaffAlerts.Closed alert : alerts.closedByTheClockWithNoLastNote(Kind.SETTLEMENT_STUCK)) {
+            Watch watch = read(UUID.fromString(alert.subjectId()));
+            alerts.tellInOneTransaction(alert.id(), Kind.SETTLEMENT_STUCK, "CLOSING", 1, MessageTexts.settlementNeverAnswered(money(watch)), now);
         }
     }
 

@@ -143,7 +143,88 @@ class PaymentToConfirmAlertTest {
         return timestamp == null ? null : ((Timestamp) timestamp).toInstant();
     }
 
+    @Test
+    @DisplayName("an alert email still waiting for a mailbox the owner has since taken off the list is not sent to it")
+    void aMailboxTakenOffTheListIsNoLongerEmailed() {
+        UUID orderId = UUID.randomUUID();
+        claim(orderId);
+        // The service was restarted with one mailbox fewer (somebody left the shop) while the two emails of this alert were still waiting.
+        List<String> now = List.of("alerts-money@oriah.local");
+
+        dispatcher(catcher(now), new StaffAlerts(jdbc, transactions, catcher(now), settings)).run();
+
+        assertThat(transport.handedOver()).extracting(Email::to).containsExactly("alerts-money@oriah.local");
+        assertThat(staffRows("FIRST")).filteredOn(row -> "alerts-owner@oriah.local".equals(row.get("staff_to"))).singleElement().satisfies(row -> {
+            assertThat(row.get("status")).isEqualTo("NOT_SENT");
+            assertThat(row.get("status_reason")).isEqualTo("NO_RECIPIENT_CONFIGURED");
+            assertThat(row.get("attempts")).isEqualTo(0);
+        });
+    }
+
+    @Test
+    @DisplayName("an alert email the server took while the database was away is, once it is written down, also what makes the alert 'told': staff are not told again")
+    void aSendRecordedLateStillMarksTheAlertAsTold() {
+        UUID orderId = UUID.randomUUID();
+        claim(orderId);
+        java.util.concurrent.atomic.AtomicBoolean databaseAway = new java.util.concurrent.atomic.AtomicBoolean(true);
+        MessageStore store = new MessageStore(jdbc) {
+            @Override
+            public boolean markSent(UUID row, int claimed, Instant now, boolean shortForm) {
+                if (databaseAway.get()) {
+                    throw new org.springframework.dao.TransientDataAccessResourceException("the database is restarting");
+                }
+                return super.markSent(row, claimed, now, shortForm);
+            }
+        };
+        StaffAlerts staffAlerts = new StaffAlerts(jdbc, transactions, catcher(MONEY), settings) {
+            @Override
+            public void accepted(UUID alertId, Instant now) {
+                if (databaseAway.get()) {
+                    throw new org.springframework.dao.TransientDataAccessResourceException("the database is restarting");
+                }
+                super.accepted(alertId, now);
+            }
+        };
+        MessageDispatcher dispatcher = new MessageDispatcher(store, contacts, orderRefs, health, staffAlerts, watch, transport, catcher(MONEY), settings, clock);
+
+        dispatcher.run();
+        assertThat(transport.handedOver()).hasSize(2);
+        assertThat(alert(orderId).get("emailed_at")).isNull();
+
+        databaseAway.set(false);
+        clock.advance(Duration.ofMinutes(4));
+        dispatcher.run();
+
+        assertThat(staffRows("FIRST")).allSatisfy(row -> assertThat(row.get("status")).isEqualTo("SENT"));
+        assertThat(alert(orderId).get("emailed_at")).as("a mail server took it: staff have been told").isNotNull();
+        assertThat(transport.handedOver()).as("nothing was handed over twice").hasSize(2);
+    }
+
     // ---- raised, told, reminded, ended ---------------------------------------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("an alert that ends between the dispatcher's decision and its claim is not emailed: staff must never get an alarm with no 'sorted' after it")
+    void anAlertThatEndsBetweenTheDecisionAndTheClaimIsNotEmailed() {
+        UUID orderId = UUID.randomUUID();
+        claim(orderId);
+        StaffAlerts staffAlerts = new StaffAlerts(jdbc, transactions, catcher(MONEY), settings);
+        // The order is paid in the instant after the dispatcher decided to send and before it takes the row.
+        MessageStore paidJustBeforeTheClaim = new MessageStore(jdbc) {
+            @Override
+            public java.util.OptionalInt claim(UUID id, Instant now, Duration lease) {
+                staffAlerts.resolve(StaffAlerts.Kind.PAYMENT_TO_CONFIRM, orderId.toString(), "PAID", now);
+                return super.claim(id, now, lease);
+            }
+        };
+
+        new MessageDispatcher(paidJustBeforeTheClaim, contacts, orderRefs, health, staffAlerts, watch, transport, catcher(MONEY), settings, clock).run();
+
+        assertThat(transport.handedOver()).as("nobody is told of a payment to confirm that is already confirmed").isEmpty();
+        assertThat(staffRows("FIRST")).hasSize(2).allSatisfy(row -> {
+            assertThat(row.get("status")).isEqualTo("NOT_SENT");
+            assertThat(row.get("status_reason")).isEqualTo("ALERT_RESOLVED");
+        });
+    }
 
     @Test
     @DisplayName("a claim raises one alert and one email per money mailbox, due at once and worth sending until the hold ends")

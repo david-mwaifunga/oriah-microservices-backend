@@ -316,7 +316,7 @@ oriah:
       # updates what is known, and emails nobody.
       max-fact-age: PT30M
       # An open alert that no mail server ever took (mail was down, or no mailbox was configured) is written again this often,
-      # at most this many times.
+      # at most this many times. The below-cost email that could not be delivered follows the same two numbers.
       retell-after: PT1H
       retell-max: 12
       # The mail server failing this long is itself an alert ("emails are not going out"), listed and logged, never emailed.

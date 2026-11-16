@@ -164,8 +164,15 @@ public class OrderEventConsumer {
                     payload.isPhone() ? read(message.getPayload(), PhoneExtras.class).takenLive() : null,
                     paid ? paidWith.receiptNumber() : null, paid ? facts.recordedAt() : null, now);
 
-            // What this event answers is closed before anything else can return: an order that is paid, expired or cancelled no longer has a
-            // payment waiting to be confirmed. (A repeated payment and a phone order's payment close it too.)
+            // What this event answers is closed before anything else can return. The ORDER of the two steps is a rule: the confirmation's row
+            // is taken first and the claim alert after it, exactly as payment's facts do (ConfirmationWatch), so the two consumers, which run
+            // side by side on two topics, can never wait for each other.
+            if (paid && paidWith.confirmationId() != null) {
+                // The answer to "did this money pay its sale?", for every order.paid that names its confirmation.
+                watch.paid(paidWith.confirmationId(), payload.orderId(), facts.recordedAt(), now);
+            }
+            // An order that is paid, expired or cancelled no longer has a payment waiting to be confirmed. (A repeated payment and a phone
+            // order's payment close it too.)
             String ended = switch (type) {
                 case "order.paid" -> "PAID";
                 case "order.expired" -> "EXPIRED";
@@ -174,10 +181,6 @@ public class OrderEventConsumer {
             };
             if (ended != null) {
                 alerts.resolve(StaffAlerts.Kind.PAYMENT_TO_CONFIRM, payload.orderId().toString(), ended, now);
-            }
-            if (paid && paidWith.confirmationId() != null) {
-                // The answer to "did this money pay its sale?", for every order.paid that names its confirmation.
-                watch.paid(paidWith.confirmationId(), payload.orderId(), facts.recordedAt(), now);
             }
 
             if (Boolean.TRUE.equals(payload.republished())) {

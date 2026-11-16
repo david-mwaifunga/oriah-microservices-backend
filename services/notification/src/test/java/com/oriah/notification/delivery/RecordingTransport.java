@@ -24,6 +24,7 @@ public final class RecordingTransport implements MessageTransport {
     private volatile SendResult probeAnswer = SendResult.accepted();
     private volatile CountDownLatch hold;
     private volatile CountDownLatch entered = new CountDownLatch(1);
+    private volatile java.util.function.Consumer<Email> whileSending = email -> { };
 
     /** The next sends get these answers, in order; after them everything is accepted again. */
     public synchronized RecordingTransport thenAnswer(SendResult... results) {
@@ -40,6 +41,12 @@ public final class RecordingTransport implements MessageTransport {
     public void holdSends() {
         hold = new CountDownLatch(1);
         entered = new CountDownLatch(1);
+    }
+
+    /** What happens while each send is inside the transport: a slow server (the clock moves), or somebody else touching the row meanwhile. */
+    public RecordingTransport whileSending(java.util.function.Consumer<Email> happens) {
+        this.whileSending = happens;
+        return this;
     }
 
     public void letGo() {
@@ -70,6 +77,7 @@ public final class RecordingTransport implements MessageTransport {
         }
         handedOver.add(email);
         entered.countDown();
+        whileSending.accept(email);
         CountDownLatch held = hold;
         if (held != null) {
             try {

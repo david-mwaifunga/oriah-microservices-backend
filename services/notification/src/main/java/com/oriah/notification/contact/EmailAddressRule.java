@@ -31,6 +31,11 @@ public final class EmailAddressRule {
         if (address.isEmpty() || address.length() > LONGEST || address.chars().anyMatch(c -> NEVER_IN_A_BARE_ADDRESS.indexOf(c) >= 0)) {
             return Optional.empty();
         }
+        // Plain printable ASCII only. The mail library writes only the low byte of every character, so a character outside ASCII leaves as a
+        // DIFFERENT one (a dot, a '>', a line break): the address a gate judged would not be the address put on the wire.
+        if (address.chars().anyMatch(c -> c < 0x21 || c > 0x7E)) {
+            return Optional.empty();
+        }
         int at = address.indexOf('@');
         if (at <= 0 || at != address.lastIndexOf('@')) {
             return Optional.empty();

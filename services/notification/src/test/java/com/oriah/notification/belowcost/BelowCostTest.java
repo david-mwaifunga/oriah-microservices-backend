@@ -245,6 +245,36 @@ class BelowCostTest {
     }
 
     @Test
+    @DisplayName("a digest the mail server refused is not written again on every round: an hour apart, and not for ever")
+    void aRefusedDigestIsNotWrittenAgainOnEveryRound() {
+        below.add(ring);
+        poller().tick(clock.instant());
+        transport.thenAnswer(SendResult.refused(SendResult.ADDRESS_REFUSED));
+        dispatch();
+        assertThat(digests()).singleElement().satisfies(row -> assertThat(row).containsEntry("status", "FAILED"));
+
+        for (int round = 1; round <= 11; round++) {
+            clock.advance(Duration.ofMinutes(5));
+            poller().tick(clock.instant());
+        }
+        assertThat(digests()).as("55 minutes and eleven good rounds later").hasSize(1);
+
+        clock.advance(Duration.ofMinutes(5));
+        poller().tick(clock.instant());
+        assertThat(digests()).as("an hour after the one that failed").hasSize(2);
+
+        // The mailbox stays wrong for days: the piece stays listed, and the emails stop.
+        for (int hour = 1; hour <= 30; hour++) {
+            transport.thenAnswer(SendResult.refused(SendResult.ADDRESS_REFUSED));
+            dispatch();
+            clock.advance(Duration.ofHours(1));
+            poller().tick(clock.instant());
+        }
+        assertThat(digests()).as("the first digest and twelve more, then no more").hasSize(13);
+        assertThat(alertsOf("BELOW_COST")).singleElement().satisfies(alert -> assertThat(alert).containsEntry("state", "OPEN"));
+    }
+
+    @Test
     @DisplayName("pieces that opened before anybody was configured to be told are told once somebody is; a digest whose pieces all cleared is not sent")
     void piecesOpenBeforeAnAddressWasConfiguredAreToldOnceItIs() {
         below.add(ring);
@@ -388,6 +418,49 @@ class BelowCostTest {
                 "a-secret", () -> { }).tick(clock.instant());
         assertThat(alertsOf("BELOW_COST")).isEmpty();
         assertThat(jdbc.queryForMap("SELECT last_failure FROM below_cost_poll")).containsEntry("last_failure", "INCONSISTENT");
+    }
+
+    @Test
+    @DisplayName("a list catalog re-sorted between two pages (one piece read twice, another never) is thrown away although its total did not change")
+    void aListReorderedBetweenPagesIsThrownAway() {
+        for (int i = 1; i <= 200; i++) {
+            below.add(piece("Piece " + i, "P-" + i));
+        }
+        // A piece's shortfall changed after the first page was read: it moved from the second page to the first, so the second page begins
+        // with the piece the first page ended with, and the last piece is on no page at all. The total is 200 both times.
+        CatalogBelowCostClient reordered = (status, page, size) -> new BelowCostReply(page == 0 ? below.subList(0, 100) : below.subList(99, 199),
+                Map.of(), page, size, 200);
+
+        new BelowCostPoller(reordered, new BelowCostMemory(jdbc, transactions, alerts(COST), setup(COST), settings), alerts(COST), jdbc, settings,
+                "a-secret", () -> { }).tick(clock.instant());
+
+        assertThat(alertsOf("BELOW_COST")).as("a reading that is not one list raises nothing and clears nothing").isEmpty();
+        assertThat(jdbc.queryForMap("SELECT last_failure FROM below_cost_poll")).containsEntry("last_failure", "INCONSISTENT");
+    }
+
+    @Test
+    @DisplayName("a lease is given back only by the instance that holds it: one with no secret, or whose round outlived its lease, leaves another's alone and judges nothing")
+    void aLeaseIsOnlyGivenBackByItsHolder() {
+        java.sql.Timestamp theirs = java.sql.Timestamp.from(clock.instant().plusSeconds(60));
+        jdbc.update("UPDATE below_cost_poll SET leased_until = ?", theirs);
+
+        poller(COST, "").tick(clock.instant());
+
+        assertThat(jdbc.queryForMap("SELECT leased_until, last_failure, down_since FROM below_cost_poll")).as("no secret, and not the holder")
+                .containsEntry("leased_until", theirs).containsEntry("last_failure", null).containsEntry("down_since", null);
+
+        // This instance's round hangs for longer than its lease; another instance takes the lease and is in the middle of its own round.
+        jdbc.update("UPDATE below_cost_poll SET leased_until = NULL");
+        java.sql.Timestamp takenOver = java.sql.Timestamp.from(clock.instant().plus(Duration.ofMinutes(10)));
+        catalogFails = () -> {
+            jdbc.update("UPDATE below_cost_poll SET leased_until = ?", takenOver);
+            return new IllegalStateException("catalog did not answer");
+        };
+
+        poller().tick(clock.instant());
+
+        assertThat(jdbc.queryForMap("SELECT leased_until, last_failure, down_since FROM below_cost_poll")).as("a round that lost its lease")
+                .containsEntry("leased_until", takenOver).containsEntry("last_failure", null).containsEntry("down_since", null);
     }
 
     @Test
