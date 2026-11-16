@@ -568,7 +568,7 @@ amount; a salesperson reads no landed cost or margin (Q29).**
 ### Built in Phase 10 (Finance): the books, and the profit report
 
 Design: `../.codex-tmp/plan-p10-FINAL.md` (its amendments A1 to A16 win over `plan-p10-final-wf.md`, a 17-agent design run; it folds in **Codex's design review, NOT SOUND with 8 P1**, all adopted or answered).
-Slices 10.0 to 10.11 are in the 14 commits `ac90b42` to `2ac03ee` and after (nothing pushed). **Proved live:** see the status block in `docs/MVP_PLAN.md` Phase 10. The frontend is not changed (`docs/FRONTEND_WORK.md`,
+Slices 10.0 to 10.11 are the commits `ac90b42` to `a71a7d6` (nothing pushed). **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20i) passed on images rebuilt from the final committed code (finance `a71a7d6`; order, payment, inventory, procurement, gateway `38efbc8`); finance replayed every producer's whole history into 1,077 ledger rows and its only open errors were the 29 version-1 sales from before Phase 7, set aside by design (developer data).** The frontend is not changed (`docs/FRONTEND_WORK.md`,
 Phase 10, says what it must do and carries the owner's questions in plain words).
 
 A new service, **`finance`** (port 8094, Postgres host port 5446, database, user and password `finance`, Flyway V1 to V3, **JdbcTemplate only: no JPA**, 14th service, 13th with a database). It **produces no events**; it reads
@@ -1170,8 +1170,8 @@ to match.
 - **`docs/PROGRESS.md`** — read **from the top**; it is newest-first. **No
   "Next exact action" line in it is live** — both remaining ones are completed
   history and are marked where they sit; one would destroy the finished
-  frontend if executed. Its topmost entry is dated 2026-11-15 and covers Phase 8; the "Built in Phase 7 (Sell)" and
-  "Built in Phase 8 (Deliver)" blocks above are the contract-level detail.
+  frontend if executed. Its topmost entry is dated 2026-11-16 and covers Phase 10; the "Built in Phase 7 (Sell)" to
+  "Built in Phase 10 (Finance)" blocks above are the contract-level detail.
 - **`docs/ARCHITECTURE.md`** — decisions and rationale. Accurate on *why*; its
   present-tense claims are frozen at their own dates and the stale ones are now
   marked inline.
@@ -1212,6 +1212,8 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
 - `project-oriah-requirements-locked.md` — `docs/CLIENT_DECISIONS.md` is the
   baseline; tax = ZRA Smart Invoice, deferred past the MVP (core integration-ready);
   delivery per town; promotions per product, category or shop
+- `project-oriah-phase10-plan.md` — **the MVP plan's Phase 10 "Finance"**: the design files, what Codex and the panel changed, what was built, the limits recorded and the hand-offs to
+  Phases 12 to 14. Read it before touching the books
 - `project-oriah-phase9-plan.md` — **the MVP plan's Phase 9 "Phone orders"**: the design files (plan-p9-r2/r3/r4), what Codex changed, what was built, what was cut or deferred and why.
   Read it before touching recorded orders
 - `project-oriah-phase8-deliver.md` — **the MVP plan's Phase 8 "Deliver"**: the dispatch steps, the fare,

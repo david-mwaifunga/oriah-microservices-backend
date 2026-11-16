@@ -122,18 +122,27 @@ message but before it recorded that, the message is sent again with the same
 
 ## Facts and projections: the one rule for consumers
 
-A consumer is one of two kinds, never a mix:
+Each **event type** a consumer reads is one of two kinds. A service reading
+several types may use both, for different types, but never both for the same
+type:
 
-- **A fact consumer** (`once`) - each event is a thing that happened, applied
-  exactly once, in any order. Example: finance recording a sale. Order does
-  not matter because each fact stands alone.
+- **A fact** (`once`) - each event is a thing that happened, applied
+  exactly once, in any order. Example: finance recording a sale. Order
+  does not matter because each fact stands alone: whatever depends on
+  several facts (a payment fee against its sale, a refund against its
+  confirmation) is derived from ALL the facts after each one lands, so the
+  answer is the same in any arrival order.
 - **A projection** (`onceInOrder`) - keeps a copy of another service's state
-  (search's product index). Each event is a **full snapshot** of its
-  aggregate, so the projection only ever needs the newest one: an older
-  snapshot arriving late is skipped, using `seq`.
+  (search's product index; finance's product names and consignment lines).
+  Each event is a **full snapshot** of its aggregate, so the projection only
+  ever needs the newest one: an older snapshot arriving late is skipped,
+  using `seq`.
 
 So producers emit a full snapshot for any state a projection reads, and no
-consumer may depend on receiving changes ("deltas") in strict order.
+consumer may depend on receiving changes ("deltas") in strict order. (Until
+Phase 10 this paragraph said a consumer was one kind, "never a mix"; finance
+is the first service to read facts and snapshots side by side, so the rule
+moved from the service to the event type.)
 
 ## Receiving events (the Inbox)
 

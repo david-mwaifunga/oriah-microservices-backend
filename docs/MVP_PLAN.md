@@ -2289,6 +2289,24 @@ customer confirm carrying a delivery amount is refused.
 
 ### Phase 10 — Finance: expenses, the ledger, the profit report
 
+> **Status: built, 2026-11-16.** Committed in `oriah-api` (not pushed) in slices 10.0 to 10.11: the new event types declared by their consumers before any producer emits them (`ac90b42`), the trailing fields of
+> `order.paid` and `payment.voided`/`held` (`1bacef8`), procurement's `consignment.period_costs` (`056b923`) and inventory's `stock.cost_recorded` (`e06d362`) with their back-fills, the finance skeleton wired into every list
+> that names the services (`2602a18`), the appliers for sales, fares, fees, voids, held money, bills for the month and stock costs (`02d7a1f`, `8006ca3`, `8cdf76e`), the live and replayed consumers with the replay test (`1d804ac`),
+> expenses, tax by hand and the statement check (`5ad0d67`, `9552f5d`), the monthly report, gross profit by product, the disclosure, issuing a month and the status, anomalies and re-verify (`40b48ad`, `fa84e66`), the
+> guard tests, OpenAPI documentation and the smoke step (`2ac03ee`), and the review fixes (`d44af3d` and the commit after it). The design is `../.codex-tmp/plan-p10-FINAL.md` (its amendments A1 to A16 win over
+> `plan-p10-final-wf.md`, a 17-agent design run; it folds in **Codex's design review: NOT SOUND, 8 P1**, all adopted or answered).
+> **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20i) passed on images rebuilt from the final committed code (finance `a71a7d6`; order, payment, inventory, procurement and the gateway `38efbc8`), 14 services.** Finance's first start replayed every producer's whole history (catalog 560 events, order 815, payment 323, procurement 152, inventory 52) into 1,077 ledger rows and finished its catch-up in about a minute; the only open errors were the 29 sales announced in the first (version 1) form before Phase 7, which are set aside by design (developer data: a go-live database starts empty). The first run reached step 20i and failed only on a check in the new script block (it looked for a sale's stock cost under the order; a cost row carries the product). The OpenAPI gate is additions-only with no new waiver; the content audit, run on the live documents, found that finance's 16 reads documented no success body (fixed test-first, then PASS); 6 error goldens were added (62 in all, unchanged otherwise) and Postman was regenerated.
+>
+> **What it delivers.** A `finance` service that reads every other service's whole event history (live, and replayed from the beginning, each event applied once) into one append-only signed ledger, and answers: the month's
+> profit in the client's own words (goods, discounts, cost of goods, gross profit, delivery, stock written off, expenses, **profit before turnover tax**, tax entered by hand, profit after it), gross profit by product that
+> adds up exactly to the shop's, how much of the cost is an estimate, what changed in a month after it was reported, and whether the books can be trusted yet (catch-up, open errors). Expenses and tax are typed in by hand and
+> never edited; the bookkeeper and the owner alone see any of it. **What Codex changed:** the as-of cut is finance's own clock (no digest, no `throughEntry`); the product travels with the stock cost instead of finance remembering
+> the first one it saw; a re-tag counts from the day it is made; held money is dated by its arrival; a courier fare can never be counted twice; the roles are `FINANCE_ADMIN` alone; markers are atomic with the live emission.
+> **Its code review (NOT SOUND, 4 P1) and a six-lens panel** (19 agents, a skeptic on every finding) added: every failure applying an event is written down, including the transaction's own; a report is cut on the database clock end to end; the
+> stored issue keeps every product; a statement check counts an adjustment; every typed string is screened; racing reversals answer 409. **Not built:** a balance sheet or double entry (cut: not asked for); refunds, returns and
+> cancel-after-pay (Phase 12: no producer exists); the card path's revenue and fees (Phase 13); versioned consignment and product facts for an old report (an old report's product titles and the held value in its disclosure are as
+> finance holds them now; the stored issue freezes what it showed); a price-below-cost report (Q18). **Owner questions** are in `docs/FRONTEND_WORK.md`, Phase 10 (Q1 to Q14 and Q16 to Q19).
+
 New `finance` module + Postgres + `V1`, behind a gateway route and a
 `FINANCE_ADMIN` matcher on `/api/v1/admin/finance/**`. Consume every service's
 outbox, idempotently (Phase 1), **from the beginning** through the Phase 1

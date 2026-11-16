@@ -102,6 +102,46 @@
     "request": "GET /api/v1/admin/orders/dispatch/queue?stage=NOT_A_STAGE  (as admin)",
     "status": 400
   },
+  "400-finance-expense-without-a-key": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Send an Idempotency-Key header of 1 to 128 characters: it makes a double click the same write",
+      "instance": "/api/v1/admin/finance/expenses",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/idempotency-key-required"
+    },
+    "request": "POST /api/v1/admin/finance/expenses  (as admin)",
+    "status": 400
+  },
+  "400-finance-month-that-is-not-a-month": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "A month is written year-month, for example 2026-10",
+      "instance": "/api/v1/admin/finance/reports/profit/october",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/invalid-month"
+    },
+    "request": "GET /api/v1/admin/finance/reports/profit/october  (as admin)",
+    "status": 400
+  },
   "400-malformed-uuid-path": {
     "contentType": "application/problem+json",
     "problem": {
@@ -294,6 +334,25 @@
     "request": "GET /api/v1/products/contact-info",
     "status": 401
   },
+  "401-finance-report-without-a-token": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authentication is required. Send a Bearer token in the Authorization header.",
+      "instance": "/api/v1/admin/finance/reports/profit/2026-10",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 401,
+      "title": "Unauthorized",
+      "type": "https://oriah.dev/problems/unauthorized"
+    },
+    "request": "GET /api/v1/admin/finance/reports/profit/2026-10",
+    "status": 401
+  },
   "401-inventory-read-anonymous-at-edge": {
     "contentType": "application/problem+json",
     "problem": {
@@ -406,6 +465,25 @@
       "type": "https://oriah.dev/problems/forbidden"
     },
     "request": "GET /api/v1/admin/orders/dispatch/queue  (as user)",
+    "status": 403
+  },
+  "403-finance-status-as-a-shopper": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/finance/status",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/finance/status  (as user)",
     "status": 403
   },
   "403-pack-as-a-shopper": {
@@ -638,6 +716,46 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/admin/orders/<uuid>/delivery-waiver  (as admin)",
+    "status": 404
+  },
+  "404-finance-expense-unknown": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "There is no expense <uuid>",
+      "instance": "/api/v1/admin/finance/expenses/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/expense-not-found"
+    },
+    "request": "GET /api/v1/admin/finance/expenses/<uuid>  (as admin)",
+    "status": 404
+  },
+  "404-finance-tax-entry-unknown": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "There is no tax entry <uuid>",
+      "instance": "/api/v1/admin/finance/tax-entries/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/tax-entry-not-found"
+    },
+    "request": "GET /api/v1/admin/finance/tax-entries/<uuid>  (as admin)",
     "status": 404
   },
   "404-pack-an-unknown-order": {
