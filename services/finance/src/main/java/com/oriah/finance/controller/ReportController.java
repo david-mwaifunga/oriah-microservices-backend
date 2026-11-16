@@ -54,18 +54,21 @@ public class ReportController {
         this.idempotency = idempotency;
     }
 
+    @OkResponse
     @GetMapping("/profit")
     @Operation(operationId = "profitReportRange", summary = "Profit reports for a range of months (at most 24)")
     public List<ProfitReportResponse> range(@RequestParam String from, @RequestParam String to, @RequestParam(required = false) String asOf) {
         return reports.range(from, to, asOf);
     }
 
+    @OkResponse
     @GetMapping("/profit/{month}")
     @Operation(operationId = "profitReport", summary = "One month's profit report, as finance knew it at asOf (default now)")
     public ProfitReportResponse month(@PathVariable String month, @RequestParam(required = false) String asOf) {
         return reports.month(month, asOf);
     }
 
+    @OkResponse
     @GetMapping("/profit/{month}/products")
     @Operation(operationId = "profitReportByProduct", summary = "Gross profit by product for a month: the products add up exactly to the shop's gross profit")
     public ProductReportResponse products(@PathVariable String month, @RequestParam(required = false) String asOf, @RequestParam(defaultValue = "0") int page,
@@ -73,6 +76,7 @@ public class ReportController {
         return reports.products(month, asOf, page, size);
     }
 
+    @OkResponse
     @GetMapping("/profit/{month}/entries")
     @Operation(operationId = "profitReportEntries", summary = "The ledger rows behind a month's figures, by report line, product, heading or order; changedSinceIssue lists what changed after the month was reported")
     public EntryPage entries(@PathVariable String month, @RequestParam(required = false) String line, @RequestParam(required = false) String product, @RequestParam(required = false) String category,
@@ -95,12 +99,14 @@ public class ReportController {
         return ResponseEntity.status(HttpStatus.CREATED).location(URI.create("/api/v1/admin/finance/reports/profit/" + month + "/issues")).body(done.body());
     }
 
+    @OkResponse
     @GetMapping("/profit/{month}/issues")
     @Operation(operationId = "listProfitReportIssues", summary = "Every time a month was reported")
     public List<IssueSummary> issues(@PathVariable String month) {
         return issues.issues(month);
     }
 
+    @OkResponse
     @GetMapping("/estimated-stock")
     @Operation(operationId = "estimatedStock", summary = "The standing list of consignment lines whose cost is an estimate (day-one stock)")
     public List<ProfitReportResponse.EstimatedLine> estimatedStock() {

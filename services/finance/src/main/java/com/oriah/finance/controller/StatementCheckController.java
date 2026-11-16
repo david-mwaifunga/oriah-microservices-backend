@@ -57,12 +57,14 @@ public class StatementCheckController {
         return done.replay() ? ResponseEntity.ok(done.body()) : ResponseEntity.status(HttpStatus.CREATED).location(URI.create(BASE + "?month=" + request.month())).body(done.body());
     }
 
+    @OkResponse
     @GetMapping("/statement-checks")
     @Operation(operationId = "listStatementChecks", summary = "Every statement entry for a month, oldest first")
     public List<StatementCheckResponse> list(@RequestParam String month) {
         return checks.list(month);
     }
 
+    @OkResponse
     @GetMapping("/statement-checks/latest")
     @Operation(operationId = "latestStatementChecks", summary = "The latest statement entry for each provider for a month")
     public List<StatementCheckResponse> latest(@RequestParam String month) {

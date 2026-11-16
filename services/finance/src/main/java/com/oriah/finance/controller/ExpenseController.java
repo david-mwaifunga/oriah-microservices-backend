@@ -66,6 +66,7 @@ public class ExpenseController {
         return answer(done);
     }
 
+    @OkResponse
     @GetMapping("/expenses")
     @Operation(operationId = "listExpenses", summary = "Expenses of a month, newest first: typed in and posted, each saying where it came from")
     public ExpensePage list(@RequestParam(required = false) String month, @RequestParam(required = false) String category, @RequestParam(required = false) String source,
@@ -74,6 +75,7 @@ public class ExpenseController {
     }
 
     @NotFoundResponse
+    @OkResponse
     @GetMapping("/expenses/{id}")
     @Operation(operationId = "getExpense", summary = "One expense")
     public ExpenseResponse get(@PathVariable UUID id) {
@@ -102,6 +104,7 @@ public class ExpenseController {
         return answer(idempotency.run(actor, key, "POST " + BASE + "/" + id + "/correction", request, ExpenseResponse.class, () -> expenses.correct(actor, id, request)));
     }
 
+    @OkResponse
     @GetMapping("/expense-categories")
     @Operation(operationId = "listExpenseCategories", summary = "The headings an expense is entered under, and what each needs")
     public List<ExpenseCategoryResponse> categories() {

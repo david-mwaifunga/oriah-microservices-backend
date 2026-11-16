@@ -48,12 +48,14 @@ public class OperationsController {
         this.idempotency = idempotency;
     }
 
+    @OkResponse
     @GetMapping("/status")
     @Operation(operationId = "financeStatus", summary = "Where each producer's catch-up stands and how many errors and warnings are open")
     public StatusResponse status() {
         return operations.status();
     }
 
+    @OkResponse
     @GetMapping("/anomalies")
     @Operation(operationId = "listAnomalies", summary = "What does not add up: the open ones (default) or all")
     public List<AnomalyResponse> anomalies(@RequestParam(required = false) String status) {

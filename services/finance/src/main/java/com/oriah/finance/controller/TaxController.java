@@ -60,6 +60,7 @@ public class TaxController {
         return answer(idempotency.run(actor, key, "POST " + BASE, request, TaxEntryResponse.class, () -> taxes.add(actor, request)));
     }
 
+    @OkResponse
     @GetMapping("/tax-entries")
     @Operation(operationId = "listTaxEntries", summary = "Tax entries, newest first, optionally for one month")
     public List<TaxEntryResponse> list(@RequestParam(required = false) String month) {
@@ -67,6 +68,7 @@ public class TaxController {
     }
 
     @NotFoundResponse
+    @OkResponse
     @GetMapping("/tax-entries/{id}")
     @Operation(operationId = "getTaxEntry", summary = "One tax entry")
     public TaxEntryResponse get(@PathVariable UUID id) {
@@ -95,6 +97,7 @@ public class TaxController {
         return answer(idempotency.run(actor, key, "POST " + BASE + "/" + id + "/correction", request, TaxEntryResponse.class, () -> taxes.correct(actor, id, request)));
     }
 
+    @OkResponse
     @GetMapping("/tax-types")
     @Operation(operationId = "listTaxTypes", summary = "The taxes that can be entered here (turnover tax; customs charges are refused)")
     public List<TaxTypeResponse> types() {

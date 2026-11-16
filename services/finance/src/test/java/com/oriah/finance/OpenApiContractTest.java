@@ -117,4 +117,23 @@ class OpenApiContractTest {
         assertThat(operations.get("POST " + base + "/expenses/{id}/reversal").get("responses").has("404")).as("reversing an expense that is not there").isTrue();
         assertThat(operations.get("GET " + base + "/expenses/{id}").get("responses").has("404")).as("reading an expense that is not there").isTrue();
     }
+
+    @Test
+    @DisplayName("every finance call documents what it answers when it works: a 2xx with the shape of its body (documenting only the refusals would leave the client with no type for the answer)")
+    void everyCallDocumentsItsAnswer() throws Exception {
+        List<String> silent = new ArrayList<>();
+        for (Map.Entry<String, JsonNode> op : operations().entrySet()) {
+            boolean answered = false;
+            for (Map.Entry<String, JsonNode> response : op.getValue().path("responses").properties()) {
+                if (response.getKey().startsWith("2") && response.getValue().toString().contains("\"schema\"")) {
+                    answered = true;
+                }
+            }
+            if (!answered) {
+                silent.add(op.getKey());
+            }
+        }
+
+        assertThat(silent).as("calls with no documented success body").isEmpty();
+    }
 }

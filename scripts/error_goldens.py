@@ -153,6 +153,15 @@ CASES = [
      {"kind": "LIVE_PHONE", "caller": {"name": "Golden Caller"}, "lines": [{"variantId": MISSING, "quantity": 1}], "delivery": {"mode": "PICKUP"}}),
     ("403-record-as-a-shopper", "POST", "/api/v1/admin/orders/recorded", "user", {}),
     ("403-recorded-list-as-a-shopper", "GET", "/api/v1/admin/orders/recorded", "user", None),
+    # Phase 10 (finance): an expense and a tax entry nobody typed are 404; a month that is not a month, and an expense with no Idempotency-Key, are refused before anything is read or
+    # written; a shopper holds no FINANCE_ADMIN and no token is no door at all. "admin" (maya, OWNER) holds FINANCE_ADMIN.
+    ("404-finance-expense-unknown", "GET", "/api/v1/admin/finance/expenses/" + MISSING, "admin", None),
+    ("404-finance-tax-entry-unknown", "GET", "/api/v1/admin/finance/tax-entries/" + MISSING, "admin", None),
+    ("400-finance-month-that-is-not-a-month", "GET", "/api/v1/admin/finance/reports/profit/october", "admin", None),
+    ("400-finance-expense-without-a-key", "POST", "/api/v1/admin/finance/expenses", "admin",
+     {"category": "RENT_UTILITIES", "amount": 1.00, "expenseDate": "2026-10-15", "description": "golden rent"}),
+    ("403-finance-status-as-a-shopper", "GET", "/api/v1/admin/finance/status", "user", None),
+    ("401-finance-report-without-a-token", "GET", "/api/v1/admin/finance/reports/profit/2026-10", None, None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

@@ -3725,25 +3725,37 @@ $finStatus = Wait-Until { $s = Invoke-Api GET "$finBase/status" $mayaH $null; if
 Require ($null -ne $finStatus) "finance's catch-up had not finished 4 minutes after the stack started: $((Invoke-Api GET "$finBase/status" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)"
 $producerNames = @(@($finStatus.Json.producers) | ForEach-Object { "$($_.producer)" } | Sort-Object)
 Require (($producerNames -join ",") -ceq "catalog,inventory,order,payment,procurement") "finance reads $($producerNames -join ',') but should read catalog, inventory, order, payment and procurement"
-Require ([int]$finStatus.Json.openErrors -eq 0) "finance has $($finStatus.Json.openErrors) open error(s) after its catch-up: $((Invoke-Api GET "$finBase/anomalies?status=OPEN" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)"
+# A stack that has lived through Phase 0 to 6 still holds sales announced in the first (version 1) form, which names no payment confirmation: finance sets each aside and says so as an open
+# error (legacy-order-paid-v1). Those are the only errors a healthy catch-up may leave; anything else is a real fault.
+$finOpen = Invoke-Api GET "$finBase/anomalies?status=OPEN" $mayaH $null
+Assert-Reply $finOpen "the open anomalies" 200
+$finOther = @(@($finOpen.Json) | Where-Object { ("$($_.severity)" -ceq "ERROR") -and ("$($_.code)" -cne "legacy-order-paid-v1") })
+Require ($finOther.Count -eq 0) "finance has $($finOther.Count) open error(s) beside the set-aside version-1 sales: $($finOther | ConvertTo-Json -Compress -Depth 5)"
 Require (("$($finStatus.Json | ConvertTo-Json -Compress -Depth 5)") -cnotmatch "amount") "the status carries an amount: it is counts and ids only"
 
 # --- (c) the phone sale of step 20h appears in the books line by line: revenue less discount is what the caller paid, and its stock cost is booked --------
+# The money rows carry the order; a stock cost row carries the PRODUCT (a cost belongs to a piece, and inventory names the product, not the order), so the cost is looked for
+# under the sale ring's product, written down at about the moment the sale was.
 $sums = Wait-Until {
     $e = Invoke-Api GET "$finBase/reports/profit/$finMonth/entries?orderId=$p9AId&size=100" $mayaH $null
     if ($e.Status -ne 200) { return $null }
-    $rows = @($e.Json.items)
-    $rev = [decimal]0; $disc = [decimal]0; $cogs = [decimal]0
-    foreach ($row in $rows) {
-        if ("$($row.account)" -ceq "REVENUE_GOODS") { $rev += [decimal]$row.amount }
+    $rev = [decimal]0; $disc = [decimal]0; $at = $null
+    foreach ($row in @($e.Json.items)) {
+        if ("$($row.account)" -ceq "REVENUE_GOODS") { $rev += [decimal]$row.amount; $at = ConvertTo-UtcInstant $row.recordedAt }
         if ("$($row.account)" -ceq "DISCOUNTS") { $disc += [decimal]$row.amount }
-        if ("$($row.account)" -ceq "COGS_GOODS") { $cogs += [decimal]$row.amount }
     }
-    if (($rev -gt 0) -and ($cogs -gt 0)) { @{ Revenue = $rev; Discount = $disc; Cogs = $cogs } } else { $null }
+    if ($rev -le 0) { return $null }
+    $c = Invoke-Api GET "$finBase/reports/profit/$finMonth/entries?product=$saleProductId&size=200" $mayaH $null
+    if ($c.Status -ne 200) { return $null }
+    $cogs = [decimal]0
+    foreach ($row in @($c.Json.items)) {
+        if (("$($row.account)" -ceq "COGS_GOODS") -and ([decimal]$row.amount -gt 0) -and ([math]::Abs(((ConvertTo-UtcInstant $row.recordedAt) - $at).TotalSeconds) -le 120)) { $cogs += [decimal]$row.amount }
+    }
+    if ($cogs -gt 0) { @{ Revenue = $rev; Discount = $disc; Cogs = $cogs } } else { $null }
 } 180 3
-Require ($null -ne $sums) "finance has no revenue and cost rows for the phone order $p9AId in $finMonth after 3 minutes"
+Require ($null -ne $sums) "finance has no revenue row for the phone order $p9AId, or no stock cost for its ring, in $finMonth after 3 minutes"
 Require (($sums.Revenue - $sums.Discount) -eq $p9Total) "the phone sale paid K$p9Total but the books show goods K$($sums.Revenue) less discount K$($sums.Discount)"
-Write-Host "    the catch-up finished (5 producers, no open error); the phone sale's books: goods K$($sums.Revenue) less discount K$($sums.Discount) = the K$p9Total the caller paid, stock cost K$($sums.Cogs) booked"
+Write-Host "    the catch-up finished (5 producers; no open error but the set-aside pre-Phase-7 sales); the phone sale's books: goods K$($sums.Revenue) less discount K$($sums.Discount) = the K$p9Total the caller paid; the ring's stock cost booked beside it (K$($sums.Cogs) in those two minutes)"
 
 # --- (d) the report of the month shows it, and says whether it can be relied on --------------------------------------------------------------------------
 $finReport = Invoke-Api GET "$finBase/reports/profit/$finMonth" $mayaH $null
