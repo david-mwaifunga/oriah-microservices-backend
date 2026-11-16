@@ -99,7 +99,7 @@ class OrderEventBindingTest {
     @DisplayName("oriah.order is read through the Inbox, so the module -- not the binder -- retries and dead-letters it")
     void readThroughTheInbox() {
         assertThat(events.inbox().enabled()).isTrue();
-        assertThat(events.inbox().topics()).containsExactly("oriah.order");
+        assertThat(events.inbox().topics()).containsExactly("oriah.order", "oriah.payment");
 
         BindingProperties binding = bindings.getBindingProperties(BINDING);
         assertThat(deadLetters.retryAndDlqInBinding(binding.getDestination(), binding.getGroup()))

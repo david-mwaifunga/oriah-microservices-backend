@@ -28,8 +28,9 @@ import org.springframework.test.context.TestPropertySource;
 @TestPropertySource(properties = {
         "spring.cloud.config.enabled=false",
         "eureka.client.enabled=false",
-        "spring.cloud.function.definition=orderEvents",
-        "spring.cloud.stream.bindings.orderEvents-in-0.destination=oriah.order"
+        "spring.cloud.function.definition=orderEvents;paymentEvents",
+        "spring.cloud.stream.bindings.orderEvents-in-0.destination=oriah.order",
+        "spring.cloud.stream.bindings.paymentEvents-in-0.destination=oriah.payment"
 })
 public @interface ServiceTest {
 }

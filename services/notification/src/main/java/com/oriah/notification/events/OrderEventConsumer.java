@@ -17,6 +17,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.events.Inbox;
 import com.oriah.events.InboxConsumer;
+import com.oriah.notification.alerts.ConfirmationWatch;
 import com.oriah.notification.alerts.StaffAlerts;
 import com.oriah.notification.config.NotificationSettings;
 import com.oriah.notification.model.MessageKind;
@@ -76,7 +77,8 @@ public class OrderEventConsumer {
      *   <li>{@code order.expired}: an order's hold was let go. It reads differently when the customer had told us they paid.
      *   <li>{@code order.payment_submitted} is a FACT for staff, not a snapshot of the order: a shopper says they have paid. It raises the alert
      *       "a customer says they have paid" ({@link StaffAlerts#claimReceived}); nothing is written for the customer.
-     *   <li>{@code order.payment_unsettled} (money that could not settle a sale) is declared and ignored: marked applied, nothing written.
+     *   <li>{@code order.payment_unsettled} is a FACT for staff too: recorded money could not pay the sale and is kept for the customer. It is
+     *       an answer for that payment ({@link ConfirmationWatch#unsettled}); nothing is written for the customer.
      * </ul>
      *
      * A type nobody declared (a refund, say) is refused on its first delivery so that a new one is noticed. Declare a new type HERE before order
@@ -91,7 +93,7 @@ public class OrderEventConsumer {
             .handles(ORDER, "order.cancelled", 1)
             .handles(ORDER, "order.expired", 1)
             .handles(ORDER, "order.payment_submitted", 1)
-            .ignores("order.payment_unsettled");
+            .handles(ORDER, "order.payment_unsettled", 1);
 
     /** The steps of a dispatch. One keyed long after it happened is not announced: the customer already has the parcel. */
     private static final Set<String> DISPATCH_STEPS = Set.of("order.fulfilled", "order.shipped", "order.delivered");
@@ -99,8 +101,8 @@ public class OrderEventConsumer {
 
     @Bean
     public Consumer<Message<byte[]>> orderEvents(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts,
-                                                 NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
-        return new Handler(inbox, repository, orderRefs, alerts, settings, clock, objectMapper);
+                                                 ConfirmationWatch watch, NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
+        return new Handler(inbox, repository, orderRefs, alerts, watch, settings, clock, objectMapper);
     }
 
     static class Handler implements Consumer<Message<byte[]>> {
@@ -108,16 +110,18 @@ public class OrderEventConsumer {
         private final NotificationLogRepository repository;
         private final OrderRefs orderRefs;
         private final StaffAlerts alerts;
+        private final ConfirmationWatch watch;
         private final NotificationSettings settings;
         private final Clock clock;
         private final ObjectMapper objectMapper;
 
-        Handler(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts, NotificationSettings settings,
-                Clock clock, ObjectMapper objectMapper) {
+        Handler(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts, ConfirmationWatch watch,
+                NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
             this.inbox = inbox;
             this.repository = repository;
             this.orderRefs = orderRefs;
             this.alerts = alerts;
+            this.watch = watch;
             this.settings = settings;
             this.clock = clock;
             this.objectMapper = objectMapper;
@@ -136,6 +140,10 @@ public class OrderEventConsumer {
             if ("order.payment_submitted".equals(type)) {
                 // Branch FIRST: a claim is a fact for staff with a shape of its own, never read as a snapshot of the order.
                 claimed(message, facts);
+                return;
+            }
+            if ("order.payment_unsettled".equals(type)) {
+                unsettled(message, facts);
                 return;
             }
             OrderEventPayload payload = read(message.getPayload(), OrderEventPayload.class);
@@ -166,6 +174,10 @@ public class OrderEventConsumer {
             };
             if (ended != null) {
                 alerts.resolve(StaffAlerts.Kind.PAYMENT_TO_CONFIRM, payload.orderId().toString(), ended, now);
+            }
+            if (paid && paidWith.confirmationId() != null) {
+                // The answer to "did this money pay its sale?", for every order.paid that names its confirmation.
+                watch.paid(paidWith.confirmationId(), payload.orderId(), facts.recordedAt(), now);
             }
 
             if (Boolean.TRUE.equals(payload.republished())) {
@@ -212,6 +224,23 @@ public class OrderEventConsumer {
             }
             alerts.claimReceived(claim.orderId(), claim.method(), claim.holdExpiresAt(), facts.recordedAt(), clock.instant());
             log.info("order.payment_submitted for order {} noted: staff are told a customer says they have paid", claim.orderId());
+        }
+
+        /**
+         * {@code order.payment_unsettled}: recorded money could not pay the sale. Only ids and the reason code are read. An order notification
+         * has never heard of is not refused: the fact is about the payment.
+         */
+        private void unsettled(Message<byte[]> message, EnvelopeFacts facts) {
+            UnsettledFact fact = read(message.getPayload(), UnsettledFact.class);
+            if (fact.orderId() == null || !fact.orderId().equals(facts.aggregateId())) {
+                throw new IllegalArgumentException("unsettled money names order " + fact.orderId() + " but arrived in an envelope for order "
+                        + facts.aggregateId());
+            }
+            if (fact.confirmationId() == null) {
+                throw new IllegalArgumentException("unsettled money for order " + fact.orderId() + " names no confirmation");
+            }
+            watch.unsettled(fact.confirmationId(), fact.orderId(), fact.reason(), facts.recordedAt(), clock.instant());
+            log.info("order.payment_unsettled for order {} noted", fact.orderId());
         }
 
         /**
@@ -293,6 +322,11 @@ public class OrderEventConsumer {
     /** What a payment claim says that an alert uses. The claim id and the customer's reference are deliberately not declared. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     record ClaimFact(java.util.UUID orderId, String method, Instant submittedAt, Instant holdExpiresAt) {
+    }
+
+    /** What "money could not pay the sale" says that an alert uses: which payment, which order, and a reason CODE. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record UnsettledFact(java.util.UUID confirmationId, java.util.UUID orderId, String reason) {
     }
 
     /** What order.paid's second version adds that a message uses; absent (null) in the first version. Nothing else of the payment is read. */

@@ -70,6 +70,8 @@ class PaymentToConfirmAlertTest {
     @Autowired
     private StaffAlerts alerts;
     @Autowired
+    private ConfirmationWatch watch;
+    @Autowired
     private MessageStore store;
     @Autowired
     private ContactBook contacts;
@@ -108,7 +110,7 @@ class PaymentToConfirmAlertTest {
     }
 
     private MessageDispatcher dispatcher(EmailSetup setup, StaffAlerts staffAlerts) {
-        return new MessageDispatcher(store, contacts, orderRefs, health, staffAlerts, transport, setup, settings, clock);
+        return new MessageDispatcher(store, contacts, orderRefs, health, staffAlerts, watch, transport, setup, settings, clock);
     }
 
     private void claim(UUID orderId) {

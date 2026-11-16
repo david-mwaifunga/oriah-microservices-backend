@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.oriah.notification.alerts.ConfirmationWatch;
 import com.oriah.notification.alerts.StaffAlerts;
 import com.oriah.notification.config.EmailSetup;
 import com.oriah.notification.config.NotificationSettings;
@@ -75,6 +76,7 @@ public class MessageDispatcher {
     private final OrderRefs orderRefs;
     private final DispatchHealth health;
     private final StaffAlerts alerts;
+    private final ConfirmationWatch watch;
     private final MessageTransport transport;
     private final EmailSetup setup;
     private final NotificationSettings settings;
@@ -88,12 +90,13 @@ public class MessageDispatcher {
     }
 
     public MessageDispatcher(MessageStore store, ContactBook contacts, OrderRefs orderRefs, DispatchHealth health, StaffAlerts alerts,
-                             MessageTransport transport, EmailSetup setup, NotificationSettings settings, Clock clock) {
+                             ConfirmationWatch watch, MessageTransport transport, EmailSetup setup, NotificationSettings settings, Clock clock) {
         this.store = store;
         this.contacts = contacts;
         this.orderRefs = orderRefs;
         this.health = health;
         this.alerts = alerts;
+        this.watch = watch;
         this.transport = transport;
         this.setup = setup;
         this.settings = settings;
@@ -106,7 +109,7 @@ public class MessageDispatcher {
         NotificationSettings.Send send = settings.send();
         step("writing down what was already sent", this::recordWhatWasAccepted);
         // The alert clock first: a reminder written now is sent in this same pass, and an alert that just closed is not emailed.
-        step("reminding of, closing and re-telling alerts", () -> alerts.clock(now));
+        step("reminding of, closing and re-telling alerts", () -> watch.sayLastNotes(alerts.clock(now), now));
         step("ending the messages whose time has passed", () -> store.sweep(now, send.lease()));
         handedOverThisPass = 0;
         step("sending the messages that wait", () -> sendWhatWaits(now));
@@ -297,8 +300,21 @@ public class MessageDispatcher {
             subject = shortNote.subject();
             body = shortNote.body();
         }
-        // An alert to a shop mailbox is its stored words and nothing else: no link, no foot.
-        return new Email(row.id(), send.address(), subject, row.recipientKind() == RecipientKind.STAFF ? body : body + foot(row, send.shortForm()));
+        if (row.recipientKind() == RecipientKind.STAFF) {
+            // An alert to a shop mailbox is its stored words: no link, no foot. An alert that says the system needs attention ends with who
+            // to turn to. That line is the owner's to change at any time, so it is added here and never stored.
+            return new Email(row.id(), send.address(), subject, needsTheSupportLine(row) ? body + " " + supportLine() : body);
+        }
+        return new Email(row.id(), send.address(), subject, body + foot(row, send.shortForm()));
+    }
+
+    private static boolean needsTheSupportLine(Due row) {
+        return ("alert.settlement_stuck".equals(row.eventType()) && !"SORTED".equals(row.alertNotice()))
+                || "alert.below_cost_check_down".equals(row.eventType());
+    }
+
+    private String supportLine() {
+        return setup.supportLine() == null || setup.supportLine().isBlank() ? MessageTexts.NOBODY_NAMED_FOR_SUPPORT : setup.supportLine();
     }
 
     private String foot(Due row, boolean shortForm) {

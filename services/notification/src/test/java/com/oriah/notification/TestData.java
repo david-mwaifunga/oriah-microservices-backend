@@ -19,6 +19,7 @@ public final class TestData {
         jdbc.update("DELETE FROM notification_log");
         jdbc.update("DELETE FROM staff_alert");
         jdbc.update("DELETE FROM order_ref");
+        jdbc.update("DELETE FROM confirmation_watch");
         jdbc.update("DELETE FROM recipient_contact");
         jdbc.update("UPDATE dispatch_state SET server_failing_since = NULL, server_failures = 0, quiet_until = NULL");
     }

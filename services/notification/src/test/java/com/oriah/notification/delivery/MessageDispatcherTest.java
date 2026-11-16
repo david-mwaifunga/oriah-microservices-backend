@@ -56,6 +56,8 @@ class MessageDispatcherTest {
     @Autowired
     private com.oriah.notification.alerts.StaffAlerts alerts;
     @Autowired
+    private com.oriah.notification.alerts.ConfirmationWatch watch;
+    @Autowired
     private NotificationSettings settings;
     @Autowired
     private JdbcTemplate jdbc;
@@ -84,7 +86,7 @@ class MessageDispatcherTest {
     }
 
     private MessageDispatcher dispatcher(EmailSetup setup, MessageStore store) {
-        return new MessageDispatcher(store, contacts, orderRefs, health, alerts, transport, setup, settings, clock);
+        return new MessageDispatcher(store, contacts, orderRefs, health, alerts, watch, transport, setup, settings, clock);
     }
 
     /** A customer's message waiting to be emailed, as the consumer writes it: due now, worth sending for six hours. */

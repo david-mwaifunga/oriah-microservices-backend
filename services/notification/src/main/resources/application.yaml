@@ -23,7 +23,8 @@ spring:
           issuer-uri: http://localhost:7080/realms/oriah
   cloud:
     function:
-      definition: orderEvents
+      # Two consumers: order's events (messages for customers, and the payment claim), and payment's (money recorded and what became of it).
+      definition: orderEvents;paymentEvents
     stream:
       bindings:
         orderEvents-in-0:
@@ -69,6 +70,21 @@ spring:
             retryable-exceptions:
               java.lang.IllegalArgumentException: false
               com.fasterxml.jackson.core.JsonProcessingException: false
+        # Payment's events (Phase 11): staff-confirmed money, re-announced by payment until order answers; a second announcement with
+        # no answer is "money recorded but the sale has not completed". Same rules as orderEvents-in-0, written out in full on
+        # purpose: these are NOTIFICATION's own two non-retryable classes (it reads JSON with Jackson 2), never another service's list.
+        paymentEvents-in-0:
+          destination: oriah.payment
+          group: notification
+          consumer:
+            use-native-decoding: false
+            max-attempts: 3
+            back-off-initial-interval: 1000
+            back-off-multiplier: 2.0
+            back-off-max-interval: 10000
+            retryable-exceptions:
+              java.lang.IllegalArgumentException: false
+              com.fasterxml.jackson.core.JsonProcessingException: false
       kafka:
         binder:
           brokers: localhost:9092
@@ -100,6 +116,8 @@ spring:
               #    there, unsent.
               enable-dlq: true
               dlq-name: oriah.order.dlq.notification
+              # Written out (it is the binder's default for a new group): read from the beginning.
+              startOffset: earliest
               configuration:
                 # Kafka takes the partition away if the next poll is more than
                 # max.poll.interval.ms (5 min) away, and the event in hand then
@@ -112,6 +130,16 @@ spring:
                 # the 10 s pause after it -- about 65 s in all. It also
                 # commits each event's offset as soon as it is done.
                 # OrderEventBindingTest adds it up.
+                max.poll.records: 1
+          paymentEvents-in-0:
+            consumer:
+              enable-dlq: true
+              dlq-name: oriah.payment.dlq.notification
+              # A NEW consumer group. It reads whatever the topic still holds, from the beginning, so that an answer recorded
+              # before its alarm is never missed. That history cannot raise an old alarm: every fact is judged by the time its
+              # producer recorded it, and one older than oriah.notification.alerts.max-fact-age emails nobody.
+              startOffset: earliest
+              configuration:
                 max.poll.records: 1
 
 # The event log convention (shared/oriah-events). Notification only receives:
@@ -127,7 +155,7 @@ oriah.events.inbox.enabled: true
 # keep the binder's own, which drops a message when its dead-letter publish
 # fails. The service refuses to start if a topic listed here is not read by
 # exactly one input binding, so a typo cannot leave oriah.order without it.
-oriah.events.inbox.topics: oriah.order
+oriah.events.inbox.topics: oriah.order,oriah.payment
 
 server:
   port: 8090
@@ -250,6 +278,18 @@ oriah:
       retell-max: 12
       # The mail server failing this long is itself an alert ("emails are not going out"), listed and logged, never emailed.
       down-after: PT30M
+      # The wait before the first "money recorded but the sale has not completed" email, and before any "sorted" email. The alarm
+      # (payment's topic) and the answer (order's topic) travel separately: an answer seconds behind the alarm then mails nobody.
+      settle-delay: PT1M
+      settlement:
+        # Money recorded whose sale has not completed: told again after this long if still open, then this often ...
+        remind-after: PT5H
+        remind-every: P1D
+        # ... and closed by itself after this long, with a last note. A sale can wait that long for a box to be received.
+        close-after: P14D
+      void-after-sale:
+        # "A cancelled payment record paid a sale anyway" stays open this long: no fact ends it, a person puts the books right.
+        open-for: P7D
       payment-to-confirm:
         # Anyone can open an account and say they have paid. At most this many "a customer says they have paid" alerts are emailed
         # in any 24 hours; beyond it they are listed only and ONE email says so. At least 1: there is no "off".

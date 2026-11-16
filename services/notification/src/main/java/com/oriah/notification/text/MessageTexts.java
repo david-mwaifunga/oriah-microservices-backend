@@ -202,6 +202,96 @@ public final class MessageTexts {
                         + "is fixed, alerts may not reach that address by email; they are still on this list.");
     }
 
+    /**
+     * What an alert about recorded money says about it. The amount comes from payment's own announcement (the fact that raised the alert);
+     * it is absent when only order's side of the story has been heard, and then no figure is printed.
+     *
+     * @param receiptNumber the order's receipt number when it is paid and notification has learnt it
+     */
+    public record MoneyWords(UUID orderId, String receiptNumber, BigDecimal gross, String currency, String method) {
+
+        String order() {
+            return OrderName.of(orderId, receiptNumber);
+        }
+
+        /** " of K180.00", or nothing when the amount is not known. */
+        String amount() {
+            return gross == null || currency == null ? "" : " of " + Kwacha.write(gross, currency);
+        }
+
+        /** " by MTN mobile money", or nothing when the method is not known. */
+        String by() {
+            return method == null || method.isBlank() ? "" : " by " + methodWords(method);
+        }
+    }
+
+    /** A3: money was recorded and the sale has not completed. (The support line is added when the email is built.) */
+    public static Text settlementStuck(MoneyWords money) {
+        return new Text("A payment was recorded but the sale has not completed - order " + money.order(),
+                "A payment" + money.amount() + money.by() + " was recorded for order " + money.order() + ", and the order is still not marked "
+                        + "as paid. Please open " + Screens.SETTLEMENTS + ". If it says the sale is waiting for a box, receive that box into "
+                        + "stock and the sale will finish by itself. If it says anything else, the system needs attention.");
+    }
+
+    /** A4: the reminder, after some hours and then daily. */
+    public static Text settlementStillStuck(MoneyWords money) {
+        return new Text("Still not completed - order " + money.order(),
+                "The payment" + money.amount() + money.by() + " for order " + money.order() + " has still not completed the sale. The customer "
+                        + "has paid and cannot be served until this is fixed. Please open " + Screens.SETTLEMENTS + ".");
+    }
+
+    /**
+     * A5: what became of it.
+     *
+     * @param how             PAID, UNSETTLED or VOIDED
+     * @param unsettledReason the code order or payment gave when the money could not pay the sale
+     */
+    public static Text settlementSorted(MoneyWords money, String how, String unsettledReason) {
+        String body = switch (how) {
+            case "PAID" -> "The payment" + money.amount() + " for order " + money.order() + " has now completed the sale. There is nothing "
+                    + "more to do.";
+            case "VOIDED" -> "The payment record" + money.amount() + " for order " + money.order() + " was cancelled by staff. There is "
+                    + "nothing more to do.";
+            default -> "The payment" + money.amount() + " for order " + money.order() + " could not pay the sale ("
+                    + whyUnsettled(unsettledReason) + "). The money is being kept for the customer.";
+        };
+        return new Text("Sorted - order " + money.order(), body);
+    }
+
+    /** A11: the last note, when the alert closes by the clock with no answer ever heard. */
+    public static Text settlementNeverAnswered(MoneyWords money) {
+        return new Text("We have stopped reminding you - order " + money.order(),
+                "We have stopped reminding you about the payment" + money.amount() + money.by() + " for order " + money.order() + ". We never "
+                        + "heard that the sale was completed. Please open " + Screens.SETTLEMENTS + ".");
+    }
+
+    /** A6: a payment record was cancelled, and the sale it paid had already gone through. */
+    public static Text voidAfterSale(MoneyWords money) {
+        return new Text("A cancelled payment record paid a sale anyway - order " + money.order(),
+                "The payment record" + money.amount() + money.by() + " for order " + money.order() + " was cancelled (voided), but the sale had "
+                        + "already gone through, so the order is marked as paid and its pieces are sold. Please check whether this money "
+                        + "really arrived, and put it right with the customer and in your books.");
+    }
+
+    /** Why money could not pay a sale, in words. A code nobody taught this service points at the screen instead of guessing. */
+    static String whyUnsettled(String reason) {
+        if (reason == null) {
+            return "see " + Screens.SETTLEMENTS;
+        }
+        return switch (reason) {
+            case "WRONG_AMOUNT" -> "the amount was not the order's total";
+            case "ORDER_CANCELLED" -> "the order had been cancelled";
+            case "PIECE_SOLD" -> "a piece had already been sold";
+            case "ALREADY_PAID" -> "the order was already paid";
+            case "ORDER_UNKNOWN" -> "no such order was found";
+            case "WRONG_DATE" -> "a paper sale was paid on a different day than it happened";
+            default -> "see " + Screens.SETTLEMENTS;
+        };
+    }
+
+    /** The line added to an alert that says the system needs attention, when the owner has not said who to turn to. */
+    public static final String NOBODY_NAMED_FOR_SUPPORT = "Please contact the person who looks after your system.";
+
     /** A payment method as a person says it. A code nobody taught this service is printed as it is, never guessed at. */
     public static String methodWords(String method) {
         if (method == null || method.isBlank()) {

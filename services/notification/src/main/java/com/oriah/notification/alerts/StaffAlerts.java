@@ -149,9 +149,89 @@ public class StaffAlerts {
 
     /** Ends the open alert about this thing, if there is one. @return whether one was open */
     public boolean resolve(Kind kind, String subjectId, String how, Instant now) {
+        if (kind == Kind.PAYMENT_TO_CONFIRM && !"MONEY_RECORDED".equals(how)) {
+            // A claim alert that stepped aside when money was recorded now gets its real ending (the order was paid, expired, cancelled).
+            jdbc.update("""
+                    UPDATE staff_alert SET resolved_how = ?
+                     WHERE kind = 'PAYMENT_TO_CONFIRM' AND subject_id = ? AND state = 'RESOLVED' AND resolved_how = 'MONEY_RECORDED'""",
+                    how, subjectId);
+        }
         return jdbc.update("""
                 UPDATE staff_alert SET state = 'RESOLVED', resolved_at = ?, resolved_how = ?, remind_at = NULL
                  WHERE kind = ? AND subject_id = ? AND state = 'OPEN'""", Timestamp.from(now), how, kind.name(), subjectId) == 1;
+    }
+
+    /**
+     * An alert as stored.
+     *
+     * @param resolvedHow how it ended; null while open
+     */
+    public record Stored(UUID id, String state, String resolvedHow) {
+
+        public boolean open() {
+            return "OPEN".equals(state);
+        }
+    }
+
+    /** The newest alert about this thing, open or ended; empty when there never was one. */
+    public Optional<Stored> newest(Kind kind, String subjectId) {
+        return jdbc.query("""
+                SELECT id, state, resolved_how FROM staff_alert WHERE kind = ? AND subject_id = ?
+                 ORDER BY raised_at DESC, (state = 'OPEN') DESC LIMIT 1""",
+                (row, n) -> new Stored(row.getObject(1, UUID.class), row.getString(2), row.getString(3)), kind.name(), subjectId).stream().findFirst();
+    }
+
+    /** Gives an alert that closed by the clock its real answer, heard later: it leaves the "never answered" list. */
+    public void relabel(UUID alertId, String how) {
+        jdbc.update("UPDATE staff_alert SET resolved_how = ? WHERE id = ? AND state = 'RESOLVED'", how, alertId);
+    }
+
+    /** Whether this notice of the alert was ever written. */
+    public boolean said(UUID alertId, String notice) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM notification_log WHERE alert_id = ? AND alert_notice = ?)", Boolean.class, alertId, notice));
+    }
+
+    /**
+     * Whether staff may have been told of this alert: some notice of it was at least tried. A send that is in flight right now counts (its
+     * try was counted when the row was taken), so an answer that arrives during the send is still followed by "sorted".
+     */
+    public boolean aNoticeMayHaveGoneOut(UUID alertId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM notification_log
+                                WHERE alert_id = ? AND alert_notice IN ('FIRST', 'AGAIN', 'REMINDER', 'CLOSING') AND attempts > 0)""",
+                Boolean.class, alertId));
+    }
+
+    /**
+     * Opens "a customer says they have paid" again for an order whose recorded money ended held or cancelled, while its hold still runs.
+     * Staff were told of this claim once, so no first email is written again; the list and the reminder (if it has not gone) carry it.
+     */
+    public void reopenClaim(UUID orderId, Instant now) {
+        record Old(UUID id, Instant tellBefore, int remindersSent, boolean limited, boolean hasReminderWords) {
+        }
+        List<Old> newest = jdbc.query("""
+                SELECT id, tell_before, reminders_sent, email_limited, remind_subject IS NOT NULL AS has_words FROM staff_alert
+                 WHERE kind = 'PAYMENT_TO_CONFIRM' AND subject_id = ? AND state = 'RESOLVED' AND resolved_how = 'MONEY_RECORDED'
+                   AND NOT EXISTS (SELECT 1 FROM staff_alert o WHERE o.kind = 'PAYMENT_TO_CONFIRM' AND o.subject_id = ? AND o.state = 'OPEN')
+                 ORDER BY raised_at DESC LIMIT 1""",
+                (row, n) -> new Old(row.getObject("id", UUID.class), instant(row.getTimestamp("tell_before")), row.getInt("reminders_sent"),
+                        row.getBoolean("email_limited"), row.getBoolean("has_words")), orderId.toString(), orderId.toString());
+        if (newest.isEmpty() || newest.getFirst().tellBefore() == null || !now.isBefore(newest.getFirst().tellBefore())) {
+            return;
+        }
+        Old old = newest.getFirst();
+        NotificationSettings.Hold hold = settings.alerts().hold();
+        Instant remindAt = old.remindersSent() > 0 || old.limited() || !old.hasReminderWords() ? null
+                : new HoldRemindTime(hold.remindBefore(), hold.quietFrom(), hold.quietUntil(), settings.zone()).of(old.tellBefore(), now).orElse(null);
+        jdbc.update("""
+                INSERT INTO staff_alert (id, kind, subject_id, order_id, audience, state, summary, detail, raised_at, emailed_at, email_limited,
+                                         tell_before, remind_at, remind_subject, remind_body, reminders_sent, closes_at)
+                SELECT ?, kind, subject_id, order_id, audience, 'OPEN', summary, detail, ?, emailed_at, email_limited, tell_before, ?,
+                       remind_subject, remind_body, reminders_sent, closes_at
+                  FROM staff_alert WHERE id = ?
+                ON CONFLICT (kind, subject_id) WHERE state = 'OPEN' DO NOTHING""", UUID.randomUUID(), Timestamp.from(now), timestamp(remindAt),
+                old.id());
     }
 
     /** A mail server took an email about this alert: from now on staff have been told. */
@@ -252,12 +332,17 @@ public class StaffAlerts {
      * themselves, and open alerts nobody was ever told about. Each alert is handled in a transaction of its own; one that fails is logged by
      * its id and the others go on.
      */
-    public void clock(Instant now) {
+    public List<Closed> clock(Instant now) {
         remind(now);
-        close(now);
+        List<Closed> closed = close(now);
         if (setup.canSend()) {
             tellAgain(now);
         }
+        return closed;
+    }
+
+    /** An alert that closed by the clock: nothing ended it before its time ran out. */
+    public record Closed(UUID id, Kind kind, String subjectId) {
     }
 
     private record Reminder(UUID id, Kind kind, Instant remindAt, Text words, int sent, Instant tellBefore, Instant closesAt) {
@@ -285,19 +370,28 @@ public class StaffAlerts {
         }
     }
 
-    /** When an alert is reminded of again after this reminder: never, for the kinds built so far. */
+    /**
+     * When an alert is reminded of again after this reminder. "Money recorded but the sale has not completed" repeats every
+     * {@code alerts.settlement.remind-every} until it closes; a payment claim is reminded of once.
+     */
     private Instant nextReminder(Reminder reminder) {
-        return null;
+        if (reminder.kind() != Kind.SETTLEMENT_STUCK) {
+            return null;
+        }
+        Instant next = reminder.remindAt().plus(settings.alerts().settlement().remindEvery());
+        return reminder.closesAt() == null || next.isBefore(reminder.closesAt()) ? next : null;
     }
 
-    private void close(Instant now) {
-        List<UUID> closed = jdbc.query("""
+    private List<Closed> close(Instant now) {
+        List<Closed> closed = jdbc.query("""
                 UPDATE staff_alert SET state = 'RESOLVED', resolved_at = ?, resolved_how = 'BY_CLOCK', remind_at = NULL
-                 WHERE state = 'OPEN' AND closes_at <= ? RETURNING id""", (row, n) -> row.getObject(1, UUID.class), Timestamp.from(now),
+                 WHERE state = 'OPEN' AND closes_at <= ? RETURNING id, kind, subject_id""",
+                (row, n) -> new Closed(row.getObject(1, UUID.class), Kind.valueOf(row.getString(2)), row.getString(3)), Timestamp.from(now),
                 Timestamp.from(now));
         if (!closed.isEmpty()) {
             log.info("{} alert(s) closed by themselves: nothing closed them before their time ran out", closed.size());
         }
+        return closed;
     }
 
     private record Untold(UUID id, Kind kind, Text words, Instant tellBefore, int tellings) {

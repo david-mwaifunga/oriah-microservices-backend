@@ -83,10 +83,27 @@ public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNul
      * @param retellAfter an open alert that no mail server ever took is written again this often
      * @param retellMax   and at most this many times
      * @param downAfter   the mail server failing this long is itself an alert ("emails are not going out")
+     * @param settleDelay the wait before the first "money recorded but the sale has not completed" email and before any "sorted" email: an
+     *                    answer that is only seconds behind the alarm then mails nobody
      */
     public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients, @NotNull Duration maxFactAge, @NotNull Duration retellAfter,
-                         @Min(0) int retellMax, @NotNull Duration downAfter, @NotNull @Valid PaymentToConfirm paymentToConfirm,
-                         @NotNull @Valid Hold hold) {
+                         @Min(0) int retellMax, @NotNull Duration downAfter, @NotNull Duration settleDelay,
+                         @NotNull @Valid PaymentToConfirm paymentToConfirm, @NotNull @Valid Hold hold, @NotNull @Valid Settlement settlement,
+                         @NotNull @Valid VoidAfterSale voidAfterSale) {
+    }
+
+    /**
+     * Money recorded whose sale has not completed.
+     *
+     * @param remindAfter how long after the first notice staff are told again if it is still open
+     * @param remindEvery and how often after that
+     * @param closeAfter  when the alert closes by itself, with a last note (a sale can wait this long for a box to be received)
+     */
+    public record Settlement(@NotNull Duration remindAfter, @NotNull Duration remindEvery, @NotNull Duration closeAfter) {
+    }
+
+    /** @param openFor how long "a cancelled payment record paid a sale anyway" stays open: no fact ends it, a person puts the books right */
+    public record VoidAfterSale(@NotNull Duration openFor) {
     }
 
     /** @param maxAlertsEmailedPerDay how many payment-claim alerts are emailed in any 24 hours; beyond it they are listed only */
