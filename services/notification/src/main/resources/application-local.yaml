@@ -11,7 +11,9 @@ spring:
   datasource:
     # The container's database, published by Docker on 127.0.0.1:5440:
     # DataGrip or pgAdmin sees exactly what this service wrote.
-    url: jdbc:postgresql://localhost:5440/notification
+    # logServerErrorDetail=false: the database never quotes the row it refused, so nothing in a refused row (a mailbox, say)
+    # can reach an exception message and, through it, a log line or a dead-letter record.
+    url: jdbc:postgresql://localhost:5440/notification?logServerErrorDetail=false
     username: notification
     password: notification
 

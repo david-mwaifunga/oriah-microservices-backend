@@ -1,6 +1,8 @@
 spring:
   datasource:
-    url: jdbc:postgresql://postgres-notification:5432/notification
+    # logServerErrorDetail=false: the database never quotes the row it refused, so nothing in a refused row (a mailbox, say)
+    # can reach an exception message and, through it, a log line or a dead-letter record.
+    url: jdbc:postgresql://postgres-notification:5432/notification?logServerErrorDetail=false
     username: ${SPRING_DATASOURCE_USERNAME:notification}
     password: ${SPRING_DATASOURCE_PASSWORD:notification}
   config:

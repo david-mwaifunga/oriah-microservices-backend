@@ -19,6 +19,7 @@ import com.oriah.notification.MutableClock;
 import com.oriah.notification.ServiceTest;
 import com.oriah.notification.TestData;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -34,6 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * "delivered". A row for staff or for a caller has no owner and is in nobody's list.
  */
 @ServiceTest
+@org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
 class NotificationMeHttpTest {
 
     private static final Instant T = Instant.parse("2026-11-09T07:00:00Z");
@@ -158,6 +160,41 @@ class NotificationMeHttpTest {
         mvc.perform(get("/api/v1/notifications/me").with(jwt().jwt(j -> j.subject("kc-olive")).authorities(new SimpleGrantedAuthority("ROLE_OWNER"))))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/notifications/me")).andExpect(status().isUnauthorized());
+    }
+
+    // ---- the bell is also how notification learns where to email a customer ------------------------------------------------------------------
+
+    private static RequestPostProcessor shopperWithEmail(String subject, String email, boolean verified) {
+        return jwt().jwt(j -> j.subject(subject).claim("email", email).claim("email_verified", verified).issuedAt(T).expiresAt(T.plusSeconds(1800)))
+                .authorities(new SimpleGrantedAuthority("ROLE_USER"));
+    }
+
+    @Test
+    @DisplayName("reading the bell teaches notification the customer's address, from their own token")
+    void readingTheBellTeachesTheAddress() throws Exception {
+        mvc.perform(get("/api/v1/notifications/me").with(shopperWithEmail("kc-alice", "alice@oriah.local", true))).andExpect(status().isOk());
+
+        assertThat(jdbc.queryForMap("SELECT email, email_verified FROM recipient_contact WHERE keycloak_id = 'kc-alice'"))
+                .containsEntry("email", "alice@oriah.local").containsEntry("email_verified", true);
+    }
+
+    @Test
+    @DisplayName("reading the bell never fails because the address could not be remembered, and no reply or log line carries an address")
+    void readingMyMessagesNeverFailsBecauseTheContactCouldNotBeSaved(org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        shopperRow("kc-alice", "a message", T, "NOT_SENT", "BELL_ONLY", null);
+        jdbc.execute("ALTER TABLE recipient_contact RENAME TO recipient_contact_away");
+        String reply;
+        try {
+            reply = mvc.perform(get("/api/v1/notifications/me").with(shopperWithEmail("kc-alice", "alice.private@oriah.local", true)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.content.length()").value(1))
+                    .andReturn().getResponse().getContentAsString();
+        } finally {
+            jdbc.execute("ALTER TABLE recipient_contact_away RENAME TO recipient_contact");
+        }
+
+        assertThat(reply).doesNotContain("alice.private").doesNotContain("@");
+        assertThat(output.getAll()).doesNotContain("alice.private");
     }
 
     private static RequestPostProcessor shopper(String subject) {

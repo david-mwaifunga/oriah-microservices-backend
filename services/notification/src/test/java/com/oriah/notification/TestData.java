@@ -18,5 +18,6 @@ public final class TestData {
         clock.reset();
         jdbc.update("DELETE FROM notification_log");
         jdbc.update("DELETE FROM order_ref");
+        jdbc.update("DELETE FROM recipient_contact");
     }
 }

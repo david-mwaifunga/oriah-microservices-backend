@@ -13,7 +13,9 @@ public class TestcontainersConfiguration {
     @Bean
     @ServiceConnection
     PostgreSQLContainer postgresContainer() {
-        return new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"));
+        // logServerErrorDetail=false, as on the service's own URLs: the database never quotes the row it refused, so an address in a
+        // refused row cannot reach an exception message, and through it a log line or a dead-letter record.
+        return new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine")).withUrlParam("logServerErrorDetail", "false");
     }
 
     /** The service's clock in every database test: it stands still until a test moves it (see {@link MutableClock}). */

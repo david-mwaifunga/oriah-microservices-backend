@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.oriah.notification.contact.ContactBook;
 import com.oriah.notification.dto.NotificationResponse;
 import com.oriah.notification.model.RecipientKind;
 import com.oriah.notification.repository.NotificationLogRepository;
@@ -41,9 +42,11 @@ import com.oriah.notification.repository.NotificationLogRepository;
 public class NotificationController {
 
     private final NotificationLogRepository repository;
+    private final ContactBook contacts;
 
-    public NotificationController(NotificationLogRepository repository) {
+    public NotificationController(NotificationLogRepository repository, ContactBook contacts) {
         this.repository = repository;
+        this.contacts = contacts;
     }
 
     @Operation(operationId = "mine", summary = "The caller's own messages of every status, newest first",
@@ -59,9 +62,13 @@ public class NotificationController {
         // Newest first, always: the page and its size are the caller's, the order is not. (A sort by a field name would be handed to the
         // database as it is, and the field the storefront knows, deliveredAt, is no longer a column.)
         Pageable newestFirst = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
-        return ResponseEntity.ok(
-                repository.findByKeycloakIdAndRecipientKindOrderByRecordedAtDesc(jwt.getSubject(), RecipientKind.SHOPPER, newestFirst)
-                        .map(NotificationResponse::from)
-        );
+        Page<NotificationResponse> mine = repository
+                .findByKeycloakIdAndRecipientKindOrderByRecordedAtDesc(jwt.getSubject(), RecipientKind.SHOPPER, newestFirst)
+                .map(NotificationResponse::from);
+        // The bell is also how notification learns where to email this customer: their own token says. Noted AFTER the read, in a transaction
+        // of its own, and it never fails: the bell is answered whatever happens to the note. (A write while answering a GET is unusual; it is
+        // one note of the caller's own data, made at most once per new token.)
+        contacts.seen(jwt);
+        return ResponseEntity.ok(mine);
     }
 }
