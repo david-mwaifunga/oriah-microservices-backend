@@ -249,6 +249,21 @@
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "http://localhost:4000/*##http://localhost:3000/*"
       }
+    },
+    {
+      "clientId": "oriah-notification",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${ORIAH_NOTIFICATION_CLIENT_SECRET}",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "implicitFlowEnabled": false,
+      "clientAuthenticatorType": "client-secret",
+      "attributes": {
+        "access.token.lifespan": "300"
+      }
     }
   ],
   "users": [
@@ -257,6 +272,12 @@
       "enabled": true,
       "serviceAccountClientId": "oriah-admin",
       "realmRoles": ["USER", "INVENTORY_ADMIN"]
+    },
+    {
+      "username": "service-account-oriah-notification",
+      "enabled": true,
+      "serviceAccountClientId": "oriah-notification",
+      "realmRoles": ["CATALOG_ADMIN", "COST_VIEWER"]
     }
   ]
 }

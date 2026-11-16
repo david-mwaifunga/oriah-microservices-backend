@@ -540,6 +540,9 @@ services:
       # otherwise store the placeholder TEXT as a working secret; and the
       # go-live step (scripts/keycloak-go-live.ps1) sets the real one.
       ORIAH_ADMIN_CLIENT_SECRET: oriah-admin-secret
+      # The same for notification's own machine client (Phase 11): the dev value, matching notification's
+      # ORIAH_NOTIFICATION_CLIENT_SECRET below. A production compose must refuse to start without it, like the one above.
+      ORIAH_NOTIFICATION_CLIENT_SECRET: oriah-notification-secret
     depends_on:
       postgres-keycloak:
         condition: service_healthy

@@ -44,6 +44,9 @@ $oldSecret = New-Secret "old"
 $adoptSecret = New-Secret "adopt"
 $newSecret = New-Secret "new"
 $rotatedSecret = New-Secret "rot"
+# Notification's own machine client (Phase 11) has a secret of its own, set by the same go-live run.
+$oldNotificationSecret = New-Secret "nold"
+$newNotificationSecret = New-Secret "nnew"
 $tag = [guid]::NewGuid().ToString("N").Substring(0, 6)
 $ownerEmail = "owner-$tag@oriah.test"
 $ownerPassword = "first-" + [guid]::NewGuid().ToString("N")
@@ -52,12 +55,18 @@ $failures = @()
 function Fail($message) { $script:failures += $message; Write-Host "    FAIL: $message" -ForegroundColor Red }
 function Pass($message) { Write-Host "    ok: $message" -ForegroundColor Gray }
 
-function Get-ClientToken($secret) {
+function Get-ClientToken($secret, $clientId = "oriah-admin") {
     try {
         return Invoke-RestMethod -Method POST -Uri "$url/realms/oriah/protocol/openid-connect/token" `
             -ContentType "application/x-www-form-urlencoded" `
-            -Body @{ client_id = "oriah-admin"; client_secret = $secret; grant_type = "client_credentials" }
+            -Body @{ client_id = $clientId; client_secret = $secret; grant_type = "client_credentials" }
     } catch { return $null }
+}
+
+function Get-JwtClaim($jwt, $claim) {
+    $payload = $jwt.Split(".")[1].Replace("-", "+").Replace("_", "/")
+    switch ($payload.Length % 4) { 2 { $payload += "==" } 3 { $payload += "=" } }
+    return ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload)) | ConvertFrom-Json).$claim
 }
 
 function Test-PasswordSignIn($username, $password, $secret) {
@@ -102,9 +111,11 @@ function Get-DirectRoles($userId) {
 
 # Runs the go-live step. -Email "" leaves -OwnerEmail off (a secret-only run).
 function Invoke-GoLive {
-    param([string] $Secret, [string] $Email = $ownerEmail, [string[]] $Switches = @(), [switch] $ExpectRefusal)
+    param([string] $Secret, [string] $Email = $ownerEmail, [string[]] $Switches = @(), [switch] $ExpectRefusal,
+          [string] $NotificationSecret = $newNotificationSecret)
     $env:KC_GO_LIVE_ADMIN_PASSWORD = $bootstrapPassword
     $env:ORIAH_ADMIN_CLIENT_SECRET = $Secret
+    if ($NotificationSecret) { $env:ORIAH_NOTIFICATION_CLIENT_SECRET = $NotificationSecret }
     $env:ORIAH_OWNER_TEMPORARY_PASSWORD = $ownerPassword
     try {
         $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $goLive, "-KeycloakUrl", $url)
@@ -118,7 +129,7 @@ function Invoke-GoLive {
         if ($code -ne 0 -and -not $ExpectRefusal) { Write-Host $output -ForegroundColor DarkYellow }
         return [pscustomobject]@{ Code = $code; Output = $output }
     } finally {
-        Remove-Item Env:\KC_GO_LIVE_ADMIN_PASSWORD, Env:\ORIAH_ADMIN_CLIENT_SECRET, Env:\ORIAH_OWNER_TEMPORARY_PASSWORD -ErrorAction SilentlyContinue
+        Remove-Item Env:\KC_GO_LIVE_ADMIN_PASSWORD, Env:\ORIAH_ADMIN_CLIENT_SECRET, Env:\ORIAH_NOTIFICATION_CLIENT_SECRET, Env:\ORIAH_OWNER_TEMPORARY_PASSWORD -ErrorAction SilentlyContinue
     }
 }
 
@@ -136,6 +147,7 @@ try {
     docker run -d --name $name -p "127.0.0.1:${port}:8080" `
         -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e "KC_BOOTSTRAP_ADMIN_PASSWORD=$bootstrapPassword" `
         -e "ORIAH_ADMIN_CLIENT_SECRET=$oldSecret" `
+        -e "ORIAH_NOTIFICATION_CLIENT_SECRET=$oldNotificationSecret" `
         -v "${realmFile}:/opt/keycloak/data/import/oriah-realm.json:ro" `
         -v "${themes}:/opt/keycloak/themes/oriah:ro" `
         $Image start-dev --import-realm *> $null
@@ -159,6 +171,18 @@ try {
         $roles = (Get-JwtRoles $machine.access_token) -join ","
         if ($roles -ne "INVENTORY_ADMIN,USER") { Fail "machine token roles were [$roles], want [INVENTORY_ADMIN,USER]" } else { Pass "machine token roles [$roles]" }
     }
+    # Notification's machine identity (Phase 11): exactly the two roles the below-cost list asks for, and the username the gateway's
+    # edge wall and any service's second wall would know it by.
+    $notifier = Get-ClientToken $oldNotificationSecret "oriah-notification"
+    if (-not $notifier) { Fail "notification's machine identity could not sign in with the imported secret" }
+    else {
+        $roles = (Get-JwtRoles $notifier.access_token) -join ","
+        if ($roles -ne "CATALOG_ADMIN,COST_VIEWER") { Fail "notification's token roles were [$roles], want [CATALOG_ADMIN,COST_VIEWER]" } else { Pass "notification's token roles [$roles]" }
+        $who = Get-JwtClaim $notifier.access_token "preferred_username"
+        if ($who -ne "service-account-oriah-notification") { Fail "notification's token says preferred_username [$who]" } else { Pass "notification's token names its service account" }
+    }
+    # The literal placeholder text must never be a working secret (it would be, if Keycloak were started without the variable).
+    if (Get-ClientToken '${ORIAH_NOTIFICATION_CLIENT_SECRET}' "oriah-notification") { Fail "the placeholder TEXT works as notification's secret" } else { Pass "the placeholder text is not a secret" }
 
     Write-Host "[3/9] A secret that is short, not JSON-safe or ends in a newline is refused, and nothing changes..." -ForegroundColor Cyan
     # A trailing newline (Get-Content -Raw of an LF-ended file) would be stored
@@ -219,6 +243,15 @@ try {
         $roles = (Get-JwtRoles $rotated.access_token) -join ","
         if ($roles -ne "INVENTORY_ADMIN,USER") { Fail "after rotation the machine roles were [$roles]" } else { Pass "new secret works, machine roles unchanged" }
     }
+    # The same run set notification's secret too.
+    if (Get-ClientToken $oldNotificationSecret "oriah-notification") { Fail "notification's OLD secret still works after the go-live step" } else { Pass "notification's old secret refused" }
+    if (Get-ClientToken "oriah-notification-secret" "oriah-notification") { Fail "the DEV secret works as notification's secret after go-live" }
+    $notifier = Get-ClientToken $newNotificationSecret "oriah-notification"
+    if (-not $notifier) { Fail "notification's NEW secret does not work" }
+    else {
+        $roles = (Get-JwtRoles $notifier.access_token) -join ","
+        if ($roles -ne "CATALOG_ADMIN,COST_VIEWER") { Fail "after go-live notification's roles were [$roles]" } else { Pass "notification's new secret works, its roles unchanged" }
+    }
     $owner = Get-UserByEmail $ownerEmail
     if (-not $owner) { Fail "no owner account for $ownerEmail" }
     else {
@@ -240,6 +273,12 @@ try {
     if ($run.Code -ne 0) { Fail "a secret-only rotation failed" }
     if ((Get-ClientToken $newSecret) -or -not (Get-ClientToken $rotatedSecret)) { Fail "the secret-only run did not rotate the secret" } else { Pass "secret rotated without touching any account" }
     if ((Get-List "/users?max=100").Count -ne $peopleBefore) { Fail "a secret-only run changed the accounts" }
+    # Rotating one client's secret leaves the other client working (that run gave notification the secret it already had).
+    if (-not (Get-ClientToken $newNotificationSecret "oriah-notification")) { Fail "rotating order's secret broke notification's" } else { Pass "notification still signs in after order's secret was rotated" }
+    # And a run with no secret for notification is refused before anything changes.
+    $run = Invoke-GoLive -Secret $rotatedSecret -Email "" -NotificationSecret "" -ExpectRefusal
+    if ($run.Code -eq 0) { Fail "a go-live run with no ORIAH_NOTIFICATION_CLIENT_SECRET was accepted" } else { Pass "a run without notification's secret is refused" }
+    if (-not (Get-ClientToken $rotatedSecret)) { Fail "the refused run changed order's secret" }
 
     Write-Host "[9/9] A mistyped owner email does not create a second OWNER..." -ForegroundColor Cyan
     $typo = "owner-$tag@exmaple.test"

@@ -66,6 +66,7 @@ param(
     [switch] $AdditionalOwner,
     [string] $Realm = "oriah",
     [string] $ClientId = "oriah-admin",
+    [string] $NotificationClientId = "oriah-notification",
     [string] $AdminUser = "admin"
 )
 
@@ -84,6 +85,14 @@ $clientSecret = $env:ORIAH_ADMIN_CLIENT_SECRET
 $ownerPassword = $env:ORIAH_OWNER_TEMPORARY_PASSWORD
 if (-not $adminPassword) { Refuse "KC_GO_LIVE_ADMIN_PASSWORD is not set" }
 if (-not $clientSecret) { Refuse "ORIAH_ADMIN_CLIENT_SECRET is not set" }
+# Notification's own machine client (Phase 11: it asks catalog which pieces are priced below cost). Its secret is set in the same run, so
+# a go-live can never leave it on the development value or on the placeholder text.
+$notificationSecret = $env:ORIAH_NOTIFICATION_CLIENT_SECRET
+if (-not $notificationSecret) { Refuse "ORIAH_NOTIFICATION_CLIENT_SECRET is not set" }
+if ($notificationSecret -cnotmatch '\A[A-Za-z0-9_-]{32,}\z') {
+    Refuse "notification's client secret must be at least 32 characters of A-Z a-z 0-9 _ - and nothing else (got $($notificationSecret.Length) characters)"
+}
+if ($notificationSecret -ceq $clientSecret) { Refuse "the two client secrets must differ: one secret for two identities means a leak of either is a leak of both" }
 # \A and \z, not ^ and $: in .NET, $ also matches before a final newline, which
 # let a secret read from an LF-ended file through with the newline kept.
 if ($clientSecret -cnotmatch '\A[A-Za-z0-9_-]{32,}\z') {
@@ -211,19 +220,30 @@ try {
     #    but resets the service account -- the machine identity lost
     #    INVENTORY_ADMIN and gained default roles, seen in
     #    scripts/keycloak-go-live-test.ps1.
-    $client = Get-AdminList "/clients?clientId=$([uri]::EscapeDataString($ClientId))"
-    if ($client.Count -ne 1) { throw "client '$ClientId' not found in realm '$Realm'" }
-    $full = Invoke-Admin GET "/clients/$($client[0].id)"
-    $full | Add-Member -NotePropertyName secret -NotePropertyValue $clientSecret -Force
-    Invoke-Admin PUT "/clients/$($client[0].id)" $full | Out-Null
-    Write-Host "client secret set on $ClientId" -ForegroundColor Gray
+    #    Both clients are looked up BEFORE either is changed, so a missing client changes nothing.
+    $secrets = @(
+        @{ ClientId = $ClientId; Secret = $clientSecret },
+        @{ ClientId = $NotificationClientId; Secret = $notificationSecret }
+    )
+    $found = @()
+    foreach ($entry in $secrets) {
+        $client = Get-AdminList "/clients?clientId=$([uri]::EscapeDataString($entry.ClientId))"
+        if ($client.Count -ne 1) { throw "client '$($entry.ClientId)' not found in realm '$Realm'" }
+        $found += @{ Id = $client[0].id; ClientId = $entry.ClientId; Secret = $entry.Secret }
+    }
+    foreach ($entry in $found) {
+        $full = Invoke-Admin GET "/clients/$($entry.Id)"
+        $full | Add-Member -NotePropertyName secret -NotePropertyValue $entry.Secret -Force
+        Invoke-Admin PUT "/clients/$($entry.Id)" $full | Out-Null
+        Write-Host "client secret set on $($entry.ClientId)" -ForegroundColor Gray
+    }
 }
 catch {
     $detail = Get-ErrorDetail $_
     Write-Host "FAILED: $($_.Exception.Message) $detail" -ForegroundColor Red
-    Write-Host "The client secret is set last, so it is unchanged unless that was the step that failed. Fix the cause and run again." -ForegroundColor Red
+    Write-Host "The client secrets are set last, so they are unchanged unless that was the step that failed. Fix the cause and run again (it is safe to repeat)." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "DONE: give the new client secret to every service that uses it (order: ORIAH_SERVICE_CLIENT_SECRET)." -ForegroundColor Green
+Write-Host "DONE: give each new client secret to the service that uses it (order: ORIAH_SERVICE_CLIENT_SECRET; notification: ORIAH_NOTIFICATION_CLIENT_SECRET), then restart both." -ForegroundColor Green
 exit 0

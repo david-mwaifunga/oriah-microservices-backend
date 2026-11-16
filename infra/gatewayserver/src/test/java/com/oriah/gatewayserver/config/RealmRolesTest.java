@@ -185,11 +185,50 @@ class RealmRolesTest {
     }
 
     @Test
-    @DisplayName("the committed realm carries no person: its only user is the machine identity")
+    @DisplayName("the committed realm carries no person: its only users are the two machine identities")
     void theCommittedRealmCarriesNoPerson() {
         assertThat(users(realm))
                 .extracting(u -> u.path("username").asText())
-                .containsExactly("service-account-oriah-admin");
+                .containsExactlyInAnyOrder("service-account-oriah-admin", "service-account-oriah-notification");
+        assertThat(users(realm)).allSatisfy(user -> assertThat(user.path("serviceAccountClientId").asText()).isNotBlank());
+    }
+
+    private JsonNode serviceAccountOf(String clientId) {
+        return users(realm).stream().filter(u -> clientId.equals(u.path("serviceAccountClientId").asText())).findFirst().orElseThrow();
+    }
+
+    private JsonNode client(String clientId) {
+        return StreamSupport.stream(realm.path("clients").spliterator(), false)
+                .filter(c -> clientId.equals(c.path("clientId").asText())).findFirst().orElseThrow();
+    }
+
+    @Test
+    @DisplayName("notification's own machine identity holds exactly CATALOG_ADMIN and COST_VIEWER: what the below-cost list asks for, and nothing wider")
+    void notificationsAccountHoldsExactlyCatalogAdminAndCostViewer() {
+        // Phase 11: notification asks catalog, on a schedule, which pieces are priced below what they cost, and tells the owner when one
+        // newly is. Catalog's pricing door needs both roles, and catalog hands the same token on to inventory's cost read (COST_VIEWER).
+        // No USER (it shops for nothing), no job role, no credentials.
+        JsonNode account = serviceAccountOf("oriah-notification");
+
+        assertThat(account.path("username").asText()).isEqualTo("service-account-oriah-notification");
+        assertThat(realmRolesOf(account)).containsExactlyInAnyOrder("CATALOG_ADMIN", "COST_VIEWER");
+        assertThat(account.has("credentials")).isFalse();
+    }
+
+    @Test
+    @DisplayName("the notification client is a machine's and nothing else: no person can sign in through it, and its token lives five minutes")
+    void theNotificationClientCannotSignAPersonIn() {
+        JsonNode notification = client("oriah-notification");
+
+        assertThat(notification.path("publicClient").asBoolean()).isFalse();
+        assertThat(notification.path("serviceAccountsEnabled").asBoolean()).isTrue();
+        assertThat(notification.path("standardFlowEnabled").asBoolean(true)).isFalse();
+        assertThat(notification.path("directAccessGrantsEnabled").asBoolean(true)).isFalse();
+        assertThat(notification.path("implicitFlowEnabled").asBoolean(true)).isFalse();
+        assertThat(notification.path("redirectUris").isMissingNode() || notification.path("redirectUris").isEmpty()).isTrue();
+        assertThat(notification.path("clientAuthenticatorType").asText()).isEqualTo("client-secret");
+        // CATALOG_ADMIN can also set prices and the realm cannot say "read only", so the token is kept short.
+        assertThat(notification.path("attributes").path("access.token.lifespan").asText()).isEqualTo("300");
     }
 
     @Test
@@ -198,9 +237,9 @@ class RealmRolesTest {
         // USER: order's server-side shipping quote (item 4). INVENTORY_ADMIN:
         // checkout's reservations (Phase 7). A later machine caller adds its
         // role in its own phase, with a test.
-        JsonNode account = users(realm).getFirst();
+        JsonNode account = serviceAccountOf("oriah-admin");
 
-        assertThat(account.path("serviceAccountClientId").asText()).isEqualTo("oriah-admin");
+        assertThat(account.path("username").asText()).isEqualTo("service-account-oriah-admin");
         assertThat(realmRolesOf(account)).containsExactlyInAnyOrder(USER, "INVENTORY_ADMIN");
         assertThat(account.has("credentials")).isFalse();
     }
@@ -225,11 +264,11 @@ class RealmRolesTest {
     // ------------------------------------------------------------ the secret
 
     @Test
-    @DisplayName("no client secret is committed: oriah-admin's comes from the environment, with no default")
+    @DisplayName("no client secret is committed: each confidential client's comes from the environment, with no default")
     void noClientSecretIsCommitted() {
-        JsonNode admin = StreamSupport.stream(realm.path("clients").spliterator(), false)
-                .filter(c -> "oriah-admin".equals(c.path("clientId").asText()))
-                .findFirst().orElseThrow();
+        JsonNode admin = client("oriah-admin");
+        assertThat(client("oriah-notification").path("secret").asText()).isEqualTo("${ORIAH_NOTIFICATION_CLIENT_SECRET}");
+        assertThat(realmText).doesNotContain("oriah-notification-secret");
 
         // Keycloak replaces ${VAR} from its environment at import. A default
         // (${VAR:value}) would commit the value in clear; ${env.VAR} is not
@@ -278,7 +317,16 @@ class RealmRolesTest {
     void theDevPeopleAreTheOnesTheTestsSignInAs() {
         Map<String, JsonNode> byName = users(devUsers).stream()
                 .collect(Collectors.toMap(u -> u.path("username").asText(), u -> u));
-        assertThat(byName).containsKeys("maya", "admin", "alice", "dave", "sara");
+        assertThat(byName).containsKeys("maya", "admin", "alice", "dave", "sara", "olive", "nora");
+        // olive (Phase 11): the owner as she will be in production, where the go-live script gives her OWNER and NOT USER. The smoke test signs
+        // in as her to prove the staff reads work without USER and the shopper's bell does not. Her address is one the sandbox lets through.
+        assertThat(realmRolesOf(byName.get("olive"))).containsExactly("OWNER");
+        assertThat(byName.get("olive").path("email").asText()).isEqualTo("olive@oriah.local");
+        // nora (Phase 11): a customer whose address LOOKS real (example.com is not on the sandbox's list). The smoke test uses her to prove
+        // that a stack which is not live never hands a real-looking address to any mail server.
+        assertThat(realmRolesOf(byName.get("nora"))).containsExactly(USER);
+        assertThat(byName.get("nora").path("email").asText()).isEqualTo("nora@example.com");
+        assertThat(byName.get("nora").path("emailVerified").asBoolean()).isTrue();
 
         // maya: every admin surface, AND a second customer in the smoke test's
         // money-path probes -- so USER as well. Imported users get no default
