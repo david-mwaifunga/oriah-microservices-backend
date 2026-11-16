@@ -348,6 +348,33 @@ class PaymentEventsTest {
     }
 
     @Test
+    @DisplayName("an answer that arrives right after an alarm was taken leaves the alarm to go out: staff never get 'sorted' for an alarm that was held back")
+    void anAnswerRightAfterTheClaimLeavesTheAlarmToGoOut() {
+        confirmed(2);
+        clock.advance(Duration.ofMinutes(1));
+        java.util.concurrent.atomic.AtomicBoolean answered = new java.util.concurrent.atomic.AtomicBoolean();
+        MessageStore answeredRightAfterTheClaim = new MessageStore(jdbc) {
+            @Override
+            public java.util.OptionalInt claim(UUID id, Instant now, Duration lease) {
+                java.util.OptionalInt taken = super.claim(id, now, lease);
+                if (taken.isPresent() && answered.compareAndSet(false, true)) {
+                    // The sale completes in the instant after the row was taken: the answer sees the try and writes "sorted".
+                    orderPaid();
+                }
+                return taken;
+            }
+        };
+        EmailSetup setup = new EmailSetup(Mode.CATCHER, null, MONEY, List.of("alerts-cost@oriah.local"), null, false);
+
+        new MessageDispatcher(answeredRightAfterTheClaim, contacts, orderRefs, health, new StaffAlerts(jdbc, transactions, setup, settings), watch, transport,
+                setup, settings, clock).run();
+
+        assertThat(rows("SETTLEMENT_STUCK", "SORTED")).as("the answer saw a try and says 'sorted'").hasSize(2);
+        assertThat(rows("SETTLEMENT_STUCK", "FIRST")).filteredOn(row -> "SENT".equals(row.get("status")))
+                .as("so the alarm it answers went out").hasSize(1);
+    }
+
+    @Test
     @DisplayName("after days with the service away, staff get ONE 'still not completed', not one for every day that was missed")
     void afterDaysAwayStaffGetOneReminderNotOnePerMissedDay() {
         confirmed(2);

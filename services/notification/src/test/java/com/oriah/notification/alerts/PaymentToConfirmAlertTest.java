@@ -144,6 +144,63 @@ class PaymentToConfirmAlertTest {
     }
 
     @Test
+    @DisplayName("taking an alarm waits for an answer that is being written at that very moment, and then does not take it: the answer saw no try and will say no 'sorted'")
+    void takingAnAlarmWaitsForAnAnswerBeingWritten() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        claim(orderId);
+        UUID row = (UUID) staffRows("FIRST").getFirst().get("id");
+        org.springframework.transaction.support.TransactionTemplate tx = new org.springframework.transaction.support.TransactionTemplate(transactions);
+        java.util.concurrent.CountDownLatch written = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch commit = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            // The consumer is ending the alert (the order was paid): written, not yet committed.
+            java.util.concurrent.Future<?> answer = pool.submit(() -> tx.executeWithoutResult(status -> {
+                alerts.resolve(StaffAlerts.Kind.PAYMENT_TO_CONFIRM, orderId.toString(), "PAID", clock.instant());
+                written.countDown();
+                try {
+                    commit.await(30, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
+            assertThat(written.await(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            java.util.concurrent.Future<java.util.OptionalInt> taking = pool.submit(() -> store.claim(row, clock.instant(), Duration.ofMinutes(3)));
+            long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+            while (jdbc.queryForObject("SELECT count(*) FROM pg_locks WHERE NOT granted", Integer.class) == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(50);
+            }
+            assertThat(taking.isDone()).as("the claim waits for the answer to be committed").isFalse();
+
+            commit.countDown();
+            answer.get(20, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(taking.get(20, java.util.concurrent.TimeUnit.SECONDS)).as("and then finds the alert ended: the row is not taken").isEmpty();
+            assertThat(jdbc.queryForObject("SELECT attempts FROM notification_log WHERE id = ?", Integer.class, row)).isZero();
+        } finally {
+            commit.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("the last note is written only for an alert that is still 'closed by the clock': one that got its real answer meanwhile gets none")
+    void noLastNoteForAnAlertThatWasAnsweredMeanwhile() {
+        UUID orderId = UUID.randomUUID();
+        claim(orderId);
+        UUID alertId = (UUID) alert(orderId).get("id");
+        StaffAlerts staffAlerts = new StaffAlerts(jdbc, transactions, catcher(MONEY), settings);
+        com.oriah.notification.text.MessageTexts.Text words = new com.oriah.notification.text.MessageTexts.Text("We have stopped reminding you", "The last note.");
+        jdbc.update("UPDATE staff_alert SET state = 'RESOLVED', resolved_how = 'PAID', resolved_at = now(), remind_at = NULL WHERE id = ?", alertId);
+
+        staffAlerts.tellTheLastNote(alertId, StaffAlerts.Kind.PAYMENT_TO_CONFIRM, words, clock.instant());
+        assertThat(staffRows("CLOSING")).as("answered: nothing is 'never answered' about it").isEmpty();
+
+        jdbc.update("UPDATE staff_alert SET resolved_how = 'BY_CLOCK' WHERE id = ?", alertId);
+        staffAlerts.tellTheLastNote(alertId, StaffAlerts.Kind.PAYMENT_TO_CONFIRM, words, clock.instant());
+        assertThat(staffRows("CLOSING")).hasSize(2);
+    }
+
+    @Test
     @DisplayName("an alert email still waiting for a mailbox the owner has since taken off the list is not sent to it")
     void aMailboxTakenOffTheListIsNoLongerEmailed() {
         UUID orderId = UUID.randomUUID();
@@ -217,7 +274,11 @@ class PaymentToConfirmAlertTest {
             }
         };
 
-        new MessageDispatcher(paidJustBeforeTheClaim, contacts, orderRefs, health, staffAlerts, watch, transport, catcher(MONEY), settings, clock).run();
+        MessageDispatcher dispatcher = new MessageDispatcher(paidJustBeforeTheClaim, contacts, orderRefs, health, staffAlerts, watch, transport,
+                catcher(MONEY), settings, clock);
+        // The first pass cannot take the row (its alert has ended); the next pass writes down why it never went.
+        dispatcher.run();
+        dispatcher.run();
 
         assertThat(transport.handedOver()).as("nobody is told of a payment to confirm that is already confirmed").isEmpty();
         assertThat(staffRows("FIRST")).hasSize(2).allSatisfy(row -> {

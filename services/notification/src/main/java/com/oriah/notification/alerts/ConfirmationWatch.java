@@ -148,7 +148,7 @@ public class ConfirmationWatch {
     public void sayLastNotes(Instant now) {
         for (StaffAlerts.Closed alert : alerts.closedByTheClockWithNoLastNote(Kind.SETTLEMENT_STUCK)) {
             Watch watch = read(UUID.fromString(alert.subjectId()));
-            alerts.tellInOneTransaction(alert.id(), Kind.SETTLEMENT_STUCK, "CLOSING", 1, MessageTexts.settlementNeverAnswered(money(watch)), now);
+            alerts.tellTheLastNote(alert.id(), Kind.SETTLEMENT_STUCK, MessageTexts.settlementNeverAnswered(money(watch)), now);
         }
     }
 

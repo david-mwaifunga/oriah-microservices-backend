@@ -60,8 +60,10 @@ import com.oriah.notification.text.MessageTexts;
  * <h2>Every message at its own time</h2>
  * A slow mail server can make one pass last many minutes. So the clock is read again for every message, when it is taken and when its
  * answer has come: the lease runs from the moment the send begins, and "sent at", the wait before the next try and the quiet time are counted
- * from the answer. A message is looked at twice: before it is taken (so nothing is taken needlessly) and again once it is ours, because
- * whoever ended its alert in between saw no try and will say nothing more.
+ * from the answer. A customer's message is decided twice: before it is taken (so nothing is taken needlessly) and again once it is ours,
+ * and the second decision is the one that counts (the address as it is then). An alarm to staff is taken together with a look at its
+ * alert, in one statement ({@link MessageStore#claim}): an alert that ended a moment before is not emailed, and one that ends a moment
+ * after gets its "sorted" behind an alarm that did go out.
  *
  * <h2>At least once</h2>
  * A message is never marked sent before a mail server took it, so a stop at the wrong moment sends a second copy rather than none. A copy is
@@ -224,7 +226,7 @@ public class MessageDispatcher {
                 orderKnownPaid), setup, now, settings.send().addressRecheck());
     }
 
-    private Pass handOver(Due row, Send send, Instant now) {
+    private Pass handOver(Due row, Send asFirstDecided, Instant now) {
         NotificationSettings.Send timing = settings.send();
         if (health.state().quietAt(now)) {
             // The mail server failed a moment ago. The message stays due and is tried once the quiet time is over.
@@ -237,13 +239,20 @@ public class MessageDispatcher {
         }
         int claimed = claim.getAsInt();
 
-        // The row is ours now. Look once more: whoever ended its alert (or learnt that its order was paid) before this moment saw no try of
-        // it and will say nothing more, so it must not go; whoever does so from here on sees the try that was just counted.
-        if (decide(row, now) instanceof NotSent after) {
+        // The row is ours now. A customer's message is decided once more, and THIS decision is the one acted on: the address as it is
+        // now (never one that was replaced a moment ago), nothing at all if the order turned out to be paid or the address is gone.
+        // (An alarm to staff needs no second look: the claim itself took it only while its alert was open.)
+        Decision decided = row.recipientKind() == RecipientKind.SHOPPER ? decide(row, now) : asFirstDecided;
+        if (decided instanceof NotSent after) {
             store.notSentAfterClaim(row.id(), claimed, after.reason(), now);
             log.info("Message {} ({}) is not sent: {}", row.id(), row.eventType(), after.reason());
             return Pass.GO_ON;
         }
+        if (decided instanceof Wait later) {
+            store.retryLater(row.id(), claimed, later.until(), null);
+            return Pass.GO_ON;
+        }
+        Send send = (Send) decided;
 
         SendResult result;
         handedOverThisPass++;
@@ -319,7 +328,7 @@ public class MessageDispatcher {
             if (!store.theLastThreeRecipientsWereAllRefused()) {
                 return false;
             }
-            if (alerts.emailIsDown(now, now)) {
+            if (alerts.everybodyIsBeingRefused(now)) {
                 log.error("Emails are not going out: the mail server refused the last three recipients, each a different one. "
                         + "Messages still waiting are kept and tried again");
             }

@@ -617,6 +617,58 @@ class MessageDispatcherTest {
     }
 
     @Test
+    @DisplayName("what is sent is decided once the row is taken: an address that changed in that instant is the one written to, and one that vanished means no send")
+    void theDecisionMadeAfterTheClaimIsTheOneThatCounts() {
+        knows("kc-alice", "old@oriah.local", true);
+        knows("kc-carol", "carol@oriah.local", true);
+        UUID moved = waiting("kc-alice", "order.paid");
+        UUID gone = waiting("kc-carol", "order.paid");
+        MessageStore changesJustBeforeTheClaim = new MessageStore(jdbc) {
+            @Override
+            public java.util.OptionalInt claim(UUID id, Instant now, Duration lease) {
+                if (id.equals(moved)) {
+                    jdbc.update("UPDATE recipient_contact SET email = 'new@oriah.local' WHERE keycloak_id = 'kc-alice'");
+                } else if (id.equals(gone)) {
+                    jdbc.update("DELETE FROM recipient_contact WHERE keycloak_id = 'kc-carol'");
+                }
+                return super.claim(id, now, lease);
+            }
+        };
+
+        dispatcher(setup(Mode.CATCHER, false), changesJustBeforeTheClaim).run();
+
+        assertThat(transport.handedOver()).extracting(Email::to).as("never the address that was replaced, never one that is no longer known")
+                .containsExactly("new@oriah.local");
+        assertThat(status(moved)).isEqualTo("SENT");
+        assertThat(status(gone)).isEqualTo("RECORDED");
+        assertThat(nextTry(gone)).as("it is looked at again in a minute").isEqualTo(START.plus(settings.send().addressRecheck()));
+    }
+
+    @Test
+    @DisplayName("'the server refuses everybody' does not stand for ever: with nothing more to send it closes by itself after a day")
+    void theRefusingEverybodyAlertClosesAfterADay() {
+        for (String owner : List.of("kc-a", "kc-b", "kc-c")) {
+            knows(owner, owner + "@oriah.local", true);
+            waiting(owner, "order.paid");
+        }
+        transport.whileSending(email -> clock.advance(Duration.ofSeconds(1)));
+        transport.thenAnswer(SendResult.refused(SendResult.ADDRESS_REFUSED), SendResult.refused(SendResult.ADDRESS_REFUSED),
+                SendResult.refused(SendResult.ADDRESS_REFUSED));
+        dispatcher().run();
+        assertThat(emailDownAlerts("OPEN")).isEqualTo(1);
+
+        clock.advance(Duration.ofHours(23));
+        dispatcher().run();
+        assertThat(emailDownAlerts("OPEN")).as("still listed within the day").isEqualTo(1);
+
+        clock.advance(Duration.ofHours(1));
+        dispatcher().run();
+        assertThat(emailDownAlerts("OPEN")).as("three dead addresses in a row and then a quiet shop: the list must not say 'emails are not going out' for ever").isZero();
+        assertThat(jdbc.queryForObject("SELECT resolved_how FROM staff_alert WHERE kind = 'EMAIL_DOWN' AND subject_id = 'email'", String.class))
+                .isEqualTo("BY_CLOCK");
+    }
+
+    @Test
     @DisplayName("a message past its deadline is never claimed: the sweep ends it, nobody sends it")
     void aRowPastItsDeadlineIsNeverClaimed() {
         UUID id = waiting("kc-alice", "order.paid");

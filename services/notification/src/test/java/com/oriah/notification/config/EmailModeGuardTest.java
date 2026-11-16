@@ -321,6 +321,15 @@ class EmailModeGuardTest {
     }
 
     @Test
+    @DisplayName("a reminder interval of nothing, or less, is refused: the daily reminder is stepped forward by it until it lies ahead")
+    void aReminderIntervalOfNothingIsRefused() {
+        assertThatThrownBy(() -> build(new FakeEnv(), Map.of("oriah.notification.alerts.settlement.remind-every", "PT0S")))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("oriah.notification.alerts.settlement.remind-every");
+        assertThatThrownBy(() -> build(new FakeEnv(), Map.of("oriah.notification.alerts.settlement.remind-every", "-PT1H")))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("oriah.notification.alerts.settlement.remind-every");
+    }
+
+    @Test
     @DisplayName("the time a row is kept out of reach must outlast the longest send by half a minute, or two senders could hold one message")
     void theLeaseMustOutlastTheLongestSend() {
         assertThatThrownBy(() -> build(new FakeEnv(), Map.of("oriah.notification.send.max-send", "PT90S", "oriah.notification.send.lease", "PT100S")))

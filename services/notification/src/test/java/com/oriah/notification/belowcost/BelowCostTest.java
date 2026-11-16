@@ -408,7 +408,7 @@ class BelowCostTest {
             below.add(piece("Piece " + i, "P-" + i));
         }
         poller().tick(clock.instant());
-        assertThat(catalogCalls).isEqualTo(3);
+        assertThat(catalogCalls).as("a list longer than one page is read twice, and the two readings must agree").isEqualTo(6);
         assertThat(alertsOf("BELOW_COST")).hasSize(250);
 
         TestData.clean(jdbc, clock);
@@ -435,6 +435,34 @@ class BelowCostTest {
                 "a-secret", () -> { }).tick(clock.instant());
 
         assertThat(alertsOf("BELOW_COST")).as("a reading that is not one list raises nothing and clears nothing").isEmpty();
+        assertThat(jdbc.queryForMap("SELECT last_failure FROM below_cost_poll")).containsEntry("last_failure", "INCONSISTENT");
+    }
+
+    @Test
+    @DisplayName("a list that lost one piece and gained another between two pages (same total, nothing read twice, one piece on no page) is thrown away: the second reading differs")
+    void aListThatLostAndGainedAPieceBetweenPagesIsThrownAway() {
+        for (int i = 1; i <= 201; i++) {
+            below.add(piece("Piece " + i, "P-" + i));
+        }
+        int[] calls = {0};
+        CatalogBelowCostClient changing = (status, page, size) -> {
+            calls[0]++;
+            if (calls[0] <= 2) {
+                // First reading. Page 0 is pieces 1 to 100. Then piece 50 leaves the list and piece 201 joins it, so page 1 is pieces 102 to
+                // 201: piece 101 slid onto page 0 after it was read, and is on no page. 200 both times, no piece twice.
+                return new BelowCostReply(page == 0 ? below.subList(0, 100) : below.subList(101, 201), Map.of(), page, size, 200);
+            }
+            // Second reading, of the list as it now stands: every piece but number 50.
+            List<Item> now = new ArrayList<>(below);
+            now.remove(49);
+            return new BelowCostReply(now.subList(page * size, Math.min(page * size + size, now.size())), Map.of(), page, size, 200);
+        };
+
+        new BelowCostPoller(changing, new BelowCostMemory(jdbc, transactions, alerts(COST), setup(COST), settings), alerts(COST), jdbc, settings,
+                "a-secret", () -> { }).tick(clock.instant());
+
+        assertThat(calls[0]).isEqualTo(4);
+        assertThat(alertsOf("BELOW_COST")).as("two readings that do not agree are not one list: nothing is raised, nothing is cleared").isEmpty();
         assertThat(jdbc.queryForMap("SELECT last_failure FROM below_cost_poll")).containsEntry("last_failure", "INCONSISTENT");
     }
 

@@ -84,14 +84,24 @@ public class MessageStore {
      *
      * <p>A row at or past its deadline is never taken: the sweep ends it, nobody sends it.
      *
-     * @return the row's new number of tries; empty when the row is no longer waiting, is past its deadline, or somebody else has it
+     * <p><b>An alarm is taken only while its alert is open, and the two are decided together.</b> The same statement locks the alert's row
+     * (FOR SHARE) and counts the try. So an answer that is being written at this moment and this claim can only happen one after the other:
+     * either the answer came first (the claim waits for it, finds the alert ended and takes nothing: the answer saw no try and says no
+     * "sorted"), or the claim came first (the answer waits, then sees the try and says "sorted" for an alarm that does go out). "Sorted"
+     * and the last note are said after the end, so they are taken whatever the alert's state.
+     *
+     * @return the row's new number of tries; empty when the row is no longer waiting, is past its deadline, is an alarm whose alert has
+     *         ended, or somebody else has it
      */
     public OptionalInt claim(UUID id, Instant now, Duration lease) {
         List<Integer> attempts = jdbc.query("""
-                UPDATE notification_log
-                   SET attempts = attempts + 1, last_attempt_at = ?, next_attempt_at = ?
-                 WHERE id = ? AND status = 'RECORDED' AND next_attempt_at <= ? AND (send_before IS NULL OR send_before > ?)
-                RETURNING attempts""", (row, n) -> row.getInt(1), Timestamp.from(now), Timestamp.from(now.plus(lease)), id, Timestamp.from(now),
+                UPDATE notification_log m
+                   SET attempts = m.attempts + 1, last_attempt_at = ?, next_attempt_at = ?
+                 WHERE m.id = ? AND m.status = 'RECORDED' AND m.next_attempt_at <= ? AND (m.send_before IS NULL OR m.send_before > ?)
+                   AND (m.alert_id IS NULL OR m.alert_notice IN ('SORTED', 'CLOSING')
+                        OR EXISTS (SELECT 1 FROM (SELECT a.state FROM staff_alert a WHERE a.id = m.alert_id FOR SHARE) alert
+                                    WHERE alert.state = 'OPEN'))
+                RETURNING m.attempts""", (row, n) -> row.getInt(1), Timestamp.from(now), Timestamp.from(now.plus(lease)), id, Timestamp.from(now),
                 Timestamp.from(now));
         return attempts.isEmpty() ? OptionalInt.empty() : OptionalInt.of(attempts.getFirst());
     }

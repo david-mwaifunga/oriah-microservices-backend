@@ -143,6 +143,11 @@ public final class EmailModeGuard {
 
     /** The rules that span two settings; they hold in every mode, so a wrong value is found on a developer's machine, not at go-live. */
     private static void timings(NotificationSettings settings) {
+        Duration remindEvery = settings.alerts().settlement().remindEvery();
+        if (remindEvery.isZero() || remindEvery.isNegative()) {
+            // The next reminder is found by stepping forward by this much until it lies ahead: a step of nothing would never get there.
+            throw refused("oriah.notification.alerts.settlement.remind-every must be more than nothing");
+        }
         Duration maxSend = settings.send().maxSend();
         if (maxSend.isZero() || maxSend.isNegative() || maxSend.compareTo(LONGEST_SEND) > 0) {
             throw refused("oriah.notification.send.max-send must be more than nothing and at most PT5M");

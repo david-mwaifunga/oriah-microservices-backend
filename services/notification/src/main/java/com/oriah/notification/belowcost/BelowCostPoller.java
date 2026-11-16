@@ -102,33 +102,22 @@ public class BelowCostPoller {
         if (clientSecret == null || clientSecret.isBlank()) {
             return failed("NO_SECRET", now, lease);
         }
-        List<Item> onSaleAndBelow = new ArrayList<>();
+        List<Item> onSaleAndBelow;
         try {
-            long total = -1;
-            long read = 0;
-            Set<UUID> seen = new HashSet<>();
-            for (int page = 0; total < 0 || (long) page * PAGE_SIZE < total; page++) {
-                BelowCostReply reply = catalog.belowCost(BELOW, page, PAGE_SIZE);
-                if (reply == null || reply.items() == null || (total >= 0 && reply.totalItems() != total)) {
-                    // Each page is a fresh evaluation by catalog. A list that changed between two pages is not one list.
-                    return failed("INCONSISTENT", now, lease);
-                }
-                total = reply.totalItems();
-                read += reply.items().size();
-                for (Item piece : reply.items()) {
-                    if (piece.variantId() != null && !seen.add(piece.variantId())) {
-                        // Catalog sorts the list afresh for every page. A piece read twice means the order changed between two pages, and
-                        // then another piece was on no page at all, although the total is the same: this is not one list either.
-                        return failed("INCONSISTENT", now, lease);
-                    }
-                    if (piece.variantId() != null && BELOW.equals(piece.assessment()) && ON_SALE.equals(piece.productStatus())) {
-                        onSaleAndBelow.add(piece);
-                    }
+            Reading reading = read();
+            if (reading != null && reading.total() > PAGE_SIZE) {
+                // A list longer than one page cannot be proven to be ONE list from a single reading: catalog works every page out afresh,
+                // and a piece that leaves while another joins shifts a third onto a page already read, with the same total and no piece
+                // twice. So such a list is read a second time, and both readings must name exactly the same pieces.
+                Reading again = read();
+                if (again == null || !again.pieces().equals(reading.pieces())) {
+                    reading = null;
                 }
             }
-            if (read != total) {
+            if (reading == null) {
                 return failed("INCONSISTENT", now, lease);
             }
+            onSaleAndBelow = reading.onSaleAndBelow();
         } catch (RetryableException away) {
             // Feign's own word for "this may pass later": no answer at all (a timeout, a refused connection: no status), or an answer that
             // said when to come back (catalog's 503 with Retry-After, when stock or promotions could not be asked).
@@ -157,6 +146,38 @@ public class BelowCostPoller {
             return failed("OTHER", now, lease);
         }
         return Round.GOOD;
+    }
+
+    /** One reading of catalog's whole list. */
+    private record Reading(long total, Set<UUID> pieces, List<Item> onSaleAndBelow) {
+    }
+
+    /** @return the list, page by page; null when the pages do not make one list (the total changed, or a piece was read twice) */
+    private Reading read() {
+        List<Item> onSaleAndBelow = new ArrayList<>();
+        Set<UUID> seen = new HashSet<>();
+        long total = -1;
+        long read = 0;
+        for (int page = 0; total < 0 || (long) page * PAGE_SIZE < total; page++) {
+            BelowCostReply reply = catalog.belowCost(BELOW, page, PAGE_SIZE);
+            if (reply == null || reply.items() == null || (total >= 0 && reply.totalItems() != total)) {
+                // Each page is a fresh evaluation by catalog. A list that changed between two pages is not one list.
+                return null;
+            }
+            total = reply.totalItems();
+            read += reply.items().size();
+            for (Item piece : reply.items()) {
+                if (piece.variantId() != null && !seen.add(piece.variantId())) {
+                    // Catalog sorts the list afresh for every page. A piece read twice means the order changed between two pages, and
+                    // then another piece was on no page at all, although the total is the same: this is not one list either.
+                    return null;
+                }
+                if (piece.variantId() != null && BELOW.equals(piece.assessment()) && ON_SALE.equals(piece.productStatus())) {
+                    onSaleAndBelow.add(piece);
+                }
+            }
+        }
+        return read == total ? new Reading(total, seen, onSaleAndBelow) : null;
     }
 
     /**

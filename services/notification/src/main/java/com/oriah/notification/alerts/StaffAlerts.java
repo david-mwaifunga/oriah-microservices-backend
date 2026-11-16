@@ -331,6 +331,18 @@ public class StaffAlerts {
                 null, null, null, false), now).isPresent());
     }
 
+    /**
+     * The mail server refused the last three recipients, each a different one: it is refusing everybody. Listed like "the mail server is
+     * failing", and ended the same way by the next accepted message. Unlike that one it also closes by itself after a day: three dead
+     * addresses in a row look the same, and in a quiet shop nothing would ever be accepted to say otherwise.
+     *
+     * @return whether this call raised it (so it is logged once)
+     */
+    public boolean everybodyIsBeingRefused(Instant now) {
+        return transaction.execute(tx -> raise(new NewAlert(Kind.EMAIL_DOWN, "email", null, MessageTexts.emailDown(now, settings.zone()), null,
+                null, null, now.plus(Duration.ofHours(24)), false), now).isPresent());
+    }
+
     public void emailWorks(Instant now) {
         resolve(Kind.EMAIL_DOWN, "email", "RECOVERED", now);
     }
@@ -353,9 +365,20 @@ public class StaffAlerts {
                 (row, n) -> new Closed(row.getObject(1, UUID.class), Kind.valueOf(row.getString(2)), row.getString(3)), kind.name(), ALERTS_A_PASS);
     }
 
-    /** One notice of an alert to every mailbox of its group, all or none: for the scheduled jobs, which have no transaction of their own. */
-    public void tellInOneTransaction(UUID alertId, Kind kind, String notice, int tellNo, Text words, Instant now) {
-        each(alertId, () -> tell(alertId, kind, notice, tellNo, words, now, null, now));
+    /**
+     * The last note of an alert that closed by the clock, to every mailbox of its group, all or none. The alert's row is locked and looked
+     * at again first: if its real answer arrived since it was found ("paid", "money held"), nothing is "never answered" about it and no
+     * note is written.
+     */
+    public void tellTheLastNote(UUID alertId, Kind kind, Text words, Instant now) {
+        each(alertId, () -> {
+            boolean stillNeverAnswered = !jdbc.query(
+                    "SELECT 1 FROM staff_alert WHERE id = ? AND state = 'RESOLVED' AND resolved_how = 'BY_CLOCK' FOR UPDATE", (row, n) -> 1, alertId)
+                    .isEmpty();
+            if (stillNeverAnswered) {
+                tell(alertId, kind, "CLOSING", 1, words, now, null, now);
+            }
+        });
     }
 
     /** The mail server refused one of the alert mailboxes. It stays listed for a day. @return whether this call raised it */
