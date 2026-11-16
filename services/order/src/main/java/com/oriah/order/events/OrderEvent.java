@@ -47,7 +47,7 @@ import com.oriah.order.model.OrderStatus;
  * consumers are built against.
  */
 @JsonPropertyOrder({"orderId", "keycloakId", "previousStatus", "newStatus", "total", "currency",
-        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId", "dispatch", "channel", "occurredAt"})
+        "subtotal", "shippingAmount", "discountAmount", "deliveryOption", "paymentIntentId", "lines", "reservationId", "dispatch", "channel", "occurredAt", "saleKind"})
 public record OrderEvent(
         UUID orderId,
         String keycloakId,
@@ -85,7 +85,14 @@ public record OrderEvent(
          * personal travels with it: never the caller, the recorder, a phone, an address or free text.
          */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        java.time.Instant occurredAt
+        java.time.Instant occurredAt,
+        /**
+         * Only with {@code channel} (Phase 11), and always the LAST field: which kind of sale staff recorded, {@code LIVE_PHONE} (taken as it happened) or
+         * {@code LATE_PAPER} (written on paper and typed in later). It is what the person chose on the form, never guessed from a date. Notification
+         * writes words for a caller only for a live sale: somebody whose paper sale is typed in afterwards already has their goods.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String saleKind
 ) {
     public static final String TOPIC = "oriah.order";
     public static final String AGGREGATE_TYPE = "order";
@@ -141,7 +148,8 @@ public record OrderEvent(
                 order.status() == OrderStatus.CANCELLED || order.status() == OrderStatus.EXPIRED ? order.reservationId() : null,
                 null,
                 order.channel() == Channel.PHONE ? order.channel().name() : null,
-                order.channel() == Channel.PHONE ? order.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS) : null);
+                order.channel() == Channel.PHONE ? order.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS) : null,
+                order.channel() == Channel.PHONE ? order.saleKind().name() : null);
     }
 
     /** The snapshot of an order that has just been shipped, carrying the dispatch. */
@@ -150,7 +158,7 @@ public record OrderEvent(
         return new OrderEvent(base.orderId, base.keycloakId, base.previousStatus, base.newStatus, base.total, base.currency, base.subtotal, base.shippingAmount,
                 base.discountAmount, base.deliveryOption, base.paymentIntentId, base.lines, base.reservationId, new Dispatch(
                         dispatch.dispatchedAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), stored(dispatch.farePaid()), dispatch.payer()),
-                base.channel, base.occurredAt);
+                base.channel, base.occurredAt, base.saleKind);
     }
 
     /** {@code order.<status in lower case>}: order.created, order.paid, ... order.cancelled. */

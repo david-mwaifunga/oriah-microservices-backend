@@ -31,7 +31,7 @@ import com.oriah.order.model.OrderStatus;
         "deliveryOption", "paymentIntentId", "lines",
         "confirmationId", "receiptNumber", "arrivedAt", "recordedAt", "paymentMethod", "paymentGross", "paymentFee", "paymentNet",
         "deliveryTownId", "deliveryPayer", "republished", "channel", "occurredAt",
-        "deliveryWaivedAmount", "deliveryPriceSource", "deliveryAgreedAmount", "deliveryQuotedAmount"})
+        "deliveryWaivedAmount", "deliveryPriceSource", "deliveryAgreedAmount", "deliveryQuotedAmount", "saleKind"})
 public record OrderPaidEvent(
         UUID orderId,
         String keycloakId,
@@ -82,7 +82,13 @@ public record OrderPaidEvent(
         BigDecimal deliveryAgreedAmount,
         /** Only on a LIVE agreed delivery where the shop had a published price: what the shop would have charged. Absent for a late paper sale or no published price. */
         @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        BigDecimal deliveryQuotedAmount
+        BigDecimal deliveryQuotedAmount,
+        /**
+         * Only on a phone order (Phase 11), and always the LAST field: {@code LIVE_PHONE} or {@code LATE_PAPER}, as the person chose on the form. See
+         * {@link OrderEvent#saleKind()}.
+         */
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String saleKind
 ) {
     public static final String TYPE = "order.paid";
     public static final int SCHEMA_VERSION = 2;
@@ -127,7 +133,8 @@ public record OrderPaidEvent(
                 stored(order.deliveryWaivedAmount()),
                 order.channel() == Channel.PHONE ? order.deliveryPriceSource() : null,
                 order.channel() == Channel.PHONE ? stored(order.deliveryAgreedAmount()) : null,
-                order.channel() == Channel.PHONE ? stored(order.deliveryQuotedAmount()) : null);
+                order.channel() == Channel.PHONE ? stored(order.deliveryQuotedAmount()) : null,
+                order.channel() == Channel.PHONE ? order.saleKind().name() : null);
     }
 
     private static Line line(OrderItem item) {

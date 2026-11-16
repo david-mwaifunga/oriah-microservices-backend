@@ -53,7 +53,7 @@ class PhoneOrderEventsTest {
         String json = EventJson.write(OrderEvent.of(phoneOrder(SaleKind.LATE_PAPER), null));
 
         assertThat(json).contains("\"keycloakId\":null");
-        assertThat(json).endsWith("\"channel\":\"PHONE\",\"occurredAt\":\"2026-11-12T09:30:00.123456Z\"}");
+        assertThat(json).endsWith("\"channel\":\"PHONE\",\"occurredAt\":\"2026-11-12T09:30:00.123456Z\",\"saleKind\":\"LATE_PAPER\"}");
     }
 
     @Test
@@ -94,8 +94,8 @@ class PhoneOrderEventsTest {
         String live = EventJson.write(OrderPaidEvent.of(phoneOrder(SaleKind.LIVE_PHONE), OrderStatus.CREATED, MONEY, false));
         String late = EventJson.write(OrderPaidEvent.of(phoneOrder(SaleKind.LATE_PAPER), OrderStatus.CREATED, MONEY, false));
 
-        assertThat(live).endsWith(",\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00,\"deliveryQuotedAmount\":100.00}");
-        assertThat(late).endsWith(",\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00}");
+        assertThat(live).endsWith(",\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00,\"deliveryQuotedAmount\":100.00,\"saleKind\":\"LIVE_PHONE\"}");
+        assertThat(late).endsWith(",\"deliveryPriceSource\":\"AGREED\",\"deliveryAgreedAmount\":60.00,\"saleKind\":\"LATE_PAPER\"}");
     }
 
     @Test
@@ -110,9 +110,24 @@ class PhoneOrderEventsTest {
         String json = EventJson.write(OrderPaidEvent.of(published, OrderStatus.CREATED, MONEY, false));
         String webJson = EventJson.write(OrderPaidEvent.of(web, OrderStatus.CREATED, MONEY, false));
 
-        assertThat(json).endsWith(",\"deliveryPriceSource\":\"PUBLISHED\"}");
+        assertThat(json).endsWith(",\"deliveryPriceSource\":\"PUBLISHED\",\"saleKind\":\"LIVE_PHONE\"}");
         assertThat(webJson).doesNotContain("deliveryPriceSource").doesNotContain("deliveryAgreedAmount").doesNotContain("deliveryQuotedAmount")
                 .doesNotContain("deliveryWaivedAmount");
+    }
+
+    @Test
+    @DisplayName("every event of a phone order says which kind of sale it was, as its LAST field: taken live, or typed in later from paper (Phase 11: notification writes words for a caller only for a live sale; the kind is what the person chose on the form, never guessed from a date)")
+    void everyEventOfAPhoneSaleSaysItsKind() {
+        for (SaleKind kind : SaleKind.values()) {
+            Order order = phoneOrder(kind);
+            String last = ",\"saleKind\":\"" + kind.name() + "\"}";
+
+            assertThat(EventJson.write(OrderEvent.of(order, null))).as("order.created and every status event").endsWith(last);
+            assertThat(EventJson.write(OrderEvent.shipped(order, OrderStatus.FULFILLED,
+                    new OrderEvent.Dispatch(Instant.parse("2026-11-13T10:00:00Z"), new BigDecimal("40.00"), "ORIAH_COLLECTS")))).as("order.shipped").endsWith(last);
+            assertThat(EventJson.write(OrderPaidEvent.of(order, OrderStatus.CREATED, MONEY, false))).as("order.paid").endsWith(last);
+            assertThat(EventJson.write(OrderPaidEvent.of(order, null, MONEY, true))).as("order.paid announced again").endsWith(last);
+        }
     }
 
     @Test
@@ -121,7 +136,8 @@ class PhoneOrderEventsTest {
         Order web = new Order("kc-alice", null, "ZMW", "SELF_COLLECT", new BigDecimal("0.00"));
         web.addItem(RING, "Aurelia 18k / Ring Size M", 1, new BigDecimal("4500.00"));
 
-        assertThat(EventJson.write(OrderEvent.of(web, null))).doesNotContain("channel").doesNotContain("occurredAt");
-        assertThat(EventJson.write(OrderPaidEvent.of(web, OrderStatus.CREATED, MONEY, false))).doesNotContain("channel").doesNotContain("occurredAt");
+        assertThat(EventJson.write(OrderEvent.of(web, null))).doesNotContain("channel").doesNotContain("occurredAt").doesNotContain("saleKind");
+        assertThat(EventJson.write(OrderPaidEvent.of(web, OrderStatus.CREATED, MONEY, false))).doesNotContain("channel").doesNotContain("occurredAt")
+                .doesNotContain("saleKind");
     }
 }
