@@ -695,6 +695,32 @@ services:
       timeout: 3s
       retries: 10
 
+  mailcatcher:
+    # Catches every email the development stack sends, and delivers none (Phase 11). Notification, while it is not live, can talk to no
+    # other mail server than this one, and hands it only addresses on names reserved for testing. Read what was caught at
+    # http://localhost:8025. No relay is configured, on purpose: the registry guard refuses a line here that would set one, or that
+    # would make the stack live or give it a real mail account.
+    extends:
+      file: ../common-config.yml
+      service: network-deploy-service
+    # Pinned, never :latest.
+    image: axllent/mailpit:v1.21
+    container_name: oriah-mailcatcher
+    # Limit measured 2026-11-16 (docker stats after taking mail): about 10 MiB.
+    mem_limit: 64m
+    memswap_limit: 64m
+    environment:
+      # Keep the newest 500 messages; a long-lived development stack must not fill its disk with test mail.
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   kafka:
     # Apache Kafka in KRaft mode (no ZooKeeper). 4.x replaced ZK with a
     # self-managed Raft quorum; one container is the broker AND the
@@ -1234,6 +1260,20 @@ services:
     environment:
       SPRING_DATASOURCE_USERNAME: notification
       SPRING_DATASOURCE_PASSWORD: notification
+      # Notification's own machine identity (it asks catalog which pieces are priced below cost): the dev value, the same one
+      # Keycloak's environment above fills the realm's placeholder with.
+      ORIAH_NOTIFICATION_CLIENT_SECRET: oriah-notification-secret
+      # Who is told, on this stack: two mailboxes that exist only in the mail catcher. In production these two lists are real
+      # mailboxes and come from the environment only, never from a settings file.
+      ORIAH_ALERT_EMAILS_MONEY: alerts-money@oriah.local
+      ORIAH_ALERT_EMAILS_COST: alerts-cost@oriah.local
+      # The storefront, for the link at the foot of a customer's email.
+      ORIAH_NOTIFICATION_SITE_URL: http://localhost:4000
+      # A development stack is used hard: the daily limit of payment-claim emails is raised (it cannot be switched off), and the
+      # below-cost check runs every minute instead of every five so the smoke test need not wait.
+      ORIAH_NOTIFICATION_CLAIM_ALERTS_PER_DAY: "500"
+      ORIAH_NOTIFICATION_BELOW_COST_DELAY: "60000"
+      ORIAH_NOTIFICATION_BELOW_COST_INITIAL_DELAY: "60000"
     ports:
       - "127.0.0.1:8090:8090"
     depends_on:

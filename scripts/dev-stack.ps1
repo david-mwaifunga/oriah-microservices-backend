@@ -39,7 +39,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$Backing = @('postgres-catalog', 'postgres-inventory', 'postgres-customer', 'postgres-cart', 'postgres-payment',
+$Backing = @('mailcatcher', 'postgres-catalog', 'postgres-inventory', 'postgres-customer', 'postgres-cart', 'postgres-payment',
              'postgres-order', 'postgres-promotion', 'postgres-notification', 'postgres-review', 'postgres-search',
              'postgres-procurement', 'postgres-shipping', 'postgres-finance', 'postgres-keycloak', 'keycloak', 'kafka', 'redis', 'oriah-s3')
 $TraceTools = @('tempo', 'prometheus', 'grafana')

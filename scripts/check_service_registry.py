@@ -148,6 +148,8 @@ DEFAULT_ROOT = HERE.parent.parent          # oriah-api/
 
 # ---- the watched files (relative to oriah-api/) ----------------------------
 COMPOSE = "docker-compose/default/docker-compose.yml"
+# What would let the development stack send real email (see check_compose).
+NEVER_IN_THE_DEV_COMPOSE = ("ORIAH_NOTIFICATION_LIVE", "ORIAH_SMTP_", "ORIAH_EMAIL_FROM", "MP_SMTP_RELAY")
 BUILD_IMAGES = "build-images.ps1"
 PROMETHEUS = "monitoring/prometheus.yml"
 DEV_STACK = "scripts/dev-stack.ps1"
@@ -766,6 +768,18 @@ def check_compose(ctx, rep):
     blocks, dups, volumes = parse_compose(text)
     for n in sorted(set(dups)):
         rep.add(n, "compose-service", COMPOSE, "the service key %s is defined more than once" % n)
+
+    # Phase 11: this compose file is a stack that is NOT production, and notification's promise is that such a stack cannot reach a real
+    # mailbox. So nothing in it may make the stack live, give it a real mail account, or let the mail catcher relay what it catches.
+    # (Comment lines may name these words; a line that sets one may not.)
+    for number, line in enumerate(text.splitlines(), start=1):
+        code = line.split(" #", 1)[0].strip()
+        if not code or code.startswith("#"):
+            continue
+        for word in NEVER_IN_THE_DEV_COMPOSE:
+            if word in code:
+                rep.add("notification", "compose-service", COMPOSE,
+                        "line %d sets %s: the development stack must never be live or reach a real mail server" % (number, word))
 
     for name in sorted(ctx.services):
         s = ctx.services[name]

@@ -21,6 +21,15 @@ spring:
 
 spring.cloud.stream.kafka.binder.brokers: kafka:9092
 
+# Email on the container stack: the mail catcher beside it, by its container name. This stack is not live (no settings file can make
+# it so), so notification talks to no other mail server and hands the catcher only addresses on names reserved for testing.
+oriah:
+  notification:
+    email:
+      transport: catcher
+      catcher:
+        host: mailcatcher
+
 eureka:
   client:
     service-url:

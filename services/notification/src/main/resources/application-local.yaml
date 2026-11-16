@@ -33,6 +33,20 @@ management:
       # in the log. Turn on per run: MANAGEMENT_TRACING_EXPORT_ENABLED=true.
       enabled: false
 
+# Email when this app runs in the IDE: the mail catcher the dev stack starts (.\scripts\dev-stack.ps1), published on localhost:1025;
+# read what was caught at http://localhost:8025. Alerts go to two mailboxes that exist only in the catcher. The client secret is the
+# development value of notification's own Keycloak client (the below-cost check signs in with it).
+oriah:
+  notification:
+    email:
+      transport: catcher
+    alerts:
+      sandbox-recipients:
+        money: alerts-money@oriah.local
+        cost: alerts-cost@oriah.local
+ORIAH_NOTIFICATION_CLIENT_SECRET: oriah-notification-secret
+ORIAH_NOTIFICATION_SITE_URL: http://localhost:4000
+
 # Where traces go when export is on: Tempo's published port. The Config
 # Server's value names the container (tempo:4318), which this PC cannot resolve.
 ORIAH_OTLP_ENDPOINT: http://localhost:4318/v1/traces

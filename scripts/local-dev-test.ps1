@@ -137,7 +137,7 @@ function Get-Token([string] $user) {
 try {
     # --- [0] backing services ---------------------------------------------------
     Write-Host "[0] Backing services in Docker are healthy" -ForegroundColor Cyan
-    $backing = @('oriah-keycloak', 'oriah-kafka', 'oriah-redis', 'oriah-s3', 'oriah-postgres-keycloak') +
+    $backing = @('oriah-keycloak', 'oriah-kafka', 'oriah-redis', 'oriah-s3', 'oriah-mailcatcher', 'oriah-postgres-keycloak') +
                @('catalog', 'inventory', 'customer', 'cart', 'payment', 'order', 'promotion', 'notification', 'review', 'search', 'procurement', 'shipping', 'finance' |
                  ForEach-Object { "oriah-postgres-$_" })
     $bad = @($backing | Where-Object { ((Invoke-Native { docker inspect -f '{{.State.Health.Status}}' $_ }) -join '') -ne 'healthy' })
