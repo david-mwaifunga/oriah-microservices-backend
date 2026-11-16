@@ -4,9 +4,9 @@ spring:
   task:
     scheduling:
       pool:
-        # One thread per @Scheduled job, so a slow pass of one never holds back another. Today: the message dispatcher.
-        # Add a thread for any further job.
-        size: 1
+        # One thread per @Scheduled job, so a slow pass of one never holds back another: the message dispatcher and the
+        # below-cost check. Add a thread for any further job.
+        size: 2
   config:
     import: "optional:configserver:http://localhost:8888"
   jpa:
@@ -21,7 +21,33 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
+      # Notification's OWN identity (Phase 11), used for one call: catalog's below-cost list. Client credentials: the service signs in
+      # as itself, with its client's id and secret, not on behalf of a person. Its Keycloak service account holds exactly
+      # CATALOG_ADMIN and COST_VIEWER. The secret has no default that works: unset, the service starts and the check says it is down.
+      # token-uri, never issuer-uri: an issuer triggers discovery at start-up, which fails offline and inside the container.
+      client:
+        registration:
+          oriah-notification:
+            provider: keycloak
+            client-id: oriah-notification
+            client-secret: ${ORIAH_NOTIFICATION_CLIENT_SECRET:}
+            authorization-grant-type: client_credentials
+            client-authentication-method: client_secret_basic
+        provider:
+          keycloak:
+            token-uri: http://localhost:7080/realms/oriah/protocol/openid-connect/token
   cloud:
+    openfeign:
+      # No circuit breaker on the one Feign client: the check runs on a schedule, and its schedule is its back-off.
+      circuitbreaker:
+        enabled: false
+      client:
+        config:
+          # The below-cost list. Catalog works it out at every read (one database read, the stock service, the promotion
+          # service): up to about 8 s for a hundred pieces by catalog's own timeouts, so 20 s here.
+          catalogBelowCost:
+            connect-timeout: 1000
+            read-timeout: 20000
     function:
       # Two consumers: order's events (messages for customers, and the payment claim), and payment's (money recorded and what became of it).
       definition: orderEvents;paymentEvents
@@ -264,6 +290,23 @@ oriah:
       window: PT6H
       # A dispatch step (packed, on its way, delivered) keyed this much later than it happened is not emailed: the customer already has the parcel.
       backdated-step-after: PT24H
+    below-cost:
+      # The below-cost check: every few minutes notification asks catalog which pieces are on sale for less than they cost, and
+      # tells the people allowed to see costs when a piece NEWLY is. On in every profile; the test configuration turns it off.
+      enabled: true
+      # Milliseconds between two rounds, and before the first (catalog asks the stock and promotion services, which need time to start).
+      delay: ${ORIAH_NOTIFICATION_BELOW_COST_DELAY:300000}
+      initial-delay: ${ORIAH_NOTIFICATION_BELOW_COST_INITIAL_DELAY:180000}
+      # Good rounds in a row without a piece before its alert ends: a piece that blinks out of one reading is not told twice.
+      clear-after-rounds: 2
+      # A piece the owner was emailed about this recently is not emailed again until the time is up (it is delayed, never dropped).
+      quiet-for: PT24H
+      # How long a digest email is worth sending. One that could not go is written again, fresh, by a later round.
+      digest-window: PT1H
+      # No good round for this long is itself an alert: "the below-cost check is not running".
+      down-after: PT2H
+      # How many pieces one email names; the rest are counted ("and 5 more").
+      max-named: 20
     alerts:
       # Used ONLY while not live and only when the matching environment variable is absent: catcher addresses for a developer's own machine.
       sandbox-recipients:

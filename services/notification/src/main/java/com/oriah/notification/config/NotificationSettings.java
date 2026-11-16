@@ -34,7 +34,24 @@ import jakarta.validation.constraints.NotNull;
 @ConfigurationProperties("oriah.notification")
 @Validated
 public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNull @Valid Shop shop, @NotNull @Valid Email email,
-                                   @NotNull @Valid Send send, @NotNull @Valid Alerts alerts) {
+                                   @NotNull @Valid Send send, @NotNull @Valid Alerts alerts, @NotNull @Valid BelowCost belowCost) {
+
+    /**
+     * The below-cost check.
+     *
+     * @param enabled          its switch (the test configuration turns it off and calls the poller itself)
+     * @param delay            milliseconds between two rounds
+     * @param initialDelay     milliseconds before the first round (the services catalog asks need time to start)
+     * @param clearAfterRounds good rounds in a row without a piece before its alert ends
+     * @param quietFor         a piece the owner was emailed about this recently is not emailed again until the time is up
+     * @param digestWindow     how long a digest email is worth sending; a later round writes a fresh one
+     * @param downAfter        no good round for this long is itself an alert ("the below-cost check is not running")
+     * @param maxNamed         how many pieces one email names; the rest are counted
+     */
+    public record BelowCost(boolean enabled, @Min(1000) long delay, @Min(0) long initialDelay, @Min(1) int clearAfterRounds,
+                            @NotNull Duration quietFor, @NotNull Duration digestWindow, @NotNull Duration downAfter, @Min(1) int maxNamed) {
+    }
+
 
     /** The shop's own public details, written by the owner; each is left out of a message while it is empty. */
     public record Shop(String payLine, String collectLine, String contactLine) {

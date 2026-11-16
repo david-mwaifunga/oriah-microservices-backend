@@ -273,6 +273,45 @@ public final class MessageTexts {
                         + "really arrived, and put it right with the customer and in your books.");
     }
 
+    /**
+     * A7b: one piece priced below cost, as it stands in the list of alerts (never emailed by itself). It names the piece and no figure:
+     * what it cost and what it sells for stay on the Prices screen, behind the capability to see costs.
+     *
+     * @param piece the piece as a person names it, for example "Aurelia Solitaire Ring - Ring Size M (SKU RING-M)"
+     */
+    public static Text belowCostPiece(String piece) {
+        return new Text(piece + " is priced below cost",
+                piece + " is on sale for less than it cost you. Open " + Screens.BELOW_COST + ", to see what it cost and to change its price. "
+                        + "If the price is like this on purpose, there is nothing to do.");
+    }
+
+    /**
+     * A7: the email of one round, naming every piece newly below cost (at most {@code maxNamed}; the rest are counted).
+     *
+     * @param pieces the pieces as a person names them
+     */
+    public static Text belowCostDigest(java.util.List<String> pieces, int maxNamed) {
+        boolean one = pieces.size() == 1;
+        StringBuilder body = new StringBuilder(one ? "This piece is now on sale for less than it cost you:\n"
+                : "These pieces are now on sale for less than they cost you:\n");
+        pieces.stream().limit(maxNamed).forEach(piece -> body.append("- ").append(piece).append('\n'));
+        if (pieces.size() > maxNamed) {
+            body.append("and ").append(pieces.size() - maxNamed).append(" more\n");
+        }
+        body.append(one ? "Open " + Screens.BELOW_COST + ", to see what it cost and to change its price. If the price is like this on purpose, "
+                + "there is nothing to do."
+                : "Open " + Screens.BELOW_COST + ", to see what each one cost and to change its price. If a price is like this on purpose, there "
+                + "is nothing to do.");
+        return new Text(one ? "1 piece is now priced below cost" : pieces.size() + " pieces are now priced below cost", body.toString());
+    }
+
+    /** A8: the below-cost check has had no good round for a while. (The support line is added when the email is built.) */
+    public static Text belowCostCheckDown(java.time.Instant since, java.time.ZoneId zone) {
+        return new Text("The below-cost check is not running",
+                "The system has not been able to compare your prices with your costs since " + LusakaTime.write(since, zone) + ". Until this "
+                        + "is fixed you will not be told when a piece falls below cost. You can still open " + Screens.BELOW_COST + ", yourself.");
+    }
+
     /** Why money could not pay a sale, in words. A code nobody taught this service points at the screen instead of guessing. */
     static String whyUnsettled(String reason) {
         if (reason == null) {

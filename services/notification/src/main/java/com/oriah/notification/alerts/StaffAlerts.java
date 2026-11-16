@@ -234,6 +234,19 @@ public class StaffAlerts {
                 old.id());
     }
 
+    /**
+     * Raises an alert and tells its group at once, in one transaction. For the scheduled jobs, which have no transaction of their own.
+     *
+     * @return whether this call raised it (false when an open alert about the same thing already stands)
+     */
+    public boolean raiseAndTell(NewAlert alert, Instant now) {
+        return Boolean.TRUE.equals(transaction.execute(tx -> {
+            Optional<UUID> id = raise(alert, now);
+            id.ifPresent(raised -> tell(raised, alert.kind(), "FIRST", 1, alert.words(), now, alert.tellBefore(), now));
+            return id.isPresent();
+        }));
+    }
+
     /** A mail server took an email about this alert: from now on staff have been told. */
     public void accepted(UUID alertId, Instant now) {
         jdbc.update("UPDATE staff_alert SET emailed_at = COALESCE(emailed_at, ?) WHERE id = ?", Timestamp.from(now), alertId);

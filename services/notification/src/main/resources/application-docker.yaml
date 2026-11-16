@@ -13,6 +13,11 @@ spring:
         jwt:
           issuer-uri: http://localhost:7080/realms/oriah
           jwk-set-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/certs
+      client:
+        provider:
+          keycloak:
+            # Inside the stack's network Keycloak is reached by its container name. (The token's issuer stays localhost:7080.)
+            token-uri: http://keycloak:8080/realms/oriah/protocol/openid-connect/token
 
 spring.cloud.stream.kafka.binder.brokers: kafka:9092
 

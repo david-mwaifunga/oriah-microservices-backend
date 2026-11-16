@@ -10,6 +10,9 @@ oriah:
   notification:
     send:
       enabled: false
+    # The below-cost check is off in tests for the same reason; tests build a poller and call tick() themselves.
+    below-cost:
+      enabled: false
     # The mailboxes alerts go to in tests: two for money alerts (so "one email per mailbox" is visible) and one for cost alerts. The test
     # context has no mail server (email.transport stays none); a test that sends builds its own dispatcher with a recording transport.
     alerts:

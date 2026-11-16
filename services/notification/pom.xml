@@ -46,6 +46,10 @@
         <!-- The mail library, driven directly (no Spring mail starter, so no auto-configured sender and no mail health indicator): the transport
              must know which step of the SMTP dialogue failed, which the Spring wrapper hides. The version is the Boot BOM's. -->
         <dependency><groupId>org.eclipse.angus</groupId><artifactId>angus-mail</artifactId></dependency>
+        <!-- The below-cost check (Phase 11): notification signs in at Keycloak as itself (client credentials) and asks catalog, over Feign,
+             which pieces are priced below what they cost. Its only outbound call. -->
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security-oauth2-client</artifactId></dependency>
+        <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-openfeign</artifactId></dependency>
         <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
 
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc-test</artifactId><scope>test</scope></dependency>
@@ -58,6 +62,8 @@
         <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-postgresql</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.springframework.security</groupId><artifactId>spring-security-test</artifactId><scope>test</scope></dependency>
         <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-stream-test-binder</artifactId><scope>test</scope></dependency>
+        <!-- Stands in for Keycloak and catalog in the test that proves notification signs in as itself. -->
+        <dependency><groupId>org.wiremock</groupId><artifactId>wiremock-standalone</artifactId><scope>test</scope></dependency>
     </dependencies>
 
     <build>

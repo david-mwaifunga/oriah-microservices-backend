@@ -12,6 +12,8 @@ import lombok.extern.slf4j.Slf4j;
 // @EnableConfigurationProperties(X.class), which has to be re-edited for
 // every future properties class.
 @ConfigurationPropertiesScan
+// The one Feign client: catalog's below-cost list (belowcost.CatalogBelowCostClient).
+@org.springframework.cloud.openfeign.EnableFeignClients
 @Slf4j
 public class NotificationServiceApplication {
     public static void main(String[] args) {

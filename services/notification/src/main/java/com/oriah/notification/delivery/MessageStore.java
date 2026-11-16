@@ -176,6 +176,22 @@ public class MessageStore {
                                   AND (? = FALSE OR status = 'SENT'))""", Boolean.class, orderId, eventType, afterSeq, sentOnly));
     }
 
+    /** Whether every piece a below-cost digest names has cleared meanwhile: then there is nothing left to tell. */
+    public boolean everyPieceOfTheDigestHasCleared(UUID rowId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT NOT EXISTS (SELECT 1 FROM notification_log m JOIN below_cost_digest_piece p ON p.digest_id = m.digest_id
+                                     JOIN staff_alert a ON a.id = p.alert_id
+                                    WHERE m.id = ? AND a.state = 'OPEN')""", Boolean.class, rowId));
+    }
+
+    /** A mail server took a below-cost digest: every piece it named has now been told. */
+    public void stampThePiecesOfTheDigest(UUID rowId, Instant now) {
+        jdbc.update("""
+                UPDATE staff_alert a SET emailed_at = COALESCE(a.emailed_at, ?)
+                  FROM notification_log m JOIN below_cost_digest_piece p ON p.digest_id = m.digest_id
+                 WHERE m.id = ? AND a.id = p.alert_id""", Timestamp.from(now), rowId);
+    }
+
     /** Whether the alert a staff row is about has ended. A row with no alert (a digest) answers false. */
     public boolean alertResolved(UUID alertId) {
         return alertId != null && Boolean.TRUE.equals(jdbc.queryForObject(

@@ -152,7 +152,13 @@ class EmailWiringTest {
         assertThat(shipped.getProperty("oriah.notification.send.enabled")).isEqualTo(true);
         assertThat(shipped.getProperty("oriah.notification.send.delay")).isEqualTo(5000);
         assertThat(shipped.getProperty("oriah.notification.send.initial-delay")).isEqualTo(15000);
-        assertThat(shipped.getProperty("spring.task.scheduling.pool.size")).isEqualTo(1);
+        assertThat(shipped.getProperty("spring.task.scheduling.pool.size")).as("one thread per job: the dispatcher and the below-cost check").isEqualTo(2);
+        assertThat(shipped.getProperty("oriah.notification.below-cost.enabled")).isEqualTo(true);
+        assertThat(shipped.getProperty("oriah.notification.below-cost.delay")).isEqualTo("${ORIAH_NOTIFICATION_BELOW_COST_DELAY:300000}");
+        assertThat(shipped.getProperty("oriah.notification.below-cost.initial-delay")).isEqualTo("${ORIAH_NOTIFICATION_BELOW_COST_INITIAL_DELAY:180000}");
+        assertThat(shipped.getProperty("oriah.notification.alerts.hold.quiet-from")).as("quoted in the file: unquoted, YAML reads 20:00 as the number 1200")
+                .isEqualTo("20:00");
+        assertThat(testOnly.getProperty("oriah.notification.below-cost.enabled")).isEqualTo(false);
         assertThat(testOnly.getProperty("oriah.notification.send.enabled")).isEqualTo(false);
     }
 }

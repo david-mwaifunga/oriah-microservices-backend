@@ -66,6 +66,7 @@ import com.oriah.notification.text.MessageTexts;
 public class MessageDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(MessageDispatcher.class);
+    private static final String DIGEST = "DIGEST";
     private static final int TRIES_TO_RECORD_A_SEND = 3;
     private static final Duration BETWEEN_TRIES_TO_RECORD = Duration.ofMillis(200);
     /** A second send with no answer in one pass ends the pass: something is wrong, though nobody can say what. */
@@ -186,7 +187,9 @@ public class MessageDispatcher {
 
     private Decision decide(Due row, Instant now) {
         if (row.recipientKind() == RecipientKind.STAFF) {
-            return SendDecision.forStaff(new StaffFacts(row.alertNotice(), row.staffTo(), store.alertResolved(row.alertId()),
+            // A digest names several alerts (the pieces newly below cost); it has "ended" when every one of them has cleared.
+            boolean ended = DIGEST.equals(row.alertNotice()) ? store.everyPieceOfTheDigestHasCleared(row.id()) : store.alertResolved(row.alertId());
+            return SendDecision.forStaff(new StaffFacts(row.alertNotice(), row.staffTo(), ended,
                     row.alertId() != null && store.newerNotice(row.id())), setup);
         }
         if (row.recipientKind() != RecipientKind.SHOPPER) {
@@ -231,6 +234,8 @@ public class MessageDispatcher {
                     if (row.alertId() != null) {
                         // "Told" means a mail server took it: only now have staff been told of this alert.
                         alerts.accepted(row.alertId(), now);
+                    } else if (DIGEST.equals(row.alertNotice())) {
+                        store.stampThePiecesOfTheDigest(row.id(), now);
                     }
                 });
                 return Pass.GO_ON;
