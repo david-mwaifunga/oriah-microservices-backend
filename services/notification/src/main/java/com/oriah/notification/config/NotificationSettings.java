@@ -2,6 +2,7 @@ package com.oriah.notification.config;
 
 import java.time.Duration;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Set;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -13,6 +14,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 
 /**
@@ -57,12 +59,23 @@ public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNul
     }
 
     /**
+     * @param enabled            the dispatcher's switch (the test configuration turns it off and calls the dispatcher itself)
+     * @param delay              milliseconds between two passes of the dispatcher
+     * @param initialDelay       milliseconds before its first pass
+     * @param batchSize          how many waiting messages one pass looks at
      * @param maxSend            the one wall-clock limit on a whole send
      * @param lease              how long a message being sent is out of reach of any other sender
+     * @param backoff            the wait after the 1st, 2nd, 3rd ... failed try; the last one repeats
+     * @param serverQuiet        after the mail server itself failed, nothing is handed to it for this long; it doubles with each failure in a row
+     * @param serverQuietMax     the longest such quiet time
      * @param window             how long after its event was recorded a message is still worth emailing
      * @param backdatedStepAfter a dispatch step keyed this much later than it happened is not emailed: the customer already has the parcel
+     * @param addressRecheck     how soon a message whose customer's address is not known yet is looked at again
      */
-    public record Send(@NotNull Duration maxSend, @NotNull Duration lease, @NotNull Duration window, @NotNull Duration backdatedStepAfter) {
+    public record Send(boolean enabled, @Min(100) long delay, @Min(0) long initialDelay, @Min(1) @Max(500) int batchSize,
+                       @NotNull Duration maxSend, @NotNull Duration lease, @NotEmpty List<Duration> backoff, @NotNull Duration serverQuiet,
+                       @NotNull Duration serverQuietMax, @NotNull Duration window, @NotNull Duration backdatedStepAfter,
+                       @NotNull Duration addressRecheck) {
     }
 
     public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients) {

@@ -1,6 +1,12 @@
 spring:
   application:
     name: notification
+  task:
+    scheduling:
+      pool:
+        # One thread per @Scheduled job, so a slow pass of one never holds back another. Today: the message dispatcher.
+        # Add a thread for any further job.
+        size: 1
   config:
     import: "optional:configserver:http://localhost:8888"
   jpa:
@@ -207,6 +213,21 @@ oriah:
       # The kinds of message that are emailed as well as shown on the website; every other kind is website only.
       emailed: PAID,READY_TO_COLLECT,ON_ITS_WAY,DELIVERED,PAYMENT_NOT_CONFIRMED
     send:
+      # The dispatcher: the one job that sends. On in every profile; the test configuration turns it off and calls it itself.
+      enabled: true
+      # Milliseconds between two passes, and before the first.
+      delay: 5000
+      initial-delay: 15000
+      # How many waiting messages one pass looks at.
+      batch-size: 20
+      # The wait after the 1st, 2nd, 3rd and 4th failed try of a message; the last one repeats until the message is too old.
+      backoff: PT1M,PT5M,PT15M,PT1H
+      # After the mail server itself failed (no connection, no sign-in, a refused sender, a used-up quota) nothing is handed to it
+      # for this long; it doubles with each failure in a row, up to the maximum. One failing message must not hammer a failing server.
+      server-quiet: PT1M
+      server-quiet-max: PT15M
+      # How soon a message whose customer's address is not known yet is looked at again (it costs no try).
+      address-recheck: PT1M
       # The one wall-clock limit on a whole send, whatever the mail server does (at most PT5M).
       max-send: PT90S
       # How long a message being sent is out of reach of any other sender. It must outlast max-send by PT30S, or the start is refused.

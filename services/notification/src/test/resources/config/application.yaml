@@ -1,0 +1,12 @@
+# Test-only settings, layered OVER src/main/resources/application.yaml.
+#
+# Spring Boot reads classpath:/config/application.yaml after classpath:/application.yaml, and a key here wins over the same key there; every other
+# key still comes from the main file. Only the test classpath has this file, so the service as shipped never sees it.
+#
+# The message dispatcher's schedule is off in tests. A test context stays alive for the whole run once it has started, and a pass landing mid-test
+# would send (or give up on) the very message a test is asserting on. Tests build a dispatcher and call run() themselves; DispatchScheduleTest
+# switches the schedule back on to prove it, and ShippedDefaultsTest pins that the main file ships it on.
+oriah:
+  notification:
+    send:
+      enabled: false
