@@ -321,6 +321,9 @@ oriah:
       retell-max: 12
       # The mail server failing this long is itself an alert ("emails are not going out"), listed and logged, never emailed.
       down-after: PT30M
+      # Money recorded whose sale was never heard to complete stays in the default list of alerts this long after its alert closed
+      # by the clock: an alert about money already taken must not vanish.
+      list-unanswered-for: P30D
       # The wait before the first "money recorded but the sale has not completed" email, and before any "sorted" email. The alarm
       # (payment's topic) and the answer (order's topic) travel separately: an answer seconds behind the alarm then mails nobody.
       settle-delay: PT1M

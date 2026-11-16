@@ -100,11 +100,13 @@ public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNul
      * @param retellAfter an open alert that no mail server ever took is written again this often
      * @param retellMax   and at most this many times
      * @param downAfter   the mail server failing this long is itself an alert ("emails are not going out")
+     * @param listUnansweredFor how long money recorded whose sale was never heard to complete stays in the default list of alerts after its
+     *                          alert closed by the clock
      * @param settleDelay the wait before the first "money recorded but the sale has not completed" email and before any "sorted" email: an
      *                    answer that is only seconds behind the alarm then mails nobody
      */
     public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients, @NotNull Duration maxFactAge, @NotNull Duration retellAfter,
-                         @Min(0) int retellMax, @NotNull Duration downAfter, @NotNull Duration settleDelay,
+                         @Min(0) int retellMax, @NotNull Duration downAfter, @NotNull Duration listUnansweredFor, @NotNull Duration settleDelay,
                          @NotNull @Valid PaymentToConfirm paymentToConfirm, @NotNull @Valid Hold hold, @NotNull @Valid Settlement settlement,
                          @NotNull @Valid VoidAfterSale voidAfterSale) {
     }
