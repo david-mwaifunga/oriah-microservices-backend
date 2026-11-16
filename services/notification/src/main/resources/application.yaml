@@ -211,6 +211,10 @@ oriah:
       max-send: PT90S
       # How long a message being sent is out of reach of any other sender. It must outlast max-send by PT30S, or the start is refused.
       lease: PT3M
+      # How long after its event was recorded a message is still worth emailing. Older than this it is shown on the website only.
+      window: PT6H
+      # A dispatch step (packed, on its way, delivered) keyed this much later than it happened is not emailed: the customer already has the parcel.
+      backdated-step-after: PT24H
     alerts:
       # Used ONLY while not live and only when the matching environment variable is absent: catcher addresses for a developer's own machine.
       sandbox-recipients:

@@ -3,11 +3,8 @@ package com.oriah.notification;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 
@@ -35,12 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * annotation was a real regression: springdoc's bean satisfied it, so the
  * shared error contract would have registered in no module at all.
  */
-@SpringBootTest
-@Import(TestcontainersConfiguration.class)
-@TestPropertySource(properties = {
-        "spring.cloud.config.enabled=false",
-        "eureka.client.enabled=false"
-})
+@ServiceTest
 class ErrorAdviceRegistrationTest {
 
     /** This service throws only the shared {@code ResourceNotFoundException}, whose

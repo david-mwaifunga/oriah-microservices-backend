@@ -5,15 +5,12 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
-import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.oriah.events.InboxSchemaGuard;
-import com.oriah.notification.TestcontainersConfiguration;
+
+import com.oriah.notification.ServiceTest;
 
 import static com.oriah.events.InboxSchemaGuard.Table.PROCESSED_EVENT;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,13 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * processed_event, the record of what it has already sent. It keeps no
  * processed_aggregate: it is not a copy of anybody's state.
  */
-@SpringBootTest
-@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
-@TestPropertySource(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.function.definition=orderEvents",
-        "spring.cloud.stream.bindings.orderEvents-in-0.destination=oriah.order"
-})
+@ServiceTest
 class InboxSchemaTest {
 
     @Autowired

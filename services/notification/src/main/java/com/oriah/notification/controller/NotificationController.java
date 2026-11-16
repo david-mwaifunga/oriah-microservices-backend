@@ -1,6 +1,7 @@
 package com.oriah.notification.controller;
 
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.http.ProblemDetail;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.oriah.notification.dto.NotificationResponse;
+import com.oriah.notification.model.RecipientKind;
 import com.oriah.notification.repository.NotificationLogRepository;
 
 @RestController
@@ -44,7 +46,8 @@ public class NotificationController {
         this.repository = repository;
     }
 
-    @Operation(operationId = "mine", summary = "The caller's notifications, newest first")
+    @Operation(operationId = "mine", summary = "The caller's own messages of every status, newest first",
+            description = "What the website's bell shows. A message that was not emailed is still listed. Any sort parameter is ignored.")
     @ApiResponse(responseCode = "200", description = "A page of notifications, possibly empty")
     @ApiResponse(responseCode = "400", description = "Validation failure or unparseable parameter; see fieldErrors",
             content = @Content(mediaType = "application/problem+json",
@@ -53,8 +56,11 @@ public class NotificationController {
     public ResponseEntity<Page<NotificationResponse>> mine(
             @AuthenticationPrincipal Jwt jwt,
             @PageableDefault(size = 50) Pageable pageable) {
+        // Newest first, always: the page and its size are the caller's, the order is not. (A sort by a field name would be handed to the
+        // database as it is, and the field the storefront knows, deliveredAt, is no longer a column.)
+        Pageable newestFirst = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
         return ResponseEntity.ok(
-                repository.findByKeycloakIdOrderByDeliveredAtDesc(jwt.getSubject(), pageable)
+                repository.findByKeycloakIdAndRecipientKindOrderByRecordedAtDesc(jwt.getSubject(), RecipientKind.SHOPPER, newestFirst)
                         .map(NotificationResponse::from)
         );
     }

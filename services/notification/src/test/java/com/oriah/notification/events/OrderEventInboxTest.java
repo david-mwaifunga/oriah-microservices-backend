@@ -16,11 +16,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.stream.binder.test.InputDestination;
 import org.springframework.cloud.stream.binder.test.TestChannelBinder;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
-import org.springframework.context.annotation.Import;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.integration.channel.AbstractMessageChannel;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -28,13 +25,16 @@ import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.oriah.events.EventHeaders;
-import com.oriah.notification.TestcontainersConfiguration;
+import com.oriah.notification.ServiceTest;
+import com.oriah.notification.MutableClock;
+import com.oriah.notification.TestData;
+import com.oriah.notification.model.MessageStatus;
+import com.oriah.notification.orders.OrderRefs;
 import com.oriah.notification.repository.NotificationLogRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,9 +47,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>Kafka delivers at least once: after a crash or a rebalance the same
  * event arrives again with the same event-id. Notification is a FACT
  * consumer -- each event is one message to send, order-independent -- so it
- * applies each through {@code Inbox.once}: the "sent" marker
+ * applies each through {@code Inbox.once}: the "applied" marker
  * (processed_event) and the notification_log row commit together or not at
- * all.
+ * all. Nothing is SENT here: the row waits for the scheduled dispatcher, so no
+ * mail server can hold up, fail or dead-letter an event.
  *
  * <p>What cannot be applied is refused loudly instead of skipped: the
  * exception leaves the consumer and no marker is left behind. On Kafka the
@@ -65,18 +66,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * dead-letter. What they prove is which failures are tried again and which
  * are not; OrderEventBindingTest works out how many deliveries Kafka makes.
  */
-@SpringBootTest
-@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class,
-        RecordingSender.InPlaceOfTheRealSender.class})
-@TestPropertySource(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.function.definition=orderEvents",
-        "spring.cloud.stream.bindings.orderEvents-in-0.destination=oriah.order"
-})
+@ServiceTest
 class OrderEventInboxTest {
 
     @Autowired
-    private RecordingSender sender;
+    private MutableClock clock;
+    @Autowired
+    private OrderRefs orderRefs;
     @Autowired
     private PlatformTransactionManager transactionManager;
     @Autowired
@@ -103,8 +99,7 @@ class OrderEventInboxTest {
 
     @BeforeEach
     void clean() {
-        notifications.deleteAll();
-        sender.clear();
+        TestData.clean(jdbc, clock);
         binder.resetLastError();
         countTries();
     }
@@ -117,7 +112,7 @@ class OrderEventInboxTest {
     }
 
     @Test
-    @DisplayName("the same event delivered twice sends ONE message and records it once")
+    @DisplayName("the same event delivered twice records ONE message")
     void redeliveryNotifiesOnce() {
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
@@ -132,17 +127,18 @@ class OrderEventInboxTest {
         assertThat(markers(eventId)).isEqualTo(1);
     }
 
-    // ---- Sent only once the transaction has committed ----------------------
+    // ---- Recorded with the marker, sent by somebody else ---------------------
     //
-    // Sending is the one step that cannot be taken back: a message that has
-    // gone out stays out. So it must happen only for a notification whose
-    // row and "applied" marker are committed. Sent inside the transaction, a
-    // commit that then failed would leave a message out with nothing
-    // recorded -- and Kafka's redelivery would send it a second time.
+    // Sending is the one step that cannot be taken back, and a mail server can
+    // be slow or away. So the consumer never sends: it writes the message down
+    // in the same transaction as the "applied" marker, and a scheduled
+    // dispatcher picks it up afterwards. A transaction that rolls back leaves
+    // no row, so there is nothing to send; one that commits leaves a row that
+    // waits.
 
     @Test
-    @DisplayName("a transaction that rolls back after the notification row is written sends nothing")
-    void rolledBackTransactionSendsNothing() {
+    @DisplayName("a transaction that rolls back after the row is written records nothing")
+    void aRolledBackEventRecordsNothing() {
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
         Message<byte[]> paid = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId)).build();
@@ -153,49 +149,46 @@ class OrderEventInboxTest {
             transaction.setRollbackOnly(); // and then the transaction does not commit
         });
 
-        assertThat(sender.sent()).as("nothing is sent for a transaction that never committed").isEmpty();
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId)).isZero();
     }
 
     @Test
-    @DisplayName("an event whose transaction commits is sent exactly once, after its row is committed")
-    void committedEventIsSentOnceAfterTheCommit() {
+    @DisplayName("an event whose transaction commits leaves one row waiting for the dispatcher, due at once")
+    void aCommittedEventWaitsForTheDispatcher() {
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
 
         input.send(Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId)).build(), "oriah.order");
 
-        assertThat(sender.sent()).singleElement().satisfies(sent -> {
-            assertThat(sent.notification().orderId()).isEqualTo(orderId);
-            assertThat(sent.notification().keycloakId()).isEqualTo("kc-alice");
-            assertThat(sent.notification().subject()).contains("Payment");
-            assertThat(sent.committedWhenSent())
-                    .as("the row was already committed -- visible to another connection -- when it was sent")
-                    .isTrue();
+        assertThat(notifications.findAll()).singleElement().satisfies(row -> {
+            assertThat(row.orderId()).isEqualTo(orderId);
+            assertThat(row.keycloakId()).isEqualTo("kc-alice");
+            assertThat(row.subject()).contains("Payment");
+            assertThat(row.status()).isEqualTo(MessageStatus.RECORDED);
+            assertThat(row.nextAttemptAt()).isEqualTo(clock.instant());
+            assertThat(row.eventId()).isEqualTo(eventId);
         });
         assertThat(markers(eventId)).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("a redelivery of an event already sent sends nothing")
-    void redeliveryOfAnAppliedEventSendsNothing() {
+    @DisplayName("a redelivery of an event already applied records nothing more")
+    void aRedeliveredEventRecordsOnce() {
         UUID orderId = UUID.randomUUID();
         Message<byte[]> paid = Relayed.orderEvent(UUID.randomUUID(), "order.paid", orderId, 2, payload(orderId))
                 .build();
         input.send(paid, "oriah.order");
-        assertThat(sender.sent()).hasSize(1);
-        sender.clear();
+        assertThat(notifications.count()).isEqualTo(1);
 
         input.send(paid, "oriah.order");
 
-        assertThat(sender.sent()).as("the Inbox finds it applied, so nothing is sent again").isEmpty();
-        assertThat(notifications.count()).isEqualTo(1);
+        assertThat(notifications.count()).as("the Inbox finds it applied, so no second row is written").isEqualTo(1);
     }
 
     @Test
-    @DisplayName("an event whose first transaction rolled back is sent exactly once when it is delivered again")
-    void redeliveryAfterARollbackSendsOnce() {
+    @DisplayName("an event whose first transaction rolled back is recorded exactly once when it is delivered again")
+    void redeliveryAfterARollbackRecordsOnce() {
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();
         Message<byte[]> paid = Relayed.orderEvent(eventId, "order.paid", orderId, 2, payload(orderId)).build();
@@ -206,15 +199,15 @@ class OrderEventInboxTest {
 
         input.send(paid, "oriah.order");
 
-        assertThat(sender.sent())
-                .as("one message: none for the transaction that rolled back, one for the one that committed")
+        assertThat(notifications.findAll())
+                .as("one row: none for the transaction that rolled back, one for the one that committed")
                 .singleElement()
-                .satisfies(sent -> assertThat(sent.committedWhenSent()).isTrue());
+                .satisfies(row -> assertThat(row.status()).isEqualTo(MessageStatus.RECORDED));
         assertThat(markers(eventId)).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("events of one order are facts: each is sent once, whatever order they arrive in")
+    @DisplayName("events of one order are facts: each is recorded once, whatever order they arrive in")
     void factsApplyInAnyOrder() {
         UUID orderId = UUID.randomUUID();
         // paid (seq 2) overtakes created (seq 1). A fact consumer still sends
@@ -283,7 +276,7 @@ class OrderEventInboxTest {
 
     @Test
     @DisplayName("the SAME payment announced again (republished: order does this while payment has no answer) is recorded as applied and tells the customer nothing a second time")
-    void aRepublishedPaymentSendsNothing() {
+    void aRepublishedPaymentRecordsNothing() {
         UUID orderId = UUID.randomUUID();
         UUID first = UUID.randomUUID();
         UUID again = UUID.randomUUID();
@@ -294,9 +287,24 @@ class OrderEventInboxTest {
         orderEvents.accept(Relayed.orderEvent(again, "order.paid", orderId, 2, republished).setHeader(EventHeaders.SCHEMA_VERSION, "2").build());
 
         assertThat(notifications.findAll()).as("one 'payment received', not two").hasSize(1);
-        assertThat(sender.sent()).hasSize(1);
         assertThat(markers(first)).isEqualTo(1);
         assertThat(markers(again)).as("the repeat is applied (recorded) all the same, so it is never delivered again").isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a payment heard of ONLY as a repeat (the first announcement never arrived) still marks the order as paid in notification's memory, and tells the customer nothing")
+    void aRepublishedPaymentIsStillRememberedAsPaid() {
+        UUID orderId = UUID.randomUUID();
+        byte[] republished = new String(payloadV2(orderId), StandardCharsets.UTF_8)
+                .replace("\"receiptNumber\":\"R-000123\"", "\"receiptNumber\":\"R-000123\",\"republished\":true").getBytes(StandardCharsets.UTF_8);
+
+        orderEvents.accept(Relayed.orderEvent(UUID.randomUUID(), "order.paid", orderId, 2, republished).setHeader(EventHeaders.SCHEMA_VERSION, "2").build());
+
+        assertThat(notifications.count()).isZero();
+        assertThat(orderRefs.find(orderId)).hasValueSatisfying(ref -> {
+            assertThat(ref.paidAt()).isNotNull();
+            assertThat(ref.receiptNumber()).isEqualTo("R-000123");
+        });
     }
 
     @Test
@@ -309,18 +317,18 @@ class OrderEventInboxTest {
 
         orderEvents.accept(Relayed.orderEvent(eventId, "order.expired", orderId, 3, snapshotWithNoTotals).build());
 
-        assertThat(sender.sent()).singleElement().satisfies(sent -> {
-            assertThat(sent.notification().orderId()).isEqualTo(orderId);
-            assertThat(sent.notification().keycloakId()).isEqualTo("kc-alice");
-            assertThat(sent.notification().subject()).containsIgnoringCase("expired");
-            assertThat(sent.notification().body()).contains(orderId.toString());
+        assertThat(notifications.findAll()).singleElement().satisfies(row -> {
+            assertThat(row.orderId()).isEqualTo(orderId);
+            assertThat(row.keycloakId()).isEqualTo("kc-alice");
+            assertThat(row.subject()).isEqualTo("Your order has expired");
+            assertThat(row.body()).contains(orderId.toString().substring(0, 8).toUpperCase()).doesNotContain(orderId.toString());
         });
         assertThat(markers(eventId)).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("a shopper submitting a payment claim and money that could not settle a sale are facts for staff, not for the customer: recorded as applied, and nothing is sent")
-    void factsForStaffSendNothing() {
+    @DisplayName("a shopper submitting a payment claim and money that could not settle a sale are facts for staff, not for the customer: recorded as applied, and no row is written for anyone yet")
+    void factsForStaffAreStillOnlyMarkedApplied() {
         UUID orderId = UUID.randomUUID();
         UUID submitted = UUID.randomUUID();
         UUID unsettled = UUID.randomUUID();
@@ -335,7 +343,6 @@ class OrderEventInboxTest {
         assertThat(markers(submitted)).isEqualTo(1);
         assertThat(markers(unsettled)).isEqualTo(1);
         assertThat(notifications.count()).isZero();
-        assertThat(sender.sent()).isEmpty();
     }
 
     /**
@@ -367,7 +374,6 @@ class OrderEventInboxTest {
         assertThat(binder.getLastError()).as("it is dead-lettered").isNotNull();
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId)).isZero();
-        assertThat(sender.sent()).as("nothing is sent").isEmpty();
     }
 
     /**
@@ -399,7 +405,6 @@ class OrderEventInboxTest {
         assertThat(binder.getLastError()).as("it is dead-lettered").isNotNull();
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId)).isZero();
-        assertThat(sender.sent()).as("nobody is told about another order").isEmpty();
     }
 
     @Test
@@ -417,7 +422,6 @@ class OrderEventInboxTest {
 
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId)).isZero();
-        assertThat(sender.sent()).as("nothing is sent").isEmpty();
     }
 
     @Test
@@ -451,13 +455,13 @@ class OrderEventInboxTest {
     }
 
     @Test
-    @DisplayName("when sending throws, the exception leaves the consumer and no marker is left behind")
+    @DisplayName("when applying an event throws, the exception leaves the consumer and no marker is left behind")
     void throwingEffectLeavesNoMarker() {
         UUID eventId = UUID.randomUUID();
         // A handled type with a body that breaks the contract: the order id is
-        // not a UUID. Reading it is part of sending, so the send throws after
-        // the marker was written -- and the marker must roll back with it, or
-        // the retry would find it and never send.
+        // not a UUID. Reading it happens after the marker was written, so the
+        // marker must roll back with the failure, or a retry would find the
+        // event "applied" with no message ever recorded.
         byte[] broken = """
                 {"orderId":"not-a-uuid","keycloakId":"kc-alice","previousStatus":"CREATED","newStatus":"PAID",
                  "total":4625.00,"currency":"ZMW"}""".getBytes(StandardCharsets.UTF_8);
@@ -467,7 +471,7 @@ class OrderEventInboxTest {
 
         assertThat(notifications.count()).isZero();
         assertThat(markers(eventId))
-                .as("the marker rolled back with the failed send, so the retry sends it")
+                .as("the marker rolled back with the failure, so a retry applies it")
                 .isZero();
     }
 
@@ -524,7 +528,7 @@ class OrderEventInboxTest {
     }
 
     @Test
-    @DisplayName("through the binder: a failure that can pass on a later try is retried, and the message sent once")
+    @DisplayName("through the binder: a failure that can pass on a later try is retried, and the message recorded once")
     void passingFailureIsRetried() {
         UUID orderId = UUID.randomUUID();
         UUID eventId = UUID.randomUUID();

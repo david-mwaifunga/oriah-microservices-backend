@@ -2,83 +2,79 @@ package com.oriah.notification.events;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.Message;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.oriah.events.EventHeaders;
 import com.oriah.events.Inbox;
 import com.oriah.events.InboxConsumer;
-import com.oriah.notification.delivery.NotificationSender;
+import com.oriah.notification.config.NotificationSettings;
+import com.oriah.notification.model.MessageKind;
 import com.oriah.notification.model.NotificationLog;
+import com.oriah.notification.model.StatusReason;
+import com.oriah.notification.orders.OrderRefs;
 import com.oriah.notification.repository.NotificationLogRepository;
+import com.oriah.notification.text.MessageTexts;
+import com.oriah.notification.text.MessageTexts.OrderWords;
+import com.oriah.notification.text.MessageTexts.ShopLines;
+import com.oriah.notification.text.MessageTexts.Text;
 
 /**
- * Subscribes to the {@code oriah.order} Kafka topic. Every state
- * change publishes one event there (CREATED, PAID, SHIPPED, etc.); we
- * translate it to a customer-facing notification, record it (a
- * notification_log row) and, once that is committed, deliver it
- * ({@link NotificationSender}: today a log line).
+ * Subscribes to the {@code oriah.order} Kafka topic. Every change to an order publishes one event there (created, paid, shipped and so on);
+ * this consumer turns each into a message for the customer and WRITES IT DOWN (a notification_log row). It sends nothing.
  *
- * <p>One consumer dispatches by the {@code event-type} message header.
+ * <p>group=notification ensures all notification instances share one consumer group: each event is delivered to exactly one instance.
  *
- * <p>group=notification ensures all notification instances share one
- * consumer group: each event is delivered to exactly one instance.
+ * <h2>Recorded here, sent by somebody else</h2>
  *
- * <h2>Each event is sent once</h2>
+ * Kafka delivers at least once, so the same event can arrive twice. Each event is one message to a person, a fact and not a copy of the
+ * order's state, so it goes through {@link Inbox#once}: the record that it was applied (processed_event) commits in the same transaction as its
+ * notification_log row, and a second delivery finds the record and writes nothing.
  *
- * Kafka delivers at least once, so the same event can arrive twice. Each
- * event is one message to a person -- a fact, not a copy of the order's
- * state -- so it goes through {@link Inbox#once}: the record that it was sent
- * (processed_event) commits in the same transaction as its notification_log
- * row, and a second delivery finds the record and sends nothing. The message
- * itself goes out only after that transaction commits (see
- * {@code Handler.sendAfterCommit}), so a transaction that rolls back never
- * sends.
+ * <p>The row says what is to become of the message: it waits to be emailed (RECORDED), or it is final at once with the reason (this kind is
+ * shown on the website only; the event is already too old; it announces a dispatch step keyed long after it happened). A scheduled dispatcher
+ * sends the rows that wait. Until Phase 11 the send happened here, on the thread that reads Kafka, after the commit: a slow mail server would
+ * have held up every order behind it, and a message whose send failed after the commit was lost for good. Now a mail server cannot hold up,
+ * fail or dead-letter an event, and a message that could not be sent is still in its row to be tried again.
  *
  * <h2>Nothing is swallowed</h2>
  *
- * An event that cannot be applied -- a type or payload version this consumer
- * does not declare, an aggregate that is not an order, a missing or garbled
- * envelope header, a body that breaks the contract -- throws. The transaction
- * rolls back with its record, and the oriah-events module's error handler
- * publishes it to {@code oriah.order.dlq.notification}: on its first delivery
- * for a refusal like these, which would fail the same way again, and after
- * three deliveries in all for anything else, such as the database being away
- * (application.yaml). It commits the event only once that topic has it, so a
- * failed dead-letter publish keeps the event instead of dropping it. Logging
- * and carrying on, as this consumer once did, lost such an event for good.
+ * An event that cannot be applied (a type or payload version this consumer does not declare, an aggregate that is not an order, a missing or
+ * garbled envelope header, a body that breaks the contract) throws. The transaction rolls back with its record, and the oriah-events module's
+ * error handler publishes it to {@code oriah.order.dlq.notification}: on its first delivery for a refusal like these, which would fail the same
+ * way again, and after three deliveries in all for anything else, such as the database being away (application.yaml). It commits the event
+ * only once that topic has it, so a failed dead-letter publish keeps the event instead of dropping it.
  */
 @Configuration
 @lombok.extern.slf4j.Slf4j
 public class OrderEventConsumer {
 
     /**
-     * What every order event is about, spelled exactly as order writes it in
-     * the aggregate-type header (OrderEvent.AGGREGATE_TYPE, "order", lower
-     * case). The Inbox refuses an order event that says it is about anything
-     * else -- "Order" included -- before anything is recorded: notification
+     * What every order event is about, spelled exactly as order writes it in the aggregate-type header (OrderEvent.AGGREGATE_TYPE, "order", lower
+     * case). The Inbox refuses an order event that says it is about anything else, "Order" included, before anything is recorded: notification
      * reads its aggregate-id as an order's id, so it must be one.
      */
     static final String ORDER = "order";
 
     /**
      * Every type order publishes on oriah.order. Each status change is {@code order.<status>} with the full order snapshot ({@link OrderEventPayload})
-     * as its payload and has a message to send; the two facts order announces about a sale in progress are not for the customer and are ignored.
+     * as its payload and has a message to write; the two facts order announces about a sale in progress are not for the customer and are ignored.
      *
      * <ul>
      *   <li>{@code order.paid} has two versions (Phase 7): the second keeps every field of the first, in the same order, and adds what the sale was
-     *       paid with. Both are read as the snapshot they start with and say the same thing to the customer.
-     *   <li>{@code order.expired}: an unpaid order lapsed; its hold was let go. A plain message that reads no figure.
+     *       paid with. The customer is told the receipt number from the second.
+     *   <li>{@code order.expired}: an order's hold was let go. It reads differently when the customer had told us they paid.
      *   <li>{@code order.payment_submitted} and {@code order.payment_unsettled} are FACTS for staff (a shopper's claim to have paid; money that could
-     *       not settle a sale): declared and ignored, so they are marked applied and nothing is sent.
+     *       not settle a sale): declared and ignored, so they are marked applied and nothing is written.
      * </ul>
      *
      * A type nobody declared (a refund, say) is refused on its first delivery so that a new one is noticed. Declare a new type HERE before order
@@ -94,40 +90,60 @@ public class OrderEventConsumer {
             .handles(ORDER, "order.expired", 1)
             .ignores("order.payment_submitted", "order.payment_unsettled");
 
+    /** The steps of a dispatch. One keyed long after it happened is not announced: the customer already has the parcel. */
+    private static final Set<String> DISPATCH_STEPS = Set.of("order.fulfilled", "order.shipped", "order.delivered");
+    private static final String THE_CUSTOMER_PAYS_THE_COURIER = "RECIPIENT_PAYS";
+
     @Bean
-    public Consumer<Message<byte[]>> orderEvents(
-            Inbox inbox,
-            NotificationLogRepository repository,
-            NotificationSender sender,
-            ObjectMapper objectMapper) {
-        return new Handler(inbox, repository, sender, objectMapper);
+    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs,
+                                                 NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
+        return new Handler(inbox, repository, orderRefs, settings, clock, objectMapper);
     }
 
     static class Handler implements Consumer<Message<byte[]>> {
         private final Inbox inbox;
         private final NotificationLogRepository repository;
-        private final NotificationSender sender;
+        private final OrderRefs orderRefs;
+        private final NotificationSettings settings;
+        private final Clock clock;
         private final ObjectMapper objectMapper;
 
-        Handler(Inbox inbox, NotificationLogRepository repository, NotificationSender sender,
+        Handler(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, NotificationSettings settings, Clock clock,
                 ObjectMapper objectMapper) {
             this.inbox = inbox;
             this.repository = repository;
-            this.sender = sender;
+            this.orderRefs = orderRefs;
+            this.settings = settings;
+            this.clock = clock;
             this.objectMapper = objectMapper;
         }
 
         @Override
         @Transactional
         public void accept(Message<byte[]> message) {
-            inbox.once(NOTIFICATION, message.getHeaders(), () -> notify(message));
+            inbox.once(NOTIFICATION, message.getHeaders(), () -> record(message));
         }
 
-        /** Runs only for a handled type the Inbox has not seen; the Inbox checked the headers. */
-        private void notify(Message<byte[]> message) {
-            String type = header(message, EventHeaders.EVENT_TYPE);
-            OrderEventPayload payload = read(message.getPayload());
-            requireAboutTheEnvelopesOrder(message, payload);
+        /** Runs only for a handled type the Inbox has not seen; the Inbox checked the headers. Everything here is one transaction with its marker. */
+        private void record(Message<byte[]> message) {
+            EnvelopeFacts facts = EnvelopeFacts.from(message);
+            String type = facts.eventType();
+            OrderEventPayload payload = read(message.getPayload(), OrderEventPayload.class);
+            requireAboutTheEnvelopesOrder(facts, payload);
+            boolean hasOwner = payload.keycloakId() != null && !payload.keycloakId().isBlank();
+            if (!hasOwner && !payload.isPhone()) {
+                // A web order always has an owner: one without is a defect upstream, refused so it is noticed (the dead-letter topic on Kafka).
+                throw new IllegalArgumentException("order event " + type + " for order " + payload.orderId() + " has no owner and is not a phone order");
+            }
+            Instant now = clock.instant();
+
+            // What notification remembers about the order, from EVERY event of it (a repeated payment too): whose it is, and, once it is paid,
+            // that it is paid and its receipt number. Later messages name the order by that number, and a "we could not complete your order"
+            // that is still waiting is held back once the order turned out to be paid after all.
+            boolean paid = "order.paid".equals(type);
+            PaidExtras paidWith = paid ? read(message.getPayload(), PaidExtras.class) : null;
+            orderRefs.note(payload.orderId(), payload.isPhone() ? null : payload.keycloakId(), payload.isPhone(), null,
+                    paid ? paidWith.receiptNumber() : null, paid ? facts.recordedAt() : null, now);
 
             if (Boolean.TRUE.equals(payload.republished())) {
                 // The same sale announced again so payment can hear its answer: the customer was told when it was first announced. The Inbox records
@@ -137,134 +153,96 @@ public class OrderEventConsumer {
             }
             if (payload.isPhone()) {
                 // An order staff recorded for a caller with no account has no shopper to message (Phase 9). It is recorded as applied all the same,
-                // so it is never delivered again; reaching the caller by phone or WhatsApp is Phase 11's, read from order by id, never from an event.
-                log.info("{} for order {} was recorded by staff for a caller with no account: no message is sent", type, payload.orderId());
+                // so it is never delivered again.
+                log.info("{} for order {} was recorded by staff for a caller with no account: no message is written for a customer", type,
+                        payload.orderId());
                 return;
             }
-            if (payload.keycloakId() == null || payload.keycloakId().isBlank()) {
-                // A web order always has an owner: one without is a defect upstream, refused so it is noticed (the dead-letter topic on Kafka).
-                throw new IllegalArgumentException("order event " + type + " for order " + payload.orderId() + " has no owner and is not a phone order");
-            }
-            var template = renderTemplate(type, payload);
-            NotificationLog notification = repository.save(new NotificationLog(
-                    payload.orderId(), payload.keycloakId(), type, "email", template.subject(), template.body()));
-            sendAfterCommit(notification);
+
+            MessageKind kind = MessageKind.of(type, payload.deliveryOption(), payload.previousStatus());
+            String receiptNumber = orderRefs.find(payload.orderId()).map(OrderRefs.OrderRef::receiptNumber).orElse(null);
+            boolean recipientPays = "order.shipped".equals(type)
+                    && THE_CUSTOMER_PAYS_THE_COURIER.equals(read(message.getPayload(), ShippedExtras.class).payer());
+            Text text = MessageTexts.forShopper(kind, new OrderWords(payload.orderId(), receiptNumber, payload.total(), payload.currency(),
+                    payload.deliveryOption(), recipientPays), shopLines());
+
+            Instant sendBefore = facts.recordedAt().plus(settings.send().window());
+            StatusReason notSentBecause = whyNotEmailed(kind, type, facts, now, sendBefore);
+            repository.save(NotificationLog.forShopper(payload.orderId(), payload.keycloakId(), type, text.subject(), text.body(), facts.eventId(),
+                    facts.seq(), facts.recordedAt(), now, notSentBecause, sendBefore));
+            // Which event, which order, what became of it. Never the words: they are in the row.
+            log.info("{} for order {} written down as a message: {}", type, payload.orderId(),
+                    notSentBecause == null ? "waiting to be emailed" : "not emailed (" + notSentBecause + ")");
         }
 
         /**
-         * Arranges for the notification to be sent only after this
-         * transaction has committed -- when its notification_log row and the
-         * Inbox's "applied" marker are saved for good. If the transaction
-         * rolls back, the arrangement is dropped with it.
+         * Why a message is NOT going to be emailed, decided when it is written down; null when it waits to be sent.
          *
-         * <p>Why wait for the commit: a message that has gone out cannot be
-         * called back. Sent inside the transaction, a commit that then failed
-         * (the database went away, the transaction timed out) would leave a
-         * customer with a message and nothing recorded; Kafka would deliver the
-         * event again, the Inbox would find no marker, and the customer would
-         * get it twice. Sent after the commit, a transaction that rolls back
-         * sends nothing, and the redelivery that follows sends it once.
-         *
-         * <p>What this does not cover: the service dying between the commit and
-         * the send. The row and the marker are saved, so a redelivery of the
-         * event finds it applied and sends nothing -- that one message is lost.
-         * The same if the send itself throws: the exception leaves the consumer
-         * after the commit, the event is delivered again, the Inbox finds it
-         * applied, and that message is lost too. Today's sender only writes a
-         * log line, so this is narrow. Phase 11, which brings real email,
-         * WhatsApp and SMS, adds a delivery status to each notification and a
-         * sweeper that retries the ones never marked delivered.
-         *
-         * <p>The send runs on the listener's thread before it returns, so its
-         * time counts in the poll budget (OrderEventBindingTest): a real
-         * sender in Phase 11 needs a timeout of its own.
+         * <p>Both "too late" rules read the producer's own times from the envelope, never the moment Kafka delivered the event: history read
+         * late (after an outage, or by a database that starts empty) looks as old as it is. A payment is never "keyed late": staff confirm
+         * money when they see it, which can be a day after it arrived, and "payment received" is news to the customer whenever that is.
          */
-        private void sendAfterCommit(NotificationLog notification) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    sender.send(notification);
-                }
-            });
+        private StatusReason whyNotEmailed(MessageKind kind, String type, EnvelopeFacts facts, Instant now, Instant sendBefore) {
+            if (!settings.email().emailed().contains(kind)) {
+                return StatusReason.BELL_ONLY;
+            }
+            if (DISPATCH_STEPS.contains(type)
+                    && Duration.between(facts.occurredAt(), facts.recordedAt()).compareTo(settings.send().backdatedStepAfter()) > 0) {
+                return StatusReason.BACKDATED_STEP;
+            }
+            if (!now.isBefore(sendBefore)) {
+                return StatusReason.TOO_LATE;
+            }
+            return null;
         }
 
-        private OrderEventPayload read(byte[] body) {
+        private ShopLines shopLines() {
+            NotificationSettings.Shop shop = settings.shop();
+            return new ShopLines(shop.payLine(), shop.collectLine(), shop.contactLine());
+        }
+
+        private <T> T read(byte[] body, Class<T> as) {
             try {
-                return objectMapper.readValue(body, OrderEventPayload.class);
+                return objectMapper.readValue(body, as);
             } catch (IOException e) {
                 throw new UncheckedIOException("order event body does not match the contract", e);
             }
         }
 
         /**
-         * The body must be a snapshot of the order the envelope names
-         * (aggregate-id). A body about another order -- or about no order at
-         * all -- would send one customer news of somebody else's order, so it
-         * is refused (an IllegalArgumentException, which the binding never
-         * retries: it goes to the dead-letter topic on its first delivery).
+         * The body must be a snapshot of the order the envelope names (aggregate-id). A body about another order, or about no order at all,
+         * would tell one customer news of somebody else's order, so it is refused (an IllegalArgumentException, which the binding never retries:
+         * it goes to the dead-letter topic on its first delivery).
          *
-         * <p>This is the first thing the effect does, before anything of
-         * notification's own is written or any delivery is arranged. The
-         * Inbox inserted its "applied" marker a moment earlier, in this same
-         * transaction, so the refusal rolls the marker back with it: nothing
-         * is recorded and nothing is sent. (It runs after the Inbox's own
-         * checks on purpose: an event of a type or payload version
-         * notification does not read is refused for that reason, rather than
-         * for a body this record cannot make sense of.) Search and inventory
-         * check their product snapshots the same way.
+         * <p>This is the first thing the effect does, before anything of notification's own is written. The Inbox inserted its "applied" marker a
+         * moment earlier, in this same transaction, so the refusal rolls the marker back with it: nothing is recorded. (It runs after the Inbox's
+         * own checks on purpose: an event of a type or payload version notification does not read is refused for that reason, rather than for a
+         * body this record cannot make sense of.) Search and inventory check their product snapshots the same way.
          */
-        private static void requireAboutTheEnvelopesOrder(Message<byte[]> message, OrderEventPayload payload) {
-            String aggregateId = header(message, EventHeaders.AGGREGATE_ID);
-            if (payload.orderId() == null || !payload.orderId().toString().equals(aggregateId)) {
+        private static void requireAboutTheEnvelopesOrder(EnvelopeFacts facts, OrderEventPayload payload) {
+            if (payload.orderId() == null || !payload.orderId().equals(facts.aggregateId())) {
                 throw new IllegalArgumentException("order event body has orderId " + payload.orderId()
-                        + " but arrived in an envelope for order " + aggregateId
+                        + " but arrived in an envelope for order " + facts.aggregateId()
                         + "; refused, so no customer is told about another order");
             }
         }
+    }
 
-        /** A header as text: a String as the binder hands it over, or raw UTF-8 bytes as Kafka carries it. */
-        private static String header(Message<?> message, String name) {
-            Object value = message.getHeaders().get(name);
-            return value instanceof byte[] bytes ? new String(bytes, StandardCharsets.UTF_8) : String.valueOf(value);
+    /** What order.paid's second version adds that a message uses; absent (null) in the first version. Nothing else of the payment is read. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PaidExtras(java.util.UUID confirmationId, String receiptNumber) {
+    }
+
+    /** What order.shipped says about the dispatch that a message uses: who pays the courier. The fare is never read. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record ShippedExtras(Dispatch dispatch) {
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        record Dispatch(String payer) {
         }
 
-        private Template renderTemplate(String type, OrderEventPayload payload) {
-            // Keep templates inline for the stub. Real impl picks them
-            // from a CMS / Mustache-like engine.
-            return switch (type) {
-                case "order.created"   -> new Template("Your Oriah order is on its way to confirmation",
-                        "Thank you. We received your order " + payload.orderId() +
-                        " for " + payload.total().toPlainString() + " " + payload.currency());
-                case "order.paid"      -> new Template("Payment received — thank you!",
-                        "Your payment for order " + payload.orderId() + " was successful.");
-                // An order the shopper collects is packed and handed over across the counter: nothing is ever shipped or delivered to them (Phase 8). An
-                // order that records no delivery option (placed before Phase 7) gets the courier wording, never a guess that it was collected.
-                case "order.fulfilled" -> "SELF_COLLECT".equals(payload.deliveryOption())
-                        ? new Template("Your order is ready to collect",
-                                "Order " + payload.orderId() + " is packed and ready for you to collect.")
-                        : new Template("Your order is being prepared",
-                                "Order " + payload.orderId() + " has been fulfilled and is awaiting shipment.");
-                case "order.shipped"   -> new Template("Your order has shipped",
-                        "Order " + payload.orderId() + " is on its way to you.");
-                case "order.delivered" -> "SELF_COLLECT".equals(payload.deliveryOption())
-                        ? new Template("Your order has been collected",
-                                "Order " + payload.orderId() + " was collected. We hope you love it.")
-                        : new Template("Your order has been delivered",
-                                "Order " + payload.orderId() + " was delivered. We hope you love it.");
-                case "order.cancelled" -> new Template("Your order was cancelled",
-                        "Order " + payload.orderId() + " has been cancelled. Any payment will be refunded.");
-                // Reads no figure on purpose: an expiry's snapshot is not guaranteed to carry totals.
-                case "order.expired"   -> new Template("Your order has expired",
-                        "Order " + payload.orderId() + " was not paid in time, so the pieces we were holding for you have been let go. "
-                                + "If you have already paid, please contact us.");
-                // Unreachable while NOTIFICATION and this switch list the same
-                // types: the Inbox refuses any other before this runs. If one
-                // is ever declared without a template, fail (retry, then the
-                // dead-letter topic) rather than send a vague message.
-                default -> throw new IllegalStateException("no template for declared event type " + type);
-            };
+        String payer() {
+            return dispatch == null ? null : dispatch.payer();
         }
-
-        record Template(String subject, String body) {}
     }
 }

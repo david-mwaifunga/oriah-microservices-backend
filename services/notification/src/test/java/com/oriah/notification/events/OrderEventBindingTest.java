@@ -14,26 +14,23 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
-import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.kafka.ListenerContainerWithDlqAndRetryCustomizer;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaConsumerProperties;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaExtendedBindingProperties;
-import org.springframework.cloud.stream.binder.test.TestChannelBinderConfiguration;
 import org.springframework.cloud.stream.config.BindingProperties;
 import org.springframework.cloud.stream.config.BindingServiceProperties;
 import org.springframework.context.ConfigurableApplicationContext;
-import org.springframework.context.annotation.Import;
 import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.util.backoff.BackOffExecution;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.oriah.events.EventsProperties;
-import com.oriah.notification.TestcontainersConfiguration;
 import com.zaxxer.hikari.HikariDataSource;
+
+import com.oriah.notification.ServiceTest;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -61,13 +58,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * from them what the module's handler will do. The module's own
  * DeadLetterKafkaTest proves that handler on a real broker.
  */
-@SpringBootTest
-@Import({TestcontainersConfiguration.class, TestChannelBinderConfiguration.class})
-@TestPropertySource(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.function.definition=orderEvents",
-        "spring.cloud.stream.bindings.orderEvents-in-0.destination=oriah.order"
-})
+@ServiceTest
 class OrderEventBindingTest {
 
     private static final String BINDING = "orderEvents-in-0";
@@ -149,6 +140,18 @@ class OrderEventBindingTest {
                         + "dead-lettered on its first delivery")
                 .containsEntry(IllegalArgumentException.class, false)
                 .containsEntry(JsonProcessingException.class, false);
+    }
+
+    /**
+     * The list is exactly those two, on purpose. In particular IllegalStateException is NOT on it: notification has no replay of its own, so an
+     * event it gives up on is never applied later, and an IllegalStateException can be something that passes on the next try (a context that is
+     * shutting down). The one case that can never pass, an event type declared without words for it, throws IllegalArgumentException instead.
+     */
+    @Test
+    @DisplayName("only a refusal and a body that cannot be read skip the retries: nothing else is given up on at the first failure")
+    void onlyRefusalsAndUnreadableBodiesSkipTheRetries() {
+        assertThat(bindings.getConsumerProperties(BINDING).getRetryableExceptions())
+                .containsOnlyKeys(IllegalArgumentException.class, JsonProcessingException.class);
     }
 
     @Test

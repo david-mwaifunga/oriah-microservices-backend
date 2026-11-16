@@ -15,9 +15,9 @@
     <packaging>jar</packaging>
     <name>notification</name>
     <description>
-        Consumes oriah.order Kafka events and "sends" notifications
-        (log-stub today; pluggable SES/SendGrid sender later). Records
-        every send attempt in notification_log for ops visibility.
+        Turns order events into messages for customers: writes each one
+        down with a status (notification_log), shows it in the website's
+        bell, and emails the kinds that are emailed over plain SMTP.
     </description>
 
     <dependencies>

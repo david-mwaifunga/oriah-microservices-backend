@@ -57,10 +57,12 @@ public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNul
     }
 
     /**
-     * @param maxSend the one wall-clock limit on a whole send
-     * @param lease   how long a message being sent is out of reach of any other sender
+     * @param maxSend            the one wall-clock limit on a whole send
+     * @param lease              how long a message being sent is out of reach of any other sender
+     * @param window             how long after its event was recorded a message is still worth emailing
+     * @param backdatedStepAfter a dispatch step keyed this much later than it happened is not emailed: the customer already has the parcel
      */
-    public record Send(@NotNull Duration maxSend, @NotNull Duration lease) {
+    public record Send(@NotNull Duration maxSend, @NotNull Duration lease, @NotNull Duration window, @NotNull Duration backdatedStepAfter) {
     }
 
     public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients) {
