@@ -638,6 +638,69 @@ class GatewaySecurityConfigTest {
         return new SimpleGrantedAuthority(name);
     }
 
+    // ---- Phase 11: the two staff reads of notification, and its machine identity at the edge ----------------------------------------------------
+
+    private static final String STAFF_ALERTS = "/api/v1/admin/notifications/alerts";
+    private static final String STAFF_MESSAGES = "/api/v1/admin/notifications/messages";
+
+    @Test
+    @DisplayName("the alerts read admits sales staff, and whoever may see costs and set prices; the messages read is sales staff's alone")
+    void theStaffReadsOfNotification() {
+        for (WebTestClient who : new WebTestClient[] {holding("ROLE_SALES_AGENT"), holding("ROLE_CATALOG_ADMIN", "ROLE_COST_VIEWER"), as("OWNER"),
+                as("MANAGER"), as("SALES")}) {
+            assertAdmitted(who.get().uri(STAFF_ALERTS));
+        }
+        for (WebTestClient who : new WebTestClient[] {holding("ROLE_COST_VIEWER"), holding("ROLE_CATALOG_ADMIN"), holding("ROLE_USER"), as("DISPATCH"),
+                as("BOOKKEEPER")}) {
+            who.get().uri(STAFF_ALERTS).exchange().expectStatus().isForbidden();
+        }
+        for (WebTestClient who : new WebTestClient[] {holding("ROLE_SALES_AGENT"), as("OWNER"), as("SALES")}) {
+            assertAdmitted(who.get().uri(STAFF_MESSAGES + "?status=BY_HAND"));
+        }
+        for (WebTestClient who : new WebTestClient[] {holding("ROLE_CATALOG_ADMIN", "ROLE_COST_VIEWER"), holding("ROLE_USER"), as("DISPATCH")}) {
+            who.get().uri(STAFF_MESSAGES + "?status=BY_HAND").exchange().expectStatus().isForbidden();
+        }
+        client.get().uri(STAFF_ALERTS).exchange().expectStatus().isUnauthorized();
+        client.get().uri(STAFF_MESSAGES).exchange().expectStatus().isUnauthorized();
+    }
+
+    @Test
+    @DisplayName("nothing else under that prefix is open, to anyone: another path or another method fails closed")
+    void otherNotificationAdminPathsFailClosed() {
+        WebTestClient owner = as("OWNER");
+        owner.get().uri("/api/v1/admin/notifications/anything-else").exchange().expectStatus().isForbidden();
+        owner.get().uri(STAFF_ALERTS + "/00000000-0000-0000-0000-000000000001").exchange().expectStatus().isForbidden();
+        owner.post().uri(STAFF_ALERTS).exchange().expectStatus().isForbidden();
+        owner.delete().uri(STAFF_MESSAGES).exchange().expectStatus().isForbidden();
+    }
+
+    private WebTestClient machine(String username, String... authorities) {
+        return client.mutateWith(mockJwt().jwt(jwt -> jwt.claim("preferred_username", username))
+                .authorities(java.util.Arrays.stream(authorities).map(GatewaySecurityConfigTest::authority).toArray(SimpleGrantedAuthority[]::new)));
+    }
+
+    @Test
+    @DisplayName("notification's own machine identity is refused at the edge on EVERY path: it holds CATALOG_ADMIN, which can set prices, and it never needs the gateway")
+    void theNotificationMachineIsRefusedOnEveryPath() {
+        WebTestClient notification = machine("service-account-oriah-notification", "ROLE_CATALOG_ADMIN", "ROLE_COST_VIEWER");
+
+        notification.get().uri(PRICING_LIST).exchange().expectStatus().isForbidden();
+        notification.put().uri(PRICING_WRITE).exchange().expectStatus().isForbidden();
+        notification.get().uri(STAFF_ALERTS).exchange().expectStatus().isForbidden();
+        notification.post().uri("/api/v1/admin/products").exchange().expectStatus().isForbidden();
+        notification.get().uri("/api/v1/products").exchange().expectStatus().isForbidden();
+        notification.get().uri("/api/v1/notifications/me").exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("that wall is about WHO, not about roles: a person holding the same two roles still prices, and the order system's machine is untouched")
+    void theEdgeWallNamesOneMachineOnly() {
+        assertAdmitted(machine("maya", "ROLE_CATALOG_ADMIN", "ROLE_COST_VIEWER").get().uri(PRICING_LIST));
+        assertAdmitted(machine("service-account-oriah-admin", "ROLE_USER", "ROLE_INVENTORY_ADMIN").get().uri("/api/v1/shipping/towns"));
+        assertAdmitted(holding("ROLE_CATALOG_ADMIN", "ROLE_COST_VIEWER").put().uri(PRICING_WRITE));
+        assertAdmitted(client.get().uri("/api/v1/products"));
+    }
+
     /**
      * Asserts the security chain ADMITTED the request. Nothing is routable in
      * this slice (Eureka is off), so a permitted request ends in 404/5xx; the

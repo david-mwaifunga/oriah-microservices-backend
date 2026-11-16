@@ -128,13 +128,22 @@ public class SecurityConfig {
 
     @Bean
     public SecurityWebFilterChain springSecurityFilterChain(
-            ServerHttpSecurity http, EdgeProblemResponses problems) {
+            ServerHttpSecurity http, EdgeProblemResponses problems,
+            @org.springframework.beans.factory.annotation.Value("${oriah.gateway.machines-never-at-the-edge:service-account-oriah-notification}")
+            java.util.List<String> machinesNeverAtTheEdge) {
         return http
                 // Stateless bearer-token API: there is no session or cookie for
                 // an attacker to ride, and CSRF tokens would simply break every
                 // non-GET call.
                 .csrf(ServerHttpSecurity.CsrfSpec::disable)
                 .authorizeExchange(exchange -> exchange
+                        // A machine identity that never needs the gateway is refused on EVERY path, before anything else is looked
+                        // at (Phase 11). Notification signs in as itself to ask catalog which pieces are priced below cost, and it
+                        // calls catalog directly, inside the stack. Its token holds CATALOG_ADMIN, which can also SET prices, and the
+                        // realm cannot say "read only": so its secret must be useless from outside. This wall is about WHO the caller
+                        // is (the token's preferred_username), not about roles: a person holding the same roles is not affected.
+                        .matchers(anInternalMachine(machinesNeverAtTheEdge)).denyAll()
+
                         // Preflight first. A browser sends OPTIONS with no
                         // Authorization header; rejecting it means the real
                         // request is never sent and the browser reports an
@@ -220,6 +229,13 @@ public class SecurityConfig {
                         // cost): one without the other is refused here, and again by catalog. OWNER and MANAGER hold both;
                         // BOOKKEEPER sees cost but may not price, and SALES neither.
                         .pathMatchers("/api/v1/admin/pricing/**").access(hasAllRoles("CATALOG_ADMIN", "COST_VIEWER"))
+
+                        // Notification's two reads for staff (Phase 11), by their exact paths, GET only: anything else under the
+                        // prefix fails closed below. The alerts read shows each kind under the capability that guards the list it
+                        // points at (money alerts: SALES_AGENT; cost alerts: CATALOG_ADMIN and COST_VIEWER both), so either admits;
+                        // the service then shows only the kinds the caller may see. What customers were told is sales staff's.
+                        .pathMatchers(HttpMethod.GET, "/api/v1/admin/notifications/alerts").access(salesOrPricing())
+                        .pathMatchers(HttpMethod.GET, "/api/v1/admin/notifications/messages").hasRole("SALES_AGENT")
 
                         .pathMatchers("/api/v1/admin/products/**").hasRole("CATALOG_ADMIN")
                         .pathMatchers("/api/v1/admin/inventory/**").hasRole("INVENTORY_ADMIN")
@@ -307,6 +323,33 @@ public class SecurityConfig {
         JwtAuthenticationConverter delegate = new JwtAuthenticationConverter();
         delegate.setJwtGrantedAuthoritiesConverter(new KeycloakRoleConverter());
         return new ReactiveJwtAuthenticationConverterAdapter(delegate);
+    }
+
+    /** Admits a signed-in caller who holds SALES_AGENT, or CATALOG_ADMIN and COST_VIEWER both. */
+    private static ReactiveAuthorizationManager<AuthorizationContext> salesOrPricing() {
+        return (authentication, context) -> authentication
+                .<AuthorizationResult>map(caller -> new AuthorizationDecision(caller.isAuthenticated()
+                        && (holds(caller, "SALES_AGENT") || (holds(caller, "CATALOG_ADMIN") && holds(caller, "COST_VIEWER")))))
+                .defaultIfEmpty(new AuthorizationDecision(false));
+    }
+
+    private static boolean holds(org.springframework.security.core.Authentication caller, String role) {
+        return caller.getAuthorities().stream().anyMatch(granted -> ("ROLE_" + role).equals(granted.getAuthority()));
+    }
+
+    /**
+     * Matches a request made with the token of one of the named machine identities (by the token's {@code preferred_username}; Keycloak
+     * names a client's service account {@code service-account-<client id>}). A request with no token, or anyone else's, does not match.
+     */
+    private static org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher anInternalMachine(java.util.List<String> usernames) {
+        return exchange -> exchange.getPrincipal()
+                .filter(org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken.class::isInstance)
+                // mapNotNull: a token with no preferred_username is simply nobody's machine (a reactive map may not answer null).
+                .mapNotNull(principal -> ((org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken) principal)
+                        .getToken().getClaimAsString("preferred_username"))
+                .filter(usernames::contains)
+                .flatMap(username -> org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher.MatchResult.match())
+                .switchIfEmpty(org.springframework.security.web.server.util.matcher.ServerWebExchangeMatcher.MatchResult.notMatch());
     }
 
     /**

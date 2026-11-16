@@ -98,6 +98,20 @@ class EdgeErrorBodyTest {
     }
 
     @Test
+    @DisplayName("the 403 an internal machine identity gets at the edge carries the same problem body")
+    void theMachinesRefusalCarriesAProblemBody() {
+        client.mutateWith(org.springframework.security.test.web.reactive.server.SecurityMockServerConfigurers.mockJwt()
+                        .jwt(jwt -> jwt.claim("preferred_username", "service-account-oriah-notification"))
+                        .authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_CATALOG_ADMIN"),
+                                new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_COST_VIEWER")))
+                .get().uri("/api/v1/admin/pricing/below-cost").exchange()
+                .expectStatus().isForbidden()
+                .expectBody()
+                .jsonPath("$.status").isEqualTo(403)
+                .jsonPath("$.type").isEqualTo("https://oriah.dev/problems/forbidden");
+    }
+
+    @Test
     @DisplayName("403 carries a problem body")
     void forbiddenCarriesAProblemBody() {
         // An authenticated caller with no admin role, hitting a path the

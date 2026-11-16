@@ -226,6 +226,9 @@ public class GatewayRoutesConfig {
         // its own because /api/v1/admin/products/** is CATALOG_ADMIN alone and the pricing screen shows landed cost: the
         // matcher in SecurityConfig needs CATALOG_ADMIN and COST_VIEWER both, and catalog's controller checks both again.
         routes = simple(routes, "catalog-pricing-admin-route", "/api/v1/admin/pricing/**", "catalog");
+        // Phase 11: notification's two reads for staff (the alerts, and what customers were told). SecurityConfig names the two exact
+        // paths and who may call each; anything else under the prefix falls to the deny-all for unmatched admin paths.
+        routes = simple(routes, "notification-admin-route", "/api/v1/admin/notifications/**", "notification");
         routes = simple(routes, "customer-admin-route", "/api/v1/admin/customers/**", "customer");
         routes = simple(routes, "order-admin-route", "/api/v1/admin/orders/**", "order");
         routes = simple(routes, "promotion-admin-route", "/api/v1/admin/promotions/**", "promotion");

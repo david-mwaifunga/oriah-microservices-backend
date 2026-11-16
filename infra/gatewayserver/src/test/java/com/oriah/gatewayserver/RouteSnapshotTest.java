@@ -98,6 +98,7 @@ class RouteSnapshotTest {
             // Phase 6: pricing (CATALOG_ADMIN and COST_VIEWER) has a prefix of its own, because /api/v1/admin/products/** is
             // CATALOG_ADMIN alone and the pricing screen shows landed cost.
             "catalog-pricing-admin-route",
+            "notification-admin-route",
             // Phase 7: delivery prices by town and option (SHIPPING_ADMIN). The matcher has guarded the prefix since Phase 0;
             // nothing was routed to it until shipping gained its database and its admin endpoints.
             "shipping-admin-route",
@@ -132,7 +133,7 @@ class RouteSnapshotTest {
     private RouteLocator routeLocator;
 
     @Test
-    @DisplayName("route id set is exactly the 39-route snapshot")
+    @DisplayName("route id set is exactly the 40-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
         List<String> actual = routes().stream().map(Route::getId).toList();
 
@@ -172,6 +173,7 @@ class RouteSnapshotTest {
                 .containsEntry("shipping-admin-route", "lb://shipping")
                 .containsEntry("checkout-route", "lb://checkout")
                 .containsEntry("notification-route", "lb://notification")
+                .containsEntry("notification-admin-route", "lb://notification")
                 // Both the generic reviews route and the nested
                 // product-reviews route live in review-service.
                 .containsEntry("review-route", "lb://review")
@@ -219,6 +221,8 @@ class RouteSnapshotTest {
             "/api/v1/admin/shipping/prices/11111111-1111-1111-1111-111111111111/publish, shipping-admin-route",
             "/api/v1/checkout/preview,                           checkout-route",
             "/api/v1/notifications/me,                           notification-route",
+            "/api/v1/admin/notifications/alerts,                 notification-admin-route",
+            "/api/v1/admin/notifications/messages,               notification-admin-route",
             "/api/v1/reviews/me,                                 review-route",
             "/api/v1/search,                                     search-route",
             // Products phase. The taxonomy and variant paths are siblings of
