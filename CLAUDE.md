@@ -6,8 +6,8 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state (2026-11-16: Phase 10 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
-(Deliver)"**, **"Built in Phase 9 (Phone orders)"** and **"Built in Phase 10 (Finance)"** blocks below are the contract-level detail).
+state (2026-11-16: Phase 11 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
+(Deliver)"**, **"Built in Phase 9 (Phone orders)"**, **"Built in Phase 10 (Finance)"** and **"Built in Phase 11 (Notifications)"** blocks below are the contract-level detail).
 
 ---
 
@@ -368,7 +368,7 @@ money** in `payment` → `order` settles it: the stock is sold and the order is 
   that has had no answer for 5 minutes (`oriah.sales.settlement-stuck-after`) is flagged `stuck`
   (here and in payment's `GET /api/v1/admin/payments/confirmations/pending`) and counted by the
   `payment.confirmations.stuck` gauge, and payment logs an ERROR once it has announced it ten times
-  unanswered. Nothing pushes an alert before Phase 11, so these lists are the alert.
+  unanswered. Since Phase 11 staff are emailed too ("a payment was recorded but the sale has not completed"); these lists are where the detail is read.
   A box swap, `POST /api/v1/admin/orders/{id}/box-swaps`, is ORDER_ADMIN's: only a PAID or FULFILLED order (until it is dispatched; Phase 8 moved
   the cut-off from packing) can be swapped, `reason` is 10 to 200 characters, and a repeat with the
   same `amendmentId` answers the same swap. The card `POST /orders/{id}/pay` is **removed**.
@@ -623,6 +623,93 @@ before any producer emits it (it ignores `price.set`, `reservation.*`, `box.swap
 - **Hand-offs.** Phase 11: nothing consumes finance (it produces nothing). Phase 12: add the refund, return and cancel-after-pay events to finance's declarations and appliers, map `RELISTED_MARKED_DOWN`, and
   re-run the replay test. Phase 13: book the card path's revenue and fees. Phase 14: the computed turnover-tax line replaces the hand entry as line 12.
 
+### Built in Phase 11 (Notifications): real email to customers, alerts to staff
+
+Design: `../.codex-tmp/plan-p11-FINAL.md` (its amendments AM1 to AM12 win over `plan-p11-final-wf.md`, a judged design run revised after six critics; it folds in **Codex's design review, NOT SOUND with 7 defects**,
+all accepted, and five proposed cuts, two accepted). Slices 11.0 to 11.14 are the commits `030a056` to `8b033c9` (nothing pushed), with payment's log line (`e9ef5ff`) and the review fixes (`0baa787`, `94cccc9`, `4e6c870`). **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20j) passed, on its first run, on images rebuilt from the final committed code (notification `4e6c870`; order, payment and the gateway from the same tree), with no ERROR-level line in any of the 15 services' logs or Keycloak's since that start. The run before it, on the images of `0baa787`, passed every step through 20i and stopped in 20j on slips in the new script block only (a claim rejection answers 201; a PowerShell array piped as one object; a poll made with another person's token). The OpenAPI gate is additions-only with no new waiver and the audit passes; six error goldens were added (all 68 verify); Postman was regenerated and its check passes.** The frontend is not changed
+(`docs/FRONTEND_WORK.md`, Phase 11, says what it must do and carries the owner's 19 questions in plain words).
+
+Until this phase "sending" a message was a log line. Now `notification` **emails customers and staff over SMTP** (email only: no WhatsApp or SMS sender exists, there is no provider account), keeps what became of every
+message, and raises **staff alerts**: a customer says they have paid, money recorded whose sale has not completed, a cancelled money record that paid a sale anyway, a piece priced below cost. **No message or alert
+carries a name, a phone, an address, a payment reference, a cost or a selling price** (tested by words).
+
+- **Write down first, send afterwards.** The consumer only records (`notification_log`, V4: `status` `RECORDED` / `SENT` / `FAILED` / `NOT_SENT` / `BY_HAND`, a `status_reason` from a closed list, `recipient_kind`
+  `SHOPPER` / `CALLER` / `STAFF`), in the Inbox's transaction. **One scheduled job sends** (`MessageDispatcher`, every 5 s): decide (`SendDecision`, pure), claim the row with a lease, send with no transaction open, write the
+  outcome under a guard. **At least once:** one extra copy is possible when a server's acceptance could not be written down or after the single retry of a send with no answer (fixed `Message-ID`). `SENT` means "a mail
+  server accepted it", never "it arrived". A customer message not sent within 6 hours of its event is never sent (`TOO_LATE`); a dispatch step keyed more than 24 hours after it happened is not emailed
+  (`BACKDATED_STEP`); a later message of an order waits behind an earlier one still waiting.
+- **"Live" is the process environment, never a setting.** Only the exact word `true` in `ORIAH_NOTIFICATION_LIVE` (read through `ProcessEnv`, never a Spring property) makes a stack live. Not live: the mail host must be
+  `localhost`, `127.0.0.1`, `::1` or `mailcatcher` (anything else refuses to start) and only addresses on `.local`, `.test`, `.example`, `.invalid` or `.localhost` are handed over; any other is `NOT_SENT / SANDBOX`
+  (`example.com` is deliberately not on the list). Live needs `ORIAH_SMTP_HOST/PORT/USERNAME/PASSWORD/SECURITY`, `ORIAH_EMAIL_FROM` (one bare address) and at least `ORIAH_ALERT_EMAILS_MONEY`;
+  `ORIAH_ALERT_EMAILS_COST`, `ORIAH_EMAIL_REPLY_TO`, `ORIAH_NOTIFICATION_SUPPORT_LINE` and `ORIAH_NOTIFICATION_SEND_PAUSED` (stops all email; messages written meanwhile are never emailed) are the rest. **None of these
+  may be in a settings file**, and `scripts/check_service_registry.py` refuses a compose line that sets the live word, an `ORIAH_SMTP_*` variable, `ORIAH_EMAIL_FROM` or a relay for the catcher.
+- **Whose address.** Read from the customer's **own token** each time the bell asks (`GET /api/v1/notifications/me` writes `recipient_contact`, V6, in a transaction of its own that can never fail the read); no service
+  is asked for it. A customer who never opens the storefront after ordering is `NO_ADDRESS`. **An address Keycloak has not confirmed gets only the short note** ("There is news about your order. Please sign in on our
+  website to read it."), and "we could not complete your order" is not emailed to it at all (`UNVERIFIED_ADDRESS`). Keycloak does not verify email yet, so in production every customer email is the short note until
+  it does (the dev people are pre-verified, which is why the smoke test reads full emails).
+- **What a shopper is told** (`MessageTexts`; `Kwacha` writes `K5,875.00`, `OrderName` the receipt number or the order's first 8 characters in capitals, `LusakaTime` the hour): the placement notice now says the pieces
+  are held and **nothing is paid yet**; the cancellation promises no refund; "ready to collect" asks for no receipt number; an order that closes after a claim reads "We could not complete your order ... if you did pay,
+  your money is safe with us" (the same event is written for a rejected claim, a lapsed hold and money that came for a piece already sold). **Emailed:** payment received, ready to collect, on its way, delivered and,
+  to a confirmed address, the closed order (`oriah.notification.email.emailed`); the rest are `NOT_SENT / BELL_ONLY`. **Money that cannot pay an order produces no message to the customer** (AM1: the order id on a
+  confirmation is typed by a person; staff tell them).
+- **`/api/v1/notifications/me`** gains `recordedAt`, `status`, `statusReason`, `sentAt` (additions only); `deliveredAt` stays, deprecated, always equal to `recordedAt`; the list is newest first whatever a caller asks.
+- **A caller has no email: words by hand.** For a phone sale recorded **live** (`saleKind: LIVE_PHONE`, a trailing field order now puts on a phone order's events, after the true last field) the payment, "ready to
+  collect" and "on its way" are written as `BY_HAND` rows for a salesperson to send from the shop's WhatsApp; a paper sale gets none; the system sends nothing to a phone.
+- **Staff alerts** (`staff_alert`, V8; one open alert per kind and subject; their emails are `STAFF` rows of the same log, to the mailboxes in `ORIAH_ALERT_EMAILS_MONEY` / `_COST`, sandbox mailboxes on a dev stack):
+  - `PAYMENT_TO_CONFIRM` from `order.payment_submitted` (now handled, not ignored): an email at once **with no amount and no reference** (the Awaiting payment list has both), one reminder 3 hours before the hold ends
+    (moved to 20:00 Lusaka if that falls in the night); ends on `order.paid`, `order.expired`, `order.cancelled` or `payment.confirmed` for the order, or 15 minutes after the hold. The emails repeat the rule: reject only
+    when the provider says there is no such payment or the reference paid another order. **At most 50 such alerts a day are emailed** (`ORIAH_NOTIFICATION_CLAIM_ALERTS_PER_DAY`; counted when the alert is raised, under
+    an advisory lock); beyond it ONE `CLAIM_EMAIL_LIMIT` email says so and every claim is still listed.
+  - `SETTLEMENT_STUCK` from `payment.confirmed` announced a second time (`attempt >= 2`, payment's own threshold, never copied): emailed after a minute, again after 5 hours, then daily for 14 days, "Sorted" when
+    `order.paid`, `order.payment_unsettled`, `payment.held` or `payment.voided` answers it, and a last note when it closes by the clock (it then stays listed for 30 days). A sale waiting for a box is this alert.
+  - `VOID_AFTER_SALE`: `payment.voided` and `order.paid` for one confirmation, in either order. `confirmation_watch` (V9) is the one row both topics' consumers lock before deciding; a fact older than 30 minutes
+    raises nothing.
+  - `BELOW_COST`: every 5 minutes (60 s on the dev compose) notification asks catalog's `GET /api/v1/admin/pricing/below-cost` as **its own Keycloak client** and raises one alert per ACTIVE piece that is newly below;
+    one digest email per round names the pieces and **no figure**; an alert ends after two good rounds without the piece; a failed round changes nothing ("unknown is not empty"). `BELOW_COST_CHECK_DOWN` after 2
+    hours with no good round.
+  - `EMAIL_DOWN` (the mail server failing for 30 minutes, or three different recipients refused in a row; and "an alert address is being refused"): **listed only, never emailed**, with one ERROR line.
+- **Two staff reads** (gateway route `notification-admin-route`): `GET /api/v1/admin/notifications/alerts?state=OPEN|ALL[&audience=MONEY|COST]` (money alerts for `SALES_AGENT`, cost alerts for `CATALOG_ADMIN` **and**
+  `COST_VIEWER`; a caller sees only their group; at most 100 per audience) and `GET /api/v1/admin/notifications/messages?orderId=` | `?status=BY_HAND[&since=]` (`SALES_AGENT`; what a customer was told, or the work list of
+  words to send by hand, 14 days). Neither carries an owner, an address or a mailbox.
+- **Notification reads `oriah.payment` too** (binding `paymentEvents-in-0`, dead letters `oriah.payment.dlq.notification`, one Inbox consumer name for both topics): it handles `payment.confirmed`, `payment.voided`,
+  `payment.held` and ignores `payment.rejected`, `payment.succeeded`, `payment.failed`. **Any new payment event type must be declared by notification before payment emits it.**
+- **Identity.** A third Keycloak client, `oriah-notification` (secret from `ORIAH_NOTIFICATION_CLIENT_SECRET`), whose service account holds exactly `CATALOG_ADMIN` + `COST_VIEWER`. Those two could set prices, so the
+  **gateway's first rule denies that identity on every path** (`oriah.gateway.machines-never-at-the-edge`): its token works only inside the stack's network. Dev people `olive` (`OWNER`, **no `USER`**: the owner as
+  she will be in production; she reads both staff lists and has no bell) and `nora` (`nora@example.com`, `USER`: proves a dev stack never emails a real-looking address).
+- **The stack.** A `mailcatcher` container (`axllent/mailpit:v1.21`, SMTP 1025, read what was caught at http://localhost:8025, 64 MiB, no relay). Notification runs two scheduled jobs (the dispatcher, the below-cost
+  check: pool 2). Flyway V4 to V10 (next free V11). Datasource URLs carry `logServerErrorDetail=false`, so a database error never prints a row's values. **Owed:** notification's memory limit (640 MiB) was NOT re-measured after this phase: Docker Desktop's engine stalled three times on 2026-11-16, the last time before `scripts/measure-stack.ps1` could take one sample. It stood at 452 MiB before the phase and now runs a mail client, two scheduled jobs and a second Kafka binding: measure it on the next full-stack run and write the peak beside the limit.
+- **Settings** (`oriah.notification`): `email.transport` (`none` / `catcher`), `email.emailed`, `send.*` (`delay` 5000, `window` PT6H, `backoff` PT1M,PT5M,PT15M,PT1H, `max-send` PT90S, `lease` PT3M,
+  `backdated-step-after` PT24H), `alerts.*` (`max-fact-age` PT30M, `hold.remind-before` PT3H, `settlement.remind-after` PT5H / `remind-every` P1D / `close-after` P14D, `void-after-sale.open-for` P7D,
+  `payment-to-confirm.max-alerts-emailed-per-day` 50), `below-cost.*` (`delay` 300000, `clear-after-rounds` 2, `quiet-for` PT24H, `down-after` PT2H, `max-named` 20), `shop.pay-line` / `collect-line` /
+  `contact-line` (the owner's own lines, empty until she gives them; in `config-repo`).
+- **Rollout order:** order first (it only adds `saleKind`), then the realm change (the new client; `scripts/keycloak-go-live.ps1` sets both client secrets), then notification (V4 to V10 on first start), then the
+  gateway. A production compose uses the `${NAME:?...}` form for both client secrets.
+- **Known limits, recorded (not defects):** a duplicate email is possible (above); a dead-lettered event is never replayed, so its message is never sent and an alert it would have ended closes by the clock; an alert
+  fact older than 30 minutes emails nobody (payment's ERROR line and the pending list remain); a shopper who never opens the storefront gets no email; an alert already written goes to the mailbox configured then and
+  counts as told once ONE mailbox accepted it; a "Sorted" email can arrive for an alarm that never did; a price set below cost on purpose is told like any other; every smoke run leaves one open `BELOW_COST` alert
+  (its ring stays on sale below cost). **Proven by module tests on a test clock or a scripted mail server, not live:** the hold reminder, the stuck alert with its reminders and last note, the void after a sale, the
+  claim limit, telling again, the pause, the two "not working" alerts, real TLS and sign-in (the first real proof is the go-live check with the owner's mail account).
+- **Not built, recorded (plan section 14):** WhatsApp and SMS senders; a machine message to a caller (needs a provider, a correction endpoint for a caller's details, a walled read of the phone in order, a ceiling
+  per number, no texts at night, a sandbox list); delivery receipts and bounces; Keycloak email verification (the switch that turns the short note into the full email); a separate alert for a sale waiting for a box
+  or for payment's tenth announcement (folded into the stuck alert); alerts for a piece with no cost known, for dead letters and lag (operator signals), for finance's open errors; an acknowledge or "send again"
+  button; retention of addresses and messages (owner question 17); checkout's rate limiter and breaker (item H1, Phase 13's block in `docs/MVP_PLAN.md`).
+- **Reviewed (2026-11-16): Codex's code review (NOT SOUND: 4 P1, 2 P2, 1 P3), a six-lens read-only panel (36 agents, a skeptic on every finding: 28 standing, none P1), Codex's second pass on the fixes (NOT SOUND: 2 P1, 4 P2) and a
+  four-lens skeptic check of both fix commits (4 raised, all P3).** All fixed test-first (`0baa787`, then `94cccc9`, then `4e6c870`; 29 tests added for them). What they changed, and what to keep when touching this code: **the dispatcher reads the clock for every message** (at the claim and at the answer; a lease counted from the start of
+  a slow pass had run out before its send began, so a second instance could send again); **an alarm is claimed in one statement that also locks its alert's row and requires it open** (so an alert that ended a moment before is
+  not emailed, and one that ends a moment after gets its "sorted" behind an alarm that went out), while a customer's message is decided again once it is claimed and that second decision is the one acted on; a message the server
+  took is marked sent even if its claim was lost, and a send written down late still marks its alert as told; **both consumers take their rows in one order** (`order_ref`, then `confirmation_watch`, then `staff_alert`: `order.paid`
+  could deadlock with `payment.confirmed`); **three refusals in a row for three different people is the server refusing everybody**: listed (it closes after a day or on the next accepted message), the pass ends, and meanwhile a
+  refusal is not believed (the message waits), so a sending account that may not send as the shop's address no longer fails the whole queue; two unanswered sends count as the server's trouble; an alert email is not sent to a
+  mailbox since taken off the list; after days away staff get one reminder, not one per missed day; the last note of a closed alert is found from what is stored and written only if the alert is still unanswered; **a below-cost
+  list longer than one page is read twice and both readings must agree** (catalog works each page out afresh), its lease is given back only by its holder, and an email that could not be delivered is repeated hourly, twelve
+  times at most; a From name with a control character, a pause switch that is neither `true` nor `false`, a reminder interval of nothing and an address outside printable ASCII (the mail library writes only each character's low
+  byte) are refused; an answer that loses the race with the clock's close still gives the alert its real ending (never "we never heard" for a sale that completed); not live, the From address used is the cleaned one that was judged.
+  **Declined, recorded:** "sorted" can follow an alarm whose only try failed (accepted on purpose: an alarm with no "sorted" is worse); Codex's "re-tell ceiling off by one" (twelve re-tellings after the first is what `retell-max` means); a claim alert reopened before its first email was accepted is listed and
+  reminded, not emailed afresh; an unanswered send whose own record cannot be written is retried after its lease; the first three customers refused by a server that refuses everybody stay failed (that is how it is noticed).
+- **Hand-offs.** Phase 12: declare the refund, return and cancel-after-pay events in notification before they are emitted, and write their messages; what a web shopper is told when a paper sale took a paid piece.
+  Phase 13: declare any new payment event type first; the card path's `payment.succeeded` / `payment.failed` are ignored today; item H1. Frontend stage: the alerts list and banner, the "messages waiting to be sent"
+  list, the bell on `recordedAt`, one `/me` call per session.
+
 ---
 
 ## Stack
@@ -652,7 +739,8 @@ history and the default box, and **since Phase 7 works out each piece's promotio
 **payment since Phase 7 records staff-confirmed money**; Flyway V1-V7; **promotion since Phase 7 keeps scoped, dated
 promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
 `checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
-(host port 5445), so 12 of the first 13 services own a database; **`finance` (Phase 10) is the 14th and owns one too, so 13 of the 14.**
+(host port 5445), so 12 of the first 13 services own a database; **`finance` (Phase 10) is the 14th and owns one too, so 13 of the 14.** **`notification` since Phase 11** really sends email (SMTP), keeps what became of every message, raises staff alerts and reads
+`oriah.payment` as well as `oriah.order`; Flyway V1-V10.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -689,7 +777,12 @@ dead-letter topics are `oriah.payment.dlq.order` and `oriah.inventory.dlq.order`
 consumes `oriah.order`** (it releases the reservation a cancelled or expired order names);
 **payment consumes `oriah.order`** (a claim, the sale paid, money that could not pay it). A consumer
 refuses an event type nobody declared, so **any NEW event type must be declared by every consumer
-before its producer emits it** (notification declared order's new types first). Three
+before its producer emits it** (notification declared order's new types first). **Since Phase 11 notification
+consumes `oriah.payment` too** (dead letters `oriah.payment.dlq.notification`; it handles `payment.confirmed`,
+`payment.voided` and `payment.held` and ignores the rest), so a new PAYMENT event type must be declared by
+notification as well, and it now handles `order.payment_submitted` and `order.payment_unsettled` (staff alerts)
+instead of ignoring them. A phone order's `order.created`, `order.paid` and `order.shipped` end with `saleKind`
+(`LIVE_PHONE` | `LATE_PAPER`). Three
 more serve the event log itself: `oriah.outbox.replay-requests` (a late
 consumer asks a producer to send its history again),
 `oriah.replay.<consumer>` (the answer, one topic per consumer) and the
@@ -755,7 +848,7 @@ connections and the Postman collection (`local-dev/postman/`, generated from
 the services' OpenAPI by `scripts/local-dev/postman_from_openapi.py`).
 
 ```powershell
-.\scripts\dev-stack.ps1      # 14 Postgres, Keycloak, Kafka, Redis, SeaweedFS
+.\scripts\dev-stack.ps1      # 14 Postgres, Keycloak, Kafka, Redis, SeaweedFS, the mail catcher
 ```
 
 Then run **1. Platform (local)** and **2. All services (local)** from `.run/`.
@@ -778,8 +871,9 @@ docker compose up -d
 powershell.exe -ExecutionPolicy Bypass -File .\smoke-test.ps1
 ```
 
-**~41 containers:** 14 Postgres instances (host ports 5433–5446: finance's is 5446 since Phase 10, procurement's is 5444, shipping's is 5445 since Phase 7, and Keycloak's is 5443), Keycloak,
-Kafka, Redis, SeaweedFS + its init job, Prometheus, Grafana, Loki, Tempo,
+**~42 containers:** 14 Postgres instances (host ports 5433–5446: finance's is 5446 since Phase 10, procurement's is 5444, shipping's is 5445 since Phase 7, and Keycloak's is 5443), Keycloak,
+Kafka, Redis, SeaweedFS + its init job, the mail catcher (Phase 11: `oriah-mailcatcher`, read what was caught at
+http://localhost:8025; it delivers nothing), Prometheus, Grafana, Loki, Tempo,
 Alloy, the 3 infra modules, all 14 domain services (ports 8081–8094), and `oriah-web`.
 
 The stack lives in `docker-compose/default/docker-compose.yml` with shared
@@ -818,7 +912,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20i**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20j**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
 cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
@@ -844,7 +938,12 @@ system's own paths are 403 at the gateway and a person's token is 403 on invento
 courier bill and the re-costed stock, and the sale consignment's bill corrected too (K36.00 to K72.00, re-costing the rings the paid orders sold);
 **steps 2, 2b and the control ring of 8b price through the pricing endpoint** (a variant is
 created unpriced) and step 20f follows the ring through the below-cost warning, the default box, a cost corrected UP,
-boxes set aside, unpublish and the retired endpoints.
+boxes set aside, unpublish and the retired endpoints. **Step 20j (Phase 11) reads the mail catcher:** the paid order of step 6d was
+emailed to alice with its receipt number and K180.00; a payment claim emails the money mailbox at once (no amount, no reference) and
+a rejected claim ends the alert and tells the customer; the ring step 20f left below cost is emailed to the cost mailbox with no
+figure; a live phone sale's words wait in the sales work list and a paper sale has none; every caught email is to an `@oriah.local`
+mailbox while `nora@example.com` reads `NOT_SENT / SANDBOX`; notification's machine token holds exactly two roles and is 403 at the
+gateway; the owner without `USER` reads both staff lists. (Step 1 opens alice's bell once, which is how notification learns her address.)
 
 ### Keycloak
 
@@ -853,8 +952,13 @@ Postgres on first start — only when the realm does not exist there yet.
 **The committed realm carries no person and no secret** (Phase 0 item 5,
 `2e43b92`). It holds:
 
-- **Clients:** `oriah-admin` (confidential), `oriah-web`.
-- **One user only — the machine identity `service-account-oriah-admin`**,
+- **Clients:** `oriah-admin` (confidential), `oriah-web`, and since Phase 11 `oriah-notification` (confidential, client credentials only).
+- **Two users only, both machine identities.** `service-account-oriah-notification` (Phase 11) holds exactly
+  `CATALOG_ADMIN` + `COST_VIEWER`: notification signs in as itself to ask catalog which pieces are priced below
+  cost. Those two roles could set prices, so **the gateway's first rule denies that identity on every path**: its
+  token is useful only inside the stack's network. Its secret is the placeholder `${ORIAH_NOTIFICATION_CLIENT_SECRET}`
+  (dev value `oriah-notification-secret`), supplied like oriah-admin's below.
+- **The other is `service-account-oriah-admin`**,
   holding exactly `USER` + `INVENTORY_ADMIN`. It used to hold `USER` + all
   five admin roles, so the old advice "reuse it, it already holds
   `ORDER_ADMIN`" is **no longer true**. `order` signs in as `oriah-admin`
@@ -901,6 +1005,11 @@ users-file format), imported beside the realm in the dev stack only:
   sale and read no cost or margin. Applied to a dev stack by the Keycloak volume reset below.
 - `alice` — password `password`; **only `USER`**. The customer account the
   smoke test drives.
+- `olive` — password `password`; **`OWNER` and no `USER`** (Phase 11): the owner as she will be in production. She
+  reads both staff lists and has no shopper's bell (403).
+- `nora` — password `password`; `USER`, address `nora@example.com` (Phase 11): proves a dev stack never emails an
+  address that could be a real mailbox (her messages read `NOT_SENT / SANDBOX`). The other dev people's addresses
+  are `@oriah.local` and pre-verified, which is why the smoke test reads full emails in the catcher.
 
 Their ids are pinned, so a Keycloak reset orphans no customer, cart or order.
 The dev compose mounts the realm file and the users file **each on its own**,
@@ -916,7 +1025,7 @@ docker compose up -d keycloak
 ```
 
 Then **restart `order`** — its cached machine token was signed by the old
-keys. Never `down -v` (that wipes all fourteen databases); never a console edit
+keys (notification drops its own cached token by itself when catalog refuses it). Never `down -v` (that wipes all fourteen databases); never a console edit
 (it drifts from the committed files). Both files are imported only when the
 realm does not yet exist.
 
@@ -1000,8 +1109,8 @@ http://localhost:4000. Grafana (not Zipkin) for traces.
   floor the person saw are sent; it is **never refused**, and never saved without the cost having been looked at (stock down is
   503, never a guess). **Since Phase 7 the price judged is the one the customer pays, the list price less the promotion in force**
   (the 409 then also names `discountPerPiece`, `promotionId` and `netPrice`). `GET .../pricing/below-cost` says where every priced piece stands NOW. A price may start up to 72 hours
-  back, never in the future; the old `PATCH` on a variant is gone and a variant created with a price is 400. **Nothing tells
-  anyone when a piece falls below cost until Phase 11 polls that list** (written into Phase 11). Boxes can be set aside for a
+  back, never in the future; the old `PATCH` on a variant is gone and a variant created with a price is 400. **Since Phase 11
+  notification asks that list every five minutes and emails the people allowed to see costs when a piece newly falls below cost** (the piece's name, no figure). Boxes can be set aside for a
   product (`/api/v1/admin/inventory/box-commitments`, INVENTORY_ADMIN, one record per product on its default box) and are
   let go by the product's snapshot (deleted, unpublished since, or boxed differently). A box that products go out in cannot
   be deleted (409 `packaging-in-use`).
@@ -1084,6 +1193,7 @@ Follow-ups found during Phase 1 — **fixed 2026-11-10**:
   confirmed money again, and, only while the card path is on, the reconciler that settles intents
   stuck `CHARGING`), so its scheduling pool is 3; **order** runs three (the relay, the hold job and
   the settlement job: pool 3) and **inventory** two (the relay and the reservation sweeper: pool 2).
+  **Notification** runs two since Phase 11 (the dispatcher that sends, the below-cost check: pool 2).
   Add a thread for any further `@Scheduled` job.
 - ✅ **Closed by Phase 7** (these were "still open, owned by Phase 7"): a charge that went through after a
   502 never reached the order; an order cancelled while its intent was pending could still be
@@ -1170,8 +1280,8 @@ to match.
 - **`docs/PROGRESS.md`** — read **from the top**; it is newest-first. **No
   "Next exact action" line in it is live** — both remaining ones are completed
   history and are marked where they sit; one would destroy the finished
-  frontend if executed. Its topmost entry is dated 2026-11-16 and covers Phase 10; the "Built in Phase 7 (Sell)" to
-  "Built in Phase 10 (Finance)" blocks above are the contract-level detail.
+  frontend if executed. Its topmost entry is dated 2026-11-16 and covers Phase 11; the "Built in Phase 7 (Sell)" to
+  "Built in Phase 11 (Notifications)" blocks above are the contract-level detail.
 - **`docs/ARCHITECTURE.md`** — decisions and rationale. Accurate on *why*; its
   present-tense claims are frozen at their own dates and the stale ones are now
   marked inline.
@@ -1212,6 +1322,8 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
 - `project-oriah-requirements-locked.md` — `docs/CLIENT_DECISIONS.md` is the
   baseline; tax = ZRA Smart Invoice, deferred past the MVP (core integration-ready);
   delivery per town; promotions per product, category or shop
+- `project-oriah-phase11-plan.md` — **the MVP plan's Phase 11 "Notifications"**: the design files, what Codex and the panel changed, what was built, the mail-library facts and the
+  traps, the limits recorded and the hand-offs to Phases 12 and 13. Read it before touching notification
 - `project-oriah-phase10-plan.md` — **the MVP plan's Phase 10 "Finance"**: the design files, what Codex and the panel changed, what was built, the limits recorded and the hand-offs to
   Phases 12 to 14. Read it before touching the books
 - `project-oriah-phase9-plan.md` — **the MVP plan's Phase 9 "Phone orders"**: the design files (plan-p9-r2/r3/r4), what Codex changed, what was built, what was cut or deferred and why.

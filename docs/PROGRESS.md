@@ -20,6 +20,37 @@ update this before ending and read it at the start.
 
 ---
 
+## CURRENT STATE — 2026-11-16 (MVP_PLAN Phase 11 complete: notifications, real email and staff alerts)
+
+Phase 11 of `MVP_PLAN.md` is built, tested, reviewed (Codex on the design and twice on the code, and a six-lens read-only panel) and committed (**not pushed**). **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20j) passed, on its first run, on images rebuilt from the final committed code (notification `4e6c870`; order, payment and the gateway from the same tree), with no ERROR-level line in any of the 15 services' logs or Keycloak's since that start. The run before it, on the images of `0baa787`, passed every step through 20i and stopped in 20j on slips in the new script block only (a claim rejection answers 201; a PowerShell array piped as one object; a poll made with another person's token). The OpenAPI gate is additions-only with no new waiver and the audit passes; six error goldens were added (all 68 verify); Postman was regenerated and its check passes.**
+
+**What exists now.** `notification` really sends: **email over SMTP, to customers and to staff** (no WhatsApp or SMS: no provider account exists). The consumer only writes a message down; one scheduled job sends it and keeps what
+became of it (`RECORDED`, `SENT`, `FAILED`, `NOT_SENT` with a reason, `BY_HAND`), and the bell (`GET /api/v1/notifications/me`) shows that. A stack is "live" only by one word in its process environment, never by a setting; a
+stack that is not live talks only to the new mail catcher container (http://localhost:8025) and hands it only addresses on names reserved for testing. A customer's address is read from the customer's own token; an address
+nobody confirmed gets a short "please sign in" note. A caller with no account gets nothing from the system: for a sale recorded live the words are written for a salesperson to send. Staff are alerted by email, and can read the
+alerts through the gateway: a customer says they have paid (with one reminder before the pieces are released), money recorded whose sale has not completed (repeated daily for two weeks, "sorted" when it is), a cancelled money
+record that paid a sale anyway, and a piece priced below cost (notification asks catalog every five minutes with its own Keycloak identity; the email names the piece and no figure). The contract-level detail is the
+**"Built in Phase 11 (Notifications)"** block of `../CLAUDE.md`; the design is `../.codex-tmp/plan-p11-FINAL.md`.
+
+**Tests (each run by me, with these results):** notification 424/424 (it was 48 before the phase); gateway 300/300; order 641/641; payment 294/294. The registry guard: 14 services (13 own a database), 29 lists agree, and its
+new rule refuses a compose line that would make the development stack live or give it a real mail account.
+
+**Reviews.** Codex's design review (NOT SOUND, 7 defects) is folded into the design; two of its five proposed cuts were taken and three declined with reasons (`plan-p11-FINAL.md`). Its code review (NOT SOUND: 4 P1, 2 P2, 1 P3)
+and the panel (36 agents, a skeptic on every finding: 30 raised, 28 standing, none P1 after the skeptics) overlapped on four points; the confirmed ones were fixed test-first in `0baa787` (19 new tests, 27 failures red against
+the unfixed code, then green): the dispatcher reads the clock for every message, looks at a row again once it is claimed, and no longer fails the whole queue when a mail server refuses everybody; the two consumers take their
+rows in one order; a re-sorted below-cost list is thrown away and its lease is fenced; an undeliverable below-cost email is repeated hourly, twelve times at most; a removed alert mailbox is no longer written to; a From name with
+a line break, a misspelled pause switch and an address outside plain ASCII are refused. Codex's second pass on those fixes (NOT SOUND: 2 P1, 4 P2) and a four-lens skeptic check (4 raised, all P3) were fixed test-first too (`94cccc9`, `4e6c870`): an alarm is taken in one statement that locks its
+alert's row and requires it open; a customer's message is decided again once it is taken; a long below-cost list is read twice; "the server refuses everybody" closes after a day; an answer that races the clock's close
+still relabels the alert. Recorded, not changed: "sorted" can follow an alarm whose only try failed (accepted on purpose); Codex's "re-tell ceiling off by one" (twelve re-tellings after the first is what the setting means).
+
+**Honest notes on how it was built.** Test-first throughout, with three lapses: the alert texts of slice 9, the below-cost check (slice 11) and the staff reads (slice 12) had their tests written first, but the red run was
+skipped or showed only a compile error before the production code was written. The image for the mail catcher (`axllent/mailpit:v1.21`) was pulled from Docker Hub during the build. **One close-out item is not done:** notification's memory limit (640 MiB) was NOT re-measured after this phase: Docker Desktop's engine stalled three times on 2026-11-16, the last time before `scripts/measure-stack.ps1` could take one sample. It stood at 452 MiB before the phase and now runs a mail client, two scheduled jobs and a second Kafka binding: measure it on the next full-stack run and write the peak beside the limit.
+
+**What is not built, and what the owner must decide:** `docs/MVP_PLAN.md` (Phase 11: the alerts table, the not-built table, the limits, the before-go-live list) and `docs/FRONTEND_WORK.md` (Phase 11: what the screens must do,
+and the owner's 19 questions in plain words, the first of which is the shop's email account: until it is given, the system writes every message down and sends nothing to real people).
+
+---
+
 ## CURRENT STATE — 2026-11-16 (MVP_PLAN Phase 10 complete: finance, the books and the profit report)
 
 Phase 10 of `MVP_PLAN.md` is built, tested, reviewed (Codex on the design and twice on the code, and a six-lens read-only panel) and committed (**not pushed**). **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20i) passed on images rebuilt from the final committed code (finance `a71a7d6`; order, payment, inventory, procurement and the gateway `38efbc8`), 14 services.** Finance's first start replayed every producer's whole history (catalog 560 events, order 815, payment 323, procurement 152, inventory 52) into 1,077 ledger rows and finished its catch-up in about a minute; the only open errors were the 29 sales announced in the first (version 1) form before Phase 7, which are set aside by design (developer data: a go-live database starts empty). The first run reached step 20i and failed only on a check in the new script block (it looked for a sale's stock cost under the order; a cost row carries the product). The OpenAPI gate is additions-only with no new waiver; the content audit, run on the live documents, found that finance's 16 reads documented no success body (fixed test-first, then PASS); 6 error goldens were added (62 in all, unchanged otherwise) and Postman was regenerated.

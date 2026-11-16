@@ -1355,7 +1355,10 @@ error that closes by itself when the event later applies. A catch-up that has fi
 thread that reads Kafka, and a stop between "written" and "sent" would lose the message for good, because a repeat of the event finds it already applied. So the consumer now **only writes the message down**
 (`notification_log`, status `RECORDED`), in the same transaction as the Inbox marker, and one scheduled job, the **dispatcher**, sends what waits. Each pass is: decide (pure code, `SendDecision`), **claim** the row with a
 lease in a short transaction, **send with no transaction open**, then write the outcome with a guarded UPDATE that succeeds only if this pass still holds the claim. A row is `RECORDED`, `SENT`, `FAILED`, `NOT_SENT`
-(deliberately not emailed, with a reason from a closed list) or `BY_HAND` (words for a person to send).
+(deliberately not emailed, with a reason from a closed list) or `BY_HAND` (words for a person to send). Two rules the reviews added, both about time: **the clock is read for every message, never once per pass** (a slow mail
+server makes a pass last minutes, and a lease counted from the pass's start has run out before its send begins, so a second instance would send again); and **an alarm to staff is claimed in one statement that also locks its
+alert's row and requires it open**, so the claim and an answer that ends the alert can only happen one after the other: either the alarm is not sent and no "sorted" follows, or it is sent and "sorted" follows it. A customer's
+message is decided again once it is claimed, and that second decision (the address as it is then) is the one acted on.
 
 **What "sent" means, honestly.** `SENT` is "a mail server accepted it", never "it arrived": knowing that would need a public callback door. The promise is **at least once**: one extra copy is possible when the server
 accepted a message and the service stopped before writing that down, or after the single retry of a send whose answer never came (a fixed `Message-ID` lets mail systems collapse the copy). The mail library's own

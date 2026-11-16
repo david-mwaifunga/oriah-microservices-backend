@@ -5041,6 +5041,84 @@
       "name": "notification",
       "item": [
         {
+          "name": "What needs somebody: the alerts the caller may see, newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/notifications/alerts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "notifications",
+                "alerts"
+              ],
+              "query": [
+                {
+                  "key": "state",
+                  "value": "",
+                  "disabled": true,
+                  "description": "OPEN (default) or ALL"
+                },
+                {
+                  "key": "audience",
+                  "value": "",
+                  "disabled": true,
+                  "description": "MONEY or COST, to narrow the list"
+                }
+              ],
+              "variable": []
+            },
+            "description": "At most 100 per audience. OPEN (the default) also lists, for 30 days, money recorded whose sale was never heard to complete (closed BY_CLOCK). Money alerts need SALES_AGENT; cost alerts need CATALOG_ADMIN and COST_VIEWER both."
+          }
+        },
+        {
+          "name": "What a customer was told about an order, or the words waiting to be sent by hand",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/notifications/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "notifications",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "",
+                  "disabled": true,
+                  "description": "The order whose messages to list"
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": "BY_HAND, for the work list"
+                },
+                {
+                  "key": "since",
+                  "value": "",
+                  "disabled": true,
+                  "description": "With status=BY_HAND: only words written since this instant"
+                }
+              ],
+              "variable": []
+            },
+            "description": "Give orderId for one order's messages, oldest first; or status=BY_HAND for the work list of words to send to customers who ordered by phone, newest first, at most 100, from 'since' (default: the last 14 days). Exactly one of the two."
+          }
+        },
+        {
           "name": "Who owns the notification service, and how to reach them",
           "request": {
             "method": "GET",
@@ -5063,7 +5141,7 @@
           }
         },
         {
-          "name": "The caller's notifications, newest first",
+          "name": "The caller's own messages of every status, newest first",
           "request": {
             "method": "GET",
             "header": [],
@@ -5088,7 +5166,7 @@
               ],
               "variable": []
             },
-            "description": ""
+            "description": "What the website's bell shows. A message that was not emailed is still listed. Any sort parameter is ignored."
           }
         }
       ]

@@ -2354,6 +2354,90 @@ MVP.
 
 ### Phase 11 — Notifications
 
+> **Status: built, 2026-11-16.** Committed in `oriah-api` (not pushed) in slices 11.0 to 11.14: the parts that need no database (the words, Kwacha, the address rule, the sandbox gate, the SMTP
+> transport and the guard that decides whether a stack is live, `030a056`), the message status and the consumer that only records (`852e51c`), the kind of a phone sale on order's events
+> (`8638960`) and a caller's words by hand (`87c93f2`), whose address (`82427ee`), the dispatcher (`6dda1d2`), staff alerts and the claim alert (`332585e`), payment's topic and the watch on confirmed
+> money (`243810a`), notification's own Keycloak client (`6045382`), the below-cost check (`5447657`), the two staff reads (`e87bfde`), the gateway (`7766711`), the mail catcher and the stack
+> (`8b033c9`), then the review fixes (`0baa787`, `94cccc9`, `4e6c870`) and payment's log line (`e9ef5ff`). The design is `../.codex-tmp/plan-p11-FINAL.md` (its amendments AM1 to AM12 win over `plan-p11-final-wf.md`, a judged
+> design run revised after six critics; it folds in **Codex's design review: NOT SOUND, 7 defects**, all accepted, and five proposed cuts, of which two were taken).
+> **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20j) passed, on its first run, on images rebuilt from the final committed code (notification `4e6c870`; order, payment and the gateway from the same tree), with no ERROR-level line in any of the 15 services' logs or Keycloak's since that start. The run before it, on the images of `0baa787`, passed every step through 20i and stopped in 20j on slips in the new script block only (a claim rejection answers 201; a PowerShell array piped as one object; a poll made with another person's token). The OpenAPI gate is additions-only with no new waiver and the audit passes; six error goldens were added (all 68 verify); Postman was regenerated and its check passes.**
+>
+> **What it delivers.** Notification really sends now: **email, over SMTP, to customers and to staff**. Every message is written down first and one job sends it; what became of it is kept
+> (`RECORDED`, `SENT`, `FAILED`, `NOT_SENT` with a reason, `BY_HAND`) and shown in the bell. A stack that is not production can reach no real mailbox: "live" is one word in the process
+> environment, never a setting, and a stack that is not live talks only to the mail catcher and hands it only addresses on names reserved for testing. A customer's address comes from the
+> customer's own token; an address Keycloak has not confirmed gets only a short "please sign in" note. A customer who ordered by phone gets nothing from the system: for a sale recorded live the
+> words are written for a salesperson to send. **WhatsApp and SMS are not built** (no provider account exists; the plan's "email first" is what is built).
+>
+> **The alerts, in one table** (this is the only list; the three the earlier text of this plan asked for are the first, the third and the sixth rows):
+>
+> | Alert | What raises it | Who is told, how | Repeats | What ends it |
+> |---|---|---|---|---|
+> | A customer says they have paid (`PAYMENT_TO_CONFIRM`) | `order.payment_submitted` | sales staff; an email at once, **no amount and no reference** | once, 3 hours before the hold ends (at 20:00 Lusaka if that falls in the night) | the order is paid, expired or cancelled; money is recorded for it; or 15 minutes after the hold |
+> | Too many claims to email each (`CLAIM_EMAIL_LIMIT`) | the 51st claim alert in 24 hours | sales staff; ONE email | once a day at most | 24 hours |
+> | Money recorded but the sale has not completed (`SETTLEMENT_STUCK`) | payment announcing a confirmation a second time with no answer | sales staff; an email after a minute, with the amount and the method | after 5 hours, then daily for 14 days; "Sorted" when answered; a last note when it closes | `order.paid`, `order.payment_unsettled`, `payment.held`, `payment.voided`; or 14 days (then listed 30 days more) |
+> | A sale waiting for a box; payment's tenth announcement | folded into the row above (its words say what to check) | | | |
+> | A cancelled money record paid a sale anyway (`VOID_AFTER_SALE`) | `payment.voided` and `order.paid` for one confirmation, in either order | sales staff; an email | no | 7 days (a person puts the books right) |
+> | A piece priced below cost (`BELOW_COST`) | notification asking catalog's below-cost list every 5 minutes with its own identity | whoever may see costs; one email per round naming the pieces, **no cost, no price** | a piece told in the last 24 hours that falls again waits for them to pass | two good rounds without the piece |
+> | The below-cost check is not running (`BELOW_COST_CHECK_DOWN`) | no good round for 2 hours | whoever may see costs; an email | no | the next good round |
+> | Emails are not going out; an alert address is refused (`EMAIL_DOWN`) | the mail server failing for 30 minutes, or three different recipients refused in a row; a refused alert mailbox | **listed only** (it cannot be emailed), one ERROR line | no | the next accepted message (the second kind: 24 hours) |
+> | A sale ZRA has not accepted | not built: Phase 14 | | | |
+>
+> Both lists are read through the gateway: `GET /api/v1/admin/notifications/alerts` (money alerts: `SALES_AGENT`; cost alerts: `CATALOG_ADMIN` and `COST_VIEWER` both) and
+> `GET /api/v1/admin/notifications/messages` (`SALES_AGENT`: what a customer was told, or the words waiting to be sent by hand). Until the admin screens exist, **email is the only way staff are told**.
+>
+> **Changes in other services.** `order`: a phone order's events end with `saleKind` (`LIVE_PHONE` or `LATE_PAPER`), nothing else. `gatewayserver`: one route, two matchers, and a first rule that denies
+> notification's machine identity on every path. `payment`: the log line of a void no longer prints the typed reason. Keycloak: a third client, `oriah-notification` (exactly `CATALOG_ADMIN` and
+> `COST_VIEWER`), and two dev people, `olive` and `nora`. The stack: a `mailcatcher` container. Flyway: notification V4 to V10.
+>
+> **Reviewed (2026-11-16).** Codex's code review (NOT SOUND: 4 P1, 2 P2, 1 P3) and a six-lens read-only panel (36 agents, a skeptic on every finding: 30 raised, 28 standing, none P1 after the
+> skeptics) overlapped on four points. Fixed test-first in `0baa787` (19 new tests, 27 failures red, then green): the dispatcher reads the clock for every message (a lease counted from the start of a
+> slow pass could have run out before its send began, so a second instance could send again); a row is looked at again once it is claimed (no alarm without its "sorted"); the two consumers take
+> their rows in one order (they could deadlock); a mail server that refuses everybody no longer fails the whole queue; an alert email is not sent to a mailbox taken off the list; a below-cost list
+> re-sorted between two pages is thrown away; the below-cost lease is given back only by its holder; an undeliverable below-cost email is repeated hourly and twelve times at most, not every
+> round; after days away staff get one reminder; the last note of a closed alert survives a stop; a From name with a line break, a misspelled pause switch and an address outside plain ASCII are
+> refused. **Codex's second pass on those fixes (NOT SOUND: 2 P1, 4 P2) and a four-lens skeptic check (4 raised, all P3)** then found, and `94cccc9` and `4e6c870` fixed test-first: an alarm is now taken in ONE
+> statement that also locks its alert's row and requires it open (a look before the claim could miss an answer being written; a look after it could cancel an alarm whose "sorted" was already on its way); a customer's message
+> is decided again once it is taken and that decision is the one acted on; a below-cost list longer than one page is read twice and both readings must agree; "the server refuses everybody" closes by itself after a day; the
+> last note is written only for an alert that is still unanswered, and an answer that races the clock's close still relabels it; a reminder interval of nothing is refused; the From address used is the cleaned one.
+> **Not changed, recorded:** "sorted" can follow an alarm whose only try failed (accepted on purpose: an alarm with no "sorted" is worse); Codex's "re-tell ceiling off by one" (twelve re-tellings after the first is what the setting says); a claim alert reopened before
+> its first email was accepted is listed and reminded, not emailed afresh; an unanswered send whose own record cannot be written is retried after its lease.
+>
+> **Known limits, recorded (not defects).** Delivery is at least once: one extra copy is possible when a mail server's acceptance could not be written down. `SENT` means a mail server accepted it,
+> never that it arrived. A dead-lettered event is never replayed, so its message is never sent and an alert it would have ended closes by the clock. An alert fact older than 30 minutes emails nobody.
+> Until Keycloak verifies email addresses no customer receives the full words by email (the short note only), and "we could not complete your order" is website-only. A shopper who never opens the
+> storefront after ordering gets no email. An alert counts as told once ONE of its mailboxes accepted it. A price set below cost on purpose is told like any other. The first three customers refused
+> by a mail server that refuses everybody are failed for good (that is how it is noticed). Every smoke run leaves one open below-cost alert. The hold reminder, the stuck alert with its reminders,
+> the void after a sale, the claim limit, re-telling, the pause and the two "not working" alerts are proven by module tests on a test clock or a scripted mail server, not live; real TLS and
+> sign-in are first proven at go-live.
+>
+> **Not built, recorded.**
+>
+> | Not built | Why | Where it goes |
+> |---|---|---|
+> | WhatsApp Business and SMS senders | no provider account, and each provider's API, template approval, consent rules and cost differ | owner question 7 (`docs/FRONTEND_WORK.md`) |
+> | A machine message to a caller | needs ALL of: a provider account and its sandbox; an ORDER_ADMIN correction of a caller's details with history; a walled, never-routed read of the phone in order, read at send time and never stored; only for `saleKind` `LIVE_PHONE`; never a step keyed late; a ceiling per number per day; no texts at night; a sandbox that sends only to a test list | after the MVP |
+> | A message to the customer when money cannot pay their order | the order on a confirmation is typed by a person: a mistyped one would tell the wrong customer about someone else's money (AM1) | owner question 15 |
+> | Delivery receipts, bounces, read receipts | needs a public callback door with its own proof of origin | after the MVP |
+> | Keycloak email verification | needs the owner's mail account for Keycloak and changes the sign-up flow | **before go-live**, owner questions 8 and 9: it is the switch that turns the short note into the full email |
+> | A separate alert for a sale waiting for a box, or for payment's tenth announcement | folded into the stuck alert, which repeats daily for two weeks | owner question 11 |
+> | Alerts for a priced piece with no cost known, for dead letters and consumer lag, for finance's open errors | the Prices screen shows the first; the second are operator signals (the observability stack has no alert rules); finance emits nothing | Phase 1's operations item |
+> | An acknowledge button; sending a failed customer message again by hand | alerts end by facts or the clock; screens are the frontend stage | frontend stage |
+> | Staff recipients chosen by capability | needs a read of Keycloak's users, a wider identity than this phase allows | after the MVP |
+> | Retention or erasure of addresses and messages | no retention policy exists anywhere in the project | owner question 17 |
+> | Checkout's rate limiter and breaker (H1) | nothing in notification is involved | Phase 13's block |
+> | Refund, return and card-payment messages; the ZRA alert | Phases 12, 13 and 14 | their blocks |
+>
+> **Before go-live (added by this phase).** (1) The production compose supplies BOTH client secrets in the `${NAME:?...}` form (refuse to start if unset) and `scripts/keycloak-go-live.ps1` sets both.
+> (2) The owner's mail account, From address and alert mailboxes go into the process environment only (`ORIAH_SMTP_*`, `ORIAH_EMAIL_FROM`, `ORIAH_ALERT_EMAILS_MONEY`, `ORIAH_ALERT_EMAILS_COST`,
+> `ORIAH_NOTIFICATION_LIVE=true`); the four shop lines go into `config-repo`. (3) **The go-live alert check:** with the real account, place a test order, claim a payment and see the alert arrive in the
+> owner's own mailbox, then set a test price below cost and see that one too; a From address the account may not send as shows as "Emails are not going out" in the alerts read. (4) Keycloak email
+> verification, if the owner wants customers to get the full emails. (5) The two domain settings (SPF and DKIM) for the shop's sending address, or its emails land in spam. (6) Notification's memory limit (640 MiB) was NOT re-measured after this phase: Docker Desktop's engine stalled three times on 2026-11-16, the last time before `scripts/measure-stack.ps1` could take one sample. It stood at 452 MiB before the phase and now runs a mail client, two scheduled jobs and a second Kafka binding: measure it on the next full-stack run and write the peak beside the limit.
+>
+> **Rollout order.** order (it only adds `saleKind`), then the realm (the new client), then notification (V4 to V10 on its first start), then the gateway. **Hand-offs:** Phase 12 declares its refund,
+> return and cancel-after-pay events in notification before they are emitted and writes their messages; Phase 13 declares any new payment event type first and takes item H1.
+
+*(The paragraphs below are the plan as it stood before the build; the block above is what was built.)*
+
 Email first, then WhatsApp, then SMS. `notification_log.keycloak_id` is
 `NOT NULL`, which blocks notifying a phone-order buyer who has no account —
 fix that when phone orders need confirming.
