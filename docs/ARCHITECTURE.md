@@ -192,8 +192,9 @@ payment does not, and a wrong amount must still be recorded, never turned away.
   while order is already settling. If the pieces were not yet sold, the money is
   never applied; if they were (or the reply that said so was lost), they cannot
   be un-sold, so the sale stays `PAID`, payment marks the confirmation
-  `SETTLED_AFTER_VOID` and both services log an ERROR. Nothing alerts staff
-  before Phase 11, and someone must put the books right.
+  `SETTLED_AFTER_VOID` and both services log an ERROR. Since Phase 11 staff are
+  emailed ("a cancelled payment record paid a sale anyway"), and someone must
+  still put the books right.
 - **Money that cannot pay a sale is held for the customer.** If the amount is
   wrong, the order is cancelled, already paid or unknown, or its piece was sold
   to someone else meanwhile, order answers `order.payment_unsettled` and payment
@@ -377,7 +378,10 @@ the `reservationId`), then `order.fulfilled`, `order.shipped` and
 order's new types before order emitted them: it sends the shopper a message for
 created, paid (versions 1 and 2), fulfilled, shipped, delivered, cancelled and
 expired orders, and declares `order.payment_submitted` and
-`order.payment_unsettled` only to ignore them, since they are facts for staff.
+`order.payment_unsettled` only to ignore them, since they are facts for staff
+(since Phase 11 it handles both: the first raises the staff alert "a customer
+says they have paid", the second feeds the watch on confirmed money; it also
+reads `oriah.payment`).
 Every consumer built on the
 shared event log (`shared/oriah-events`) declares the types and versions it
 handles or ignores and throws on anything undeclared, so a declaration lands
@@ -390,9 +394,9 @@ sale and money events (`reservation.consumed`, `box.swapped`, `order.paid`
 version 2, `payment.confirmed`, `payment.voided`, `payment.held`) and posting
 each confirmation's fee once (Phase 10); alerts to staff for a stuck settlement,
 for a payment-submitted hold about to lapse (a client requirement, `CLIENT_DECISIONS.md`
-§8.5) and for a piece falling below cost (Phase 11; until then the staff lists
-are the only warning: `awaiting-payment`, soonest to lapse first, `settlements`,
-and the below-cost list), repaying held money and correcting a paid confirmation
+§8.5) and for a piece falling below cost (Phase 11, built 2026-11-16: emails to
+staff and an alerts read; the staff lists stay where the detail is read:
+`awaiting-payment`, soonest to lapse first, `settlements`, and the below-cost list), repaying held money and correcting a paid confirmation
 (Phase 12), card charges as confirmations (Phase 13).
 
 ---
@@ -1344,6 +1348,42 @@ just before commit, so a movement and its announcement exist together or not at 
 
 **Why a refusal is written down, not retried.** An event that breaks a promise it makes (a total that is not its lines) will fail the same way every time; it is parked on a dead-letter topic and shown as an open
 error that closes by itself when the event later applies. A catch-up that has finished never asks again, so a fix is picked up by an explicit RE-VERIFY and the next start.
+
+## Notifications: write it down first, send it afterwards (Phase 11)
+
+**Why the consumer no longer sends.** Before Phase 11 the code that read an order event also "sent" the message (a log line). With a real mail server that is wrong twice over: a slow server would hold up the
+thread that reads Kafka, and a stop between "written" and "sent" would lose the message for good, because a repeat of the event finds it already applied. So the consumer now **only writes the message down**
+(`notification_log`, status `RECORDED`), in the same transaction as the Inbox marker, and one scheduled job, the **dispatcher**, sends what waits. Each pass is: decide (pure code, `SendDecision`), **claim** the row with a
+lease in a short transaction, **send with no transaction open**, then write the outcome with a guarded UPDATE that succeeds only if this pass still holds the claim. A row is `RECORDED`, `SENT`, `FAILED`, `NOT_SENT`
+(deliberately not emailed, with a reason from a closed list) or `BY_HAND` (words for a person to send).
+
+**What "sent" means, honestly.** `SENT` is "a mail server accepted it", never "it arrived": knowing that would need a public callback door. The promise is **at least once**: one extra copy is possible when the server
+accepted a message and the service stopped before writing that down, or after the single retry of a send whose answer never came (a fixed `Message-ID` lets mail systems collapse the copy). The mail library's own
+timeouts do not bound a server that answers slowly for ever, so each send runs on a virtual thread that is interrupted at a wall-clock limit, and the message object notes whether its body was already handed over: a
+failure after that point is `OUTCOME_UNKNOWN` ("it may have arrived"), never "it did not".
+
+**Why "live" is not a setting.** A stack that is not production must not be able to reach a real customer, and a settings file is exactly what gets copied between stacks. So the switch is the exact word `true` in the
+**process environment** (`ORIAH_NOTIFICATION_LIVE`), read through `ProcessEnv`, never through Spring's property sources: no YAML, config-repo entry or profile can set it. Not live, the service refuses to start with
+any mail host but the catcher's four names, and hands the catcher only addresses on names reserved for testing (`.local`, `.test`, `.example`, `.invalid`, `.localhost`; `example.com` is deliberately not on the list,
+because real people own look-alikes of it). Anything else is written `NOT_SENT / SANDBOX`. The compose file's guard (`check_service_registry.py`) refuses a line that would make the dev stack live, give it a mail
+account or let the catcher relay.
+
+**Where an address comes from.** Notification never asks another service for a customer's email. It reads it from the customer's **own token** when the bell asks for their messages (`/notifications/me`), and keeps
+the newest (`recipient_contact`), with whether Keycloak says the address was confirmed. Nobody's address is confirmed today (Keycloak does not verify email yet), so an unconfirmed address gets only a short note
+("there is news about your order, please sign in"): a mistyped address must not hand a stranger an amount or a receipt number. A customer who ordered by phone has no token, so no address: for a sale recorded **live**
+the words are written for a person to send (`BY_HAND`), and the system sends nothing to a phone. An event says which kind of phone sale it was (`saleKind`, a trailing field), because a sale typed in later from paper
+must produce no "payment received" for someone who paid last week.
+
+**Alerts are rows first, emails second.** A staff alert is a row in `staff_alert` (one open alert per kind and subject, held by a unique index) that a screen can list, and its emails are ordinary rows of the same
+message log, sent by the same dispatcher. An alert ends by a **fact** (the order was paid; the money was held; the piece is no longer below cost) or by the **clock**, never by a button. The email names where to look
+and never a cost, a selling price, a customer's reference or a mailbox; "a customer says they have paid" names no amount, because the claim carries none and a remembered total could be stale. The alert about a stuck
+payment needs facts from two topics (`payment.confirmed` announced again on `oriah.payment`; `order.paid` on `oriah.order`) that arrive in either order, so both consumers lock one row per confirmation
+(`confirmation_watch`) before deciding anything, and an old fact (a replay, a restart) raises nothing new. Two alerts are about email itself and are therefore only listed, never emailed.
+
+**Below cost is a poll with its own identity.** Phase 6 computes where every price stands at each read; nothing is stored, so nothing can announce a change. Notification asks catalog's list every few minutes with its
+own Keycloak client, `oriah-notification`, holding exactly `CATALOG_ADMIN` and `COST_VIEWER` (the list needs both). "Unknown is not empty": a failed round changes nothing, a piece must be absent from two good rounds
+in a row before its alert ends, and no good round for two hours is itself an alert. Because those two roles could set prices, the gateway's **first** rule refuses that machine identity on every path, so its token is
+useful only from inside the stack's network.
 
 ## Logging conventions
 

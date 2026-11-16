@@ -12,6 +12,7 @@ Docker port is bound to `127.0.0.1`, never to your Wi-Fi.
 | Kafka :9092 — events between services | `gatewayserver` :8080 — the single front door |
 | Redis :6379 — the gateway's rate limiter | the 14 services, :8081–:8094 |
 | SeaweedFS :8333 — product images | |
+| Mail catcher :8025 — every email the stack sends is caught here and delivered to nobody (Phase 11) | |
 | *optional, `-Traces`:* Tempo, Prometheus, Grafana :3000 | |
 
 Why this split: you never debug Postgres or Keycloak, so they may as well be
@@ -150,6 +151,10 @@ Postman steps below.
 | Packer / driver — job role `DISPATCH` + `USER` (Phase 8; a dev stack needs the Keycloak volume reset to have it) | same | `dave` | `password` |
 | Salesperson — job role `SALES` + `USER` (Phase 9; a dev stack needs the Keycloak volume reset to have it) | same | `sara` | `password` |
 | Customer user — `USER` only | same | `alice` | `password` |
+| Owner as she will be in production — job role `OWNER` and **not** `USER`: she reads the staff lists and has no shopper's bell (Phase 11; needs the Keycloak volume reset) | same | `olive` | `password` |
+| Customer whose address looks real, `nora@example.com` — `USER` only; proves a development stack never emails an address that could be a real mailbox (Phase 11; needs the Keycloak volume reset) | same | `nora` | `password` |
+| Mail catcher: read the emails the stack sent | http://localhost:8025 | none | none |
+| OAuth client of notification itself (it asks catalog which pieces are priced below cost; roles `CATALOG_ADMIN` + `COST_VIEWER`, refused at the gateway) | realm `oriah` | `oriah-notification` | secret `oriah-notification-secret` |
 | Owner placeholder — `OWNER` + `USER`, email `admin@oriah.local` | same | `admin` | temporary `ChangeMeOnFirstLogin!`; must set a new one at first login — use `maya` instead |
 | OAuth client (Postman, scripts, order's own calls to inventory and shipping) | realm `oriah` | `oriah-admin` | secret `oriah-admin-secret` |
 | Grafana (only with `-Traces`) | http://localhost:3000 | `admin` | `admin` |
@@ -255,6 +260,14 @@ endpoints. Flyway owns every table's shape — change it with a migration,
 never by hand, or your database stops matching everyone else's — nothing that moves money or stock is ever seeded or
 hand-written — creating it through the admin endpoints is what proves they
 work — and the Keycloak database is Keycloak's alone.
+
+**Email on your own PC (Phase 11).** `.\scripts\dev-stack.ps1` starts a mail catcher (container `oriah-mailcatcher`, the Mailpit image): notification, run from IntelliJ with profile `local`,
+hands it every email on `localhost:1025`, and you read them at http://localhost:8025. **It delivers nothing to anybody.** A development stack is "not live", and no settings file can make it live (only the
+word `true` in the process environment variable `ORIAH_NOTIFICATION_LIVE` does, and the registry guard refuses that line in the compose file). While it is not live, notification talks to no mail server
+but the catcher and hands it only addresses on names reserved for testing (`.local`, `.test`, `.example`, `.invalid`, `.localhost`); a message for any other address is written down as `NOT_SENT / SANDBOX`. That is
+why the dev people have `@oriah.local` addresses, and why `nora@example.com` is never emailed. Alerts to staff go to two mailboxes that exist only in the catcher: `alerts-money@oriah.local` and
+`alerts-cost@oriah.local`. A customer is emailed only after the storefront (or you, in Postman) has called `GET /api/v1/notifications/me` with their token once: that call is how notification learns their address.
+Notification leaves a run configuration alone if it has no `ORIAH_SMTP_*` variable; with one set while not live, it refuses to start.
 
 **Finance (Phase 10) reads history when it starts.** Run `finance` from IntelliJ like the others (profile `local`, port 8094, database `finance` on 5446). Its first start asks every other service for its
 whole event history over Kafka (`localhost:9092`, the HOST listener), so start the producers first and the books are complete only when `GET /api/v1/admin/finance/status` says `catchUpComplete: true` (sign in as

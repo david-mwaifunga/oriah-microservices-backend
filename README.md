@@ -190,8 +190,11 @@ otherwise the money is held for the customer. A paid order cannot be cancelled
 queues for the `SALES_AGENT` capability,
 `GET /api/v1/admin/orders/awaiting-payment` (shoppers who say they have paid,
 soonest to lapse first) and `GET /api/v1/admin/orders/settlements` (confirmed
-money that is in flight, waiting for a box or could not pay its sale). Nothing
-pushes an alert until Phase 11, so these lists are the alert.
+money that is in flight, waiting for a box or could not pay its sale). Since
+Phase 11 `notification` also emails staff when a customer says they have paid
+and when recorded money has not completed its sale; these lists are where the
+detail is read. (On a development stack every email is caught by the mail
+catcher at http://localhost:8025 and delivered to nobody.)
 
 Delivery is priced **per town** by admin (towns are seeded, prices never are),
 and a promotion covers one product, one category or the whole shop and applies by

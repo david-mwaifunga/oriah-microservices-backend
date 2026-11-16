@@ -11,7 +11,8 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.binder.MeterBinder;
 
 /**
- * The number Phase 11's alerts watch: confirmed money that has waited past the settlement window with no outcome. Read from the database when the
+ * A number for dashboards: confirmed money that has waited past the settlement window with no outcome. (Notification's alert to staff does not read it: it is raised
+ * by the watcher's second announcement of a confirmation.) Read from the database when the
  * meter is scraped (one cheap count), so it is right whatever the watcher is doing, and it is registered whether or not the watcher's schedule is on.
  *
  * <p>{@code strongReference(true)} is said out loud: a Micrometer gauge may hold only a WEAK reference to the object it reads (the other overloads do),

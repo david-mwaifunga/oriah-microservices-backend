@@ -20,7 +20,7 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>One pass takes a bounded batch, each settlement in turn, each in transactions of its own; one that fails does not hold the others up. It also
  * says, once a pass, how many settlements are STUCK (in flight for longer than {@code oriah.sales.settlement-stuck-after}): money that staff confirmed
- * and that has paid nothing. That is an ERROR in the log (Phase 11 turns it into an alert) and a number staff can see in their queue.
+ * and that has paid nothing. That is an ERROR in the log and a number staff can see in their queue (the email to staff is notification's, raised when payment announces the money a second time).
  *
  * <p>Run by {@code SettlementJobSchedule}, on a thread of its own. Idempotent and safe on every instance.
  */
@@ -65,7 +65,7 @@ public class SettlementJob {
         }
     }
 
-    /** How many confirmed payments have been in flight for longer than the stuck threshold (a gauge for dashboards, an alert in Phase 11). */
+    /** How many confirmed payments have been in flight for longer than the stuck threshold (a gauge for dashboards; the alert to staff is notification's own, from payment's second announcement). */
     public long stuck(Instant now) {
         return jdbc.queryForObject("SELECT count(*) FROM order_settlement WHERE state IN ('RECEIVED', 'CONSUMING', 'BLOCKED_BOX') AND received_at < ?",
                 Long.class, Timestamp.from(now.minus(stuckAfter)));

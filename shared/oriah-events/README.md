@@ -307,10 +307,25 @@ acceptable. No service reads in batches today.
 
    It shows as these ERROR lines and as the consumer group's lag growing.
    **Operations: alert on both** (recorded as an operations item; nothing
-   alerts on them yet).
+   alerts on them yet. Phase 11's staff alerts are shop alerts sent by
+   email; these two are operator signals and their home is the
+   observability stack, which has no alert rules yet).
 5. If the stall outlasts Kafka's retention, the message is gone from Kafka -
    but never from the producer's outbox, so a replay (CatchUp) can still
-   bring it back. Notification has no CatchUp today.
+   bring it back. Notification has no CatchUp today, on purpose: a
+   message about an old event would be too late to email anyway (Phase
+   11 does not send a customer message older than six hours).
+
+**Notification reads two topics since Phase 11** (`oriah.order` and
+`oriah.payment`) under ONE consumer name, `notification`: the Inbox's
+`processed_event` is keyed by (consumer, event id) and event ids are random,
+so one name serves both. Its dead-letter topics are
+`oriah.order.dlq.notification` and `oriah.payment.dlq.notification`. It
+handles `payment.confirmed`, `payment.voided` and `payment.held` and ignores
+`payment.rejected`, `payment.succeeded` and `payment.failed`, so **any NEW
+payment event type (Phases 12 and 13) must be declared by notification, as
+well as by order and finance, before payment emits it**: an undeclared type
+is refused and dead-lettered.
 
 **The dead-letter record** (the contract for anyone reading a dead-letter
 topic): the original key, body and headers, exactly as they arrived, plus

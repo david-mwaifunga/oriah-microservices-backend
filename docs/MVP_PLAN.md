@@ -472,7 +472,7 @@ what is on disk now.
 | cart | V3 | V4 |
 | payment | **V5** — USED by Phase 1: one charge per intent, and the event log | **V6** |
 | search | **V4** — USED by Phase 3's `listed` (V3 is Phase 1's `processed_event`) | **V5** |
-| notification | **V3** — USED by Phase 1's `processed_event` | **V4** |
+| notification | **V10** — USED by Phase 11: V4 the message status, V5 `order_ref`, V6 `recipient_contact`, V7 `dispatch_state`, V8 `staff_alert`, V9 `confirmation_watch`, V10 the below-cost check (V3 is Phase 1's `processed_event`) | **V11** |
 | promotion / customer / review | V2 | V3 |
 | checkout | *(stateless, no DB)* | — |
 | shipping | *(stateless today)* | **V1** — gains a database in Phase 7 for provinces, towns and delivery prices |
@@ -1747,7 +1747,7 @@ current count. Catalog keeps no count at all.
 > columns to what it could undo (the default box and the unpublish count). It is now one statement that changes only the breadcrumb column.
 >
 > **Accepted for the MVP (written down so nobody rediscovers them).**
-> - **Nothing tells anyone when a priced piece falls below cost** until Phase 11 polls the list (below); the list itself is always current.
+> - **Nothing told anyone when a priced piece falls below cost** until Phase 11, which is built: notification asks this list every five minutes and tells the people allowed to see costs (below); the list itself is always current.
 > - **The cost check is "the cost as observed at evaluation time"**, kept with its time. A cross-service check cannot be a commit-time fence: a
 >   sale or a correction landing between the read and the save is not seen; the list is authoritative afterwards.
 > - **A snapshot that is dead-lettered and never followed by another** leaves a product's boxes set aside (free looks lower than it is: the safe
@@ -1763,7 +1763,7 @@ current count. Catalog keeps no count at all.
 > **Owner questions (each with its default; none blocks).** O1 may a price be set for a piece never received? (default yes, flagged);
 > O2 may a price start up to 72 hours back, never in the future? (default yes); O3 the target profit percentage (none configured: no suggestion);
 > O4 boxes set aside are let go when a piece is unpublished, deleted or boxed differently, and a write-off cuts the newest set-asides first
-> (default as stated); O5 nobody is told when a price falls below cost until Phase 11 (default as stated).
+> (default as stated); O5 nobody was told when a price falls below cost until Phase 11 (built: an email naming the piece and no figure).
 >
 > **What this phase hands on.**
 > - **Phase 7:** (a) pricing at a true date: the history answers "the price at an instant" (`PriceHistory.priceAt`, tested) but no cross-service
@@ -1777,7 +1777,7 @@ current count. Catalog keeps no count at all.
 >   built there; the evaluator `PriceGuard` is pure and reusable).
 > - **Phase 10 (finance):** `price.set` on `catalog.price` is the audit trail of every price and every below-cost acceptance (who, why, against
 >   which cost, lots by id and revision); the month's overhead share beside the suggestion needs the expenses.
-> - **Phase 11:** tell staff when a priced piece falls below cost (written into Phase 11's block).
+> - **Phase 11:** tell staff when a priced piece falls below cost (built in Phase 11: see its block).
 > - **Phase 12:** a returned piece's markdown below cost is the same rule: set it through the same endpoint, with a typed reason.
 > - **Frontend:** `docs/FRONTEND_WORK.md`'s Phase 6 section has the API as built and every screen and break.
 
@@ -1886,7 +1886,7 @@ Two additions the client asked for at this exact screen:
 > code, and checkout's tests were adapted after its production change (the old ones encoded the card flow); both were then mutation-tested as above. The claim step does
 > not compare the reference the shopper typed with the one staff confirm: a claim is not money, and a settlement never reads it.
 >
-> **Accepted and left open.** One shopper can exhaust checkout's shared per-downstream rate limiter and breaker (a hardening question for Phase 11). Checkout clears the
+> **Accepted and left open.** One shopper can exhaust checkout's shared per-downstream rate limiter and breaker. Phase 11 found the mechanism and did not change it (nothing in notification is involved): a refusal by the rate limiter counts as a failure of the breaker, so a burst from one account shuts checkout for everyone for 30 seconds, and a throttled preview answers 200 with an empty bag. It is item H1 of Phase 13's block. Checkout clears the
 > **whole** cart after placing, so a line added while the confirm was in flight goes with it. A dead replacement hold is replaced by an id that is taken on the **next**
 > attempt, so a paid, still-free piece can be unheld for up to five minutes while inventory is failing. A box-swap reason of ten UTF-16 units but fewer than ten characters
 > passes validation and then fails the database check. The claim's version-checked delete has no interleaving test. How long a lapsed order may still be settled at its old
@@ -1898,8 +1898,8 @@ Two additions the client asked for at this exact screen:
 > reads **one** setting for both and never copies the number; the walk-in channel is unbuilt (only WEB and PHONE exist). **Phase 10** (Finance): consume `order.paid` v2 and **dedupe by `confirmationId`** (order re-publishes
 > an answer it already gave, with `republished: true`, so payment can recover a lost one) and `reservation.consumed` for what each line cost; payment's fee is an expense,
 > never revenue; held money is a liability; **a waived delivery is delivery revenue given up** (`delivery_waived_amount` on the order; `order.paid` does not carry it, so add
-> it as a compatible optional field when finance needs it). **Phase 11** (Notifications): alert on a settlement stuck for five minutes (`payment.confirmations.stuck`, an ERROR log), on a
-> hold about to lapse, and on a piece falling below cost (nothing tells anyone yet); notification already skips a republished `order.paid`. **Phase 12** (Returns): a
+> it as a compatible optional field when finance needs it). **Phase 11** (Notifications, built): staff are emailed about a payment recorded whose sale has not completed, a customer who says they have paid (with one reminder before the
+> hold lapses), and a piece falling below cost; notification already skips a republished `order.paid`. **Phase 12** (Returns): a
 > paid sale is undone by a refund, never by a status change or a void (409 `confirmation-settled`); a confirmation voided after it paid shows as `SETTLED_AFTER_VOID`;
 > held money is what Phase 12 pays out; a cancellation before dispatch refunds delivery. **Phase 13** (ZynlePay): switch the card path on and give it a caller, and
 > restate the create-intent timeout budget against that caller (the test that read checkout's wait is gone). **The frontend** was not changed: `docs/FRONTEND_WORK.md`
@@ -2254,7 +2254,7 @@ paid order cancelled before it gets its delivery charge back in full (Phase 12).
 > **What Codex changed:** an explicit LIVE/LATE kind instead of a one-hour guess; money for a paper sale on another day is **held** (`WRONG_DATE`), never applied; K0.00 phone orders are refused; five pieces of
 > over-engineering were cut (a duplicate guard, the slip's locks, a published-price column, a retention sweep with automatic cancellation, a one-hour margin inside the 72). Its **code review** (NOT SOUND, 5 findings)
 > added the owner's historical-price remedy (`BACKDATE_SALE` + reason, catalog V7) and the refusal of a hidden `discount`. **Not built:** versioned category membership for as-of promotions (a historical category promotion
-> uses today's categories); a paper sale against a web shopper's hold; notification of the caller (Phase 11); walk-in and counter channels. Mutation checks: the pure rules and the entity (every mutant killed
+> uses today's categories); a paper sale against a web shopper's hold; notification of the caller (Phase 11 writes the words for a LIVE phone sale and a person sends them; the events now say the kind of sale, `saleKind`; a machine message to a caller needs every condition listed in Phase 11's not-built table); walk-in and counter channels. Mutation checks: the pure rules and the entity (every mutant killed
 > or shown equivalent) and the record, pricing and read paths.
 
 Admin records an order for a caller with no account. `SALES_AGENT` role.
@@ -2387,6 +2387,11 @@ the pricing prefix refuses either role alone): give notification its own client 
 
 `CLIENT_DECISIONS.md` §1.2. Depends on Phase 5's source-lot column.
 
+> **From Phase 11 (2026-11-16).** Notification now reads `oriah.payment` as well as `oriah.order`, so **any new payment or order event type this phase adds (a refund, a return, a
+> cancellation after payment) must be declared by notification (handles or ignores) before its producer emits it**, as by every other consumer; an undeclared type is dead-lettered.
+> The messages a refund or a return sends are this phase's to write (`MessageTexts`, with the owner's wording), and so is what a web shopper is told when a paper sale took the piece
+> they had paid for. Phase 11's "void after a sale" alert (`VOID_AFTER_SALE`) tells staff today that a cancelled money record paid a sale anyway; reopening that sale is this phase's.
+
 Today this is **structurally impossible**, and the code says so deliberately:
 
 - `OrderStatus` has **no state after `DELIVERED` and no path back from
@@ -2467,6 +2472,13 @@ card payments like stripe."* Round 5: *"For the card payments, we can continue
 on with zynle, thats fine."* Built after the core and **before tax**, which
 stays last. Staff confirmation (Phase 7) stays alongside it for cash and bank
 transfers; both are live at go-live.
+
+> **From Phase 11 (2026-11-16).** (1) Notification reads `oriah.payment`: **any new payment event type must be declared by notification before payment emits it**, and switching the card
+> path on makes `payment.succeeded` / `payment.failed` real events it ignores today; the messages a card or mobile-money payment sends are this phase's to write. (2) **Hardening item H1,
+> checkout's rate limiter and breaker** (found in Phase 7, mechanism found in Phase 11, not changed): a refusal by the rate limiter counts as a failure of the circuit breaker, so a burst from
+> one account shuts checkout for every shopper for 30 seconds, and a throttled preview answers 200 with an empty bag. Option A: limiter refusals do not open the breaker (one line: add
+> `io.github.resilience4j.ratelimiter.RequestNotPermitted` to the breaker's `ignore-exceptions`). Option B: a limit per shopper at the gateway, keyed by the token's subject. First red test:
+> two callers on one `ResilientFeignCaller`. It matters most here, where a provider's callbacks and retries add load.
 
 - **ZynlePay first.** Secondary sources describe it as Zynle Fintech's Zambian
   gateway taking **MTN, Airtel and Zamtel mobile money and debit/credit cards**,

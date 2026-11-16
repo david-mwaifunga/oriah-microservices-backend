@@ -4,7 +4,7 @@
 #
 # Drives the full backend through the gateway. Each step is listed under the
 # banner it prints, so a failure on screen can be found here by its number.
-# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20i.
+# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20j.
 #
 # Phase 7 "Sell": the sale is placed, HELD, claimed, confirmed BY STAFF and settled
 # asynchronously (steps 2b-6j). Checkout never touches money: there is no card, and
@@ -823,6 +823,11 @@ function Get-OrderReceipt($OrderId) {
 
 Write-Host "[1/20] JWTs..." -ForegroundColor Cyan
 Refresh-Tokens
+# Notification learns where to email a customer from the customer's own token, each time the storefront's bell asks for their
+# messages (Phase 11). This is that call, made once at the start as the bell would make it, so alice's address is known before
+# her first order of this run. Mail caught before this moment belongs to an earlier run (the catcher keeps the newest 500).
+$mailSince = [DateTime]::UtcNow.AddSeconds(-5)
+Assert-Reply (Invoke-Api GET "$gw/notifications/me?size=1" $aliceH $null) "alice opening her bell" 200
 
 Write-Host "[2/20] Admin: product + variant (priced, published)..." -ForegroundColor Cyan
 $product = Invoke-RestMethod -Method POST `
@@ -3784,6 +3789,185 @@ Require (@(@($posted.Json.items) | Where-Object { [decimal]$_.amount -eq [decima
 $tooSoon = Invoke-Api POST "$finBase/reports/profit/$finMonth/issue" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-issue") }) @{}
 Require (($tooSoon.Status -eq 409) -and "$($tooSoon.Json.type)".EndsWith("/month-not-finished")) "reporting the running month gave $($tooSoon.Status) '$($tooSoon.Json.type)', expected 409 month-not-finished"
 Write-Host "    only the owner opens the books (a shopper and a salesperson get 403, no token 401); an expense is keyed once (a repeat answers the same one), K1.005 is refused 400, and the running month cannot be reported (409 month-not-finished)"
+
+# --------------------------------------------------------------------------------------------------------------------------------------------------------------
+Write-Host "[20j/20] Notifications (Phase 11): a paid order is emailed; staff are told a customer says they have paid; a piece below cost is told with no figure; a caller's words wait to be sent by hand; nothing leaves the sandbox..." -ForegroundColor Cyan
+$noteBase = "$gw/admin/notifications"
+$catcher = "http://localhost:8025/api/v1"
+
+# Every message the mail catcher took since this run began, for one mailbox, with its text. The catcher is the ONLY mail server this
+# stack can talk to: it delivers nothing.
+function Get-CaughtMail([string]$To) {
+    $found = @()
+    $list = Invoke-RestMethod -Uri "$catcher/messages?limit=200" -TimeoutSec 15
+    foreach ($m in @($list.messages)) {
+        if (-not $m) { continue }
+        $toAll = @(@($m.To) | ForEach-Object { "$($_.Address)" })
+        if (($toAll -contains $To) -and ((ConvertTo-UtcInstant $m.Created) -ge $mailSince)) {
+            $full = Invoke-RestMethod -Uri "$catcher/message/$($m.ID)" -TimeoutSec 15
+            $found += @{ To = $toAll; Subject = "$($m.Subject)"; Text = "$($full.Text)" }
+        }
+    }
+    return ,$found
+}
+function Get-MeRow($Headers, [string]$OrderId, [string]$EventType) {
+    $me = Invoke-Api GET "$gw/notifications/me?size=200" $Headers $null
+    if ($me.Status -ne 200) { return $null }
+    return @(@($me.Json.content) | Where-Object { $_ -and ("$($_.orderId)" -ceq $OrderId) -and ("$($_.eventType)" -ceq $EventType) }) | Select-Object -First 1
+}
+function Get-NotificationSql([string]$Sql) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-notification", "psql", "-U", "notification", "-d", "notification", "-t", "-A", "-c", $Sql)
+    return (@($rows | Where-Object { $_ -match "\S" }) -join "").Trim()
+}
+$oliveToken = Get-Jwt "olive"
+$oliveH = @{ Authorization = "Bearer $oliveToken" }
+$noraToken = Get-Jwt "nora"
+$noraH = @{ Authorization = "Bearer $noraToken" }
+# Fresh tokens for the people of this step: a token lasts 30 minutes and the script has run for longer than that.
+Refresh-Tokens
+$saraH = @{ Authorization = "Bearer $(Get-Jwt 'sara')" }
+$orderCode = $orderId.Substring(0, 8).ToUpper()
+
+# --- (a) the sale order of step 6d was paid: alice was emailed, and her bell says what became of each message -------------------------------------
+$paidMail = Wait-Until {
+    $hit = @((Get-CaughtMail "alice@oriah.local") | Where-Object { $_.Subject -ceq "Payment received - thank you" -and $_.Text.Contains($receipt) })
+    if ($hit.Count -ge 1) { $hit[0] }
+} 90 3
+Require ($null -ne $paidMail) "no 'Payment received' email to alice@oriah.local naming receipt $receipt reached the mail catcher within 90 s"
+Require ($paidMail.Text.Contains("K180.00") -and $paidMail.Text.Contains($orderCode) -and $paidMail.Text.Contains("It is not a tax invoice")) "the payment email does not carry K180.00, the order code $orderCode and the 'not a tax invoice' line: $($paidMail.Text)"
+$paidRow = Wait-Until { $r = Get-MeRow $aliceH $orderId "order.paid"; if ($r -and "$($r.status)" -ceq "SENT") { $r } } 60 2
+Require ($null -ne $paidRow) "alice's bell does not show the payment message of order $orderId as SENT"
+Require ($paidRow.sentAt -and ("$($paidRow.deliveredAt)" -ceq "$($paidRow.recordedAt)")) "the paid row should carry sentAt, and deliveredAt equal to recordedAt: $($paidRow | ConvertTo-Json -Compress)"
+$placedRow = Get-MeRow $aliceH $orderId "order.created"
+Require ($placedRow -and ("$($placedRow.status)" -ceq "NOT_SENT") -and ("$($placedRow.statusReason)" -ceq "BELL_ONLY")) "the 'we are holding your order' row should be NOT_SENT / BELL_ONLY: $($placedRow | ConvertTo-Json -Compress)"
+Require ("$($placedRow.body)".Contains("Nothing is paid yet")) "the placement message should say nothing is paid yet: $($placedRow.body)"
+Write-Host "    alice was emailed 'Payment received' with receipt $receipt and K180.00 (her bell: SENT); 'we are holding your order' stayed on the website (NOT_SENT / BELL_ONLY)" -ForegroundColor Gray
+
+# --- (b) the client's alert, live: a customer says they have paid; staff are told at once, with no amount; a rejected claim tells the customer ----------
+Clear-LiveOrders
+Clear-Cart
+$claimOrder = Place-SaleOrder $aliceH 1 $null (New-Key "smoke-notify-claim")
+Assert-Reply $claimOrder "placing the order whose payment alice will claim" @(200, 201)
+$claimOrderId = "$($claimOrder.Json.id)"
+$claimCode = $claimOrderId.Substring(0, 8).ToUpper()
+Assert-Reply (Invoke-Api POST "$gw/orders/$claimOrderId/payment-claim" $aliceH @{ method = "MTN"; reference = "MTN${saleTag}NOTIFY" }) "alice's payment claim" 200
+$claimMail = Wait-Until {
+    $hit = @((Get-CaughtMail "alerts-money@oriah.local") | Where-Object { $_.Subject -ceq "A customer says they have paid - order $claimCode" })
+    if ($hit.Count -ge 1) { $hit[0] }
+} 90 3
+Require ($null -ne $claimMail) "no 'A customer says they have paid - order $claimCode' email reached alerts-money@oriah.local within 90 s"
+Require (($claimMail.Text -notmatch 'K\d') -and $claimMail.Text.Contains("MTN mobile money") -and $claimMail.Text.Contains("only if the provider tells you")) "the claim alert must name no amount, name the method and carry the rule on rejecting: $($claimMail.Text)"
+Require (-not $claimMail.Text.Contains("MTN${saleTag}NOTIFY")) "the claim alert carries the customer's payment reference"
+$openAlert = Wait-Until {
+    $r = Invoke-Api GET "$noteBase/alerts" $oliveH $null
+    $mine = @(@($r.Json) | Where-Object { $_ -and ("$($_.kind)" -ceq "PAYMENT_TO_CONFIRM") -and ("$($_.orderId)" -ceq $claimOrderId) })
+    if ($r.Status -eq 200 -and $mine.Count -eq 1) { $mine[0] }
+} 30 2
+Require (($null -ne $openAlert) -and ("$($openAlert.state)" -ceq "OPEN")) "the alerts read (as the owner) does not show the open claim alert of order $claimOrderId"
+$notifyClaim = Wait-Until { $r = Invoke-Api GET "$gw/admin/payments/claims?orderId=$claimOrderId" $mayaH $null; $rows = @(@($r.Json) | Where-Object { $_ }); if ($r.Status -eq 200 -and $rows.Count -ge 1) { $rows[0] } } 60 2
+Require ($null -ne $notifyClaim) "payment never recorded the claim of order $claimOrderId"
+Assert-Reply (Invoke-Api POST "$gw/admin/payments/claims/$($notifyClaim.id)/reject" $mayaH @{ proofType = "NOT_FOUND_AT_PROVIDER"; evidence = "smoke: the provider has no such payment" }) "rejecting the claim with proof" @(200, 201)
+Wait-OrderStatus $claimOrderId "EXPIRED" 90 | Out-Null
+$endedAlert = Wait-Until {
+    $r = Invoke-Api GET "$noteBase/alerts?state=ALL" $oliveH $null
+    $mine = @(@($r.Json) | Where-Object { $_ -and ("$($_.kind)" -ceq "PAYMENT_TO_CONFIRM") -and ("$($_.orderId)" -ceq $claimOrderId) -and ("$($_.state)" -ceq "RESOLVED") })
+    if ($mine.Count -ge 1) { $mine[0] }
+} 60 2
+Require (($null -ne $endedAlert) -and ("$($endedAlert.resolvedHow)" -ceq "EXPIRED")) "the claim alert of the rejected order should read RESOLVED / EXPIRED: $($endedAlert | ConvertTo-Json -Compress)"
+$closedMail = Wait-Until {
+    $hit = @((Get-CaughtMail "alice@oriah.local") | Where-Object { $_.Subject -ceq "We could not complete your order" -and $_.Text.Contains($claimCode) })
+    if ($hit.Count -ge 1) { $hit[0] }
+} 90 3
+Require ($null -ne $closedMail) "no 'We could not complete your order' email naming $claimCode reached alice within 90 s"
+Require ($closedMail.Text.Contains("your money is safe with us") -and -not $closedMail.Text.Contains("could not confirm")) "the closed-order email reads: $($closedMail.Text)"
+Write-Host "    alice claimed a payment: staff were emailed at once (the method, no amount, no reference, the rule on rejecting) and the owner's list showed it OPEN; staff rejected it with proof: the alert read RESOLVED / EXPIRED and alice was emailed 'We could not complete your order'. (That last email goes out because the dev account's address is confirmed; a production customer reads it on the website only until addresses are confirmed.)" -ForegroundColor Gray
+
+# --- (c) the ring step 20f left on sale below cost: the cost mailbox is told, with no figure -----------------------------------------------------------------
+$belowAlert = Wait-Until {
+    $r = Invoke-Api GET "$noteBase/alerts?audience=COST" $oliveH $null
+    $mine = @(@($r.Json) | Where-Object { $_ -and ("$($_.kind)" -ceq "BELOW_COST") -and ("$($_.subjectId)" -ceq "$ringVariant") })
+    if ($r.Status -eq 200 -and $mine.Count -eq 1 -and $mine[0].emailedAt) { $mine[0] }
+} 300 5
+Require ($null -ne $belowAlert) "the alerts read shows no BELOW_COST alert for the ring $ringVariant that a mail server took, after 5 minutes (the check runs every minute on this stack)"
+$costMail = @((Get-CaughtMail "alerts-cost@oriah.local") | Where-Object { $_.Subject -match 'priced below cost$' })
+Require ($costMail.Count -ge 1) "no below-cost email reached alerts-cost@oriah.local in this run"
+foreach ($mail in $costMail) {
+    # The ring costs K1,502.90 a piece and is priced K100.00 (step 20f): neither figure, nor the shortfall, nor any Kwacha amount at all.
+    Require (($mail.Text -notmatch '1,?502\.9|1,?402\.9|\b100\.00\b') -and ($mail.Text -notmatch 'K\d[\d,]*\.\d{2}')) "a below-cost email carries a figure: $($mail.Text)"
+    Require ($mail.Text.Contains("Prices, Below cost")) "a below-cost email does not say where to look: $($mail.Text)"
+}
+$saraAlerts = Invoke-Api GET "$noteBase/alerts?state=ALL" $saraH $null
+Require (($saraAlerts.Status -eq 200) -and (@(@($saraAlerts.Json) | Where-Object { $_ -and "$($_.audience)" -ceq "COST" }).Count -eq 0)) "sara (sales, no cost capability) should read the alerts and see no cost alert: $($saraAlerts.Status)"
+Require ((Invoke-Api GET "$noteBase/alerts" $aliceH $null).Status -eq 403) "a shopper reading the alerts was not refused"
+Write-Host "    the ring priced below cost in 20f is an open alert, and the cost mailbox was emailed its name with no price, cost or shortfall; a salesperson sees no cost alert and a shopper is refused" -ForegroundColor Gray
+
+# --- (d) a customer who ordered by phone: the words wait for a person to send them; a paper sale gets none -------------------------------------------------------
+$callerWords = Wait-Until {
+    $r = Invoke-Api GET "$noteBase/messages?orderId=$p9AId" $saraH $null
+    $mine = @(@($r.Json) | Where-Object { $_ -and ("$($_.status)" -ceq "BY_HAND") -and ("$($_.eventType)" -ceq "order.paid") })
+    if ($r.Status -eq 200 -and $mine.Count -eq 1) { $mine[0] }
+} 60 2
+Require ($null -ne $callerWords) "the live phone sale $p9AId has no words waiting to be sent by hand for its payment"
+Require (("$($callerWords.recipientKind)" -ceq "CALLER") -and ("$($callerWords.channel)" -ceq "by-hand") -and "$($callerWords.body)".StartsWith("Oriah Jewelry: we have received your payment of")) "the caller's words read: $($callerWords | ConvertTo-Json -Compress)"
+Require (("$($callerWords.body)" -match 'OR-\d{6}') -and ("$($callerWords.body)" -notmatch '097|Smoke Caller')) "the caller's words should carry the receipt number and nothing personal: $($callerWords.body)"
+$workList = Invoke-Api GET "$noteBase/messages?status=BY_HAND" $saraH $null
+Require (($workList.Status -eq 200) -and (@(@($workList.Json) | Where-Object { $_ -and "$($_.orderId)" -ceq $p9AId }).Count -ge 1)) "the work list of words to send by hand does not hold the live phone sale"
+$paperWords = Invoke-Api GET "$noteBase/messages?orderId=$p9CId" $saraH $null
+Require (($paperWords.Status -eq 200) -and (@(@($paperWords.Json) | Where-Object { $_ }).Count -eq 0)) "the paper sale $p9CId should have no words written for it: $($paperWords.Json | ConvertTo-Json -Compress)"
+Require ((Invoke-Api GET "$noteBase/messages?status=BY_HAND" $aliceH $null).Status -eq 403) "a shopper reading the work list was not refused"
+Write-Host "    the live phone sale's 'payment received' waits in the sales work list for a person to send (receipt number, nothing personal); the paper sale has none" -ForegroundColor Gray
+
+# --- (e) nothing leaves the sandbox, proven both ways -------------------------------------------------------------------------------------------------------------
+Assert-Reply (Invoke-Api GET "$gw/notifications/me?size=1" $noraH $null) "nora opening her bell (so her address is known)" 200
+$noraOrder = Place-SaleOrder $noraH 1 $null (New-Key "smoke-notify-nora")
+Assert-Reply $noraOrder "placing nora's order" @(200, 201)
+$noraOrderId = "$($noraOrder.Json.id)"
+$noraMoney = Confirm-Money @{ orderId = $noraOrderId; method = "CASH"; gross = [decimal]$noraOrder.Json.total } (New-Key "smoke-notify-nora-money")
+Assert-Reply $noraMoney "confirming nora's cash" @(200, 201)
+# nora's own read of her order (Wait-OrderStatus reads as alice, to whom this order is a 404).
+$noraPaid = Wait-Until { $o = Get-Order $noraOrderId $noraH; if ($o -and "$($o.status)" -ceq "PAID") { $o } } 90 2
+Require ($null -ne $noraPaid) "nora's order $noraOrderId is not PAID 90 s after staff confirmed her cash"
+$noraRow = Wait-Until { $r = Get-MeRow $noraH $noraOrderId "order.paid"; if ($r -and "$($r.status)" -cne "RECORDED") { $r } } 90 3
+Require (($null -ne $noraRow) -and ("$($noraRow.status)" -ceq "NOT_SENT") -and ("$($noraRow.statusReason)" -ceq "SANDBOX")) "nora's address looks real (nora@example.com), so her payment message must read NOT_SENT / SANDBOX on this stack: $($noraRow | ConvertTo-Json -Compress)"
+$allMail = Invoke-RestMethod -Uri "$catcher/messages?limit=500" -TimeoutSec 15
+$typed = @("097 123 4567", "0977654321", "+260977654321", "0977 000 111", "0966 000 222", "Smoke Caller", "Chipo Banda", "Natasha Phiri")
+$seen = 0
+foreach ($m in @($allMail.messages)) {
+    if (-not $m -or ((ConvertTo-UtcInstant $m.Created) -lt $mailSince)) { continue }
+    $seen++
+    foreach ($to in @($m.To)) { Require ("$($to.Address)".EndsWith("@oriah.local")) "the catcher holds mail to $($to.Address): only @oriah.local addresses may ever be handed over on this stack" }
+    $text = "$((Invoke-RestMethod -Uri "$catcher/message/$($m.ID)" -TimeoutSec 15).Text)"
+    Require ($text -notmatch '\+260\d{9}|\b0[79]\d(\s?\d){7}\b') "an email carries something shaped like a Zambian phone number: $text"
+    foreach ($word in $typed) { Require (-not $text.Contains($word)) "an email carries '$word', which this script typed as a caller or recipient" }
+}
+Require ($seen -ge 3) "the catcher holds only $seen message(s) from this run; at least the payment email, the claim alert and the closed-order email were expected"
+Write-Host "    $seen emails of this run reached the catcher, every one to an @oriah.local mailbox and none carrying a phone number or a caller's name; nora (nora@example.com) was NOT emailed: her message reads NOT_SENT / SANDBOX" -ForegroundColor Gray
+
+# --- (f) notification's own identity: exactly two roles, and useless at the gateway -----------------------------------------------------------------------------------
+$machine = Invoke-RestMethod -Method POST -Uri "http://localhost:7080/realms/oriah/protocol/openid-connect/token" -ContentType "application/x-www-form-urlencoded" `
+    -Body @{ client_id = "oriah-notification"; client_secret = "oriah-notification-secret"; grant_type = "client_credentials" }
+$claimsPart = $machine.access_token.Split(".")[1].Replace("-", "+").Replace("_", "/")
+switch ($claimsPart.Length % 4) { 2 { $claimsPart += "==" } 3 { $claimsPart += "=" } }
+$machineClaims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($claimsPart)) | ConvertFrom-Json
+$machineRoles = (@($machineClaims.realm_access.roles) | Sort-Object) -join ","
+Require ($machineRoles -ceq "CATALOG_ADMIN,COST_VIEWER") "notification's machine token holds [$machineRoles], expected exactly CATALOG_ADMIN,COST_VIEWER"
+$machineH = @{ Authorization = "Bearer $($machine.access_token)" }
+Require ((Invoke-Api GET "$pricingBase/below-cost" $machineH $null).Status -eq 403) "notification's machine token was not refused on the pricing list at the gateway"
+Require ((Invoke-Api GET "$gw/products" $machineH $null).Status -eq 403) "notification's machine token was not refused on a public path at the gateway"
+
+# --- (g) the owner as she will be in production (OWNER, not a shopper) reads both staff lists and has no bell ------------------------------------------------------------
+Require ((Invoke-Api GET "$noteBase/alerts" $oliveH $null).Status -eq 200) "the owner without USER could not read the alerts"
+Require ((Invoke-Api GET "$noteBase/messages?orderId=$orderId" $oliveH $null).Status -eq 200) "the owner without USER could not read what a customer was told"
+Require ((Invoke-Api GET "$gw/notifications/me" $oliveH $null).Status -eq 403) "the owner without USER should have no shopper's bell (403)"
+Require ((Invoke-Api GET "$noteBase/alerts" $null $null).Status -eq 401) "the alerts read with no token was not 401"
+
+# --- (h) payment's topic is read: the sale's confirmation is known as paid, the wrong amount of step 6e as unsettled ------------------------------------------------------------
+$watchPaid = Wait-Until { $v = Get-NotificationSql "SELECT count(*) FROM confirmation_watch WHERE confirmation_id = '$confirmationId' AND paid_at IS NOT NULL"; if ($v -ceq "1") { $v } } 60 3
+Require ($null -ne $watchPaid) "notification never noted that confirmation $confirmationId paid its sale (the oriah.payment / oriah.order facts)"
+$watchHeld = Get-NotificationSql "SELECT count(*) FROM confirmation_watch WHERE confirmation_id = '$wrongId' AND unsettled_at IS NOT NULL"
+Require ($watchHeld -ceq "1") "notification never noted that the wrong amount of step 6e ($wrongId) could not pay its order"
+Write-Host "    notification's own identity holds exactly CATALOG_ADMIN and COST_VIEWER and is refused at the gateway (403); the owner without USER reads both staff lists and has no bell; payment's topic is read (the sale's confirmation is known as paid, the wrong amount as unsettled)" -ForegroundColor Gray
+Write-Host "    not proven live (module tests on a test clock or a scripted mail server prove them): the hold reminder, 'money recorded but the sale has not completed' with its reminders and last note, a cancelled record that paid a sale, the claim-email limit, telling an alert again, 'the check is not running', 'emails are not going out', the pause switch, real TLS and sign-in" -ForegroundColor DarkGray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green
