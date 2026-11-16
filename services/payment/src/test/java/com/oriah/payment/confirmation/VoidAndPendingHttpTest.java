@@ -13,8 +13,11 @@ import java.util.concurrent.Future;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
@@ -47,6 +50,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @AutoConfigureMockMvc
 @Import(TestcontainersConfiguration.class)
 @TestPropertySource(properties = {"eureka.client.enabled=false"})
+@ExtendWith(OutputCaptureExtension.class)
 class VoidAndPendingHttpTest {
 
     private static final String CONFIRMATIONS = "/api/v1/admin/payments/confirmations";
@@ -129,6 +133,18 @@ class VoidAndPendingHttpTest {
 
         UUID corrected = mtn(UUID.randomUUID(), reference, "1000.00");
         assertThat(corrected).isNotEqualTo(id);
+    }
+
+    @Test
+    @DisplayName("the log line of a void says which record, who and what it was, never the reason: a person typed it and it can hold a name")
+    void theLogNeverPrintsTheTypedReason(CapturedOutput output) throws Exception {
+        UUID id = mtn(UUID.randomUUID(), reference(), "1000.00");
+        String typed = "Chipo Banda paid twice by mistake";
+
+        voidIt(id, typed).andExpect(status().isOk()).andExpect(jsonPath("$.voidReason").value(typed));
+
+        assertThat(output.getAll()).as("the record, the person who did it and what the record was").contains("Confirmation " + id + " voided by user:kc-sam (PENDING)");
+        assertThat(output.getAll()).as("the typed reason stays in the database and the event").doesNotContain("Chipo Banda").doesNotContain("paid twice by mistake");
     }
 
     @Test

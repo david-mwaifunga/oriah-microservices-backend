@@ -182,7 +182,8 @@ public class ConfirmationService {
         jdbc.update("UPDATE payment_confirmation SET reference_key = NULL WHERE id = ?", id);
         jdbc.update("UPDATE held_money SET status = 'VOIDED', voided_at = ? WHERE confirmation_id = ? AND status = 'OWED'", Timestamp.from(now), id);
         events.voided(id, row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.outcome(), why, staff.actor(), now, row.arrivedAt());
-        log.info("Confirmation {} voided by {} ({}): {}", id, staff.actor(), row.outcome(), why);
+        // Which record, who, and what it was. Never the reason: a person typed it, so it can hold a customer's name; it is in the row and the event.
+        log.info("Confirmation {} voided by {} ({})", id, staff.actor(), row.outcome());
         return get(id);
     }
 
