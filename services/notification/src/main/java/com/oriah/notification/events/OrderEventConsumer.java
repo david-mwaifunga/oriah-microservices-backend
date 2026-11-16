@@ -142,7 +142,8 @@ public class OrderEventConsumer {
             // that is still waiting is held back once the order turned out to be paid after all.
             boolean paid = "order.paid".equals(type);
             PaidExtras paidWith = paid ? read(message.getPayload(), PaidExtras.class) : null;
-            orderRefs.note(payload.orderId(), payload.isPhone() ? null : payload.keycloakId(), payload.isPhone(), null,
+            orderRefs.note(payload.orderId(), payload.isPhone() ? null : payload.keycloakId(), payload.isPhone(),
+                    payload.isPhone() ? read(message.getPayload(), PhoneExtras.class).takenLive() : null,
                     paid ? paidWith.receiptNumber() : null, paid ? facts.recordedAt() : null, now);
 
             if (Boolean.TRUE.equals(payload.republished())) {
@@ -151,20 +152,19 @@ public class OrderEventConsumer {
                 log.info("{} for order {} is a repeat of one already announced: the customer is not told twice", type, payload.orderId());
                 return;
             }
-            if (payload.isPhone()) {
-                // An order staff recorded for a caller with no account has no shopper to message (Phase 9). It is recorded as applied all the same,
-                // so it is never delivered again.
-                log.info("{} for order {} was recorded by staff for a caller with no account: no message is written for a customer", type,
-                        payload.orderId());
-                return;
-            }
 
             MessageKind kind = MessageKind.of(type, payload.deliveryOption(), payload.previousStatus());
-            String receiptNumber = orderRefs.find(payload.orderId()).map(OrderRefs.OrderRef::receiptNumber).orElse(null);
+            OrderRefs.OrderRef known = orderRefs.find(payload.orderId()).orElseThrow();
             boolean recipientPays = "order.shipped".equals(type)
                     && THE_CUSTOMER_PAYS_THE_COURIER.equals(read(message.getPayload(), ShippedExtras.class).payer());
-            Text text = MessageTexts.forShopper(kind, new OrderWords(payload.orderId(), receiptNumber, payload.total(), payload.currency(),
-                    payload.deliveryOption(), recipientPays), shopLines());
+            OrderWords words = new OrderWords(payload.orderId(), known.receiptNumber(), payload.total(), payload.currency(), payload.deliveryOption(),
+                    recipientPays);
+
+            if (payload.isPhone()) {
+                recordForACaller(type, kind, words, known, facts, now);
+                return;
+            }
+            Text text = MessageTexts.forShopper(kind, words, shopLines());
 
             Instant sendBefore = facts.recordedAt().plus(settings.send().window());
             StatusReason notSentBecause = whyNotEmailed(kind, type, facts, now, sendBefore);
@@ -173,6 +173,30 @@ public class OrderEventConsumer {
             // Which event, which order, what became of it. Never the words: they are in the row.
             log.info("{} for order {} written down as a message: {}", type, payload.orderId(),
                     notSentBecause == null ? "waiting to be emailed" : "not emailed (" + notSentBecause + ")");
+        }
+
+        /**
+         * A customer who ordered by phone has no account and no email, and no machine holds or uses their phone number. For a sale taken LIVE on
+         * the phone the words are written down for sales staff to send from the shop's own WhatsApp (a BY_HAND row, in nobody's bell). Nothing is
+         * written for a sale typed in later from paper, however soon it was typed (that customer already has their goods), nor for a phone order
+         * whose events never said which kind it was (written before order said so): nothing is guessed. A dispatch step keyed long after it
+         * happened is not announced either. Whatever is decided, the event is recorded as applied, so it is never delivered again.
+         */
+        private void recordForACaller(String type, MessageKind kind, OrderWords words, OrderRefs.OrderRef known, EnvelopeFacts facts, Instant now) {
+            if (!Boolean.TRUE.equals(known.livePhoneSale()) || !MessageTexts.writtenForACaller(kind) || keyedLongAfterItHappened(type, facts)) {
+                log.info("{} for order {} was recorded by staff for a caller with no account: no words are written for it", type, known.orderId());
+                return;
+            }
+            Text text = MessageTexts.forCaller(kind, words, shopLines());
+            repository.save(NotificationLog.byHandForCaller(known.orderId(), type, text.subject(), text.body(), facts.eventId(), facts.seq(),
+                    facts.recordedAt(), now));
+            log.info("{} for order {} written down as words for staff to send to the caller", type, known.orderId());
+        }
+
+        /** A dispatch step (packed, on its way, delivered) keyed more than a day after it happened: the customer already knows. */
+        private boolean keyedLongAfterItHappened(String type, EnvelopeFacts facts) {
+            return DISPATCH_STEPS.contains(type)
+                    && Duration.between(facts.occurredAt(), facts.recordedAt()).compareTo(settings.send().backdatedStepAfter()) > 0;
         }
 
         /**
@@ -186,8 +210,7 @@ public class OrderEventConsumer {
             if (!settings.email().emailed().contains(kind)) {
                 return StatusReason.BELL_ONLY;
             }
-            if (DISPATCH_STEPS.contains(type)
-                    && Duration.between(facts.occurredAt(), facts.recordedAt()).compareTo(settings.send().backdatedStepAfter()) > 0) {
+            if (keyedLongAfterItHappened(type, facts)) {
                 return StatusReason.BACKDATED_STEP;
             }
             if (!now.isBefore(sendBefore)) {
@@ -231,6 +254,22 @@ public class OrderEventConsumer {
     /** What order.paid's second version adds that a message uses; absent (null) in the first version. Nothing else of the payment is read. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     record PaidExtras(java.util.UUID confirmationId, String receiptNumber) {
+    }
+
+    /**
+     * What a phone order's events say beyond the snapshot (Phase 11): which kind of sale staff recorded. It is what the person chose on the
+     * form, never a guess from dates. Absent on events written before order said it, and then nothing is known.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PhoneExtras(String saleKind) {
+
+        /** True for a sale taken live on the phone, false for one typed in later from paper, null when the event does not say (or says a kind unknown here). */
+        Boolean takenLive() {
+            if ("LIVE_PHONE".equals(saleKind)) {
+                return Boolean.TRUE;
+            }
+            return "LATE_PAPER".equals(saleKind) ? Boolean.FALSE : null;
+        }
     }
 
     /** What order.shipped says about the dispatch that a message uses: who pays the courier. The fare is never read. */

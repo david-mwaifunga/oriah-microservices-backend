@@ -366,22 +366,133 @@ class OrderEventConsumerTest {
         }
     }
 
+    // ---- a caller with no account: words for a person to send ---------------------------------------------------------------------------------
+    //
+    // Somebody who ordered by phone has no account and no email, and no machine holds or uses their phone number. For a sale taken LIVE on the
+    // phone the system writes the words ("payment received", "ready to collect", "on its way") and sales staff send them from the shop's own
+    // WhatsApp. For a sale typed in later from paper it writes nothing, however soon it was typed: that customer already has their goods.
+    // Which kind a sale was is what order says on the event (saleKind), never a guess from dates.
+
+    private Map<String, Object> phoneSnapshot(UUID orderId, String saleKind, String deliveryOption) {
+        Map<String, Object> payload = snapshot(orderId, null);
+        payload.put("channel", "PHONE");
+        payload.put("deliveryOption", deliveryOption);
+        if (saleKind != null) {
+            payload.put("saleKind", saleKind);
+        }
+        return payload;
+    }
+
+    private List<NotificationLog> rowsOf(UUID orderId) {
+        return repository.findAll().stream().filter(l -> orderId.equals(l.orderId())).toList();
+    }
+
     @Test
-    @DisplayName("an order recorded by staff for a caller with no account (channel PHONE, no owner) is applied, makes no row for a customer, and is not refused")
-    void aPhoneOrderHasNobodyToTell() throws Exception {
+    @DisplayName("a sale taken live on the phone gets words for a person to send: payment received, ready to collect, on its way; and nothing else")
+    void aLivePhoneOrderGetsWordsForAPersonToSend() throws Exception {
+        UUID pickup = UUID.randomUUID();
+        UUID delivery = UUID.randomUUID();
+        for (String type : new String[] {"order.created", "order.paid", "order.fulfilled", "order.delivered", "order.cancelled", "order.expired"}) {
+            send(type, pickup, phoneSnapshot(pickup, "LIVE_PHONE", "SELF_COLLECT"));
+        }
+        for (String type : new String[] {"order.created", "order.paid", "order.fulfilled", "order.shipped", "order.delivered"}) {
+            send(type, delivery, phoneSnapshot(delivery, "LIVE_PHONE", "YANGO"));
+        }
+
+        assertThat(rowsOf(pickup)).extracting(NotificationLog::eventType).containsExactlyInAnyOrder("order.paid", "order.fulfilled");
+        assertThat(rowsOf(delivery)).extracting(NotificationLog::eventType).containsExactlyInAnyOrder("order.paid", "order.shipped");
+        assertThat(repository.findAll()).allSatisfy(row -> {
+            assertThat(row.recipientKind()).isEqualTo(RecipientKind.CALLER);
+            assertThat(row.keycloakId()).as("a caller's row has no owner, so it is in nobody's bell").isNull();
+            assertThat(row.channel()).isEqualTo("by-hand");
+            assertThat(row.status()).isEqualTo(MessageStatus.BY_HAND);
+            assertThat(row.statusReason()).isNull();
+            assertThat(row.nextAttemptAt()).as("it is never due to be sent by the system").isNull();
+            assertThat(row.recordedAt()).isEqualTo(MutableClock.START);
+        });
+        assertThat(told(pickup, "order.paid").subject()).isEqualTo("Payment received");
+        assertThat(told(pickup, "order.paid").body()).isEqualTo("Oriah Jewelry: we have received your payment of K100.00. Thank you.");
+        assertThat(told(pickup, "order.fulfilled").subject()).isEqualTo("Ready to collect");
+        assertThat(told(delivery, "order.shipped").subject()).isEqualTo("On its way");
+    }
+
+    @Test
+    @DisplayName("a sale typed in later from paper gets no words, however soon it was typed")
+    void aPaperSaleGetsNoWordsHoweverSoonItWasKeyed() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        Map<String, Object> typedAtOnce = phoneSnapshot(orderId, "LATE_PAPER", "SELF_COLLECT");
+        // It happened seconds before it was typed: by its dates alone it would look like a live sale.
+        typedAtOnce.put("occurredAt", "2026-11-09T07:29:50Z");
+        for (String type : new String[] {"order.created", "order.paid", "order.fulfilled", "order.delivered"}) {
+            send(type, orderId, typedAtOnce);
+        }
+
+        assertThat(rowsOf(orderId)).isEmpty();
+        assertThat(orderRefs.find(orderId)).hasValueSatisfying(ref -> {
+            assertThat(ref.phoneOrder()).isTrue();
+            assertThat(ref.keycloakId()).isNull();
+            assertThat(ref.livePhoneSale()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("a phone order whose events name no kind (written before order said it) gets no words: nothing is guessed")
+    void aPhoneOrderWhoseEventsNameNoKindGetsNoWords() throws Exception {
         for (String type : new String[] {"order.created", "order.paid", "order.fulfilled", "order.shipped", "order.delivered", "order.cancelled", "order.expired"}) {
             UUID orderId = UUID.randomUUID();
-            Map<String, Object> payload = snapshot(orderId, null);
-            payload.put("channel", "PHONE");
+            send(type, orderId, phoneSnapshot(orderId, null, "SELF_COLLECT"));
 
-            send(type, orderId, payload);
-
-            assertThat(repository.findAll().stream().filter(l -> orderId.equals(l.orderId()))).as(type + " tells nobody").isEmpty();
+            assertThat(rowsOf(orderId)).as(type + " tells nobody").isEmpty();
             assertThat(orderRefs.find(orderId)).as(type + " is remembered as a phone order").hasValueSatisfying(ref -> {
                 assertThat(ref.phoneOrder()).isTrue();
-                assertThat(ref.keycloakId()).isNull();
+                assertThat(ref.livePhoneSale()).isNull();
             });
         }
+    }
+
+    @Test
+    @DisplayName("the kind is learnt from whichever event first carries it, and kept: a payment that says 'live' is enough, and a later event cannot unsay it")
+    void theKindIsLearntFromWhicheverEventFirstCarriesIt() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        send("order.paid", orderId, phoneSnapshot(orderId, "LIVE_PHONE", "SELF_COLLECT"));
+        send("order.fulfilled", orderId, phoneSnapshot(orderId, null, "SELF_COLLECT"));
+
+        assertThat(rowsOf(orderId)).extracting(NotificationLog::eventType).containsExactlyInAnyOrder("order.paid", "order.fulfilled");
+    }
+
+    @Test
+    @DisplayName("a kind notification does not know gets no words")
+    void aKindNotificationDoesNotKnowGetsNoWords() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        send("order.paid", orderId, phoneSnapshot(orderId, "COUNTER_SALE", "SELF_COLLECT"));
+
+        assertThat(rowsOf(orderId)).isEmpty();
+        assertThat(orderRefs.find(orderId).orElseThrow().livePhoneSale()).isNull();
+    }
+
+    @Test
+    @DisplayName("a step of a live phone sale keyed more than a day after it happened gets no words; its payment still does")
+    void aStepKeyedADayLateGetsNoWords() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        byte[] body = objectMapper.writeValueAsBytes(phoneSnapshot(orderId, "LIVE_PHONE", "SELF_COLLECT"));
+        inputDestination.send(Relayed.orderEvent(UUID.randomUUID(), "order.paid", orderId, 2, body)
+                .setHeader(EventHeaders.OCCURRED_AT, "2026-11-07T07:29:00Z").build(), "oriah.order");
+        inputDestination.send(Relayed.orderEvent(UUID.randomUUID(), "order.fulfilled", orderId, 3, body)
+                .setHeader(EventHeaders.OCCURRED_AT, "2026-11-07T07:29:00Z").build(), "oriah.order");
+
+        assertThat(rowsOf(orderId)).extracting(NotificationLog::eventType).containsExactly("order.paid");
+    }
+
+    @Test
+    @DisplayName("the same payment of a phone sale announced again writes no second set of words")
+    void aRepeatedPaymentOfAPhoneSaleWritesNothingMore() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        send("order.paid", orderId, phoneSnapshot(orderId, "LIVE_PHONE", "SELF_COLLECT"));
+        Map<String, Object> again = phoneSnapshot(orderId, "LIVE_PHONE", "SELF_COLLECT");
+        again.put("republished", true);
+        send("order.paid", orderId, again);
+
+        assertThat(rowsOf(orderId)).hasSize(1);
     }
 
     @Test

@@ -116,6 +116,34 @@ public final class MessageTexts {
         return new Text("News about your Oriah order", "There is news about your order. Please sign in on our website to read it.");
     }
 
+    /**
+     * Whether words are written for a customer who ordered by phone: payment received, ready to collect, on its way. For everything else
+     * (placed, cancelled, expired, delivered) the caller is on the phone with staff, or already has the parcel.
+     */
+    public static boolean writtenForACaller(MessageKind kind) {
+        return kind == MessageKind.PAID || kind == MessageKind.READY_TO_COLLECT || kind == MessageKind.ON_ITS_WAY;
+    }
+
+    /**
+     * The words for a person to send to a customer who ordered by phone. The system sends nothing: the subject is a heading on the sales
+     * screen, and the body is what staff paste into WhatsApp, so it opens with the shop's name and is short.
+     *
+     * @throws IllegalArgumentException for a kind no words are written for ({@link #writtenForACaller})
+     */
+    public static Text forCaller(MessageKind kind, OrderWords order, ShopLines shop) {
+        return switch (kind) {
+            case PAID -> new Text("Payment received",
+                    "Oriah Jewelry: we have received your payment of " + order.money() + "."
+                            + (known(order.receiptNumber()) ? " Your receipt number is " + order.receiptNumber() + "." : "") + " Thank you.");
+            case READY_TO_COLLECT -> new Text("Ready to collect",
+                    "Oriah Jewelry: your order " + order.name() + " is packed and ready to collect." + line(shop.collectLine()));
+            case ON_ITS_WAY -> new Text("On its way",
+                    "Oriah Jewelry: your order " + order.name() + " is on its way to you."
+                            + (order.recipientPaysCourier() ? " You pay the courier directly when it arrives." : ""));
+            default -> throw new IllegalArgumentException("no words are written for a caller about " + kind);
+        };
+    }
+
     private static boolean known(String text) {
         return text != null && !text.isBlank();
     }

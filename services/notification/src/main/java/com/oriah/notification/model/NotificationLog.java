@@ -30,6 +30,7 @@ public class NotificationLog extends BaseEntity {
 
     /** The only channel a machine sends on. Words for a person to send are "by-hand". */
     public static final String EMAIL = "email";
+    public static final String BY_HAND = "by-hand";
 
     @Id
     @Column(nullable = false)
@@ -139,6 +140,29 @@ public class NotificationLog extends BaseEntity {
             row.status = MessageStatus.NOT_SENT;
             row.statusReason = notSentBecause;
         }
+        return row;
+    }
+
+    /**
+     * Words for a person to send to a customer who ordered by phone. The system never sends this row: it has no owner (so it is in nobody's
+     * bell), no next try and no deadline. Sales staff read it and send the words themselves.
+     */
+    public static NotificationLog byHandForCaller(UUID orderId, String eventType, String subject, String body, UUID eventId, long eventSeq,
+                                                  Instant eventRecordedAt, Instant now) {
+        NotificationLog row = new NotificationLog();
+        row.id = UUID.randomUUID();
+        row.orderId = orderId;
+        row.eventType = eventType;
+        row.channel = BY_HAND;
+        row.subject = subject;
+        row.body = body;
+        row.recipientKind = RecipientKind.CALLER;
+        row.eventId = eventId;
+        row.eventSeq = eventSeq;
+        row.eventRecordedAt = eventRecordedAt;
+        row.recordedAt = now;
+        row.statusAt = now;
+        row.status = MessageStatus.BY_HAND;
         return row;
     }
 
