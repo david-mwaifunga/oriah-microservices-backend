@@ -112,7 +112,7 @@ class EmailWiringTest {
         final AtomicInteger passes = new AtomicInteger();
 
         CountingDispatcher() {
-            super(null, null, null, null, null, null, null, null);
+            super(null, null, null, null, null, null, null, null, null);
         }
 
         @Override

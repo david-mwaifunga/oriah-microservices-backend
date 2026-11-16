@@ -5,6 +5,7 @@ import java.time.Clock;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.oriah.notification.alerts.StaffAlerts;
 import com.oriah.notification.contact.ContactBook;
 import com.oriah.notification.delivery.DispatchHealth;
 import com.oriah.notification.delivery.MessageDispatcher;
@@ -17,8 +18,8 @@ import com.oriah.notification.orders.OrderRefs;
 public class DispatchConfig {
 
     @Bean
-    MessageDispatcher messageDispatcher(MessageStore store, ContactBook contacts, OrderRefs orderRefs, DispatchHealth health,
+    MessageDispatcher messageDispatcher(MessageStore store, ContactBook contacts, OrderRefs orderRefs, DispatchHealth health, StaffAlerts alerts,
                                         MessageTransport transport, EmailSetup setup, NotificationSettings settings, Clock clock) {
-        return new MessageDispatcher(store, contacts, orderRefs, health, transport, setup, settings, clock);
+        return new MessageDispatcher(store, contacts, orderRefs, health, alerts, transport, setup, settings, clock);
     }
 }

@@ -10,3 +10,9 @@ oriah:
   notification:
     send:
       enabled: false
+    # The mailboxes alerts go to in tests: two for money alerts (so "one email per mailbox" is visible) and one for cost alerts. The test
+    # context has no mail server (email.transport stays none); a test that sends builds its own dispatcher with a recording transport.
+    alerts:
+      sandbox-recipients:
+        money: alerts-money@oriah.local, alerts-owner@oriah.local
+        cost: alerts-cost@oriah.local

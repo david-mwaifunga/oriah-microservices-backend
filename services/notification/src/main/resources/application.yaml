@@ -241,3 +241,25 @@ oriah:
       sandbox-recipients:
         money: ""
         cost: ""
+      # A fact about money recorded longer ago than this (history read after an outage, or by a database that starts empty) still
+      # updates what is known, and emails nobody.
+      max-fact-age: PT30M
+      # An open alert that no mail server ever took (mail was down, or no mailbox was configured) is written again this often,
+      # at most this many times.
+      retell-after: PT1H
+      retell-max: 12
+      # The mail server failing this long is itself an alert ("emails are not going out"), listed and logged, never emailed.
+      down-after: PT30M
+      payment-to-confirm:
+        # Anyone can open an account and say they have paid. At most this many "a customer says they have paid" alerts are emailed
+        # in any 24 hours; beyond it they are listed only and ONE email says so. At least 1: there is no "off".
+        max-alerts-emailed-per-day: ${ORIAH_NOTIFICATION_CLAIM_ALERTS_PER_DAY:50}
+      hold:
+        # Staff are reminded this long before a claimed order's pieces are released ...
+        remind-before: PT3H
+        # ... but never at night: a reminder that would fall from quiet-from to quiet-until on the shop's clock goes at quiet-from.
+        # QUOTED on purpose: unquoted, YAML reads 20:00 as the number 1200.
+        quiet-from: "20:00"
+        quiet-until: "07:00"
+        # How long after the hold's end the alert closes by itself, if no event closed it.
+        close-grace: PT15M

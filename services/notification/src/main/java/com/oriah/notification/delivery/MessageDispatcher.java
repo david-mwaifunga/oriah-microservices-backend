@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.oriah.notification.alerts.StaffAlerts;
 import com.oriah.notification.config.EmailSetup;
 import com.oriah.notification.config.NotificationSettings;
 import com.oriah.notification.contact.ContactBook;
@@ -20,6 +21,7 @@ import com.oriah.notification.delivery.SendDecision.Decision;
 import com.oriah.notification.delivery.SendDecision.NotSent;
 import com.oriah.notification.delivery.SendDecision.Send;
 import com.oriah.notification.delivery.SendDecision.ShopperFacts;
+import com.oriah.notification.delivery.SendDecision.StaffFacts;
 import com.oriah.notification.delivery.SendDecision.Wait;
 import com.oriah.notification.model.RecipientKind;
 import com.oriah.notification.model.StatusReason;
@@ -72,22 +74,26 @@ public class MessageDispatcher {
     private final ContactBook contacts;
     private final OrderRefs orderRefs;
     private final DispatchHealth health;
+    private final StaffAlerts alerts;
     private final MessageTransport transport;
     private final EmailSetup setup;
     private final NotificationSettings settings;
     private final Clock clock;
+    /** How many messages this pass handed to the mail server; only the pass's own thread touches it. */
+    private int handedOverThisPass;
     /** Messages a mail server took whose record could not be written yet. */
     private final Map<UUID, Accepted> acceptedNotRecorded = new ConcurrentHashMap<>();
 
     private record Accepted(int claimed, Instant at, boolean shortForm) {
     }
 
-    public MessageDispatcher(MessageStore store, ContactBook contacts, OrderRefs orderRefs, DispatchHealth health, MessageTransport transport,
-                             EmailSetup setup, NotificationSettings settings, Clock clock) {
+    public MessageDispatcher(MessageStore store, ContactBook contacts, OrderRefs orderRefs, DispatchHealth health, StaffAlerts alerts,
+                             MessageTransport transport, EmailSetup setup, NotificationSettings settings, Clock clock) {
         this.store = store;
         this.contacts = contacts;
         this.orderRefs = orderRefs;
         this.health = health;
+        this.alerts = alerts;
         this.transport = transport;
         this.setup = setup;
         this.settings = settings;
@@ -99,17 +105,17 @@ public class MessageDispatcher {
         Instant now = clock.instant();
         NotificationSettings.Send send = settings.send();
         step("writing down what was already sent", this::recordWhatWasAccepted);
+        // The alert clock first: a reminder written now is sent in this same pass, and an alert that just closed is not emailed.
+        step("reminding of, closing and re-telling alerts", () -> alerts.clock(now));
         step("ending the messages whose time has passed", () -> store.sweep(now, send.lease()));
+        handedOverThisPass = 0;
+        step("sending the messages that wait", () -> sendWhatWaits(now));
+        step("judging whether email works", () -> judgeMailHealth(now));
+    }
 
-        List<Due> due;
-        try {
-            due = store.due(now, send.batchSize());
-        } catch (RuntimeException failure) {
-            log.error("The messages waiting to be sent could not be read ({})", failure.getClass().getSimpleName());
-            return;
-        }
+    private void sendWhatWaits(Instant now) {
         int unanswered = 0;
-        for (Due row : due) {
+        for (Due row : store.due(now, settings.send().batchSize())) {
             if (acceptedNotRecorded.containsKey(row.id())) {
                 continue;
             }
@@ -125,6 +131,31 @@ public class MessageDispatcher {
                 // The kind of failure only: its message could quote a row.
                 log.error("Message {} could not be handled in this pass ({}); it stays as it is", row.id(), failure.getClass().getSimpleName());
             }
+        }
+    }
+
+    /**
+     * "Emails are not going out" is a fact staff must be able to read WITHOUT email, so it is judged on every pass from the stored state,
+     * never only when a send happens to fail. It is listed and logged once; it cannot be emailed.
+     *
+     * <p>When the server has been failing, its quiet time is over and this pass had nothing to hand over, the server is asked whether it is
+     * there (connect, sign in, leave): a shop with nothing queued must not read "emails are not going out" for days after the server came back.
+     */
+    private void judgeMailHealth(Instant now) {
+        DispatchHealth.State state = health.state();
+        if (state.failingSince() != null && !state.quietAt(now) && handedOverThisPass == 0 && setup.canSend()) {
+            if (transport.probe().outcome() == SendResult.Outcome.ACCEPTED) {
+                health.serverWorked();
+                alerts.emailWorks(now);
+            } else {
+                health.serverFailed(now, settings.send().serverQuiet(), settings.send().serverQuietMax());
+            }
+            state = health.state();
+        }
+        if (state.failingSince() != null && !state.failingSince().isAfter(now.minus(settings.alerts().downAfter()))
+                && alerts.emailIsDown(state.failingSince(), now)) {
+            log.error("Emails are not going out: the mail server has been failing for {} minutes. Messages are kept and retried.",
+                    java.time.Duration.between(state.failingSince(), now).toMinutes());
         }
     }
 
@@ -151,8 +182,12 @@ public class MessageDispatcher {
     }
 
     private Decision decide(Due row, Instant now) {
+        if (row.recipientKind() == RecipientKind.STAFF) {
+            return SendDecision.forStaff(new StaffFacts(row.alertNotice(), row.staffTo(), store.alertResolved(row.alertId()),
+                    row.alertId() != null && store.newerNotice(row.id())), setup);
+        }
         if (row.recipientKind() != RecipientKind.SHOPPER) {
-            throw new IllegalStateException("only a customer's message can wait to be sent yet");
+            throw new IllegalStateException("words for a caller are sent by a person, never by the dispatcher");
         }
         boolean hasSeq = row.eventSeq() != null;
         boolean laterDelivered = hasSeq && store.laterMessage(row.orderId(), row.eventSeq(), "order.delivered", false);
@@ -176,6 +211,7 @@ public class MessageDispatcher {
         int claimed = claim.getAsInt();
 
         SendResult result;
+        handedOverThisPass++;
         try {
             result = transport.send(email(row, send));
         } catch (RuntimeException unexpected) {
@@ -186,7 +222,14 @@ public class MessageDispatcher {
         switch (result.outcome()) {
             case ACCEPTED -> {
                 recordSent(row.id(), new Accepted(claimed, now, send.shortForm()));
-                step("noting that the mail server works", health::serverWorked);
+                step("noting that the mail server works", () -> {
+                    health.serverWorked();
+                    alerts.emailWorks(now);
+                    if (row.alertId() != null) {
+                        // "Told" means a mail server took it: only now have staff been told of this alert.
+                        alerts.accepted(row.alertId(), now);
+                    }
+                });
                 return Pass.GO_ON;
             }
             case REFUSED -> {
@@ -194,6 +237,7 @@ public class MessageDispatcher {
                     store.notSentAfterClaim(row.id(), claimed, StatusReason.SANDBOX, now);
                 } else {
                     store.fail(row.id(), claimed, StatusReason.ADDRESS_REFUSED, result.code(), now);
+                    step("noting a refused address", () -> afterARefusedAddress(row, now));
                 }
                 log.warn("Message {} ({}) was refused: {}", row.id(), row.eventType(), result.code());
                 return Pass.GO_ON;
@@ -222,6 +266,19 @@ public class MessageDispatcher {
         return Pass.GO_ON;
     }
 
+    /**
+     * A refused address is usually one bad address. Two cases are more than that and are listed for staff: a refused ALERT mailbox (an alert
+     * that cannot reach its reader), and three refusals in a row for three different recipients (a mail server that refuses everybody).
+     */
+    private void afterARefusedAddress(Due row, Instant now) {
+        if (row.recipientKind() == RecipientKind.STAFF && alerts.alertMailboxRefused(now)) {
+            log.error("An alert mailbox was refused by the mail server (message {}); alerts may not reach it by email until it is corrected", row.id());
+        }
+        if (store.theLastThreeRecipientsWereAllRefused() && alerts.emailIsDown(now, now)) {
+            log.error("Emails are not going out: the mail server refused the last three recipients, each a different one");
+        }
+    }
+
     /** The wait after the n-th failed try: the ladder, its last rung repeating. */
     private Duration waitAfter(int attempts) {
         List<Duration> ladder = settings.send().backoff();
@@ -240,7 +297,8 @@ public class MessageDispatcher {
             subject = shortNote.subject();
             body = shortNote.body();
         }
-        return new Email(row.id(), send.address(), subject, body + foot(row, send.shortForm()));
+        // An alert to a shop mailbox is its stored words and nothing else: no link, no foot.
+        return new Email(row.id(), send.address(), subject, row.recipientKind() == RecipientKind.STAFF ? body : body + foot(row, send.shortForm()));
     }
 
     private String foot(Due row, boolean shortForm) {

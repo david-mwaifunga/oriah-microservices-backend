@@ -17,6 +17,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.oriah.events.Inbox;
 import com.oriah.events.InboxConsumer;
+import com.oriah.notification.alerts.StaffAlerts;
 import com.oriah.notification.config.NotificationSettings;
 import com.oriah.notification.model.MessageKind;
 import com.oriah.notification.model.NotificationLog;
@@ -73,8 +74,9 @@ public class OrderEventConsumer {
      *   <li>{@code order.paid} has two versions (Phase 7): the second keeps every field of the first, in the same order, and adds what the sale was
      *       paid with. The customer is told the receipt number from the second.
      *   <li>{@code order.expired}: an order's hold was let go. It reads differently when the customer had told us they paid.
-     *   <li>{@code order.payment_submitted} and {@code order.payment_unsettled} are FACTS for staff (a shopper's claim to have paid; money that could
-     *       not settle a sale): declared and ignored, so they are marked applied and nothing is written.
+     *   <li>{@code order.payment_submitted} is a FACT for staff, not a snapshot of the order: a shopper says they have paid. It raises the alert
+     *       "a customer says they have paid" ({@link StaffAlerts#claimReceived}); nothing is written for the customer.
+     *   <li>{@code order.payment_unsettled} (money that could not settle a sale) is declared and ignored: marked applied, nothing written.
      * </ul>
      *
      * A type nobody declared (a refund, say) is refused on its first delivery so that a new one is noticed. Declare a new type HERE before order
@@ -88,31 +90,34 @@ public class OrderEventConsumer {
             .handles(ORDER, "order.delivered", 1)
             .handles(ORDER, "order.cancelled", 1)
             .handles(ORDER, "order.expired", 1)
-            .ignores("order.payment_submitted", "order.payment_unsettled");
+            .handles(ORDER, "order.payment_submitted", 1)
+            .ignores("order.payment_unsettled");
 
     /** The steps of a dispatch. One keyed long after it happened is not announced: the customer already has the parcel. */
     private static final Set<String> DISPATCH_STEPS = Set.of("order.fulfilled", "order.shipped", "order.delivered");
     private static final String THE_CUSTOMER_PAYS_THE_COURIER = "RECIPIENT_PAYS";
 
     @Bean
-    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs,
+    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts,
                                                  NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
-        return new Handler(inbox, repository, orderRefs, settings, clock, objectMapper);
+        return new Handler(inbox, repository, orderRefs, alerts, settings, clock, objectMapper);
     }
 
     static class Handler implements Consumer<Message<byte[]>> {
         private final Inbox inbox;
         private final NotificationLogRepository repository;
         private final OrderRefs orderRefs;
+        private final StaffAlerts alerts;
         private final NotificationSettings settings;
         private final Clock clock;
         private final ObjectMapper objectMapper;
 
-        Handler(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, NotificationSettings settings, Clock clock,
-                ObjectMapper objectMapper) {
+        Handler(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts, NotificationSettings settings,
+                Clock clock, ObjectMapper objectMapper) {
             this.inbox = inbox;
             this.repository = repository;
             this.orderRefs = orderRefs;
+            this.alerts = alerts;
             this.settings = settings;
             this.clock = clock;
             this.objectMapper = objectMapper;
@@ -128,6 +133,11 @@ public class OrderEventConsumer {
         private void record(Message<byte[]> message) {
             EnvelopeFacts facts = EnvelopeFacts.from(message);
             String type = facts.eventType();
+            if ("order.payment_submitted".equals(type)) {
+                // Branch FIRST: a claim is a fact for staff with a shape of its own, never read as a snapshot of the order.
+                claimed(message, facts);
+                return;
+            }
             OrderEventPayload payload = read(message.getPayload(), OrderEventPayload.class);
             requireAboutTheEnvelopesOrder(facts, payload);
             boolean hasOwner = payload.keycloakId() != null && !payload.keycloakId().isBlank();
@@ -145,6 +155,18 @@ public class OrderEventConsumer {
             orderRefs.note(payload.orderId(), payload.isPhone() ? null : payload.keycloakId(), payload.isPhone(),
                     payload.isPhone() ? read(message.getPayload(), PhoneExtras.class).takenLive() : null,
                     paid ? paidWith.receiptNumber() : null, paid ? facts.recordedAt() : null, now);
+
+            // What this event answers is closed before anything else can return: an order that is paid, expired or cancelled no longer has a
+            // payment waiting to be confirmed. (A repeated payment and a phone order's payment close it too.)
+            String ended = switch (type) {
+                case "order.paid" -> "PAID";
+                case "order.expired" -> "EXPIRED";
+                case "order.cancelled" -> "CANCELLED";
+                default -> null;
+            };
+            if (ended != null) {
+                alerts.resolve(StaffAlerts.Kind.PAYMENT_TO_CONFIRM, payload.orderId().toString(), ended, now);
+            }
 
             if (Boolean.TRUE.equals(payload.republished())) {
                 // The same sale announced again so payment can hear its answer: the customer was told when it was first announced. The Inbox records
@@ -173,6 +195,23 @@ public class OrderEventConsumer {
             // Which event, which order, what became of it. Never the words: they are in the row.
             log.info("{} for order {} written down as a message: {}", type, payload.orderId(),
                     notSentBecause == null ? "waiting to be emailed" : "not emailed (" + notSentBecause + ")");
+        }
+
+        /**
+         * {@code order.payment_submitted}: a customer told the shop they paid. Only the order, the method and the two times are read: the
+         * customer's reference is not declared, so it never reaches a row or a log line here.
+         */
+        private void claimed(Message<byte[]> message, EnvelopeFacts facts) {
+            ClaimFact claim = read(message.getPayload(), ClaimFact.class);
+            if (claim.orderId() == null || !claim.orderId().equals(facts.aggregateId())) {
+                throw new IllegalArgumentException("a payment claim names order " + claim.orderId() + " but arrived in an envelope for order "
+                        + facts.aggregateId() + "; refused, so staff are not sent to the wrong order");
+            }
+            if (claim.holdExpiresAt() == null) {
+                throw new IllegalArgumentException("a payment claim for order " + claim.orderId() + " carries no holdExpiresAt");
+            }
+            alerts.claimReceived(claim.orderId(), claim.method(), claim.holdExpiresAt(), facts.recordedAt(), clock.instant());
+            log.info("order.payment_submitted for order {} noted: staff are told a customer says they have paid", claim.orderId());
         }
 
         /**
@@ -249,6 +288,11 @@ public class OrderEventConsumer {
                         + "; refused, so no customer is told about another order");
             }
         }
+    }
+
+    /** What a payment claim says that an alert uses. The claim id and the customer's reference are deliberately not declared. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record ClaimFact(java.util.UUID orderId, String method, Instant submittedAt, Instant holdExpiresAt) {
     }
 
     /** What order.paid's second version adds that a message uses; absent (null) in the first version. Nothing else of the payment is read. */

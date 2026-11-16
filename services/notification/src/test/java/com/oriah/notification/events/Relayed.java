@@ -18,12 +18,12 @@ import com.oriah.events.EventHeaders;
  * what the real relay sends -- including the headers the Inbox checks
  * before it records anything.
  */
-final class Relayed {
+public final class Relayed {
 
     private Relayed() {
     }
 
-    static MessageBuilder<byte[]> orderEvent(UUID eventId, String eventType, UUID orderId, long seq, byte[] payload) {
+    public static MessageBuilder<byte[]> orderEvent(UUID eventId, String eventType, UUID orderId, long seq, byte[] payload) {
         return MessageBuilder.withPayload(payload)
                 .setHeader(EventHeaders.EVENT_ID, eventId.toString())
                 .setHeader(EventHeaders.EVENT_TYPE, eventType)
@@ -39,7 +39,7 @@ final class Relayed {
                 .setHeader(EventHeaders.KAFKA_KEY, orderId.toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    static Message<byte[]> orderEvent(String eventType, UUID orderId, long seq, byte[] payload) {
+    public static Message<byte[]> orderEvent(String eventType, UUID orderId, long seq, byte[] payload) {
         return orderEvent(UUID.randomUUID(), eventType, orderId, seq, payload).build();
     }
 }

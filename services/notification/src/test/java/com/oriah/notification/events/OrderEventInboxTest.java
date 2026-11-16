@@ -327,14 +327,15 @@ class OrderEventInboxTest {
     }
 
     @Test
-    @DisplayName("a shopper submitting a payment claim and money that could not settle a sale are facts for staff, not for the customer: recorded as applied, and no row is written for anyone yet")
-    void factsForStaffAreStillOnlyMarkedApplied() {
+    @DisplayName("a shopper submitting a payment claim and money that could not settle a sale are facts for staff, not for the customer: recorded as applied, and nothing is written for the customer")
+    void factsForStaffWriteNothingForTheCustomer() {
         UUID orderId = UUID.randomUUID();
         UUID submitted = UUID.randomUUID();
         UUID unsettled = UUID.randomUUID();
 
         orderEvents.accept(Relayed.orderEvent(submitted, "order.payment_submitted", orderId, 3,
-                ("{\"claimId\":\"" + UUID.randomUUID() + "\",\"orderId\":\"" + orderId + "\",\"method\":\"MTN\",\"referenceNormalised\":\"MP2411ABC\"}")
+                ("{\"claimId\":\"" + UUID.randomUUID() + "\",\"orderId\":\"" + orderId + "\",\"method\":\"MTN\",\"referenceNormalised\":\"MP2411ABC\","
+                        + "\"submittedAt\":\"2026-11-09T07:30:00Z\",\"holdExpiresAt\":\"2026-11-10T07:20:00Z\"}")
                         .getBytes(StandardCharsets.UTF_8)).build());
         orderEvents.accept(Relayed.orderEvent(unsettled, "order.payment_unsettled", orderId, 4,
                 ("{\"confirmationId\":\"" + UUID.randomUUID() + "\",\"orderId\":\"" + orderId + "\",\"reason\":\"WRONG_AMOUNT\",\"currency\":\"ZMW\"}")
@@ -342,7 +343,9 @@ class OrderEventInboxTest {
 
         assertThat(markers(submitted)).isEqualTo(1);
         assertThat(markers(unsettled)).isEqualTo(1);
-        assertThat(notifications.count()).isZero();
+        assertThat(notifications.findAll()).as("the claim is told to staff (PaymentToConfirmAlertTest); nothing is written for a customer or a caller")
+                .allSatisfy(row -> assertThat(row.keycloakId()).isNull())
+                .allSatisfy(row -> assertThat(row.eventType()).isEqualTo("alert.payment_to_confirm"));
     }
 
     /**

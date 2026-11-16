@@ -90,6 +90,42 @@ public final class SendDecision {
         return new Send(contact.email(), shortForm);
     }
 
+    /**
+     * What is known about an email to a shop mailbox when it is its turn.
+     *
+     * @param notice        which notice of its alert it is: FIRST, AGAIN, REMINDER, SORTED, CLOSING (or DIGEST, which names several alerts)
+     * @param alertResolved the alert it is about has ended
+     * @param newerNotice   a newer first notice, re-telling or reminder of the same alert for the same mailbox has been written
+     */
+    public record StaffFacts(String notice, String staffTo, boolean alertResolved, boolean newerNotice) {
+    }
+
+    private static final Set<String> SAID_AFTER_THE_END = Set.of("SORTED", "CLOSING");
+    private static final Set<String> ONLY_THE_NEWEST_GOES = Set.of("FIRST", "AGAIN", "REMINDER");
+
+    /**
+     * In this order: no mail server or all email paused; the alert has already ended (only "sorted" and the last note are said after the end);
+     * a newer notice of the same alert has been written; no mailbox on the row; a mailbox that could be real on a stack that is not live.
+     */
+    public static Decision forStaff(StaffFacts facts, EmailSetup setup) {
+        if (!setup.canSend()) {
+            return new NotSent(StatusReason.SENDING_OFF);
+        }
+        if (facts.alertResolved() && !SAID_AFTER_THE_END.contains(facts.notice())) {
+            return new NotSent(StatusReason.ALERT_RESOLVED);
+        }
+        if (facts.newerNotice() && ONLY_THE_NEWEST_GOES.contains(facts.notice())) {
+            return new NotSent(StatusReason.SUPERSEDED);
+        }
+        if (facts.staffTo() == null) {
+            return new NotSent(StatusReason.NO_RECIPIENT_CONFIGURED);
+        }
+        if (setup.mode() != EmailSetup.Mode.LIVE && !SandboxGate.mayLeaveASandbox(facts.staffTo())) {
+            return new NotSent(StatusReason.SANDBOX);
+        }
+        return new Send(facts.staffTo(), false);
+    }
+
     private static boolean superseded(ShopperFacts facts) {
         return switch (facts.eventType()) {
             case "order.fulfilled" -> facts.laterDelivered() || facts.laterShippedSent();

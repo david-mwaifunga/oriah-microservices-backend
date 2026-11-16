@@ -144,6 +144,79 @@ public final class MessageTexts {
         };
     }
 
+    // ---- alerts to staff -------------------------------------------------------------------------------------------------------------------
+    //
+    // An alert's subject is its one line in a list; its body is the whole email. No amount is printed unless the fact that raised the alert
+    // carried it. No text tells staff to reject a payment because the money cannot be found: the client's rule is that a claim is rejected only
+    // on proof that it is false, "never because the money has not shown yet, which is what the 24 hours are for".
+
+    private static final String WHEN_A_CLAIM_MAY_BE_REJECTED = "Reject the payment only if the provider tells you there is no such payment, "
+            + "or the reference has already paid another order.";
+
+    /**
+     * A1: a customer says they have paid. It names NO amount: the claim carries none, and an order's total can change without an event (a
+     * delivery waiver). Staff read the amount on the Awaiting payment list.
+     *
+     * @param holdEnds when the pieces stop being held for this customer
+     */
+    public static Text paymentToConfirm(UUID orderId, String method, java.time.Instant holdEnds, java.time.ZoneId zone) {
+        String code = OrderName.code(orderId);
+        return new Text("A customer says they have paid - order " + code,
+                "A customer says they have paid for order " + code + " by " + methodWords(method) + ". Please check that the money has arrived: "
+                        + Screens.AWAITING_PAYMENT + " shows the amount to look for and the reference the customer gave. When you find it, "
+                        + "confirm it there. If the money has not shown yet, do nothing: the pieces stay held for this customer until "
+                        + LusakaTime.write(holdEnds, zone) + ". " + WHEN_A_CLAIM_MAY_BE_REJECTED);
+    }
+
+    /** A2: the one reminder before the pieces are released. */
+    public static Text paymentToConfirmReminder(UUID orderId, String method, java.time.Instant holdEnds, java.time.ZoneId zone) {
+        String code = OrderName.code(orderId);
+        String when = LusakaTime.write(holdEnds, zone);
+        return new Text("Still waiting - order " + code + " will be released at " + when,
+                "Order " + code + ": the customer told us they paid by " + methodWords(method) + ", and the order is still not marked as paid. "
+                        + "The pieces will be released at " + when + ". If the money has arrived, please confirm it now on "
+                        + Screens.AWAITING_PAYMENT + ". If it has not shown, there is nothing to do: the order will close by itself and the "
+                        + "customer will see that on the website. " + WHEN_A_CLAIM_MAY_BE_REJECTED);
+    }
+
+    /** A10: more payment claims in a day than are emailed one by one. */
+    public static Text claimEmailLimit(int limit) {
+        return new Text("Many customers say they have paid - we have stopped emailing each one",
+                "More than " + limit + " customers said in the last day that they have paid. We have stopped emailing you about each new one "
+                        + "for now. Please open " + Screens.AWAITING_PAYMENT + ": every one is there. Alerts about other things are still "
+                        + "emailed.");
+    }
+
+    /** A9: the mail server has been failing for a while. Listed and logged, never emailed (it could not be). */
+    public static Text emailDown(java.time.Instant since, java.time.ZoneId zone) {
+        return new Text("Emails are not going out",
+                "Emails to customers and to you have not been going out since " + LusakaTime.write(since, zone) + ". Messages are kept and "
+                        + "will be sent when email works again, unless they become too old. Alerts that could not be emailed will be emailed "
+                        + "then.");
+    }
+
+    /** A9b: the mail server refused one of the alert mailboxes. Listed and logged, never emailed. */
+    public static Text alertMailboxRefused() {
+        return new Text("An alert email address is being refused",
+                "The mail server refused an alert email to one of the alert addresses you gave us. Please check those addresses. Until this "
+                        + "is fixed, alerts may not reach that address by email; they are still on this list.");
+    }
+
+    /** A payment method as a person says it. A code nobody taught this service is printed as it is, never guessed at. */
+    public static String methodWords(String method) {
+        if (method == null || method.isBlank()) {
+            return "a method we do not know";
+        }
+        return switch (method) {
+            case "MTN" -> "MTN mobile money";
+            case "AIRTEL" -> "Airtel Money";
+            case "ZAMTEL" -> "Zamtel mobile money";
+            case "BANK_TRANSFER" -> "bank transfer";
+            case "CASH" -> "cash";
+            default -> method;
+        };
+    }
+
     private static boolean known(String text) {
         return text != null && !text.isBlank();
     }

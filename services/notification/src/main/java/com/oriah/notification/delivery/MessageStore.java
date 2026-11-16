@@ -73,7 +73,7 @@ public class MessageStore {
                            SELECT 1 FROM notification_log earlier
                             WHERE earlier.order_id = m.order_id AND earlier.recipient_kind = 'SHOPPER' AND earlier.status = 'RECORDED'
                               AND earlier.event_seq < m.event_seq))
-                 ORDER BY (m.recipient_kind = 'STAFF') DESC, m.recorded_at, m.id
+                 ORDER BY (m.recipient_kind = 'STAFF') DESC, m.recorded_at, m.staff_to NULLS LAST, m.id
                  LIMIT ?""", MessageStore::due, Timestamp.from(now), limit);
     }
 
@@ -174,6 +174,36 @@ public class MessageStore {
                 SELECT EXISTS (SELECT 1 FROM notification_log
                                 WHERE order_id = ? AND recipient_kind = 'SHOPPER' AND event_type = ? AND event_seq > ?
                                   AND (? = FALSE OR status = 'SENT'))""", Boolean.class, orderId, eventType, afterSeq, sentOnly));
+    }
+
+    /** Whether the alert a staff row is about has ended. A row with no alert (a digest) answers false. */
+    public boolean alertResolved(UUID alertId) {
+        return alertId != null && Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM staff_alert WHERE id = ? AND state = 'RESOLVED')", Boolean.class, alertId));
+    }
+
+    /**
+     * Whether a NEWER notice of the same alert for the same mailbox has been written (a first notice, a re-telling or a reminder). After an
+     * outage staff must not get the first notice and its reminder seconds apart: only the newest goes.
+     */
+    public boolean newerNotice(UUID rowId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM notification_log me JOIN notification_log newer
+                                    ON newer.alert_id = me.alert_id AND newer.staff_to IS NOT DISTINCT FROM me.staff_to AND newer.id <> me.id
+                                WHERE me.id = ? AND newer.alert_notice IN ('FIRST', 'AGAIN', 'REMINDER')
+                                  AND (newer.recorded_at, newer.id) > (me.recorded_at, me.id))""", Boolean.class, rowId));
+    }
+
+    /**
+     * Whether the three messages most recently tried were all refused, each for a different recipient. One refused address is one bad address;
+     * three in a row for three people is a mail server that refuses everybody (a sending account not allowed to relay, say).
+     */
+    public boolean theLastThreeRecipientsWereAllRefused() {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT count(*) = 3 AND bool_and(status = 'FAILED' AND status_reason IS NOT DISTINCT FROM 'ADDRESS_REFUSED')
+                       AND count(DISTINCT COALESCE(keycloak_id, staff_to)) = 3
+                  FROM (SELECT status, status_reason, keycloak_id, staff_to FROM notification_log
+                         WHERE last_attempt_at IS NOT NULL ORDER BY last_attempt_at DESC, id LIMIT 3) tried""", Boolean.class));
     }
 
     private static Due due(ResultSet row, int n) throws SQLException {

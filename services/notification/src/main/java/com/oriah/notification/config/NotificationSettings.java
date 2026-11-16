@@ -78,7 +78,31 @@ public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNul
                        @NotNull Duration addressRecheck) {
     }
 
-    public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients) {
+    /**
+     * @param maxFactAge  an alert fact recorded longer ago than this still updates what is known but emails nobody (history read late)
+     * @param retellAfter an open alert that no mail server ever took is written again this often
+     * @param retellMax   and at most this many times
+     * @param downAfter   the mail server failing this long is itself an alert ("emails are not going out")
+     */
+    public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients, @NotNull Duration maxFactAge, @NotNull Duration retellAfter,
+                         @Min(0) int retellMax, @NotNull Duration downAfter, @NotNull @Valid PaymentToConfirm paymentToConfirm,
+                         @NotNull @Valid Hold hold) {
+    }
+
+    /** @param maxAlertsEmailedPerDay how many payment-claim alerts are emailed in any 24 hours; beyond it they are listed only */
+    public record PaymentToConfirm(@Min(1) int maxAlertsEmailedPerDay) {
+    }
+
+    /**
+     * When staff are reminded of a payment claim that is still not confirmed.
+     *
+     * @param remindBefore how long before the pieces are released
+     * @param quietFrom    a reminder that would fall from this hour ...
+     * @param quietUntil   ... to this hour (the shop's clock) moves back to quietFrom
+     * @param closeGrace   how long after the hold's end the alert closes by itself, if no event closed it
+     */
+    public record Hold(@NotNull Duration remindBefore, @NotNull java.time.LocalTime quietFrom, @NotNull java.time.LocalTime quietUntil,
+                       @NotNull Duration closeGrace) {
     }
 
     /** Alert mailboxes for a developer's own machine: used only while not live and only when the environment gives none. */
