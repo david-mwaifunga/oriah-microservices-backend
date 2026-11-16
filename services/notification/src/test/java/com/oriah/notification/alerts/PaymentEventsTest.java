@@ -375,6 +375,35 @@ class PaymentEventsTest {
     }
 
     @Test
+    @DisplayName("an answer that loses the race with the clock's close still gives the alert its real ending: no 'we never heard' for a sale that completed")
+    void anAnswerThatRacesTheClocksCloseStillRelabelsTheAlert() {
+        confirmed(2);
+        clock.advance(Duration.ofMinutes(1));
+        dispatcher().run();
+        EmailSetup setup = new EmailSetup(Mode.CATCHER, null, MONEY, List.of("alerts-cost@oriah.local"), null, false);
+        StaffAlerts closedInBetween = new StaffAlerts(jdbc, transactions, setup, settings) {
+            @Override
+            public boolean resolve(StaffAlerts.Kind kind, String subjectId, String how, Instant now) {
+                if (kind == StaffAlerts.Kind.SETTLEMENT_STUCK) {
+                    // The dispatcher's clock closes the alert between the answer's look at it (it read OPEN) and the answer's own UPDATE.
+                    jdbc.update("""
+                            UPDATE staff_alert SET state = 'RESOLVED', resolved_how = 'BY_CLOCK', resolved_at = ?, remind_at = NULL
+                             WHERE kind = 'SETTLEMENT_STUCK' AND state = 'OPEN'""", Timestamp.from(now));
+                }
+                return super.resolve(kind, subjectId, how, now);
+            }
+        };
+
+        new ConfirmationWatch(jdbc, closedInBetween, orderRefs, settings).paid(confirmationId, orderId, clock.instant().minusSeconds(1), clock.instant());
+
+        assertThat(stuck()).as("the answer is the alert's real ending, whoever closed it first").containsEntry("state", "RESOLVED")
+                .containsEntry("resolved_how", "PAID");
+        dispatcher().run();
+        assertThat(rows("SETTLEMENT_STUCK", "CLOSING")).as("nothing is 'never answered' about it").isEmpty();
+        assertThat(rows("SETTLEMENT_STUCK", "SORTED")).hasSize(2);
+    }
+
+    @Test
     @DisplayName("after days with the service away, staff get ONE 'still not completed', not one for every day that was missed")
     void afterDaysAwayStaffGetOneReminderNotOnePerMissedDay() {
         confirmed(2);

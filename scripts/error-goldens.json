@@ -267,6 +267,46 @@
     "request": "POST /api/v1/admin/orders/recorded  (as admin)",
     "status": 400
   },
+  "400-staff-alerts-unknown-state": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "state must be OPEN or ALL",
+      "instance": "/api/v1/admin/notifications/alerts",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/bad-request"
+    },
+    "request": "GET /api/v1/admin/notifications/alerts?state=CLOSED  (as admin)",
+    "status": 400
+  },
+  "400-staff-messages-neither-order-nor-work-list": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "give either orderId or status=BY_HAND, not both and not neither",
+      "instance": "/api/v1/admin/notifications/messages",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/bad-request"
+    },
+    "request": "GET /api/v1/admin/notifications/messages  (as admin)",
+    "status": 400
+  },
   "400-validation-missing-title": {
     "contentType": "application/problem+json",
     "problem": {
@@ -370,6 +410,44 @@
       "type": "https://oriah.dev/problems/unauthorized"
     },
     "request": "GET /api/v1/inventory/<uuid>",
+    "status": 401
+  },
+  "401-staff-alerts-without-a-token": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authentication is required. Send a Bearer token in the Authorization header.",
+      "instance": "/api/v1/admin/notifications/alerts",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 401,
+      "title": "Unauthorized",
+      "type": "https://oriah.dev/problems/unauthorized"
+    },
+    "request": "GET /api/v1/admin/notifications/alerts",
+    "status": 401
+  },
+  "401-staff-messages-without-a-token": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authentication is required. Send a Bearer token in the Authorization header.",
+      "instance": "/api/v1/admin/notifications/messages",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 401,
+      "title": "Unauthorized",
+      "type": "https://oriah.dev/problems/unauthorized"
+    },
+    "request": "GET /api/v1/admin/notifications/messages?status=BY_HAND",
     "status": 401
   },
   "403-admin-products-as-plain-user": {
@@ -617,6 +695,44 @@
       "type": "https://oriah.dev/problems/forbidden"
     },
     "request": "POST /api/v1/admin/inventory/<uuid>/confirm  (as admin)",
+    "status": 403
+  },
+  "403-staff-alerts-as-a-shopper": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/notifications/alerts",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/notifications/alerts  (as user)",
+    "status": 403
+  },
+  "403-staff-messages-as-a-shopper": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/notifications/messages",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "GET /api/v1/admin/notifications/messages?status=BY_HAND  (as user)",
     "status": 403
   },
   "403-write-offs-as-plain-user": {

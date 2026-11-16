@@ -166,7 +166,11 @@ public class ConfirmationWatch {
         }
         Stored alert = stuck.get();
         if (alert.open()) {
-            alerts.resolve(Kind.SETTLEMENT_STUCK, watch.confirmationId().toString(), how, now);
+            if (!alerts.resolve(Kind.SETTLEMENT_STUCK, watch.confirmationId().toString(), how, now)) {
+                // It read open a moment ago and is not open now. Under the confirmation's lock only the clock can have ended it in between
+                // (it closed by itself in that instant): the answer is still its real ending, or staff would read "we never heard".
+                alerts.relabel(alert.id(), how);
+            }
         } else if ("BY_CLOCK".equals(alert.resolvedHow())) {
             alerts.relabel(alert.id(), how);
         } else {

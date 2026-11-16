@@ -162,6 +162,14 @@ CASES = [
      {"category": "RENT_UTILITIES", "amount": 1.00, "expenseDate": "2026-10-15", "description": "golden rent"}),
     ("403-finance-status-as-a-shopper", "GET", "/api/v1/admin/finance/status", "user", None),
     ("401-finance-report-without-a-token", "GET", "/api/v1/admin/finance/reports/profit/2026-10", None, None),
+    # Phase 11 (notification): the two staff reads. Both are GETs and change nothing. A shopper holds neither SALES_AGENT nor the two cost
+    # capabilities; a state that is not OPEN or ALL, and a messages read that names neither an order nor the work list, are refused.
+    ("401-staff-alerts-without-a-token", "GET", "/api/v1/admin/notifications/alerts", None, None),
+    ("403-staff-alerts-as-a-shopper", "GET", "/api/v1/admin/notifications/alerts", "user", None),
+    ("400-staff-alerts-unknown-state", "GET", "/api/v1/admin/notifications/alerts?state=CLOSED", "admin", None),
+    ("401-staff-messages-without-a-token", "GET", "/api/v1/admin/notifications/messages?status=BY_HAND", None, None),
+    ("403-staff-messages-as-a-shopper", "GET", "/api/v1/admin/notifications/messages?status=BY_HAND", "user", None),
+    ("400-staff-messages-neither-order-nor-work-list", "GET", "/api/v1/admin/notifications/messages", "admin", None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------
@@ -212,7 +220,7 @@ def token(gateway, client, secret, user):
         "username": user, "password": "password", "grant_type": "password",
     }).encode()
     url = "http://localhost:7080/realms/oriah/protocol/openid-connect/token"
-    with urllib.request.urlopen(urllib.request.Request(url, data=body)) as r:
+    with urllib.request.urlopen(urllib.request.Request(url, data=body), timeout=60) as r:
         return json.loads(r.read())["access_token"]
 
 
@@ -241,7 +249,9 @@ def call(gateway, method, path, bearer, body):
         req.add_header("Content-Type", ctype)
 
     try:
-        with urllib.request.urlopen(req) as r:
+        # A limit on every call: with none, a gateway that stopped answering (a stalled Docker engine did it once) hangs this script for ever
+        # with nothing printed. A call that runs out is recorded as a transport error, which no golden matches.
+        with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, r.headers.get("Content-Type"), r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type"), e.read().decode("utf-8", "replace")

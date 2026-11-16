@@ -132,6 +132,15 @@ class EmailModeGuardTest {
     }
 
     @Test
+    @DisplayName("not live, the From address that is used is the cleaned one that was judged: a space or a line break around it never reaches the mail server")
+    void notLiveTheFromAddressIsUsedAsItWasJudged() {
+        assertThat(build(new FakeEnv(), Map.of("oriah.notification.email.transport", "catcher",
+                "oriah.notification.email.from-address", " no-reply@oriah.local\n")).smtp().fromAddress()).isEqualTo("no-reply@oriah.local");
+        assertThat(build(new FakeEnv(), Map.of("oriah.notification.email.transport", "catcher",
+                "oriah.notification.email.from-address", "no-reply@oriah.local ")).smtp().fromAddress()).isEqualTo("no-reply@oriah.local");
+    }
+
+    @Test
     @DisplayName("a transport setting that is neither 'none' nor 'catcher' is refused")
     void anUnknownTransportIsRefused() {
         assertThatThrownBy(() -> build(new FakeEnv(), Map.of("oriah.notification.email.transport", "smtp")))

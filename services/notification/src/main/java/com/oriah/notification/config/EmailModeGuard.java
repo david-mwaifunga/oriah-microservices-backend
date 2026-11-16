@@ -105,7 +105,10 @@ public final class EmailModeGuard {
             throw refused("oriah.notification.email.from-address must be one address on a name reserved for testing (such as oriah.local) "
                     + "while the stack is not live");
         }
-        SmtpSettings catcher = new SmtpSettings(email.catcher().host(), email.catcher().port(), Security.NONE, null, null, email.fromAddress(),
+        // The address as the rule cleaned it (the one that was just judged), never the raw text: a space or a line break around it in a
+        // settings file must not reach the mail server.
+        String from = EmailAddressRule.oneAddress(email.fromAddress()).orElseThrow();
+        SmtpSettings catcher = new SmtpSettings(email.catcher().host(), email.catcher().port(), Security.NONE, null, null, from,
                 email.fromName(), null, email.smtp().connectTimeout(), email.smtp().readTimeout(), email.smtp().writeTimeout(),
                 settings.send().maxSend());
         return new EmailSetup(Mode.CATCHER, catcher, money, cost, supportLine, paused);

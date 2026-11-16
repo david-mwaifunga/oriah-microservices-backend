@@ -186,7 +186,7 @@ public class StaffAlerts {
 
     /** Gives an alert that closed by the clock its real answer, heard later: it leaves the "never answered" list. */
     public void relabel(UUID alertId, String how) {
-        jdbc.update("UPDATE staff_alert SET resolved_how = ? WHERE id = ? AND state = 'RESOLVED'", how, alertId);
+        jdbc.update("UPDATE staff_alert SET resolved_how = ? WHERE id = ? AND state = 'RESOLVED' AND resolved_how = 'BY_CLOCK'", how, alertId);
     }
 
     /** Whether this notice of the alert was ever written. */
