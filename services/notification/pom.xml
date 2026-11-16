@@ -43,6 +43,9 @@
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-oauth2-resource-server</artifactId></dependency>
         <dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-starter-stream-kafka</artifactId></dependency>
+        <!-- The mail library, driven directly (no Spring mail starter, so no auto-configured sender and no mail health indicator): the transport
+             must know which step of the SMTP dialogue failed, which the Spring wrapper hides. The version is the Boot BOM's. -->
+        <dependency><groupId>org.eclipse.angus</groupId><artifactId>angus-mail</artifactId></dependency>
         <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
 
         <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-webmvc-test</artifactId><scope>test</scope></dependency>

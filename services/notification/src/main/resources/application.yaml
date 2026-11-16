@@ -167,3 +167,52 @@ oriah:
         email: unavailable
       on-call-support:
         - unavailable
+
+    # -----------------------------------------------------------------------
+    # Messages (Phase 11). Every timing and limit lives HERE, in the service's
+    # own file, so the service starts with the Config Server away.
+    #
+    # What is NOT here, on purpose: whether this stack is live, the mail
+    # account, the live From address, who receives alerts, the support line
+    # and the pause switch. Those are read from the process environment only
+    # (ProcessEnv, EmailModeGuard). One config repository is served to every
+    # stack and wins over this file, so nothing a commit could set may point a
+    # test stack at a real mailbox.
+    # -----------------------------------------------------------------------
+    # The shop's clock: times written in a message.
+    zone: Africa/Lusaka
+    # The storefront's address, for the link at the foot of a customer's email. Empty = no link.
+    site-url: ${ORIAH_NOTIFICATION_SITE_URL:}
+    # The shop's own PUBLIC details, written by the owner (config-repo/notification.yaml). Each is left out of a message while it is empty.
+    # Never a private person's own number.
+    shop:
+      pay-line: ""
+      collect-line: ""
+      contact-line: ""
+    email:
+      # While NOT live: none (nothing is ever handed to a mail server) or catcher (the local mail catcher). Ignored when live.
+      transport: none
+      # The local mail catcher. The host must be one of localhost, 127.0.0.1, ::1, mailcatcher: anything else refuses the start.
+      catcher:
+        host: localhost
+        port: 1025
+      # The From address while NOT live (it must be on a name reserved for testing), and the name shown beside the address in every mode.
+      from-address: no-reply@oriah.local
+      from-name: Oriah Jewelry
+      smtp:
+        # How long to wait for the connection (at most PT30S), for EACH reply, and for one write (each at most send.max-send).
+        connect-timeout: PT5S
+        read-timeout: PT30S
+        write-timeout: PT30S
+      # The kinds of message that are emailed as well as shown on the website; every other kind is website only.
+      emailed: PAID,READY_TO_COLLECT,ON_ITS_WAY,DELIVERED,PAYMENT_NOT_CONFIRMED
+    send:
+      # The one wall-clock limit on a whole send, whatever the mail server does (at most PT5M).
+      max-send: PT90S
+      # How long a message being sent is out of reach of any other sender. It must outlast max-send by PT30S, or the start is refused.
+      lease: PT3M
+    alerts:
+      # Used ONLY while not live and only when the matching environment variable is absent: catcher addresses for a developer's own machine.
+      sandbox-recipients:
+        money: ""
+        cost: ""
