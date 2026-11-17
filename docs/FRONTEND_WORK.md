@@ -1032,25 +1032,113 @@ published price (built: yes, with a written reason either way)? 9. Do you sell o
 
 ### Phase 13 — Payment integration: ZynlePay, for mobile money and cards
 
+**Built 2026-11-17 (backend).** The storefront is not changed. Until Oriah has a ZynlePay account the backend talks to its own stand-in for
+ZynlePay; the screens below can be built and tested against it today (`docs/ZYNLEPAY_GO_LIVE.md` says what happens before real money).
+
+**The idea in one paragraph.** After checkout the order is held, not paid (Phase 7). The customer now has a second way to pay it besides "I sent
+the money, here is my reference": **pay now by mobile money or by card**. For mobile money the customer types the wallet's number, a prompt
+appears on that phone, they approve it with their PIN. For a card the customer is sent to ZynlePay's own page and comes back. Either way the page
+then **waits and asks the server every few seconds** until the server says the money is recorded. The amount is always the order's own total: the
+page never sends one.
+
+**Storefront: the pay step of an order that is waiting (status `CREATED`)**
+
+- `POST /api/v1/payments/provider-payments` (shopper; header `Idempotency-Key`, one per press of the button, kept across a retry or reload).
+  Body: `{ "orderId": "...", "channel": "MOBILE_MONEY", "phone": "097 123 4567" }` or `{ "orderId": "...", "channel": "CARD" }`.
+  **Never send an amount, a card number, an expiry or a CVV: each is refused with 400.** A phone is read the way Zambians type it.
+  Answer 201 (or 200 for the same key again):
+  `{ id, orderId, channel, method (MTN | AIRTEL | ZAMTEL | CARD), status, amount, currency, phoneMasked ("+2609*****567"), redirectUrl?, nextStep,
+  checkAgainInSeconds?, startedAt, verifiedAt?, confirmationId?, failureCode? }`.
+- `nextStep` tells the page what to show:
+  - `APPROVE_ON_PHONE`: "We have sent a request for K180.00 to +2609\*\*\*\*\*567. Approve it on that phone." Then poll.
+  - `OPEN_CARD_PAGE`: send the browser to `redirectUrl` (ZynlePay's page; the stand-in's page on a dev stack). The customer comes back to
+    `/orders/{orderId}/payment?attempt={id}` (the address is a backend setting); on return, poll.
+  - `WAIT`: nothing to do but poll.
+  - `TRY_AGAIN`: it failed (`status: FAILED`); show why (below) and offer the button again.
+  - `DONE`: `status: VERIFIED`. The order will read `PAID` within seconds; show the receipt.
+- Poll `GET /api/v1/payments/provider-payments/{id}` every `checkAgainInSeconds` (the server chooses; absent once it is over).
+  `GET /api/v1/payments/provider-payments?orderId=` lists the customer's attempts for an order, newest first (use it after a reload to find
+  one in flight instead of starting another).
+- **What to say for each status.** `PENDING`: "Waiting for your approval." `UNRESOLVED`: **"We are checking this payment with the provider. Please
+  do not pay again: we will confirm it or tell you it did not go through."** (staff have been told). `FAILED`: by `failureCode`:
+  `DECLINED` "The payment was declined or not approved in time", `PROVIDER_REFUSED` "The provider could not take this payment",
+  `NOT_SENT` "We could not reach the provider; nothing was taken", `ORDER_REFUSED` "This order can no longer be paid", `MARKED_NOT_PAID` "We checked:
+  this payment did not go through".
+- **Refusals the page must handle** (problem `type` ends with): 400 `phone-required`, `phone-not-for-card`, `invalid-phone`,
+  `not-a-mobile-money-number` (not an MTN, Airtel or Zamtel number), `amount-is-not-typed`, `card-details-not-accepted`; 404 `order-not-found`;
+  409 `provider-payment-in-progress` (one is already in flight: show it), `money-already-recorded`, `channel-not-offered`,
+  `amount-too-small-for-channel`, `idempotency-key-reused`, and the order's own `order-not-awaiting-payment`, `payment-already-submitted` (the
+  customer already gave a reference: staff will confirm it), `order-not-held`, `hold-expired`, `hold-too-short` (under two minutes of hold left:
+  place the order again); 429 `too-many-payment-attempts` (with `Retry-After`: 6 an hour per customer, 4 per number); 503 `order-unavailable`
+  (nothing was sent: repeat with the **same** key) and `payments-unavailable`.
+- **While a payment is in flight the order is closed to everything else:** cancel and "I paid another way" answer 409
+  `provider-payment-in-progress`. Hide those buttons while an attempt is `PENDING` or `UNRESOLVED`. The order's own answer does not say an
+  attempt is in flight (not built); ask the list above.
+- The "I sent the money, here is my reference" step of Phase 7 stays as it is, for bank transfers and for customers who prefer it (owner
+  question 1).
+- No email is sent about a ZynlePay attempt itself. The customer gets Phase 11's "payment received" when the order becomes paid.
+
 **Admin screens**
 
-- No new screen. ZynlePay payments feed 'the same payment confirmation record' with gross, fee and net, listed beside staff confirmations and marked as ZynlePay, so the month reconciles against the provider's statement.
-- Show ZynlePay payments that are still waiting for the provider's verified callback, so staff do not chase them as unpaid.
-
-**Storefront**
-
-- Checkout offers ZynlePay: MTN, Airtel and Zamtel mobile money, and cards. Mobile money is asynchronous ('the customer approves on their phone and the provider calls back later'), so the page waits and the order shows as pending until the callback.
-- Staff confirmation 'stays alongside it for cash and bank transfers'. Whether a website customer can still send mobile money directly with a reference once ZynlePay is live is not in the plan.
-- The card form is built against ZynlePay's sandbox. No official API documentation was found, so its shape waits for merchant onboarding.
+- **ZynlePay payments** (sales staff, `SALES_AGENT`): `GET /api/v1/admin/payments/provider-payments?status=OPEN|PENDING|UNRESOLVED|FAILED|VERIFIED|ALL[&orderId=]`
+  (at most 200; `OPEN` is oldest first, the rest newest first; there is no "more" sign yet) and `GET .../{id}`: the order, method, amount, status, `failureCode` or `unresolvedReason`, **the reference to look
+  up on ZynlePay's merchant page** (`referenceNo`), when it was started and last checked, how many callbacks came, the money record it became
+  (`confirmationId`), the fee and how it was worked out (`feeBasis`), and every question asked of ZynlePay with its answer (`checks`). **The
+  payer's number is masked for everyone but the owner** (`PAYMENT_ADMIN`).
+- **"Check now"**: `POST .../{id}/check` (`SALES_AGENT`): asks ZynlePay at once and answers the payment as it then stands
+  (`checkedJustNow`, `verifiedByCheck`); 409 `check-in-progress` when a check is already running, 409 `provider-payment-final` when there is
+  nothing left to ask.
+- **The owner settles what ZynlePay did not** : `POST .../{id}/resolve` (`PAYMENT_ADMIN`, header `Idempotency-Key`), body
+  `{ "outcome": "PAID" | "NOT_PAID", "evidence": "what she saw, 10 to 200 characters", "arrivedAt"?, "gross"?, "overridePending"? }`. For an
+  `UNRESOLVED` attempt either way; a `FAILED` one that had reached ZynlePay may be marked `PAID` (the customer shows proof). ZynlePay is asked
+  once more first. `PAID` records the money (the order then settles like any other); `gross` is given only when ZynlePay reported another
+  amount than was asked, and must be one of those two amounts (400 `gross-not-on-record`; a gross other than the order's total is held as a
+  wrong amount, as in Phase 7). `NOT_PAID` ends the attempt and lets the order go; if ZynlePay still says "pending" it is 409
+  `provider-says-pending` until she sends `overridePending: true`. Other refusals: 409 `not-resolvable`, `provider-payment-changed` (it moved
+  while she was deciding: read it again), `provider-says-paid`, `provider-says-failed`, `same-money-on-record`, `check-in-progress`; 503
+  `provider-unavailable` (not marked "not paid" without asking ZynlePay).
+- **Why a payment is `UNRESOLVED`** (show the words): `NO_ANSWER` "ZynlePay has not said whether this was paid", `AMOUNT_DIFFERS` "ZynlePay
+  reports another amount than the order's", `SAME_MONEY_ON_RECORD` "this money is already recorded another way", `CONFIRMATION_VOIDED` "its money
+  record was cancelled by the owner", `PAID_AFTER_FAILED` "ZynlePay says it was paid after we had told the customer it failed".
+- **The alerts list of Phase 11** gains `PROVIDER_PAYMENT_UNRESOLVED` (money audience): "A ... payment of K180.00 for order ... was started
+  through ZynlePay and ZynlePay has not settled it ... Do not ask the customer to pay again." It links to the screen above and ends when the
+  payment is settled.
+- **Payment confirmations** (Phase 7's lists): a record made by ZynlePay reads `confirmedBy: "system:zynlepay"`, `method` may be `CARD`, and
+  it carries `provider: "ZYNLEPAY"` and `providerPaymentId`. **Only the owner may cancel (void) such a record** (staff: 403); doing so sends the
+  attempt back to her list as `CONFIRMATION_VOIDED`. Recording money by hand under a ZynlePay reference is 409 `provider-payment-reference`, for
+  an order with an attempt in flight 409 `provider-payment-in-progress`, and `CARD` cannot be keyed by hand (400).
+- **Finance's statement check** now sets ZynlePay's payments against ZynlePay's statement as one provider (`ZYNLEPAY`), whatever the network.
+- **Refunds** are unchanged: a refund owed for a sale paid through ZynlePay is in Phase 12's list and is paid by hand.
 
 **What it breaks in oriah-web today**
 
-- The Phase 7 pay-directly step and the ConfirmBody in lib/checkout/quote change again. storefront-happy-path.spec.ts needs ZynlePay's sandbox or stays on the staff-confirmed path.
+- `GET /api/v1/admin/payments` and `/summary` (the old list of card intents) are gone (404): remove the admin page that reads them.
+- The Phase 7 pay step gains the two buttons above. `storefront-happy-path.spec.ts` can pay through the stand-in: start a mobile-money
+  payment with a number ending in 1, then `POST http://localhost:8085/internal/zynlepay-sim/transactions/{referenceNo}/decide {"outcome":"PAID"}`
+  (payment's own port, never the gateway; the reference is read from the staff view). The last digit of the number picks the case:
+  1 paid or declined when told, 2 declines by itself, 3 never answers, 4 refused at once, 5 no callback, 6 three callbacks, 7 paid for K1.00
+  more, 8 the first answer is lost, 9 credentials refused.
+
+**Questions for the owner** (each with what happens today)
+
+1. **Once ZynlePay is live, may a website customer still pay by sending mobile money directly and typing the reference?** Today: yes, both.
+   Keeping it costs nothing and helps when ZynlePay is down; removing it means every mobile-money payment carries ZynlePay's fee.
+2. **Who pays ZynlePay's fee?** Today: Oriah. The customer pays exactly the order's total; the fee is a cost of the month. Example at the
+   placeholder 2.5%: order K180.00; customer pays K180.00; ZynlePay keeps K4.50; Oriah receives K175.50; the books show K180.00 of sales and
+   K4.50 of payment charges.
+3. **How long should a payment wait before it comes to you?** Today: 30 minutes without an answer from ZynlePay. Meanwhile the customer's
+   pieces stay held (up to 45 minutes from when the payment was started).
+4. **How many tries may one customer make?** Today: 6 payment requests an hour per customer and 4 per phone number, so nobody can be pestered
+   with prompts.
+5. **When you mark a payment "not paid", should the customer be emailed?** Today: no message is sent; the page shows it, and staff tell them.
+6. **If ZynlePay's real fee on a payment differs from the tariff** (a promotion of theirs, a rounding): today the difference shows in the
+   monthly statement check and is corrected by an expense entry by hand. Is that enough, or should each payment's fee be correctable?
+7. **Should cards be offered from the first day**, or mobile money first? Today: both are on; either can be switched off by a setting.
 
 **Needs from the owner**
 
-- ZynlePay merchant onboarding, sandbox and live credentials, and confirmation of card acceptance at sign-up (§9 item 10).
-- Whether paying mobile money directly with a reference stays on the website once ZynlePay is live.
+- ZynlePay merchant sign-up, the sandbox and then the live credentials, the tariff in writing, and confirmation that cards are accepted
+  (`docs/ZYNLEPAY_GO_LIVE.md`, sections 1 and 5).
 
 ### Phase 14 — Tax: ZRA Smart Invoice and turnover tax (AFTER THE MVP, not committed)
 

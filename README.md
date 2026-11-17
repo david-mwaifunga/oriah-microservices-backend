@@ -73,7 +73,7 @@ oriah-api/
 ├── scripts/, s3-config/    helper scripts, SeaweedFS bucket setup
 ├── build-images.ps1        Buildpacks image build for every service
 ├── smoke-test.ps1          20 numbered steps (plus 2b, 4b, 5b, 6b to 6j, 8b and
-│                           20b to 20f), the full admin + customer saga: a sale
+│                           20b to 20l), the full admin + customer saga: a sale
 │                           from checkout to a paid order with its stock sold
 ├── mvnw, mvnw.cmd, .mvn/   Maven wrapper — use this, not system Maven
 └── docs/                   CLIENT_DECISIONS.md, MVP_PLAN.md, PROGRESS.md,
@@ -198,9 +198,15 @@ catcher at http://localhost:8025 and delivered to nobody.)
 
 Delivery is priced **per town** by admin (towns are seeded, prices never are),
 and a promotion covers one product, one category or the whole shop and applies by
-itself, per piece: there is no promotion code. The card path in `payment` is
-switched off (`oriah.payment.card.enabled`, default false) until ZynlePay in
-Phase 13.
+itself, per piece: there is no promotion code.
+
+Since Phase 13 a shopper can also pay a held order **through ZynlePay**, by
+mobile money (a prompt on their phone) or by card (the provider's own page):
+`POST /api/v1/payments/provider-payments`. `payment` asks ZynlePay what became
+of each payment, and only that answer (or the owner's recorded decision) makes
+it money: the same payment record staff write. It was built against payment's
+own stand-in for ZynlePay, because Oriah has no merchant account yet;
+`docs/ZYNLEPAY_GO_LIVE.md` lists what remains before real money.
 
 ## Working conventions
 

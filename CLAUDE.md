@@ -6,9 +6,9 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state (2026-11-17: Phase 12 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
-(Deliver)"**, **"Built in Phase 9 (Phone orders)"**, **"Built in Phase 10 (Finance)"**, **"Built in Phase 11 (Notifications)"** and **"Built in Phase 12 (Returns, refunds
-and exchanges)"** blocks below are the contract-level detail).
+state (2026-11-17: Phase 13 complete, on the branch `phase13`; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
+(Deliver)"**, **"Built in Phase 9 (Phone orders)"**, **"Built in Phase 10 (Finance)"**, **"Built in Phase 11 (Notifications)"**, **"Built in Phase 12 (Returns, refunds
+and exchanges)"** and **"Built in Phase 13 (ZynlePay)"** blocks below are the contract-level detail).
 
 ---
 
@@ -60,7 +60,7 @@ cost-bearing inventory that is actually reserved when an order is placed, **with
 reservations that expire** (built in Phase 7) · delivery & fulfillment for Zambian couriers ·
 expenses · profit reporting · phone orders · an append-only audit log for money
 and stock movements · **payments confirmed by staff (built in Phase 7) and through
-ZynlePay for mobile money and cards (Phase 13, not built), both live at go-live** · **tax readiness — the core built
+ZynlePay for mobile money and cards (built in Phase 13 against a stand-in: `docs/ZYNLEPAY_GO_LIVE.md` is what remains before real money), both live at go-live** · **tax readiness — the core built
 ready for ZRA Smart Invoice, and taxes entered by hand; Smart Invoice itself
 (Phase 14) comes after the MVP** · **returns, refunds and exchanges after
 dispatch** · **stock that moves without a sale** (write-offs, gifts, prizes —
@@ -331,8 +331,8 @@ money** in `payment` → `order` settles it: the stock is sold and the order is 
   (`/api/v1/admin/payments/held-money`, PAYMENT_ADMIN, which `MANAGER` lacks, so only `OWNER` reads it),
   never lost or refused. Payment reads no
   order: it announces `payment.confirmed` and order answers; a watcher announces it again (ten
-  times at most) until it does. The card path is **switched off** (`oriah.payment.card.enabled`, default false) and nothing
-  calls it; ZynlePay (Phase 13) gives it a caller.
+  times at most) until it does. The first card path was switched off here and **deleted in Phase 13**, which collects through ZynlePay
+  instead (its own block below).
 - **`order` (7.5) owns the sale.** Placement (`POST /api/v1/orders`) writes a PENDING row, holds
   the pieces, then marks it HELD and emits `order.created`; a shopper may have 3 live orders and
   20 pieces held at once (409 `hold-limit-reached`; the settings are `oriah.sales.max-live-orders`
@@ -832,6 +832,112 @@ CANCELLED, taken only by the paid cancellation.
   first. Phase 14: a return is the credit note and the exchange link pairs it with the new invoice; every correction is published with full line detail and no tax column.
   Frontend stage: the screens of `docs/FRONTEND_WORK.md` Phase 12.
 
+### Built in Phase 13 (ZynlePay): paying an order by mobile money or by card
+
+Design: `../.codex-tmp/plan-p13-FINAL.md` (its "ROUND 2" section wins over its first part, which wins over `plan-p13-wf.md`, a judged design run; it folds in **Codex's two design
+reviews, both NOT SOUND**, and a four-lens design panel). The slices are the commits `ae2953f` to `0c15bc3`, the stack `f4bd02d` and the review fixes `0496105`, **on the branch
+`phase13`** (earlier phases are on `main`; nothing is pushed). **Proved live on the full container stack on 2026-11-17, in two parts, on images rebuilt from `0496105` (checkout, finance, notification, payment, order and the gateway): the full smoke test passed every step through 20k and stopped at the new step 20l only because the earlier steps had left two rings in stock where the step sells four (the step now receives its own stock first); step 20l was then run alone against the same running stack and passed on its first run. A second full run, to see the whole script pass in one go, was cut short at step 6i when Docker Desktop stalled (its fourth stall in two days: `docker ps` gave no answer); that run is still owed. The OpenAPI gate passes with eight new waivers (the retired list of card intents and its schemas); six error goldens were added (the 80 older ones unchanged, 86 in all). The content audit found one read that documented no error (`GET /api/v1/payments/provider-payments`); it is fixed in the source (one annotation) but the fixed image could not be rebuilt and audited again, nor Postman regenerated, because of the same stall: both are owed. The code committed after the images were built differs from them only by that annotation and three comments.** The frontend is not changed (`docs/FRONTEND_WORK.md`, Phase 13, says what it must do and carries the owner's 7
+questions in plain words). **`docs/ZYNLEPAY_GO_LIVE.md` is the list of what must happen before real money goes through it.**
+
+**What is and is not known.** Oriah has no ZynlePay account yet and ZynlePay's official API documents are behind its sandbox login. What the code knows of the API is
+**second-hand** (two unofficial libraries): one JSON endpoint with the credentials in the body; a mobile-money push answered `120` (started); a hosted card page (`redirect_url`); a
+status call answered `100` paid / `990` pending / `995` failed; an **unsigned** callback; no refund API; no fee in any answer. So the code is built against **payment's own
+stand-in for ZynlePay**, behind the same adapter production will use, and **every unconfirmed part of the API is a setting with no default** outside the stand-in.
+
+**The rule that decides every case: money is real only when our own status call to ZynlePay answers "paid, for the amount asked", or when the owner records what she saw.** A
+callback only brings the next question forward. Nothing unclear is ever a failure. A failed attempt is never quietly made paid.
+
+- **The first card path is deleted, not switched on** (payment V10 drops its three tables): `PaymentIntent`, `PaymentGateway`, `/api/v1/payments/intents/**`, the reconciler,
+  `oriah.payment.card.enabled`, and the admin reads `GET /api/v1/admin/payments` and `/summary` (404 now; waived in `scripts/openapi-allowed-breaks.txt`). `payment.succeeded` and
+  `payment.failed` are no longer produced (consumers still ignore them: old history may hold them).
+- **`payment` (V10, V11) owns the attempt.** `provider_payment` (one row per attempt; a database trigger holds the only moves between states; `holds_order` marks the one attempt
+  that holds an order), `provider_payment_check` (every question asked of ZynlePay and its answer, append-only), `provider_payment_resolution` (the owner's decisions), and
+  `payment_confirmation` gains `provider`, `provider_payment_id`, `provider_payment_key` and the method `CARD`. **States:** `STARTING` (written, ZynlePay not yet asked), `PENDING`,
+  `VERIFIED`, `FAILED` (`ORDER_REFUSED`, `NOT_SENT`, `PROVIDER_REFUSED`, `DECLINED`, `MARKED_NOT_PAID`) and `UNRESOLVED` (`NO_ANSWER`, `AMOUNT_DIFFERS`, `SAME_MONEY_ON_RECORD`,
+  `CONFIRMATION_VOIDED`, `PAID_AFTER_FAILED`), the owner's to settle. `AttemptState` (pure) is the same rule in code.
+  - **Starting** `POST /api/v1/payments/provider-payments` (`USER`; a required `Idempotency-Key`) `{orderId, channel: MOBILE_MONEY | CARD, phone?}`: 201, or 200 for the same key
+    and request. **The amount is the order's own total: a body carrying `amount`, a card number, an expiry or a CVV is 400** (`amount-is-not-typed`,
+    `card-details-not-accepted`). The wallet (`MTN` / `AIRTEL` / `ZAMTEL`) is read from the number's prefix (`Wallets`; `oriah.payment.zynlepay.wallet-prefixes`). Three short
+    transactions with the calls between them: write the attempt `STARTING` → ask **order** to take it (below) → mark it `PENDING` with the money re-checked under the order's lock →
+    ask ZynlePay → record the answer. The reference is ours (`ProviderReference`: `OZ` + 14 characters), made before ZynlePay is asked. An answer that is lost or unclear leaves the
+    attempt `PENDING`; only a refusal the settings name as final (`codes.refused`, **empty until ZynlePay says which**) or a request that provably never left is `FAILED`.
+    `GET /{id}` and `GET ?orderId=` are the shopper's own reads: `nextStep` (`APPROVE_ON_PHONE`, `OPEN_CARD_PAGE` with `redirectUrl`, `WAIT`, `TRY_AGAIN`, `DONE`),
+    `checkAgainInSeconds`, `phoneMasked`; **no reference, no provider id, no fee, no whole number**.
+  - **The checker** (`ProviderPaymentChecks`, a scheduled job: `oriah.payment.zynlepay.poll.*`; **payment's scheduling pool is 3**: the relay, the settlement watcher, this) asks
+    ZynlePay about each attempt in flight under a lease, with no transaction open: first after 15 s, every 15 s for 5 minutes (20 for a card), then every minute; after
+    `give-up-after` (PT30M) with no settled answer the attempt is `UNRESOLVED / NO_ANSWER` and is still asked hourly for 14 days. **PAID for the amount asked** writes the money
+    (below) and the attempt is `VERIFIED`; PAID for another amount is `UNRESOLVED / AMOUNT_DIFFERS`; FAILED ends it (`DECLINED`) and lets the order go, with **one last question 15
+    minutes later** (`final-recheck`); PAID for an attempt already `FAILED` is `UNRESOLVED / PAID_AFTER_FAILED`. A `MARKED_NOT_PAID` attempt is never asked again.
+  - **The callback** `POST /api/v1/payments/zynlepay/callback` is **open to anyone** (ZynlePay cannot sign in; a bearer token sent to it is ignored), takes at most 8 KiB (413),
+    always answers `{"received": true}`, and does one thing: if the reference is ours and the attempt may be asked about, it brings the next question forward (at most one every
+    `poll.callback-min-gap`, PT10S). **It never changes a status.** At the gateway it has its own route (16 KB, a rate limit) and is the only anonymous POST under payments.
+  - **The money** (`ProviderConfirmations.record`): the same `payment_confirmation` staff write, `confirmedBy: system:zynlepay`, `reference` = our reference, `gross` = the amount,
+    **`fee` worked out from the tariff** (`FeeTariff`: a percentage plus a fixed part, per method, rounded half up to the ngwee; `oriah.payment.zynlepay.fees.*`; the stand-in's
+    placeholders are 2.5% for mobile money and 3.5% for a card), `arrivedAt` = when ZynlePay says it was paid. From there Phase 7's settlement runs unchanged
+    (`payment.confirmed`, now ending with `provider: ZYNLEPAY` and `providerPaymentId`). Money already on record for the same reference is `UNRESOLVED / SAME_MONEY_ON_RECORD`.
+  - **Staff** (`/api/v1/admin/payments/provider-payments`, `SALES_AGENT`): the list (`?status=OPEN|PENDING|UNRESOLVED|FAILED|VERIFIED|ALL`, `?orderId=`, at most 200), one attempt with
+    every check, and `POST /{id}/check` ("ask ZynlePay now"). The payer's number is masked for everyone but `PAYMENT_ADMIN`. **Only the owner settles** (`POST /{id}/resolve`,
+    `PAYMENT_ADMIN`, `Idempotency-Key`): `{outcome: PAID | NOT_PAID, evidence (10 to 200 characters), arrivedAt?, gross?, overridePending?}`; ZynlePay is asked once more first, and
+    its own answer wins where it has one (409 `provider-says-paid` / `provider-says-failed`; `NOT_PAID` while it says pending needs `overridePending`).
+  - **Staff confirmations are walled off from it** (`ConfirmationService`): money for an order with an attempt in flight is 409 `provider-payment-in-progress`; a hand-keyed
+    reference that is one of ours is 409 `provider-payment-reference`; `CARD` cannot be keyed by hand (400); **a ZynlePay record is voided only by the owner** (403 for staff), and
+    the void sends its attempt back to her as `UNRESOLVED / CONFIRMATION_VOIDED`. Staff confirmations take the same order lock (`payment-order:<id>`) first, so "cash keyed while
+    ZynlePay answers paid" cannot record two payments. **Lock order in payment:** the order's advisory lock, the attempt's row, the reference locks, the confirmation, the debts.
+  - **Limits:** 6 starts an hour per shopper and 4 per number (429 `too-many-payment-attempts`, `Retry-After`; `oriah.payment.zynlepay.limits.*`). They are counted outside a lock,
+    so a burst can pass by one or two (recorded).
+- **Stand-in, sandbox or live** (`ZynlePayModeGuard`, decided once at start; a refusal names the setting, never a value). **Live is the exact word `true` in `ORIAH_ZYNLEPAY_LIVE`,
+  read from the process environment, never a setting.** Not live: `oriah.payment.zynlepay.mode` is `SIMULATOR` (the default; the stand-in must be on this machine or the payment
+  container) or `SANDBOX` (ZynlePay's test system, `ORIAH_ZYNLEPAY_SANDBOX_MERCHANT_ID` / `_API_ID` / `_API_KEY`). Live needs `ORIAH_ZYNLEPAY_MERCHANT_ID`, `_API_ID`, `_API_KEY` and
+  `ORIAH_ZYNLEPAY_WIRE_CHECKED` (the date the go-live checklist was run). **Sandbox and live refuse to start** without `wire.api-path`, `wire.status-style` (`PATH` | `METHOD`),
+  `wire.status-path`, `wire.redirect-hosts` and `wire.return-url` (when cards are offered) and `fees.*` for every method offered; a production credential on a stack that is not
+  live, or a sandbox one on a live stack, refuses the start too. `scripts/check_service_registry.py` refuses a compose line that sets any real ZynlePay variable.
+- **The stand-in** (`provider/simulator`, only when not live and in `SIMULATOR` mode; in memory; **never routed by the gateway**, which denies `/internal/**`): it answers in
+  ZynlePay's JSON under `/internal/zynlepay-sim` on payment's own port, sends real callbacks (through the gateway on the dev compose), and takes
+  `POST /internal/zynlepay-sim/transactions/{reference}/decide {outcome: PAID | DECLINED}` from a test. **The last digit of the payer's number picks the case:** 1 paid or declined
+  when told, 2 declines by itself, 3 never decides, 4 refused at once, 5 no callback, 6 three callbacks, 7 paid for K1.00 more, 8 the first answer is lost, 9 credentials refused.
+- **`order` (V18) knows which attempt holds it.** `orders.provider_payment_id` (no clock). `POST /api/v1/orders/{id}/provider-payment {providerPaymentId, supersedes?}` (the
+  shopper's own token, forwarded by payment; **the gateway denies the path to everyone**) takes a `CREATED`, held order with at least `oriah.sales.provider-payment-min-hold-left`
+  (PT2M) of hold left, **stretches the hold to `oriah.sales.provider-payment-hold` (PT45M) at inventory** and answers `{orderId, total, currency, holdExpiresAt}`; only one attempt
+  at a time (`supersedes` names a finished one). **While it is set the order cannot be cancelled, claimed, waived or paid by hand** (409 `provider-payment-in-progress`). It is
+  cleared when the order settles with that attempt's money, or by `payment.provider_payment_updated` saying `FAILED` (order handles the type; nothing else about it changes an
+  order). The order's own answers do not say an attempt is in flight (not built).
+- **`finance` (V5):** `confirmation_provider` (a new table, written once: `confirmation_fact` is append-only) remembers that a confirmation came through `ZYNLEPAY`; the statement
+  check groups a provider's payments under the provider, whatever the wallet, as the provider was known at the report's cut. It ignores `payment.provider_payment_updated`.
+- **`notification` (V13):** one staff alert, `PROVIDER_PAYMENT_UNRESOLVED` (money audience; emailed, with a reminder a day later; **no number, no reference**; "Do not ask the
+  customer to pay again"), raised from `payment.provider_payment_updated` and ended (`PAYMENT_SETTLED`) when the attempt is verified or failed. One heard of late is still listed,
+  without an email. **No customer message is sent about an attempt** (the page shows it; "payment received" follows when the order is paid).
+- **`checkout`: item H1 is closed** (`ae2953f`): a refusal by the rate limiter no longer counts as a failure of the circuit breaker (one shopper's burst cannot shut checkout for
+  everyone), the breaker needs 10 calls before it judges, and a throttled call is 503 with `Retry-After`, never a 200 with an empty bag.
+- **Gateway:** the callback's own open route; `/api/v1/orders/*/provider-payment/**` denied to everyone; `SALES_AGENT` for the staff reads and `/check`; `PAYMENT_ADMIN` for
+  `/resolve` falls under the existing rule. No realm change.
+- **One new event type, declared by every consumer before payment emitted it:** `payment.provider_payment_updated` (aggregate `provider_payment`; where an attempt stands; no
+  phone, no reference, no name). `payment.confirmed` ends with `provider` and `providerPaymentId` for provider money only (staff money keeps its bytes).
+- **Problem types added** (409 unless noted). payment: `provider-payment-in-progress`, `provider-payment-reference`, `money-already-recorded`, `channel-not-offered`,
+  `amount-too-small-for-channel` (the fee would not fit in the amount), `provider-payment-final`, `provider-payment-changed`, `check-in-progress`, `not-resolvable`,
+  `provider-says-paid`, `provider-says-failed`, `provider-says-pending`, `same-money-on-record`; 400 `amount-is-not-typed`, `card-details-not-accepted`, `phone-required`,
+  `phone-not-for-card`, `invalid-phone`, `not-a-mobile-money-number`, `gross-not-on-record`; 404 `provider-payment-not-found`, `order-not-found`; 413 `payload-too-large`; 429
+  `too-many-payment-attempts`; 503 `order-unavailable`, `payments-unavailable`, `provider-unavailable`. order: `provider-payment-in-progress`, `provider-payment-ended`,
+  `hold-too-short`.
+- **Settings** (`oriah.payment.zynlepay`): `mode`, `channels`, `base-url` (the stand-in's), `connect-timeout` PT2S, `read-timeout` PT10S, `service-id`, `callback-url`, `wire.*`,
+  `codes.*` (`initiated` 120, `paid` 100, `pending` 990, `failed` 995, `credentials` 9900-9915; `refused`, `ambiguous`, `not-found` empty), `fees.*`, `wallet-prefixes`, `card.*`,
+  `limits.*`, `poll.*` (`delay` 5000, `first-check-after` PT15S, `fast-every` PT15S, `fast-for.mobile-money` PT5M / `.card` PT20M, `slow-every` PT60S, `give-up-after` PT30M,
+  `unresolved-every` PT1H, `stop-after` P14D, `final-recheck` PT15M, `callback-min-gap` PT10S, `starting-grace` PT2M), `callback.max-bytes` 8192, `sim.*`. **The dev compose
+  shortens the poll** (give-up after one minute) and raises the limits, so the smoke test can see a payment go to the owner.
+- **Rollout order:** order, finance and notification first (each declares the new type; order V18, finance V5, notification V13), then payment (V10, V11), then the gateway.
+- **Reviewed (2026-11-17): Codex's code review (6 findings: 3 P1, 3 P2) and a read-only panel with skeptics (20 findings, 1 P1), all P1 and P2 fixed test-first in `0496105`:** a fee
+  that would not fit in the amount is refused before anything is sent; the card page is told where to send the customer back; the last question after a failure is not lost; the
+  money is checked after ownership; the owner's decision is refused when the attempt moved under her; a `MARKED_NOT_PAID` attempt is never asked again; a new attempt may supersede
+  any finished one; order lets an attempt go only for its own money; the hold job respects the minimum hold; finance's cut; notification lists a payment heard of late.
+- **Known limits and what was declined, recorded (not defects):** no customer message for an attempt, and none when the owner marks one not paid (owner question 5); the order's
+  answers carry no "payment in flight" flag; a real fee that differs from the tariff is corrected by an expense entry by hand (owner question 6; no signed fee adjustment);
+  `codes.refused` is empty until ZynlePay names its final refusals, so a refusal waits instead of failing at once; the hourly limits are counted outside a lock; the staff list
+  stops at 200 with no "more" sign; refunds of ZynlePay money are paid by hand through Phase 12's door (no refund API is known). **Honesty notes:** finance's cut fix has no test
+  that reproduces the fault; the `provider-payment-changed` guard is not exercised deterministically (its test accepts either of two refusals); one hold-job test was written
+  together with its fix. **Proven by module tests against the scripted provider or the stand-in, not live:** ZynlePay's real wire, paid for another amount, paid after failed,
+  money already keyed by hand, the owner cancelling a ZynlePay record, a start whose answer is lost, the hourly limits.
+- **Hand-offs.** Go-live: `docs/ZYNLEPAY_GO_LIVE.md` (merchant sign-up, the sandbox proof of every `wire.*` and `codes.*` setting, the written tariff). Phase 14: nothing new (a
+  ZynlePay sale is published as any paid sale). Frontend stage: the pay step and the staff screen of `docs/FRONTEND_WORK.md` Phase 13.
+
 ---
 
 ## Stack
@@ -858,11 +964,11 @@ allocator, receiving, invoices, and corrections of a received consignment's cost
 set aside for products and **since Phase 7 the reservations that hold stock for an order**, **since Phase 12 sale reversals and returned pieces**; Flyway V1-V14; **catalog since Phase 6** holds the dated price
 history and the default box, and **since Phase 7 works out each piece's promotion**, **since Phase 12 marked-down variants**; Flyway V1-V8;
 **order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver) **and since Phase 8 its dispatch** (the steps, the packer's list and slip, the recipient, the correction) **and since Phase 9 the sales staff record for a caller with no account** **and since Phase 12 the corrections of a paid sale** (paid cancellation, returns, assessment, exchange); Flyway V1-V17;
-**payment since Phase 7 records staff-confirmed money** **and since Phase 12 refunds owed and money paid back**; Flyway V1-V9; **promotion since Phase 7 keeps scoped, dated
+**payment since Phase 7 records staff-confirmed money** **and since Phase 12 refunds owed and money paid back** **and since Phase 13 collects through ZynlePay**; Flyway V1-V11; **promotion since Phase 7 keeps scoped, dated
 promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
 `checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
 (host port 5445), so 12 of the first 13 services own a database; **`finance` (Phase 10) is the 14th and owns one too, so 13 of the 14.** **`notification` since Phase 11** really sends email (SMTP), keeps what became of every message, raises staff alerts and reads
-`oriah.payment` as well as `oriah.order`; Flyway V1-V12. **`finance`** is at Flyway V1-V4 since Phase 12.
+`oriah.payment` as well as `oriah.order`; Flyway V1-V13 since Phase 13. **`finance`** is at Flyway V1-V5 since Phase 13. **`order`** is at V1-V18 since Phase 13 (the Flyway range in its own sentence above ends at Phase 12's V17).
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -1034,7 +1140,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20k**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20l**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
 cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
@@ -1069,7 +1175,13 @@ gateway; the owner without `USER` reads both staff lists. (Step 1 opens alice's 
 `use-the-paid-cancellation`; everything paid is owed; the ring is back on sale); one of two rings is returned after hand-over (only the piece is owed; it is in stock but
 held); the owner pays both refunds (cash with no charge; mobile money where the customer bears K2.50); the returned ring is marked down, priced K80.00 and sold once; the
 second ring is written off; K85.00 held for an order already paid is paid back; an exchange is linked; the stock system's doors are 403 even to the owner; finance books
-the cancellation and no event is dead-lettered.
+the cancellation and no event is dead-lettered. **Step 20l (Phase 13) pays through the stand-in for ZynlePay:** a start
+carrying an amount or a card number is 400; K100.00 by MTN is asked for under payment's own reference and, while it waits, the order cannot be cancelled, claimed or
+paid by hand; a forged "paid" callback sent with no token changes nothing; when the stand-in is told the customer approved, payment's own question to it records K100.00
+in, K2.50 fee, K97.50 net by `system:zynlepay` and the order is PAID; a decline is retried by Airtel; a payment the stand-in never answers goes to the owner after the
+dev stack's one minute, staff are alerted (no number, no reference), sara may check but not settle (403) and the owner marks it paid; a card is paid on the stand-in's
+page (fee K3.50); hand-keying under a ZynlePay reference, a `CARD` keyed by hand, the stand-in and the order's own door through the gateway, a 20 KB callback and the
+retired intent list are all refused; no event is dead-lettered and payment's log holds no whole phone number.
 
 ### Keycloak
 
@@ -1293,9 +1405,9 @@ Follow-ups found during Phase 1 — **fixed 2026-11-10**:
   payment (404 / 409), with the caller's own token; order down is 503 with
   `Retry-After`. A repeated create for the same order and amount gets the same
   intent back (200, not 201), so checkout can repeat a create whose reply was
-  lost. **Since Phase 7 the card path that makes intents is switched off**
-  (`oriah.payment.card.enabled`, default false) and nothing calls it: these checks come
-  back with it, when ZynlePay (Phase 13) gives it a caller.
+  lost. **The card path that made intents was switched off in Phase 7 and deleted in
+  Phase 13.** Its successor, a payment through ZynlePay, is started only for the caller's own
+  order because payment asks order with the caller's own token before anything is sent.
 - **checkout repeats only what cannot happen twice** (`NetworkFailures`, the
   retry rule in its `application.yaml`). A 502/503/504 that carries
   `Retry-After` is never repeated; `order.place` (which saves an order and holds its pieces; before
@@ -1316,8 +1428,8 @@ Follow-ups found during Phase 1 — **fixed 2026-11-10**:
   30 s while checkout carries on and may still place the order. The proxy timeout has to be set
   explicitly above that: a must-do in `docs/FRONTEND_WORK.md`.
 - **payment runs three scheduled jobs** (the outbox relay, the settlement watcher that announces
-  confirmed money again, and, only while the card path is on, the reconciler that settles intents
-  stuck `CHARGING`), so its scheduling pool is 3; **order** runs four since Phase 12 (the relay, the hold job, the settlement job and
+  confirmed money again, and since Phase 13 the checker that asks ZynlePay what became of each payment in flight; the first card
+  path's reconciler went with it), so its scheduling pool is 3; **order** runs four since Phase 12 (the relay, the hold job, the settlement job and
   the correction job: pool 4) and **inventory** two (the relay and the reservation sweeper: pool 2).
   **Notification** runs two since Phase 11 (the dispatcher that sends, the below-cost check: pool 2).
   Add a thread for any further `@Scheduled` job.
@@ -1406,7 +1518,7 @@ to match.
 - **`docs/PROGRESS.md`** — read **from the top**; it is newest-first. **No
   "Next exact action" line in it is live** — both remaining ones are completed
   history and are marked where they sit; one would destroy the finished
-  frontend if executed. Its topmost entry is dated 2026-11-16 and covers Phase 11; the "Built in Phase 7 (Sell)" to
+  frontend if executed. Its topmost entry is dated 2026-11-17 and covers Phase 13; the "Built in Phase 7 (Sell)" to
   "Built in Phase 11 (Notifications)" blocks above are the contract-level detail.
 - **`docs/ARCHITECTURE.md`** — decisions and rationale. Accurate on *why*; its
   present-tense claims are frozen at their own dates and the stale ones are now

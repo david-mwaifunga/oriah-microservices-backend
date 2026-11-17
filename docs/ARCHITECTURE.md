@@ -202,16 +202,12 @@ payment does not, and a wrong amount must still be recorded, never turned away.
   `ALREADY_PAID`, `ORDER_UNKNOWN`, `PIECE_SOLD`). It is owed back to the
   customer, never revenue. `GET /api/v1/admin/payments/held-money` lists it
   (`PAYMENT_ADMIN`, which only `OWNER` holds); repaying it is Phase 12.
-- **The card path is switched off.** The endpoints that create, read and confirm
-  a payment intent (`/api/v1/payments/intents/**`), the fake card gateway and the
-  reconciler exist only while `oriah.payment.card.enabled` is true; it defaults
-  to false, the stack never sets it, and nothing calls them (they answer 404, and
-  are out of the published API). Two older read-only admin reads of the intent
-  history stay, `GET /api/v1/admin/payments` and `GET /api/v1/admin/payments/summary`
-  (`PAYMENT_ADMIN`): they are not behind the switch, and with the card path off
-  they show only intents that already existed (none on a new database).
-  ZynlePay in Phase 13 gives the path a caller again: a card charge will then
-  become a confirmation.
+- **The first card path is gone (Phase 13).** The payment-intent endpoints
+  (`/api/v1/payments/intents/**`), the fake card gateway, the reconciler, the
+  switch `oriah.payment.card.enabled` and the two admin reads of the intent
+  history (`GET /api/v1/admin/payments` and `/summary`) were deleted, with their
+  three tables (payment V10). It was shaped for a card charged in one call, which
+  is not how ZynlePay works; see "Paying through ZynlePay" below.
 
 **Why records and answers, not calls.** Because payment never calls order for a
 staff confirmation, there is no payment-to-order read to secure and no new
@@ -1635,6 +1631,62 @@ explains the visibility choice so it's not mysterious for the next reader.
 - Future services follow the same convention: `services/cart/`, `services/order/`, etc.
 
 ---
+
+## Paying through ZynlePay: ask, never be told (Phase 13)
+
+**The problem.** Mobile money is not a card charge. Our server asks ZynlePay to
+send a prompt to the customer's phone; the customer approves it a minute later,
+or never; ZynlePay then sends a message (a *callback*) to say it is done. That
+callback is **not signed**, as far as anyone outside ZynlePay knows, so anybody
+who can guess its shape could send "paid". And a request to ZynlePay can time
+out after ZynlePay has already acted on it.
+
+**The rule that follows.** Money is real only when **our own question to
+ZynlePay** ("what became of payment X?") is answered "paid, for the amount we
+asked", or when **the owner records** what she saw on ZynlePay's own page. A
+callback does one thing: it brings our next question forward. Everything else is
+built so that no other path can make money:
+
+- **Nothing unclear is ever a failure.** A timeout, an unreadable answer, a code
+  nobody listed: the attempt stays open and is asked about again. Calling it
+  failed would invite the customer to pay twice.
+- **A failed attempt is never quietly turned into a paid one.** If ZynlePay later
+  says a failed attempt was paid, it goes to the owner
+  (`UNRESOLVED / PAID_AFTER_FAILED`); by then the customer may have paid another
+  way.
+- **One attempt holds an order at a time**, and the order knows which
+  (`orders.provider_payment_id`): while it does, the order cannot be cancelled,
+  claimed as paid another way, or paid by hand. The order's hold on its pieces
+  is stretched to 45 minutes so the pieces are still there when the money lands.
+- **A verified attempt writes the same money record staff write** (Phase 7's
+  payment confirmation), confirmed by `system:zynlepay`, with the fee worked out
+  from the tariff. From there the sale settles exactly as a staff-confirmed one:
+  no second path through order, inventory, finance or notification.
+- **The reference is ours** (`OZ` and 14 characters), made before ZynlePay is
+  asked, so a lost answer can always be asked about. Staff cannot key money by
+  hand under such a reference.
+
+**Why a stand-in inside payment, not a mock.** Oriah has no ZynlePay account
+yet, so nothing could be tested against ZynlePay. The stand-in answers in
+ZynlePay's JSON over real HTTP, behind the **same adapter** production uses, so
+the adapter, the timeouts and the callback door are all exercised. It exists
+only on a stack that is not live and is in `SIMULATOR` mode.
+
+**Why "live" is an environment word.** The same rule as Phase 11's email: the
+config repository is shared by every stack, so no settings file may be able to
+point a development stack at real money. `ZynlePayModeGuard` decides once, at
+start, and refuses any mixture (`docs/ZYNLEPAY_GO_LIVE.md`).
+
+**Why the unknowns are settings.** What we know of ZynlePay's API is second-hand.
+The path, the style of the status call, the meaning of each code, the hosts of
+the card page and the tariff are settings with **no defaults** outside the
+stand-in: sandbox and live refuse to start until someone has proved each against
+ZynlePay itself.
+
+**Lock order in payment** (one order, always): the order's advisory lock
+(`payment-order:<id>`), the attempt's row, the reference locks, the
+confirmation, the debts. Staff confirmations take the same first lock, which is
+how "staff key cash while ZynlePay answers paid" cannot record two payments.
 
 ## Returns and refunds: a correction, never an edit (Phase 12)
 

@@ -2560,6 +2560,32 @@ Settled in round 4 and by review (`CLIENT_DECISIONS.md` §1.3):
 
 ### Phase 13 — Payment integration: ZynlePay, for mobile money and cards
 
+> **Status: built, 2026-11-17, against a stand-in for ZynlePay** (Oriah has no merchant account yet; what is known of ZynlePay's API is second-hand).
+> Committed in `oriah-api` on the branch `phase13` (not pushed): checkout's item H1 `ae2953f`; the event contracts and the consumers' declarations (`b1982e3`,
+> `faa2cc4`); the pure rules (the fee tariff, ZynlePay's codes, our reference, the wallets, the attempt's states, the check schedule: `f5368b6`, `45ab336`, `ee1ce68`);
+> the port and the ZynlePay adapter `72b6f5a`; the stand-in (`21f7e03`, `e138b34`) and the guard that decides stand-in, sandbox or live `5db6590`; the first card path
+> retired (payment V10, `29fdd43`); the attempt's tables (payment V11, `5a5530b`); the machine's money record `ff367d0`; order V18 `13b6d72`; the start `3c7f134`; the
+> checker `2810b98`; the callback `3ca699c`; staff and the owner (`224bb5b`, `271bcfd`); the gateway `22a7ec9`; finance V5 `a1dda85`; notification V13 `0c15bc3`; the
+> stack `f4bd02d`; the review fixes `0496105`; then the smoke step 20l, the documents and this block. The design is `../.codex-tmp/plan-p13-FINAL.md` (its ROUND 2
+> section wins; Codex reviewed the design twice, NOT SOUND both times, and a four-lens panel read it). **Proved live on the full container stack on 2026-11-17, in two parts, on images rebuilt from `0496105` (checkout, finance, notification, payment, order and the gateway): the full smoke test passed every step through 20k and stopped at the new step 20l only because the earlier steps had left two rings in stock where the step sells four (the step now receives its own stock first); step 20l was then run alone against the same running stack and passed on its first run. A second full run, to see the whole script pass in one go, was cut short at step 6i when Docker Desktop stalled (its fourth stall in two days: `docker ps` gave no answer); that run is still owed. The OpenAPI gate passes with eight new waivers (the retired list of card intents and its schemas); six error goldens were added (the 80 older ones unchanged, 86 in all). The content audit found one read that documented no error (`GET /api/v1/payments/provider-payments`); it is fixed in the source (one annotation) but the fixed image could not be rebuilt and audited again, nor Postman regenerated, because of the same stall: both are owed. The code committed after the images were built differs from them only by that annotation and three comments.**
+>
+> **What was built, in one paragraph.** A shopper starts a payment for their own held order by mobile money (a prompt on their phone) or by card (ZynlePay's own
+> page). The amount is always the order's total. **Money is real only when payment's own status call to ZynlePay answers "paid, for the amount asked", or when the
+> owner records what she saw**; ZynlePay's callback is unsigned, so it only brings the next question forward. A verified payment writes the same payment confirmation
+> staff write (confirmed by `system:zynlepay`, with the fee from the tariff), and the sale settles as in Phase 7. A payment ZynlePay does not settle within 30 minutes
+> goes to the owner and staff are alerted. Nothing unclear is ever called failed. The contract-level detail is the "Built in Phase 13 (ZynlePay)" block of
+> `../CLAUDE.md`; what the frontend must do, and the owner's 7 questions, are in `docs/FRONTEND_WORK.md`.
+>
+> **What changed against the plan text below.** (1) "Callbacks are verified" became "callbacks are not trusted at all": no signature is known, so the proof is our
+> own status call. (2) `PaymentGateway.charge()` and the whole first card path were **deleted**, not adapted. (3) Fees are **worked out from a tariff in the
+> settings**, because ZynlePay's answers carry none; the month's statement check shows any difference. (4) Refunds stay by hand (Phase 12's door): no refund API is
+> known. (5) Item H1 is closed with option A plus a 503 for a throttled call.
+>
+> **Not done, and why.** Nothing was tested against ZynlePay itself. **`docs/ZYNLEPAY_GO_LIVE.md`** lists what must happen first: merchant sign-up, the sandbox proof
+> of the API's shape (every part is a setting with no default; sandbox and live refuse to start without them), the tariff in writing, and the ten questions for
+> ZynlePay. Also not built, recorded: a customer message about an attempt; a "payment in flight" flag on the order's answers; a signed fee adjustment per payment; the
+> hourly limits under a lock; a "more" sign on the staff list.
+
 *(This number used to hold stock locations. Round 2 deleted them: Oriah keeps
 all stock in one place, `inventory`'s `variant_id` stays the primary key, and
 the reserve/release/confirm/restock API is not re-keyed. Not built.)*

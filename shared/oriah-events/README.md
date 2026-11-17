@@ -340,6 +340,19 @@ still owed (it ignores `payment.refund_due_recorded`). A paid order that is
 cancelled is announced as `order.sale_cancelled`, never as `order.cancelled`:
 that type would tell inventory to release a hold that was sold.
 
+**Phase 13 added one type and two trailing fields.** On `oriah.payment`, aggregate
+`provider_payment`: `payment.provider_payment_updated` (where an attempt to collect
+through ZynlePay stands: `providerPaymentId`, `orderId`, `provider`, `channel`,
+`method`, `status`, `failureCode` or `unresolvedReason`, `amount`, `currency`,
+`recordedAt`; no phone, no reference, no name). Order handles it (a FAILED attempt
+lets the order go), notification handles it (staff are told of one ZynlePay did
+not settle) and finance ignores it (it is not money). `payment.confirmed` ends
+with `provider` and `providerPaymentId` when the money came through a provider
+(absent for money staff keyed, so those events keep their bytes); finance reads
+`provider`, order reads `providerPaymentId`. The first card path's
+`payment.succeeded` and `payment.failed` are no longer produced; consumers keep
+ignoring them because old history may hold them.
+
 **The dead-letter record** (the contract for anyone reading a dead-letter
 topic): the original key, body and headers, exactly as they arrived, plus
 Spring Kafka's `kafka_dlt-*` headers:

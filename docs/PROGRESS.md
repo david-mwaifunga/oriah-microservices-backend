@@ -20,7 +20,46 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-11-17 (MVP_PLAN Phase 12 complete: returns, refunds and exchanges)
+## CURRENT STATE — 2026-11-17 (MVP_PLAN Phase 13 complete: paying through ZynlePay, built against a stand-in)
+
+Phase 13 of `MVP_PLAN.md` is built, tested, reviewed (Codex twice on the design and once on the code, a four-lens design panel and a read-only code panel with
+skeptics) and committed on the branch **`phase13`** (**not pushed**; `main` is still at Phase 12's `f2371cc`). **Proved live on the full container stack on 2026-11-17, in two parts, on images rebuilt from `0496105` (checkout, finance, notification, payment, order and the gateway): the full smoke test passed every step through 20k and stopped at the new step 20l only because the earlier steps had left two rings in stock where the step sells four (the step now receives its own stock first); step 20l was then run alone against the same running stack and passed on its first run. A second full run, to see the whole script pass in one go, was cut short at step 6i when Docker Desktop stalled (its fourth stall in two days: `docker ps` gave no answer); that run is still owed. The OpenAPI gate passes with eight new waivers (the retired list of card intents and its schemas); six error goldens were added (the 80 older ones unchanged, 86 in all). The content audit found one read that documented no error (`GET /api/v1/payments/provider-payments`); it is fixed in the source (one annotation) but the fixed image could not be rebuilt and audited again, nor Postman regenerated, because of the same stall: both are owed. The code committed after the images were built differs from them only by that annotation and three comments.**
+
+**What exists now.** A shopper can pay a held order by mobile money (MTN, Airtel, Zamtel: a prompt on their phone) or by card (the provider's own page). The amount
+is always the order's total. Payment asks ZynlePay what became of each payment and **only that answer, or the owner's recorded decision, makes money**; a callback
+only brings the question forward. The money is the same record staff write, with the fee worked out from the tariff, and the sale settles as before. A payment
+ZynlePay does not settle goes to the owner; staff are alerted and may check, only the owner decides.
+
+**What does not exist yet.** A ZynlePay account. Everything was built and proved against payment's own stand-in for ZynlePay, behind the same adapter production
+will use. `docs/ZYNLEPAY_GO_LIVE.md` is the list of what remains before real money (sign-up, the sandbox proof of each setting, the tariff in writing).
+
+| Slice | Commit |
+|---|---|
+| Checkout's item H1: a throttled shopper no longer shuts checkout for everyone | `ae2953f` |
+| Event contracts; order, finance and notification declare `payment.provider_payment_updated` | `b1982e3`, `faa2cc4` |
+| The pure rules: fee tariff, codes, reference, wallets, attempt states, check schedule | `f5368b6`, `45ab336`, `ee1ce68` |
+| The provider port, the ZynlePay adapter, the stand-in, the guard (stand-in, sandbox or live) | `72b6f5a`, `21f7e03`, `5db6590`, `e138b34` |
+| The first card path retired (payment V10); the attempt's tables (payment V11) | `29fdd43`, `5a5530b` |
+| The machine's money record; staff confirmations walled off from it | `ff367d0` |
+| order V18: the order knows which attempt holds it | `13b6d72` |
+| The start, the checker, the callback, staff and the owner | `3c7f134`, `2810b98`, `3ca699c`, `224bb5b`, `271bcfd` |
+| Gateway; finance V5; notification V13; the dev stack | `22a7ec9`, `a1dda85`, `0c15bc3`, `f4bd02d` |
+| What Codex's code review and the panel found | `0496105` |
+| Smoke step 20l, OpenAPI waivers, error goldens, Postman, the plan, the frontend handover, the go-live checklist, CLAUDE.md, ARCHITECTURE, this entry | the closing commits |
+
+**Module tests at the end:** checkout 305, payment 295, order 798, gateway 315, finance 236, notification 449 (each `Failures: 0, Errors: 0`).
+
+**Reviews.** Codex on the design: NOT SOUND twice; folded in or declined with reasons in `plan-p13-FINAL.md`. Codex on the code: 6 findings (3 P1, 3 P2), all fixed
+test-first. The code panel: 20 findings, one P1, fixed; several P3 declined and recorded in CLAUDE.md's block. **Honesty notes:** finance's cut fix has no test that
+reproduces the fault; the guard against an attempt that moved under the owner is not exercised deterministically; one hold-job test was written with its fix. A second
+Codex pass on the fixes was not run.
+
+**Not proven live** (module tests prove them against the scripted provider or the stand-in): ZynlePay's real wire, paid for another amount, paid after failed, money
+already keyed by hand, the owner cancelling a ZynlePay record, a start whose answer is lost, the hourly limits.
+
+---
+
+## 2026-11-17 (earlier the same day; MVP_PLAN Phase 12 complete: returns, refunds and exchanges)
 
 Phase 12 of `MVP_PLAN.md` is built, tested, reviewed (Codex on the design and twice on the code, a six-lens read-only panel and a skeptic check of the fixes) and committed
 (**not pushed**). **Proved live on the full container stack on 2026-11-17: the smoke test (new step 20k) passed, on its first run, on images rebuilt from the final committed code
