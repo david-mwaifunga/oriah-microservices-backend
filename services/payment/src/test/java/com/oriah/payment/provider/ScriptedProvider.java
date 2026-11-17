@@ -19,7 +19,7 @@ import org.springframework.context.annotation.Primary;
 public class ScriptedProvider implements PaymentProvider {
 
     /** One "collect this" as payment sent it. */
-    public record Asked(String kind, String referenceNo, String msisdnDigits, BigDecimal amount, String currency, CardPayer payer) {
+    public record Asked(String kind, String referenceNo, String msisdnDigits, BigDecimal amount, String currency, CardPayer payer, String returnUrl) {
     }
 
     private final List<Asked> asked = new CopyOnWriteArrayList<>();
@@ -52,13 +52,13 @@ public class ScriptedProvider implements PaymentProvider {
 
     @Override
     public Push startMobileMoney(String referenceNo, String msisdnDigits, BigDecimal amount, String currency) {
-        asked.add(new Asked("MOBILE_MONEY", referenceNo, msisdnDigits, amount, currency, null));
+        asked.add(new Asked("MOBILE_MONEY", referenceNo, msisdnDigits, amount, currency, null, null));
         return answer(new Accepted("120", "TX" + referenceNo.substring(2, 10), "OP" + referenceNo.substring(2, 10), "MTN"));
     }
 
     @Override
-    public Push startCard(String referenceNo, BigDecimal amount, String currency, String description, CardPayer payer) {
-        asked.add(new Asked("CARD", referenceNo, null, amount, currency, payer));
+    public Push startCard(String referenceNo, BigDecimal amount, String currency, String description, CardPayer payer, String returnUrl) {
+        asked.add(new Asked("CARD", referenceNo, null, amount, currency, payer, returnUrl));
         return answer(new Redirect("120", java.net.URI.create("http://localhost:8085/internal/zynlepay-sim/card/" + referenceNo), "TX" + referenceNo.substring(2, 10)));
     }
 

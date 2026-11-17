@@ -245,6 +245,18 @@ class ProviderChecksTest {
         assertThat(updates(id)).hasSize(2).last().satisfies(payload -> assertThat(payload).contains("\"unresolvedReason\":\"PAID_AFTER_FAILED\""));
         assertThat(checks.poll(after(Duration.ofDays(1)))).isZero();
 
+        // ZynlePay silent when the one more question is asked: the question is not lost, it is asked again fifteen minutes later.
+        UUID silent = pending("MTN");
+        zynlePay.statusOf(reference(silent), new Failed("995"));
+        checks.poll(after(Duration.ofMinutes(1)));
+        zynlePay.statusOf(reference(silent), new NoAnswer("no answer: HttpTimeoutException"));
+        assertThat(checks.poll(after(Duration.ofMinutes(16)))).isEqualTo(1);
+        assertThat(row(silent).get("status")).isEqualTo("FAILED");
+        assertThat(at(row(silent).get("final_recheck_at"))).isEqualTo(after(Duration.ofMinutes(31)));
+        zynlePay.statusOf(reference(silent), paid("180.00", null));
+        checks.poll(after(Duration.ofMinutes(31)));
+        assertThat(row(silent).get("unresolved_reason")).isEqualTo("PAID_AFTER_FAILED");
+
         // A failed attempt whose one more question also says failed is simply done.
         UUID other = pending("MTN");
         zynlePay.statusOf(reference(other), new Failed("995"));

@@ -193,19 +193,25 @@ public class ProviderPaymentAdmin {
         String fingerprint = fingerprint(id, outcome, evidence, decision.gross(), decision.arrivedAt(), insists);
 
         if (repeated(id, key, fingerprint)) {
-            return view(row(id), true, clock.instant(), checksOf(id), null, false);
+            // The same answer in every member: whether ZynlePay itself settled it is read from the record the decision ended in.
+            boolean byZynlePay = !jdbc.queryForList("""
+                    SELECT 1 FROM provider_payment_resolution r JOIN payment_confirmation c ON c.id = r.confirmation_id
+                     WHERE r.idempotency_key = ? AND c.confirmed_by = ?""", key, ProviderPaymentService.ACTOR).isEmpty();
+            return view(row(id), true, clock.instant(), checksOf(id), null, byZynlePay);
         }
         AttemptState before = state(row(id));
         requireResolvable(before, paid);
 
         // ZynlePay is asked once more, unless it would only repeat the answer that is in doubt.
         String checkOutcome = null;
+        Long lastCheck = null;
         if (before.mayBeAsked()) {
             if (checks.checkOne(id, clock.instant(), "RESOLVE", owner.actor()) == ProviderPaymentChecks.Result.BUSY) {
                 throw new PaymentProblem(HttpStatus.CONFLICT, "check-in-progress", "ZynlePay is being asked about this payment right now: try again in a moment");
             }
-            checkOutcome = jdbc.query("SELECT outcome FROM provider_payment_check WHERE payment_id = ? ORDER BY id DESC LIMIT 1", (rs, n) -> rs.getString(1), id)
-                    .stream().findFirst().orElse(null);
+            lastCheck = jdbc.queryForObject("SELECT max(id) FROM provider_payment_check WHERE payment_id = ?", Long.class, id);
+            checkOutcome = lastCheck == null ? null
+                    : jdbc.queryForObject("SELECT outcome FROM provider_payment_check WHERE id = ?", String.class, lastCheck);
             AttemptState after = state(row(id));
             if (after.status() == Status.VERIFIED) {
                 if (!paid) {
@@ -242,16 +248,23 @@ public class ProviderPaymentAdmin {
         }
 
         final String asked = checkOutcome;
-        tx.executeWithoutResult(s -> decide(id, key, fingerprint, paid, evidence, decision, insists, asked, owner));
+        final Long judgedOn = lastCheck;
+        tx.executeWithoutResult(s -> decide(id, key, fingerprint, paid, evidence, decision, insists, asked, judgedOn, owner));
         return view(row(id), true, clock.instant(), checksOf(id), null, false);
     }
 
     /** The decision, applied under the order's lock and the attempt's row lock, with what it is written down as. */
     private void decide(UUID id, String key, String fingerprint, boolean paid, String evidence, Decision decision, boolean insists, String checkOutcome,
-                        Staff owner) {
+                        Long judgedOn, Staff owner) {
         Map<String, Object> first = row(id);
         ProviderConfirmations.lockOrder(jdbc, (UUID) first.get("order_id"));
         Map<String, Object> row = jdbc.queryForMap("SELECT * FROM provider_payment WHERE id = ? FOR UPDATE", id);
+        // ZynlePay may have been asked again (the checker, a member of staff) since the answer this decision was judged on: a newer answer counts
+        // for more than the one the owner saw, so the owner looks again.
+        if (judgedOn != null && !judgedOn.equals(jdbc.queryForObject("SELECT max(id) FROM provider_payment_check WHERE payment_id = ?", Long.class, id))) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "provider-payment-changed",
+                    "ZynlePay was asked about this payment again while this decision was being made: look at it again before deciding");
+        }
         AttemptState state = state(row);
         requireResolvable(state, paid);
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
@@ -309,6 +322,12 @@ public class ProviderPaymentAdmin {
         AttemptState verified = resolvable.verified(true);
         FeeTariff tariff = new FeeTariff((BigDecimal) row.get("fee_percent"), (BigDecimal) row.get("fee_fixed"));
         BigDecimal fee = tariff.fee(gross);
+        if (fee.compareTo(gross) > 0) {
+            // A fee is never more than the amount: such money cannot be a payment record. It is settled with ZynlePay, outside this record.
+            throw new PaymentProblem(HttpStatus.CONFLICT, "amount-too-small-for-channel", "the fee on " + gross.toPlainString() + " would be "
+                    + fee.toPlainString() + ", more than the amount itself: it cannot be recorded as a payment. Settle it with ZynlePay, then mark "
+                    + "this payment not paid");
+        }
         int ordinal = 1 + jdbc.queryForObject("SELECT count(*) FROM payment_confirmation WHERE provider_payment_id = ?", Integer.class, id);
         ProviderConfirmations.Result result = confirmations.record(new ProviderMoney(id, orderId, (String) row.get("method"), (String) row.get("reference_no"),
                 gross, fee, (String) row.get("currency"), arrivedAt, backdateReason, ordinal, (String) row.get("operator_reference_key"),
@@ -334,7 +353,7 @@ public class ProviderPaymentAdmin {
 
     /** UNRESOLVED is decided either way; a FAILED payment that reached ZynlePay may be marked paid; nothing else is the owner's to decide. */
     private static void requireResolvable(AttemptState state, boolean paid) {
-        boolean resolvable = state.status() == Status.UNRESOLVED || (paid && state.status() == Status.FAILED && state.mayBeAsked());
+        boolean resolvable = state.status() == Status.UNRESOLVED || (paid && state.failedAfterReachingZynlePay());
         if (!resolvable) {
             throw new PaymentProblem(HttpStatus.CONFLICT, "not-resolvable", "this payment is " + state.status()
                     + (state.failureCode() == null ? "" : " (" + state.failureCode() + ")") + ": "

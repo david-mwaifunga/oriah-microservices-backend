@@ -116,7 +116,10 @@ public class ProviderPaymentHolds {
     public java.util.Optional<Order> extended(UUID orderId, UUID attemptId, Instant expiresAt) {
         Order order = locks.lock(orderId).orElseThrow(() -> new IllegalStateException("order " + orderId + " vanished"));
         if (!attemptId.equals(order.providerPaymentId())) {
-            return java.util.Optional.of(order);       // the attempt ended meanwhile (it FAILED, or money came): nothing of it is left to finish
+            // The attempt ended while inventory was answering (payment gave it up, or its money came): it is not "taken", and payment must not go
+            // on to ask ZynlePay for money on this answer.
+            throw new SalesProblem(HttpStatus.CONFLICT, "provider-payment-ended",
+                    "this payment was ended while it was being started: start a new one from the order");
         }
         if (expiresAt.isBefore(clock.instant().plus(minHoldLeft))) {
             order.endProviderPayment(attemptId);
@@ -134,6 +137,13 @@ public class ProviderPaymentHolds {
     public void extendedLater(UUID orderId, Instant expiresAt) {
         Order order = locks.lock(orderId).orElse(null);
         if (order == null || !order.holdExtensionPending() || order.status() != OrderStatus.CREATED) {
+            return;
+        }
+        if (order.providerPaymentId() != null && expiresAt.isBefore(clock.instant().plus(minHoldLeft))) {
+            // The same rule as when the attempt is taken: pieces held for too short a time are not paid for. The order lets the attempt go, so
+            // the repeat of the start is refused and nothing is asked of ZynlePay.
+            log.info("Order id={} lets go of provider payment {}: its hold could be stretched only to {}", order.id(), order.providerPaymentId(), expiresAt);
+            order.endProviderPayment(order.providerPaymentId());
             return;
         }
         order.holdExtended(expiresAt);

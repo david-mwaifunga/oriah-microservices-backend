@@ -121,8 +121,8 @@ public class ProviderPaymentChecks {
                     setup.settings().poll().batch());
             for (UUID id : ids) {
                 // Its own for the length of the lease: a pass that dies leaves it to the next one. The one more question a failed attempt is owed
-                // is used up by being asked.
-                jdbc.update("UPDATE provider_payment SET check_lease_until = ?, final_recheck_at = NULL WHERE id = ?",
+                // is NOT used up here: only an answer uses it up (see noFinalAnswer and failed).
+                jdbc.update("UPDATE provider_payment SET check_lease_until = ? WHERE id = ?",
                         Timestamp.from(at.plus(setup.settings().poll().lease())), id);
             }
             return ids;
@@ -135,7 +135,8 @@ public class ProviderPaymentChecks {
                 }
             } catch (RuntimeException e) {
                 // One attempt's trouble never stops the pass; its lease runs out and it is asked about again.
-                log.warn("Provider payment {} could not be checked this pass: {}", id, e.toString());
+                // The kind of failure only: a database message can carry a row's values, and a row holds a payer's number.
+                log.warn("Provider payment {} could not be checked this pass ({})", id, e.getClass().getSimpleName());
             }
         }
         return asked;
@@ -193,7 +194,7 @@ public class ProviderPaymentChecks {
     private Result ask(UUID id, Instant now, String source, String askedBy) {
         Row before = find(id).orElseThrow();
         if (!before.state().mayBeAsked()) {
-            jdbc.update("UPDATE provider_payment SET check_lease_until = NULL, next_check_at = NULL WHERE id = ?", id);
+            jdbc.update("UPDATE provider_payment SET check_lease_until = NULL, next_check_at = NULL, final_recheck_at = NULL WHERE id = ?", id);
             return Result.NOT_ASKABLE;
         }
         PaymentProvider.Status answer = provider.status(before.referenceNo());
@@ -318,7 +319,7 @@ public class ProviderPaymentChecks {
     private void failed(Row row, Instant now) {
         if (row.state().status() == Status.FAILED) {
             // The one more question (or a callback's) said the same: it is simply done, and not asked about again by itself.
-            jdbc.update("UPDATE provider_payment SET next_check_at = NULL WHERE id = ?", row.id());
+            jdbc.update("UPDATE provider_payment SET next_check_at = NULL, final_recheck_at = NULL WHERE id = ?", row.id());
             return;
         }
         AttemptState declined = row.state().failed(FailureCode.DECLINED);
@@ -349,8 +350,14 @@ public class ProviderPaymentChecks {
             }
             case UNRESOLVED -> jdbc.update("UPDATE provider_payment SET next_check_at = ? WHERE id = ?",
                     stamp(setup.schedule().afterUnresolved(row.unresolvedAt() == null ? now : row.unresolvedAt(), now)), row.id());
-            // A failed attempt's one more question (or a callback's) brought nothing: it is done, and not asked about again by itself.
-            default -> jdbc.update("UPDATE provider_payment SET next_check_at = NULL WHERE id = ?", row.id());
+            // A failed attempt was asked about and ZynlePay gave no final answer. A question a callback brought is simply over. The ONE MORE
+            // question a failed attempt is owed is not lost to a silent ZynlePay: it is asked again later, while the attempt is recent enough.
+            default -> jdbc.update("""
+                    UPDATE provider_payment
+                       SET next_check_at = NULL,
+                           final_recheck_at = CASE WHEN final_recheck_at IS NOT NULL AND failed_at > ? THEN ?::timestamptz ELSE NULL END
+                     WHERE id = ?""", Timestamp.from(now.minus(setup.settings().poll().lateCheckWindow())),
+                    Timestamp.from(setup.schedule().finalRecheck(now)), row.id());
         }
     }
 

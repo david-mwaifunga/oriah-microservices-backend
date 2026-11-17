@@ -251,6 +251,16 @@ class ProviderConfirmationsTest {
 
         jdbc.update("UPDATE provider_payment SET status = 'FAILED', failure_code = 'DECLINED', holds_order = false WHERE id = ?", attempt);
         assertThatCode(() -> staffConfirm(SARA, order, "CASH", null, "k-" + UUID.randomUUID())).doesNotThrowAnyException();
+
+        // An attempt somebody merely asked to start (the order has not yet said it is theirs to pay) does not stand in the way of real money:
+        // anybody who knows an order's id could otherwise shut staff out of it. If it goes on, it finds this money and stops.
+        UUID other = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO provider_payment (id, provider, reference_no, order_id, keycloak_id, channel, method, payer_msisdn, status, idempotency_key,
+                                              request_fingerprint, started_at)
+                VALUES (?, 'ZYNLEPAY', ?, ?, 'kc-mallory', 'MOBILE_MONEY', 'MTN', '+260961234567', 'STARTING', ?, 'fp', now())""", UUID.randomUUID(),
+                ProviderReference.mint(), other, "key-" + UUID.randomUUID());
+        assertThatCode(() -> staffConfirm(SARA, other, "CASH", null, "k-" + UUID.randomUUID())).doesNotThrowAnyException();
     }
 
     @Test

@@ -292,6 +292,12 @@ class ProviderPaymentAdminTest {
         MvcResult byCheck = resolve(olive(), paid, "res-" + UUID.randomUUID(), decision("PAID", null));
         assertThat(byCheck.getResponse().getStatus()).isEqualTo(200);
         assertThat(body(byCheck).get("verifiedByCheck").asBoolean()).isTrue();
+        String sameKey = "res-" + UUID.randomUUID();
+        UUID again = unanswered();
+        zynlePay.statusOf(reference(again), new Paid("100", new BigDecimal("180.00"), "ZMW", null, null, null, "MTN"));
+        assertThat(body(resolve(olive(), again, sameKey, decision("PAID", null))).get("verifiedByCheck").asBoolean()).isTrue();
+        assertThat(body(resolve(olive(), again, sameKey, decision("PAID", null))).get("verifiedByCheck").asBoolean())
+                .as("the same decision sent again is the same answer").isTrue();
         assertThat(confirmations(paid)).singleElement().satisfies(money -> assertThat(money.get("confirmed_by")).isEqualTo("system:zynlepay"));
 
         UUID failed = unanswered();
@@ -391,6 +397,11 @@ class ProviderPaymentAdminTest {
         assertThat(notPaid.getResponse().getStatus()).as(notPaid.getResponse().getContentAsString()).isEqualTo(200);
         assertThat(row(never).get("failure_code")).isEqualTo("MARKED_NOT_PAID");
         assertThat(row(never).get("next_check_at")).isNull();
+        // And nobody's "check now" puts the owner's word back in doubt (ZynlePay would say "paid" again, and it would land on the owner again).
+        MvcResult checked = mvc.perform(post(BASE + "/" + never + "/check").with(sara())).andReturn();
+        assertThat(checked.getResponse().getStatus()).isEqualTo(409);
+        assertThat(problem(checked)).isEqualTo("provider-payment-final");
+        assertThat(row(never).get("failure_code")).isEqualTo("MARKED_NOT_PAID");
     }
 
     @Test

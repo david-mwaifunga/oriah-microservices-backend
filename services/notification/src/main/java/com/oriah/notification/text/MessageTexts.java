@@ -380,10 +380,16 @@ public final class MessageTexts {
             default -> "ZynlePay has not said whether it was paid";
         };
         return new Text("A ZynlePay payment has not been settled - order " + money.order(),
-                "A " + methodWords(money.method()) + " payment" + money.amount() + " for order " + money.order() + " was started through ZynlePay and "
+                aOrAn(methodWords(money.method())) + " payment" + money.amount() + " for order " + money.order() + " was started through ZynlePay and "
                         + "has not been settled: " + why + ". The customer may have paid. Do not ask the customer to pay again, and do not confirm "
                         + "it by hand. Open " + Screens.PROVIDER_PAYMENTS + " and press Check now; if ZynlePay still does not settle it, the owner "
                         + "can mark it paid or not paid from ZynlePay's own records.");
+    }
+
+    /** "An Airtel Money", "An MTN mobile money" (said em-tee-en), "A Zamtel mobile money", "A card". */
+    private static String aOrAn(String words) {
+        boolean vowelSound = words.startsWith("MTN") || (!words.isEmpty() && "AEIOUaeiou".indexOf(words.charAt(0)) >= 0);
+        return (vowelSound ? "An " : "A ") + words;
     }
 
     /** The reminder of {@link #providerPaymentUnresolved}, a day later. */

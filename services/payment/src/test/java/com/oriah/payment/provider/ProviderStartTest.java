@@ -245,6 +245,14 @@ class ProviderStartTest {
         assertThat(events((UUID) row.get("id"))).singleElement().satisfies(payload -> assertThat(payload).contains("\"status\":\"FAILED\"")
                 .contains("\"failureCode\":\"ORDER_REFUSED\"").doesNotContain("amount").doesNotContain(phone.substring(1)));
 
+        // Trying again: the order is told this attempt takes the place of the refused one, though that one never got as far as being sent
+        // (the order may have taken it all the same, if its answer was lost on the way back).
+        orderOwes(order, "180.00");
+        assertThat(start(me(), "k-" + UUID.randomUUID(), mobileMoney()).getResponse().getStatus()).isEqualTo(201);
+        ArgumentCaptor<OrderClient.Take> taken = ArgumentCaptor.forClass(OrderClient.Take.class);
+        verify(orders, times(2)).takeProviderPayment(eq(order), taken.capture());
+        assertThat(taken.getAllValues().get(1).supersedes()).isEqualTo(row.get("id"));
+
         // An order that is not the shopper's is the same 404 as one that does not exist.
         UUID notMine = UUID.randomUUID();
         doThrow(orderAnswers(404, "not-found")).when(orders).takeProviderPayment(eq(notMine), any());
@@ -355,6 +363,8 @@ class ProviderStartTest {
             assertThat(asked.payer().firstName()).isEqualTo("Alice");
             assertThat(asked.payer().lastName()).isEqualTo("Banda");
             assertThat(asked.payer().email()).isEqualTo("alice@example.test");
+            assertThat(asked.returnUrl()).as("where ZynlePay sends the customer back to: this order's own payment page")
+                    .isEqualTo("http://localhost:4000/orders/" + order + "/payment?attempt=" + id);
         });
     }
 
@@ -390,7 +400,13 @@ class ProviderStartTest {
 
         assertThat(refused.getResponse().getStatus()).isEqualTo(409);
         assertThat(problem(refused)).isEqualTo("money-already-recorded");
-        verify(orders, never()).takeProviderPayment(any(), any());
+        // Said only once the order has answered that it is the shopper's own: a stranger learns nothing about somebody else's order.
+        verify(orders, times(1)).takeProviderPayment(eq(order), any());
+        Map<String, Object> row = jdbc.queryForMap("SELECT * FROM provider_payment WHERE order_id = ?", order);
+        assertThat(row.get("status")).isEqualTo("FAILED");
+        assertThat(row.get("failure_code")).isEqualTo("NOT_SENT");
+        assertThat(zynlePay.askedFor((String) row.get("reference_no"))).isEmpty();
+        assertThat(events((UUID) row.get("id"))).as("the order is told to let the attempt go").hasSize(1);
     }
 
     @Test

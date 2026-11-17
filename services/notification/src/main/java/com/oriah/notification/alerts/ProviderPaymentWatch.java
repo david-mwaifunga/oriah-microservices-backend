@@ -57,14 +57,15 @@ public class ProviderPaymentWatch {
             alerts.resolve(Kind.PROVIDER_PAYMENT_UNRESOLVED, subject, SETTLED, now);
             return;
         }
-        if (recordedAt == null || Duration.between(recordedAt, now).compareTo(settings.alerts().maxFactAge()) > 0) {
-            return;
-        }
+        // Heard of late (notification was down, or history is being read again): the payment is still the owner's to settle, so it is listed all
+        // the same. Only the email is left out: nobody is written to about old news, and a later fact in the same history ends the alert.
+        boolean fresh = recordedAt != null && Duration.between(recordedAt, now).compareTo(settings.alerts().maxFactAge()) <= 0;
         String receipt = orderRefs.find(orderId).map(OrderRefs.OrderRef::receiptNumber).orElse(null);
         MoneyWords money = new MoneyWords(orderId, receipt, amount, currency, method);
         Text words = MessageTexts.providerPaymentUnresolved(money, unresolvedReason);
         alerts.raise(new NewAlert(Kind.PROVIDER_PAYMENT_UNRESOLVED, subject, orderId, words, null, now.plus(REMIND_AFTER),
                         MessageTexts.providerPaymentUnresolvedReminder(money), now.plus(OPEN_FOR), false), now)
+                .filter(id -> fresh)
                 .ifPresent(id -> alerts.tell(id, Kind.PROVIDER_PAYMENT_UNRESOLVED, "FIRST", 1, words, now, null, now));
     }
 }

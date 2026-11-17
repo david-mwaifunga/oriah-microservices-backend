@@ -89,7 +89,8 @@ class ZynlePayAdapterTest {
 
     private PaymentProvider.Push collectByCard() {
         return adapter.startCard("OZ7K2M9Q4T8X1B5D", new BigDecimal("180.00"), "ZMW", "Oriah order 0F9A4C2E",
-                new CardPayer("Alice", "Banda", "alice@example.test", "260961234567", "Lusaka, Zambia", "Lusaka"));
+                new CardPayer("Alice", "Banda", "alice@example.test", "260961234567", "Lusaka, Zambia", "Lusaka"),
+                "https://oriah.example/orders/0f9a4c2e/payment?attempt=a1b2c3d4");
     }
 
     // ---------------------------------------------------------------- collect: mobile money
@@ -194,7 +195,9 @@ class ZynlePayAdapterTest {
                 {"auth":{"merchant_id":"M-1","api_id":"API-ID-1","api_key":"API-KEY-SECRET","channel":"card"},
                  "data":{"method":"runTranAuthCapture","reference_no":"OZ7K2M9Q4T8X1B5D","amount":"180.00","currency":"ZMW",
                          "description":"Oriah order 0F9A4C2E","first_name":"Alice","last_name":"Banda","email":"alice@example.test",
-                         "phone":"260961234567","address":"Lusaka, Zambia","city":"Lusaka","state":"Lusaka","zip_code":"10101","country":"ZMB"}}""",
+                         "phone":"260961234567","address":"Lusaka, Zambia","city":"Lusaka","state":"Lusaka","zip_code":"10101","country":"ZMB",
+                         "success_url":"https://oriah.example/orders/0f9a4c2e/payment?attempt=a1b2c3d4",
+                         "fail_url":"https://oriah.example/orders/0f9a4c2e/payment?attempt=a1b2c3d4"}}""",
                 false, false)));
         String sent = zynlePay.getAllServeEvents().getFirst().getRequest().getBodyAsString().toLowerCase();
         assertThat(sent).doesNotContain("cardnumber", "card_number", "pan", "cvv", "cvc", "expiry");
@@ -214,6 +217,12 @@ class ZynlePayAdapterTest {
 
         apiAnswers("{\"response_code\":\"120\"}");
         assertThat(collectByCard()).as("no page address at all").isInstanceOf(Unclear.class);
+
+        // The scheme's own port written out is the same place; another port is not.
+        apiAnswers("{\"response_code\":\"120\",\"redirect_url\":\"https://pay.zynlepay.test:443/checkout/abc123\"}");
+        assertThat(collectByCard()).isInstanceOf(Redirect.class);
+        apiAnswers("{\"response_code\":\"120\",\"redirect_url\":\"https://pay.zynlepay.test:8443/checkout/abc123\"}");
+        assertThat(collectByCard()).isInstanceOf(Unclear.class);
 
         apiAnswers("{\"response_code\":\"01\",\"redirect_url\":\"https://pay.zynlepay.test/checkout/abc123\"}");
         assertThat(collectByCard()).as("a refusal is a refusal whatever else it carries").isEqualTo(new Refused("01"));

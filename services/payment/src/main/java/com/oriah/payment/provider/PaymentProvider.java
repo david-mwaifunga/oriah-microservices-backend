@@ -24,7 +24,8 @@ public interface PaymentProvider {
 
     Push startMobileMoney(String referenceNo, String msisdnDigits, BigDecimal amount, String currency);
 
-    Push startCard(String referenceNo, BigDecimal amount, String currency, String description, CardPayer payer);
+    /** @param returnUrl where the provider's page sends the customer back to when they are done: this order's own payment page at the shop */
+    Push startCard(String referenceNo, BigDecimal amount, String currency, String description, CardPayer payer, String returnUrl);
 
     Status status(String referenceNo);
 

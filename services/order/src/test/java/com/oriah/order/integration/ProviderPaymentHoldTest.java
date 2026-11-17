@@ -230,6 +230,47 @@ class ProviderPaymentHoldTest extends SaleTestBase {
         assertThat(row(order).get("status")).isEqualTo("CREATED");
     }
 
+    @Test
+    @DisplayName("money of ANOTHER attempt being applied does not make the order let go of the attempt in flight; once the order is paid it carries none")
+    void anotherAttemptsMoneyBeingApplied() throws Exception {
+        UUID order = heldOrder();
+        UUID attempt = taken(order);
+        // The owner recorded an earlier, failed attempt as paid after all; inventory cannot be asked just now, so that money is still being applied.
+        doThrow(SaleStubs.feign(503, null)).when(inventory).consume(any(), any());
+
+        providerConfirmed(order, UUID.randomUUID(), "4500.00");
+
+        assertThat(row(order).get("status")).isEqualTo("CREATED");
+        assertThat(row(order).get("settling_confirmation_id")).isNotNull();
+        assertThat(row(order).get("provider_payment_id")).as("the attempt in flight may still collect: the order stays closed for it").isEqualTo(attempt);
+
+        UUID paid = heldOrder(2);
+        taken(paid);
+        SaleStubs.inventorySells(inventory);
+        providerConfirmed(paid, UUID.randomUUID(), "9000.00");
+        assertThat(row(paid).get("status")).isEqualTo("PAID");
+        assertThat(row(paid).get("provider_payment_id")).as("a paid order carries no attempt").isNull();
+    }
+
+    @Test
+    @DisplayName("an attempt that ended while its pieces were being held is not answered 'taken': 409, so payment asks ZynlePay for nothing")
+    void anAttemptThatEndedMeanwhile() throws Exception {
+        UUID order = heldOrder();
+        UUID attempt = UUID.randomUUID();
+        doAnswer(inv -> {
+            // While inventory is answering, payment gives the attempt up (it was never sent) and says so.
+            providerUpdate(order, attempt, "FAILED", "NOT_SENT");
+            return new InventoryClient.Reservation(inv.getArgument(0), UUID.randomUUID(), "HELD", Instant.now(), Instant.now().plusSeconds(2_700), null,
+                    List.of());
+        }).when(inventory).extend(any(), any());
+
+        MvcResult result = take(alice(), order, attempt, null);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(409);
+        assertThat(problem(result)).isEqualTo("provider-payment-ended");
+        assertThat(row(order).get("provider_payment_id")).isNull();
+    }
+
     // ------------------------------------------------------------------ the hold
 
     @Test
@@ -252,6 +293,26 @@ class ProviderPaymentHoldTest extends SaleTestBase {
         assertThat(at(row(order).get("hold_expires_at"))).isCloseTo(Instant.now().plus(Duration.ofMinutes(45)), within(Duration.ofSeconds(30)));
         assertThat(events(order, "order.payment_submitted")).isEmpty();
         assertThat(take(alice(), order, attempt, null).getResponse().getStatus()).isEqualTo(200);
+    }
+
+    @Test
+    @DisplayName("a stretch the hold job finishes later is judged by the same rule: one that leaves under two minutes makes the order let the attempt go")
+    void aStretchFinishedLaterThatIsTooShort() throws Exception {
+        UUID order = heldOrder();
+        UUID attempt = UUID.randomUUID();
+        doThrow(SaleStubs.feign(503, null)).when(inventory).extend(any(), any());
+        assertThat(take(alice(), order, attempt, null).getResponse().getStatus()).isEqualTo(503);
+        doAnswer(inv -> new InventoryClient.Reservation(inv.getArgument(0), UUID.randomUUID(), "HELD", Instant.now(), Instant.now().plusSeconds(60), null,
+                List.of())).when(inventory).extend(any(), any());
+
+        holdJob.run();
+
+        assertThat(row(order).get("provider_payment_id")).isNull();
+        assertThat(row(order).get("hold_extension_pending")).isEqualTo(false);
+        // The repeat of the start is then refused on the same ground, and nothing is asked of ZynlePay.
+        MvcResult again = take(alice(), order, attempt, null);
+        assertThat(again.getResponse().getStatus()).isEqualTo(409);
+        assertThat(problem(again)).isEqualTo("hold-too-short");
     }
 
     @Test

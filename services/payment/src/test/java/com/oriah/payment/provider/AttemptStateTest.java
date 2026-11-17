@@ -126,6 +126,7 @@ class AttemptStateTest {
             assertThat(late.failed(FailureCode.MARKED_NOT_PAID).status()).isEqualTo(Status.FAILED);
         }
         AttemptState markedNotPaid = unresolved(UnresolvedReason.NO_ANSWER).failed(FailureCode.MARKED_NOT_PAID);
+        assertThat(markedNotPaid.mayBeAsked()).as("the owner's word is not put back in doubt by a check; the owner may still change it").isFalse();
         assertThat(markedNotPaid.paidAfterFailed().unresolvedReason()).isEqualTo(UnresolvedReason.PAID_AFTER_FAILED);
     }
 

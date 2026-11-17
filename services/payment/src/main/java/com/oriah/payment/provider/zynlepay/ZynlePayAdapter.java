@@ -74,7 +74,7 @@ public final class ZynlePayAdapter implements PaymentProvider {
     }
 
     @Override
-    public Push startCard(String referenceNo, BigDecimal amount, String currency, String description, CardPayer payer) {
+    public Push startCard(String referenceNo, BigDecimal amount, String currency, String description, CardPayer payer, String returnUrl) {
         ObjectNode data = JSON.createObjectNode();
         data.put("method", "runTranAuthCapture");
         data.put("reference_no", referenceNo);
@@ -90,6 +90,12 @@ public final class ZynlePayAdapter implements PaymentProvider {
         data.put("state", payer.city());
         data.put("zip_code", "10101");
         data.put("country", "ZMB");
+        if (returnUrl != null && !returnUrl.isBlank()) {
+            // Where ZynlePay's page sends the customer when they are done, whichever way it went: the order's own payment page, which reads
+            // where the payment stands from Oriah and never trusts the return itself.
+            data.put("success_url", returnUrl);
+            data.put("fail_url", returnUrl);
+        }
         callbackInto(data);
         Reply reply = post(wire.apiPath(), envelope("card", data), referenceNo, "collect by card");
         return push(reply, referenceNo, true);
@@ -267,7 +273,9 @@ public final class ZynlePayAdapter implements PaymentProvider {
             if (!schemeAllowed || page.getHost() == null || page.getUserInfo() != null) {
                 return null;
             }
-            String host = page.getHost().toLowerCase(Locale.ROOT) + (page.getPort() < 0 ? "" : ":" + page.getPort());
+            // The scheme's own port written out (https on 443) is the same place as no port at all.
+            boolean ownPort = page.getPort() < 0 || (scheme.equals("https") && page.getPort() == 443) || (scheme.equals("http") && page.getPort() == 80);
+            String host = page.getHost().toLowerCase(Locale.ROOT) + (ownPort ? "" : ":" + page.getPort());
             return wire.redirectHosts().contains(host) ? page : null;
         } catch (URISyntaxException e) {
             return null;

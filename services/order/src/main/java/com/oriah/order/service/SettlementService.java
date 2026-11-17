@@ -127,7 +127,7 @@ public class SettlementService {
         if (insert(p, "CONSUMING", null, reservationId, now) == 0) {
             return null;
         }
-        order.beginSettlement(p.confirmationId());
+        order.beginSettlement(p.confirmationId(), p.providerPaymentId());
         repository.flush();
         log.info("Confirmation {} of {} is applying to order {} (reservation {})", p.confirmationId(), p.gross(), order.id(), reservationId);
         return p.confirmationId();

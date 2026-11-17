@@ -150,7 +150,7 @@ class ZynlePaySimulatorHttpTest {
         String reference = ProviderReference.mint();
 
         PaymentProvider.Push push = adapter().startCard(reference, new BigDecimal("180.00"), "ZMW", "Oriah order 0F9A4C2E",
-                new CardPayer("Alice", "Banda", "alice@example.test", null, "Lusaka, Zambia", "Lusaka"));
+                new CardPayer("Alice", "Banda", "alice@example.test", null, "Lusaka, Zambia", "Lusaka"), "http://localhost:4000/orders/x/payment?attempt=y");
 
         assertThat(push).isInstanceOfSatisfying(Redirect.class,
                 redirect -> assertThat(redirect.url()).hasToString("http://localhost:8085/internal/zynlepay-sim/card/" + reference));

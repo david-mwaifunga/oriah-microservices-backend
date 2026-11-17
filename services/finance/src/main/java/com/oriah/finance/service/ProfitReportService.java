@@ -255,10 +255,11 @@ public class ProfitReportService {
         jdbc.query("""
                 SELECT COALESCE(cp.provider, cf.method), sum(l.amount)
                   FROM ledger_entry l JOIN confirmation_fact cf ON cf.confirmation_id = l.confirmation_id AND cf.kind = 'CONFIRMED'
-                  LEFT JOIN confirmation_provider cp ON cp.confirmation_id = cf.confirmation_id
+                  LEFT JOIN confirmation_provider cp ON cp.confirmation_id = cf.confirmation_id AND cp.created_at <= ?
                  WHERE l.account = 'EXPENSE' AND l.category IN ('PAYMENT_CHARGES', 'PAYMENT_CHARGES_ADJUSTMENT') AND l.effect_month = ? AND l.recorded_at <= ?
                  GROUP BY COALESCE(cp.provider, cf.method)""",
-                rs -> { recorded.merge(rs.getString(1), rs.getBigDecimal(2), BigDecimal::add); }, first, cut);
+                // (the provider as it was known at the cut: a report as of an earlier moment does not change because it was learnt later)
+                rs -> { recorded.merge(rs.getString(1), rs.getBigDecimal(2), BigDecimal::add); }, cut, first, cut);
         jdbc.query("""
                 SELECT x.provider, sum(l.amount) FROM ledger_entry l JOIN expense x ON x.ledger_entry_id = l.entry_id
                  WHERE l.account = 'EXPENSE' AND l.category = 'BANK_MOBILE_ACCOUNT_FEES' AND l.effect_month = ? AND l.recorded_at <= ? AND x.provider IS NOT NULL GROUP BY x.provider""",

@@ -179,13 +179,9 @@ public class ProviderPaymentService {
 
     /** Transaction 1: the attempt exists, STARTING, holding its order; or the start is refused and nothing is written. */
     private UUID begin(String shopper, UUID orderId, String channel, String method, String msisdn, String key, String fingerprint) {
+        // Nothing about the order is read or said here: whose order it is is not known until the order itself answers (carryOn). An attempt that
+        // is only STARTING stands in nobody's way; what must not happen twice is checked when it becomes PENDING, under this same lock.
         ProviderConfirmations.lockOrder(jdbc, orderId);
-        jdbc.query("""
-                SELECT c.id FROM payment_confirmation c LEFT JOIN payment_confirmation_void v ON v.confirmation_id = c.id
-                 WHERE c.order_id = ? AND v.id IS NULL AND c.outcome IN ('PENDING', 'SETTLED') LIMIT 1""", (rs, row) -> {
-            throw new PaymentProblem(HttpStatus.CONFLICT, "money-already-recorded",
-                    "money is already recorded for this order: it is paid, or is being paid. Look at the order again in a moment");
-        }, orderId);
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         for (int tries = 0; tries < 3; tries++) {
             UUID id = UUID.randomUUID();
@@ -220,8 +216,10 @@ public class ProviderPaymentService {
      */
     private ProviderPaymentView carryOn(UUID id, CardPayer payer) {
         Attempt attempt = find(id).orElseThrow();
-        UUID supersedes = jdbc.query("SELECT id FROM provider_payment WHERE order_id = ? AND sent_at IS NOT NULL AND NOT holds_order AND id <> ? "
-                + "ORDER BY started_at DESC LIMIT 1", (rs, n) -> rs.getObject("id", UUID.class), attempt.orderId(), id).stream().findFirst().orElse(null);
+        // The newest attempt for the order that is over. Sent or not: one that never left holds no money, and the order may have taken it all the
+        // same (its answer lost on the way back), with nothing left to tell it to let go.
+        UUID supersedes = jdbc.query("SELECT id FROM provider_payment WHERE order_id = ? AND NOT holds_order AND id <> ? "
+                + "ORDER BY started_at DESC, id LIMIT 1", (rs, n) -> rs.getObject("id", UUID.class), attempt.orderId(), id).stream().findFirst().orElse(null);
         OrderClient.Taken taken;
         try {
             taken = orders.takeProviderPayment(attempt.orderId(), new OrderClient.Take(id, supersedes));
@@ -233,10 +231,27 @@ public class ProviderPaymentService {
             throw new PaymentProblem(HttpStatus.CONFLICT, "order-not-payable", "this order has nothing that can be paid through ZynlePay");
         }
         FeeTariff tariff = setup.tariff(attempt.method());
+        if (!tariff.fits(taken.total())) {
+            // The fee would take all of it: its money could never be recorded (a fee is never more than the amount). Stopped before anything is asked.
+            tx.executeWithoutResult(status -> fail(id, "STARTING", AttemptState.FailureCode.NOT_SENT, null));
+            throw new PaymentProblem(HttpStatus.CONFLICT, "amount-too-small-for-channel",
+                    "this order's total is too small to be paid " + (attempt.card() ? "by card" : "by mobile money") + ": please pay it another way");
+        }
 
         // Transaction 2: PENDING, with what is asked for, BEFORE it is asked. Only the caller that makes this move goes on to ask.
         Boolean mine = tx.execute(status -> {
             Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+            // Under the lock every writer of this order's money takes: money a person confirmed since this attempt was written is seen here, and
+            // this attempt, seen by them, stands in their way from the moment it is PENDING.
+            ProviderConfirmations.lockOrder(jdbc, attempt.orderId());
+            boolean moneyStands = !jdbc.query("""
+                    SELECT c.id FROM payment_confirmation c LEFT JOIN payment_confirmation_void v ON v.confirmation_id = c.id
+                     WHERE c.order_id = ? AND v.id IS NULL AND c.outcome IN ('PENDING', 'SETTLED') LIMIT 1""", (rs, n) -> rs.getObject(1), attempt.orderId())
+                    .isEmpty();
+            if (moneyStands) {
+                fail(id, "STARTING", AttemptState.FailureCode.NOT_SENT, null);
+                return null;
+            }
             int moved = jdbc.update("""
                     UPDATE provider_payment
                        SET status = 'PENDING', amount = ?, currency = ?, fee_percent = ?, fee_fixed = ?, sent_at = ?, next_check_at = ?, version = version + 1
@@ -251,14 +266,18 @@ public class ProviderPaymentService {
             }
             return moved == 1;
         });
-        if (!Boolean.TRUE.equals(mine)) {
+        if (mine == null) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "money-already-recorded",
+                    "money is already recorded for this order: it is paid, or is being paid. Look at the order again in a moment");
+        }
+        if (!mine) {
             return view(find(id).orElseThrow());
         }
 
         Instant askedAt = clock.instant();
         Push push = attempt.card()
                 ? provider.startCard(attempt.referenceNo(), taken.total(), taken.currency(), "Oriah order " + attempt.orderId().toString().substring(0, 8)
-                .toUpperCase(Locale.ROOT), payer)
+                .toUpperCase(Locale.ROOT), payer, setup.returnUrl().replace("{orderId}", attempt.orderId().toString()).replace("{id}", id.toString()))
                 : provider.startMobileMoney(attempt.referenceNo(), Wallets.digits(attempt.payerMsisdn()), taken.total(), taken.currency());
 
         // Transaction 3: what ZynlePay said.

@@ -131,9 +131,16 @@ public record AttemptState(Status status, FailureCode failureCode, UnresolvedRea
         return switch (status) {
             case PENDING -> true;
             case UNRESOLVED -> !OWNER_ONLY.contains(unresolvedReason);
-            case FAILED -> !nothingReachedZynlePay();
+            // One ZynlePay itself failed or refused may be asked about again, to catch ZynlePay contradicting itself. One the OWNER marked not
+            // paid is not: the owner's word is not put back in doubt by a check (the owner may still change it).
+            case FAILED -> failureCode == FailureCode.PROVIDER_REFUSED || failureCode == FailureCode.DECLINED;
             case STARTING, VERIFIED -> false;
         };
+    }
+
+    /** A FAILED attempt whose request reached ZynlePay: the only kind that can turn out to have been paid after all. */
+    public boolean failedAfterReachingZynlePay() {
+        return status == Status.FAILED && !nothingReachedZynlePay();
     }
 
     /**

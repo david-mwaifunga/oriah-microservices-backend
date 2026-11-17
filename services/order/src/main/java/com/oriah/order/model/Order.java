@@ -555,6 +555,16 @@ public class Order extends BaseEntity {
      * @throws IllegalStateException when another settlement is in flight, or the order is not waiting for money (CREATED, PAYMENT_SUBMITTED, EXPIRED)
      */
     public void beginSettlement(UUID confirmationId) {
+        beginSettlement(confirmationId, null);
+    }
+
+    /**
+     * @param itsAttempt the payment attempt this money came from, when a provider collected it (Phase 13); null for money a person confirmed.
+     *                   The order lets go of the attempt it carries only for that attempt's own money: money of ANOTHER attempt (an earlier one
+     *                   the owner recorded as paid after all) may still be cancelled before it pays the sale, and the attempt in flight could
+     *                   then collect for an order that had been opened to a cancel or a second payment.
+     */
+    public void beginSettlement(UUID confirmationId, UUID itsAttempt) {
         if (settlingConfirmationId != null) {
             throw new IllegalStateException("order " + id + " is already being settled with " + settlingConfirmationId);
         }
@@ -562,8 +572,10 @@ public class Order extends BaseEntity {
             throw new IllegalStateException("order " + id + " is " + status + " and takes no payment");
         }
         this.settlingConfirmationId = confirmationId;
-        // Money is being applied: whatever attempt was in flight, the order is closed to everything else by the settlement itself from here.
-        this.providerPaymentId = null;
+        if (itsAttempt != null && itsAttempt.equals(providerPaymentId)) {
+            // The attempt's own money is being applied: the attempt is over, and the settlement itself closes the order to everything else.
+            this.providerPaymentId = null;
+        }
         this.updatedAt = Instant.now();
     }
 
@@ -620,6 +632,8 @@ public class Order extends BaseEntity {
         this.holdState = HoldState.CONSUMED;
         this.holdExtensionPending = false;
         this.paidConfirmationId = confirmationId;
+        // A paid order carries no attempt, whoever's money paid it: an attempt still in flight at payment is the owner's to settle there.
+        this.providerPaymentId = null;
         this.paidAt = arrivedAt;
         this.receiptNumber = receiptNumber;
         this.settlingConfirmationId = null;

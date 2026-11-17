@@ -267,7 +267,9 @@ public class ConfirmationService {
 
     /** No other money is recorded for an order while a ZynlePay payment for it is in flight: that payment may still come. */
     private void refuseWhileAProviderPaymentHoldsTheOrder(UUID orderId) {
-        jdbc.query("SELECT id FROM provider_payment WHERE order_id = ? AND holds_order", (rs, row) -> {
+        // One that is only STARTING is not in the way: the order has not yet said it is that shopper's to pay, and anybody who knows an order's id
+        // could otherwise shut staff out of it. If it goes on, it finds this money under the same lock and stops.
+        jdbc.query("SELECT id FROM provider_payment WHERE order_id = ? AND holds_order AND status <> 'STARTING'", (rs, row) -> {
             throw new PaymentProblem(HttpStatus.CONFLICT, "provider-payment-in-progress",
                     "a payment through ZynlePay is in progress for this order: wait for it to finish, or for the owner to settle it, before recording other money")
                     .with("providerPaymentId", rs.getObject("id", UUID.class));

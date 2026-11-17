@@ -128,6 +128,16 @@ class ProviderPaymentAlertTest {
             assertThat((String) alerts().getFirst().get("detail")).as(reason).contains(sentence).contains("card payment of K180.00");
         });
         assertThat(MessageTexts.methodWords("CARD")).isEqualTo("card");
+        // "An Airtel Money payment", "An MTN ...", "A Zamtel ...": the sentence reads as a person would say it.
+        TestData.clean(jdbc, clock);
+        said("AIRTEL", "UNRESOLVED", "NO_ANSWER");
+        assertThat((String) alerts().getFirst().get("detail")).startsWith("An Airtel Money payment of K180.00");
+        TestData.clean(jdbc, clock);
+        said("MTN", "UNRESOLVED", "NO_ANSWER");
+        assertThat((String) alerts().getFirst().get("detail")).startsWith("An MTN mobile money payment of K180.00");
+        TestData.clean(jdbc, clock);
+        said("ZAMTEL", "UNRESOLVED", "NO_ANSWER");
+        assertThat((String) alerts().getFirst().get("detail")).startsWith("A Zamtel mobile money payment of K180.00");
     }
 
     @Test
@@ -151,9 +161,18 @@ class ProviderPaymentAlertTest {
     }
 
     @Test
-    @DisplayName("history read late raises nothing; an ending with no alert open does nothing; a message about another payment than its envelope names is refused")
-    void whatRaisesNothing() {
-        paymentEvents.accept(update(attempt, attempt, "MTN", "UNRESOLVED", "NO_ANSWER", clock.instant().minus(Duration.ofDays(30))));
+    @DisplayName("a payment still unsettled when it is heard of late is listed all the same, with no email about old news; an ending with no alert open "
+            + "does nothing; a message about another payment than its envelope names is refused")
+    void heardOfLate() {
+        // Notification was down for two days: the payment is still the owner's to settle, so it must be in the list. Nobody is emailed about
+        // something that old (a replay of history would otherwise fill the mailboxes).
+        paymentEvents.accept(update(attempt, attempt, "MTN", "UNRESOLVED", "NO_ANSWER", clock.instant().minus(Duration.ofDays(2))));
+        assertThat(alerts()).singleElement().satisfies(alert -> assertThat(alert.get("state")).isEqualTo("OPEN"));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_log WHERE alert_id = ?", Long.class, alerts().getFirst().get("id"))).isZero();
+        said("MTN", "FAILED", "DECLINED");
+        assertThat(alerts()).singleElement().satisfies(alert -> assertThat(alert.get("state")).isEqualTo("RESOLVED"));
+
+        TestData.clean(jdbc, clock);
         said("MTN", "FAILED", "DECLINED");
         said("MTN", "VERIFIED", null);
         assertThat(alerts()).isEmpty();

@@ -194,10 +194,10 @@ class CallbackIsOnlyANudgeTest {
 
         // And a check that was due sooner than the message would make it is left where it was.
         UUID soon = pending();
-        Instant already = Instant.now().minusSeconds(30);
+        Instant already = Instant.now().minusSeconds(30).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         jdbc.update("UPDATE provider_payment SET next_check_at = ? WHERE id = ?", Timestamp.from(already), soon);
         received(callback("{\"reference_no\":\"" + reference(soon) + "\",\"response_code\":\"100\"}"));
-        assertThat(at(row(soon).get("next_check_at"))).isEqualTo(already.truncatedTo(java.time.temporal.ChronoUnit.MICROS));
+        assertThat(at(row(soon).get("next_check_at"))).isEqualTo(already);
     }
 
     @Test
