@@ -55,6 +55,19 @@ class FifoConformerTest {
         return new Action(id(100 + n), seq, Kind.RESTORE, qty, id(100 + ofDrain));
     }
 
+    /** One returned piece put back but HELD: in its lot, not for sale until it is released or leaves. */
+    private static Action held(int n, long seq, int ofDrain) {
+        return Action.held(id(100 + n), seq, id(100 + ofDrain));
+    }
+
+    private static Action release(int n, long seq, int ofHeld) {
+        return Action.release(id(100 + n), seq, id(100 + ofHeld));
+    }
+
+    private static Action redraw(int n, long seq, int ofHeld) {
+        return Action.redraw(id(100 + n), seq, id(100 + ofHeld));
+    }
+
     private static LiveChunk live(long movement, int action, UUID lot, int qty) {
         return new LiveChunk(movement, id(100 + action), lot, qty);
     }
@@ -174,6 +187,90 @@ class FifoConformerTest {
 
     // ----- properties, over a small in-memory ledger -----
 
+    // ---- returned pieces: held in their own lot until somebody has looked at them (Phase 12) ------------------------------------------
+
+    @Test
+    @DisplayName("a returned piece goes back to the newest lot its sale drained and is HELD there: no later sale can take it")
+    void aHeldRestoreIsNotDrained() {
+        List<Lot> lots = List.of(lot(A, 1), lot(B, 3));
+        List<Action> history = List.of(drain(1, 1, 2), held(2, 2, 1), drain(3, 3, 2));
+
+        Outcome out = FifoConformer.conform(lots, history, List.of());
+
+        assertThat(out.desired().get(id(102))).as("back to B, the newest lot the sale drained").containsExactly(chunk(B, 1));
+        assertThat(out.desired().get(id(103))).as("the next sale takes B's two free units, never the held one").containsExactly(chunk(B, 2));
+        assertThat(out.remainingByLot()).as("the held piece is still physical stock of its lot").containsEntry(A, 0).containsEntry(B, 1);
+        assertThatThrownBy(() -> FifoConformer.conform(lots, List.of(drain(1, 1, 2), held(2, 2, 1), drain(3, 3, 2), drain(4, 4, 1)), List.of()))
+                .as("only the held piece is left: it cannot be sold").isInstanceOf(InsufficientLotsException.class);
+    }
+
+    @Test
+    @DisplayName("once released, the piece is ordinary stock of its lot again; the release itself moves nothing")
+    void aReleasedUnitIsDrainedAgain() {
+        Outcome out = FifoConformer.conform(List.of(lot(A, 1), lot(B, 3)),
+                List.of(drain(1, 1, 2), held(2, 2, 1), release(3, 3, 2), drain(4, 4, 3)), List.of());
+
+        assertThat(out.desired().get(id(103))).as("a release writes no row").isEmpty();
+        assertThat(out.desired().get(id(104))).containsExactly(chunk(B, 3));
+        assertThat(out.remainingByLot()).containsEntry(B, 0);
+    }
+
+    @Test
+    @DisplayName("a held piece that leaves (written off, or moved to a marked-down listing) leaves the lot it is in, at that lot's cost")
+    void aRedrawLeavesTheLotItsUnitIsIn() {
+        Outcome out = FifoConformer.conform(List.of(lot(A, 1), lot(B, 1)),
+                List.of(drain(1, 1, 2), held(2, 2, 1), held(3, 3, 1), redraw(4, 4, 3)), List.of());
+
+        assertThat(out.desired().get(id(102))).containsExactly(chunk(B, 1));
+        assertThat(out.desired().get(id(103))).as("the second piece back goes to the older lot").containsExactly(chunk(A, 1));
+        assertThat(out.desired().get(id(104))).as("and leaves from that same lot").containsExactly(chunk(A, 1));
+        assertThat(out.remainingByLot()).containsEntry(A, 0).containsEntry(B, 1);
+    }
+
+    @Test
+    @DisplayName("the case a plain count cannot get right: two pieces of a two-lot sale come back, a later sale is recorded, and each piece still leaves from its own lot")
+    void twoReturnedUnitsOfATwoLotSaleEachKeepTheirOwnLot() {
+        // The sale took the last ring of the older lot A and one of B. Both came back (B first, then A), then four more were sold.
+        // Without holds the later sale would take A's returned ring first (A is the oldest), and A's piece would later "leave" from B.
+        Outcome out = FifoConformer.conform(List.of(lot(A, 1), lot(B, 5)),
+                List.of(drain(1, 1, 2), held(2, 2, 1), held(3, 3, 1), drain(4, 4, 4), redraw(5, 5, 3), redraw(6, 6, 2)), List.of());
+
+        assertThat(out.desired().get(id(104))).as("the later sale takes only B's free units").containsExactly(chunk(B, 4));
+        assertThat(out.desired().get(id(105))).as("A's piece leaves from A").containsExactly(chunk(A, 1));
+        assertThat(out.desired().get(id(106))).as("B's piece leaves from B").containsExactly(chunk(B, 1));
+        assertThat(out.remainingByLot()).containsEntry(A, 0).containsEntry(B, 0);
+    }
+
+    @Test
+    @DisplayName("when the sale is re-cut (an older lot arrived late), the returned piece and its exit follow the sale to the lot it now drains")
+    void holdsFollowARecutOfTheirSale() {
+        // As the ledger stood: the sale, the piece back and its exit all on B. Then the older lot A arrives.
+        Outcome out = FifoConformer.conform(List.of(lot(A, 1), lot(B, 2)),
+                List.of(drain(1, 1, 1), held(2, 2, 1), redraw(3, 3, 2)),
+                List.of(live(10, 1, B, 1), live(11, 2, B, 1), live(12, 3, B, 1)));
+
+        assertThat(out.recuts()).extracting(FifoConformer.Recut::actionId).containsExactly(id(101), id(102), id(103));
+        assertThat(out.recuts()).allSatisfy(recut -> assertThat(recut.replacements()).containsExactly(chunk(A, 1)));
+        assertThat(out.remainingByLot()).containsEntry(A, 0).containsEntry(B, 2);
+    }
+
+    @Test
+    @DisplayName("an outcome decides a piece that is held, once: releasing or removing anything else, or twice, or before it came back, is refused")
+    void releaseOrRedrawOfAnUnheldUnitIsRefused() {
+        List<Lot> lots = List.of(lot(A, 3));
+        assertThatThrownBy(() -> FifoConformer.conform(lots, List.of(drain(1, 1, 1), restore(2, 2, 1, 1), release(3, 3, 2)), List.of()))
+                .as("an ordinary take-back is not held").isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> FifoConformer.conform(lots, List.of(drain(1, 1, 1), held(2, 2, 1), redraw(3, 3, 2), redraw(4, 4, 2)), List.of()))
+                .as("it left once").isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> FifoConformer.conform(lots, List.of(drain(1, 1, 1), held(2, 2, 1), release(3, 3, 2), redraw(4, 4, 2)), List.of()))
+                .as("released, then removed").isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> FifoConformer.conform(lots, List.of(drain(1, 1, 1), release(3, 2, 2), held(2, 3, 1)), List.of()))
+                .as("decided before it came back").isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> FifoConformer.conform(lots,
+                List.of(drain(1, 1, 2), new Action(id(102), 2, Kind.RESTORE_HELD, 2, id(101), null)), List.of()))
+                .as("a held piece is one piece").isInstanceOf(IllegalArgumentException.class);
+    }
+
     /** The ledger as the database layer will hold it: lots, actions in recording order, and each action's live chunks. */
     private static final class Model {
         final List<Lot> lots = new ArrayList<>();
@@ -203,8 +300,12 @@ class FifoConformerTest {
         }
 
         UUID record(Kind kind, int qty, UUID restores) {
+            return record(kind, qty, restores, null);
+        }
+
+        UUID record(Kind kind, int qty, UUID restores, UUID assesses) {
             UUID actionId = new UUID(1, nextAction++);
-            actions.add(new Action(actionId, nextSeq++, kind, qty, restores));
+            actions.add(new Action(actionId, nextSeq++, kind, qty, restores, assesses));
             liveByAction.put(actionId, new ArrayList<>());
             apply(conform());
             return actionId;
@@ -212,13 +313,14 @@ class FifoConformerTest {
     }
 
     @Test
-    @DisplayName("after ANY mix of receipts, sales, take-backs and corrections: lots add up, and conforming twice changes nothing")
+    @DisplayName("after ANY mix of receipts, sales, take-backs, returned pieces (held, released, removed) and corrections: lots add up, and conforming twice changes nothing")
     void propertyOverRandomHistories() {
         for (long seed = 1; seed <= 400; seed++) {
             Random random = new Random(seed);
             Model model = new Model();
             Map<UUID, Integer> outstanding = new HashMap<>();   // drain action -> units a take-back could still return
             List<UUID> drains = new ArrayList<>();
+            List<UUID> heldPieces = new ArrayList<>();          // returned pieces nobody has decided yet
             int lotNo = 1;
             for (int step = 0; step < 40; step++) {
                 int roll = random.nextInt(10);
@@ -229,7 +331,7 @@ class FifoConformerTest {
                     model.lots.add(at, fresh);
                     model.apply(model.conform());
                 } else if (roll < 6) {
-                    int free = model.conform().remainingByLot().values().stream().mapToInt(Integer::intValue).sum();
+                    int free = model.conform().remainingByLot().values().stream().mapToInt(Integer::intValue).sum() - heldPieces.size();
                     if (free > 0) {
                         int qty = 1 + random.nextInt(Math.min(free, 5));
                         UUID a = model.record(Kind.DRAIN, qty, null);
@@ -239,7 +341,16 @@ class FifoConformerTest {
                 } else if (roll < 8 && !drains.isEmpty()) {
                     UUID target = drains.get(random.nextInt(drains.size()));
                     int left = outstanding.get(target);
-                    if (left > 0) {
+                    int what = random.nextInt(4);
+                    if (what == 0 && !heldPieces.isEmpty()) {
+                        // A returned piece is decided: fine (released) or it leaves (written off, marked down).
+                        UUID piece = heldPieces.remove(random.nextInt(heldPieces.size()));
+                        model.record(random.nextBoolean() ? Kind.RELEASE : Kind.REDRAW, 1, null, piece);
+                    } else if (what == 1 && left > 0) {
+                        // One piece of a sale comes back and is held.
+                        heldPieces.add(model.record(Kind.RESTORE_HELD, 1, target));
+                        outstanding.put(target, left - 1);
+                    } else if (left > 0) {
                         int qty = 1 + random.nextInt(left);
                         model.record(Kind.RESTORE, qty, target);
                         outstanding.put(target, left - qty);
@@ -262,12 +373,13 @@ class FifoConformerTest {
 
         Map<UUID, Integer> net = new HashMap<>();
         for (Action a : model.actions) {
-            int sign = a.kind() == Kind.DRAIN ? 1 : -1;
+            int sign = a.kind() == Kind.DRAIN || a.kind() == Kind.REDRAW ? 1 : -1;
             for (LiveChunk c : model.liveByAction.get(a.id())) {
                 net.merge(c.lotId(), sign * c.qty(), Integer::sum);
             }
             int moved = model.liveByAction.get(a.id()).stream().mapToInt(LiveChunk::qty).sum();
-            assertThat(moved).as("an action moves exactly its quantity, " + where).isEqualTo(a.qty());
+            assertThat(moved).as("an action moves exactly its quantity (a release moves nothing), " + where)
+                    .isEqualTo(a.kind() == Kind.RELEASE ? 0 : a.qty());
         }
         for (Lot lot : model.lots) {
             int consumed = net.getOrDefault(lot.id(), 0);

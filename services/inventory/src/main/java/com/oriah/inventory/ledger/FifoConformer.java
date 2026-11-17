@@ -34,6 +34,16 @@ import java.util.UUID;
  *       point at a live chunk of the new drain.</li>
  * </ol>
  *
+ * <h2>Returned pieces are held (Phase 12)</h2>
+ *
+ * A piece a customer sent back is put into the lot it left ({@code RESTORE_HELD}, found exactly as a restore finds it)
+ * and is HELD there until somebody has looked at it: it is stock of that lot, but no drain may take it. Then it is
+ * either released ({@code RELEASE}: ordinary stock again, nothing moves) or it leaves ({@code REDRAW}: written off, or
+ * moved to a marked-down listing), and it leaves from the lot it is in, at that lot's cost. A count of "pieces not for
+ * sale" beside the lots is not enough: two pieces of a sale that drained two lots come back, a later sale is recorded,
+ * and oldest-first would hand the OLDER lot's returned piece to that sale, so the piece would later leave from the
+ * wrong lot at the wrong cost. Holding the unit inside its lot is what keeps each piece at its own cost.
+ *
  * <p>Pure: plain values in, plain values out, no database, no clock. The database layer turns an {@link Outcome}
  * into ledger rows. Running it twice over its own result changes nothing (idempotent), which the tests prove.
  */
@@ -46,13 +56,34 @@ public final class FifoConformer {
     public record Lot(UUID id, int qtyReceived) {
     }
 
-    public enum Kind { DRAIN, RESTORE }
+    public enum Kind { DRAIN, RESTORE, RESTORE_HELD, RELEASE, REDRAW }
 
     /**
      * Something that took stock out ({@code DRAIN}) or put some back ({@code RESTORE}, naming the drain it restores).
      * {@code seq} is recording order.
+     *
+     * @param assessesActionId only for {@code RELEASE} and {@code REDRAW}: the held restore (the returned piece) this decides
      */
-    public record Action(UUID id, long seq, Kind kind, int qty, UUID restoresActionId) {
+    public record Action(UUID id, long seq, Kind kind, int qty, UUID restoresActionId, UUID assessesActionId) {
+
+        public Action(UUID id, long seq, Kind kind, int qty, UUID restoresActionId) {
+            this(id, seq, kind, qty, restoresActionId, null);
+        }
+
+        /** One returned piece put back into the lot it left, and held there. */
+        public static Action held(UUID id, long seq, UUID restoresActionId) {
+            return new Action(id, seq, Kind.RESTORE_HELD, 1, restoresActionId, null);
+        }
+
+        /** The held piece is fine: ordinary stock again. */
+        public static Action release(UUID id, long seq, UUID heldRestoreId) {
+            return new Action(id, seq, Kind.RELEASE, 1, null, heldRestoreId);
+        }
+
+        /** The held piece leaves its lot (written off, or moved to a marked-down listing). */
+        public static Action redraw(UUID id, long seq, UUID heldRestoreId) {
+            return new Action(id, seq, Kind.REDRAW, 1, null, heldRestoreId);
+        }
     }
 
     /** {@code qty} units of one lot. */
@@ -109,15 +140,38 @@ public final class FifoConformer {
         List<Action> inOrder = actions.stream().sorted(Comparator.comparingLong(Action::seq)).toList();
         Map<UUID, List<Chunk>> desired = new LinkedHashMap<>();
         Map<UUID, List<Outstanding>> stacks = new HashMap<>();
+        // Returned pieces nobody has decided yet: the held restore, and the lot its piece is in. And how many each lot holds.
+        Map<UUID, UUID> heldIn = new HashMap<>();
+        Map<UUID, Integer> heldByLot = new HashMap<>();
 
         for (Action action : inOrder) {
             if (action.qty() < 1) {
                 throw new IllegalArgumentException("action " + action.id() + " moves " + action.qty() + " units");
             }
-            if (action.kind() == Kind.DRAIN) {
-                desired.put(action.id(), drain(action, lotsInFifoOrder, remaining, stacks));
-            } else {
-                desired.put(action.id(), restore(action, remaining, stacks));
+            switch (action.kind()) {
+                case DRAIN -> desired.put(action.id(), drain(action, lotsInFifoOrder, remaining, heldByLot, stacks));
+                case RESTORE -> desired.put(action.id(), restore(action, remaining, stacks));
+                case RESTORE_HELD -> {
+                    onePiece(action);
+                    List<Chunk> back = restore(action, remaining, stacks);
+                    UUID lot = back.getFirst().lotId();
+                    heldIn.put(action.id(), lot);
+                    heldByLot.merge(lot, 1, Integer::sum);
+                    desired.put(action.id(), back);
+                }
+                case RELEASE -> {
+                    onePiece(action);
+                    heldByLot.merge(decided(action, heldIn), -1, Integer::sum);
+                    // Nothing moves: the piece was already in its lot.
+                    desired.put(action.id(), List.of());
+                }
+                case REDRAW -> {
+                    onePiece(action);
+                    UUID lot = decided(action, heldIn);
+                    heldByLot.merge(lot, -1, Integer::sum);
+                    remaining.merge(lot, -1, Integer::sum);
+                    desired.put(action.id(), List.of(new Chunk(lot, 1)));
+                }
             }
         }
 
@@ -137,7 +191,7 @@ public final class FifoConformer {
         while (grew) {
             grew = false;
             for (Action action : inOrder) {
-                if (action.kind() == Kind.RESTORE && !recut.contains(action.id())
+                if ((action.kind() == Kind.RESTORE || action.kind() == Kind.RESTORE_HELD) && !recut.contains(action.id())
                         && recut.contains(action.restoresActionId())) {
                     recut.add(action.id());
                     grew = true;
@@ -156,16 +210,35 @@ public final class FifoConformer {
         return new Outcome(List.copyOf(recuts), Map.copyOf(remaining), Map.copyOf(desired));
     }
 
-    private static List<Chunk> drain(Action action, List<Lot> lots, Map<UUID, Integer> remaining,
+    /** A returned piece is one piece: it is held, released and removed one at a time. */
+    private static void onePiece(Action action) {
+        if (action.qty() != 1) {
+            throw new IllegalArgumentException("action " + action.id() + " is about a returned piece and moves " + action.qty()
+                    + " units: a returned piece is one piece");
+        }
+    }
+
+    /** The lot of the held piece this action decides; the piece is held no longer. Refused if it is not held (never was, or was decided). */
+    private static UUID decided(Action action, Map<UUID, UUID> heldIn) {
+        UUID lot = action.assessesActionId() == null ? null : heldIn.remove(action.assessesActionId());
+        if (lot == null) {
+            throw new IllegalStateException("action " + action.id() + " decides the returned piece " + action.assessesActionId()
+                    + ", which is not held: it was not put back before this, or it was already decided");
+        }
+        return lot;
+    }
+
+    private static List<Chunk> drain(Action action, List<Lot> lots, Map<UUID, Integer> remaining, Map<UUID, Integer> heldByLot,
                                      Map<UUID, List<Outstanding>> stacks) {
         List<Chunk> chunks = new ArrayList<>();
         List<Outstanding> stack = new ArrayList<>();
         int need = action.qty();
         for (Lot lot : lots) {
-            int available = remaining.get(lot.id());
+            // A lot offers what it holds less the returned pieces held in it: those are not for sale until somebody decides them.
+            int available = remaining.get(lot.id()) - heldByLot.getOrDefault(lot.id(), 0);
             if (available > 0) {
                 int take = Math.min(available, need);
-                remaining.put(lot.id(), available - take);
+                remaining.merge(lot.id(), -take, Integer::sum);
                 chunks.add(new Chunk(lot.id(), take));
                 stack.add(new Outstanding(lot.id(), take));
                 need -= take;
