@@ -25,6 +25,63 @@ class InventoryTest {
         return inv;
     }
 
+    // ---- returned pieces waiting to be looked at (Phase 12) -----------------------------------------------------------------------------
+
+    @Test
+    @DisplayName("a returned piece is on the shelf and counted, but not free: nobody can reserve it until somebody has looked at it")
+    void quarantinedStockIsNotFree() {
+        var inv = holding(3);
+
+        inv.takeBackToQuarantine();
+
+        assertThat(inv.onHand()).isEqualTo(4);
+        assertThat(inv.quarantined()).isEqualTo(1);
+        assertThat(inv.free()).as("the three that were free before, and not the returned one").isEqualTo(3);
+        assertThat(inv.available()).isEqualTo(3);
+
+        inv.releaseQuarantine();
+        assertThat(inv.quarantined()).isZero();
+        assertThat(inv.free()).as("looked at and fine: on sale again").isEqualTo(4);
+        assertThat(inv.onHand()).isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("a returned piece that leaves (written off, or moved to a marked-down listing) leaves the count and the quarantine together")
+    void aQuarantinedPieceLeaves() {
+        var inv = holding(3);
+        inv.takeBackToQuarantine();
+
+        inv.exitQuarantined();
+
+        assertThat(inv.onHand()).isEqualTo(3);
+        assertThat(inv.quarantined()).isZero();
+        assertThat(inv.free()).isEqualTo(3);
+        assertThatThrownBy(inv::exitQuarantined).as("nothing is waiting").isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(inv::releaseQuarantine).isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    @DisplayName("the ordinary write-off and give-away never take a returned piece that is waiting: a plain refusal, never a broken count")
+    void theOrdinaryWriteOffNeverTakesAQuarantinedPiece() {
+        var inv = holding(1);
+        inv.takeBackToQuarantine();
+
+        assertThatThrownBy(() -> inv.writeOff(2)).as("one free, one waiting").isInstanceOf(InsufficientStockException.class);
+        inv.writeOff(1);
+        assertThat(inv.onHand()).isEqualTo(1);
+        assertThat(inv.quarantined()).as("the waiting piece is untouched").isEqualTo(1);
+        assertThatThrownBy(() -> inv.writeOff(1)).isInstanceOf(InsufficientStockException.class);
+    }
+
+    @Test
+    @DisplayName("only goods are returned: a box that went out does not come back")
+    void onlyGoodsAreQuarantined() {
+        var box = Inventory.open(VARIANT, "PACKAGING");
+        box.receive(5);
+
+        assertThatThrownBy(box::takeBackToQuarantine).isInstanceOf(IllegalStateException.class);
+    }
+
     @Test
     @DisplayName("requires a non-null variantId")
     void requiresVariantId() {

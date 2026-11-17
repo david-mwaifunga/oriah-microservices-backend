@@ -18,6 +18,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The database keeps its own promises about cost lots and the stock ledger, whatever the application does:
@@ -211,7 +212,12 @@ class StockSchemaTest {
         assertThat(refusal(movementSql(v, a, l, "STOLEN_BY_ELVES", "ORIGINAL", -1, null, null))).contains("ck_stock_movement_reason");
         for (String reason : new String[] {"CONSIGNMENT_RECEIVED", "SALE", "RETURN", "WRITE_OFF_LOST", "WRITE_OFF_STOLEN",
                 "WRITE_OFF_BROKEN", "GIVEN_AWAY_MODEL", "GIVEN_AWAY_INFLUENCER", "GIVEN_AWAY_GIFT", "GIVEN_AWAY_PRIZE",
-                "TAKEN_BACK", "CANCELLED_BEFORE_DISPATCH", "RELISTED_MARKED_DOWN", "BOX_SWAPPED"}) {
+                "TAKEN_BACK", "CANCELLED_BEFORE_DISPATCH", "RELISTED_MARKED_DOWN", "BOX_SWAPPED", "WRITE_OFF_RETURNED"}) {
+            // On a movement row, where a reason has no shape of its own. (Since V13 an ACTION carries some reasons only in the shape
+            // they have: a return is a take-back of one piece, never a "sale". kindsAndReasonsOfTheNewActions pins those.)
+            assertThat(refusal(movementSql(v, a, l, reason, "ORIGINAL", -1, null, null))).as(reason).isNull();
+        }
+        for (String reason : new String[] {"SALE", "BOX_SWAPPED", "TAKEN_BACK", "CANCELLED_BEFORE_DISPATCH", "WRITE_OFF_LOST", "GIVEN_AWAY_GIFT"}) {
             assertThat(refusal("""
                     INSERT INTO stock_action (id, variant_id, kind, reason, qty, occurred_at, actor)
                     VALUES ('%s', '%s', 'SALE', '%s', 1, now(), 'user:x')""".formatted(UUID.randomUUID(), v, reason)))
@@ -308,6 +314,197 @@ class StockSchemaTest {
     }
 
     // ----- the catch-up bookkeeping -----
+
+    // ----- returned pieces, their outcomes and marked-down lots (Phase 12, V13) -----
+
+    private static String actionSql(UUID id, UUID variant, String kind, String reason, int qty, UUID reverses, UUID assesses) {
+        return """
+                INSERT INTO stock_action (id, variant_id, kind, reason, qty, occurred_at, actor, reverses_action_id, assesses_action_id)
+                VALUES ('%s', '%s', '%s', '%s', %d, '2026-11-12T10:00:00Z', 'user:kc-maya', %s, %s)"""
+                .formatted(id, variant, kind, reason, qty, reverses == null ? "NULL" : "'" + reverses + "'",
+                        assesses == null ? "NULL" : "'" + assesses + "'");
+    }
+
+    /** A sale of {@code qty} and one piece of it returned: the returned piece's action id. */
+    private static UUID returnedPiece(UUID variant, UUID sale) throws SQLException {
+        UUID piece = UUID.randomUUID();
+        exec(actionSql(piece, variant, "TAKE_BACK", "RETURN", 1, sale, null));
+        return piece;
+    }
+
+    @Test
+    @DisplayName("the three new kinds of action and the new reason are accepted, each only in the shape it has")
+    void kindsAndReasonsOfTheNewActions() throws SQLException {
+        UUID v = variant("SELLABLE");
+        UUID child = variant("SELLABLE");
+        UUID sale = action(v, "SALE", "SALE", 4, null);
+        UUID fine = returnedPiece(v, sale), broken = returnedPiece(v, sale), marked = returnedPiece(v, sale);
+
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RELEASE", "RETURN", 1, null, fine))).isNull();
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RETURN_EXIT", "WRITE_OFF_RETURNED", 1, null, broken))).isNull();
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RETURN_EXIT", "RELISTED_MARKED_DOWN", 1, null, marked))).isNull();
+        assertThat(refusal(actionSql(UUID.randomUUID(), child, "RELIST_IN", "RELISTED_MARKED_DOWN", 1, null, null))).isNull();
+
+        UUID another = returnedPiece(v, sale);
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RELEASE", "SALE", 1, null, another))).as("a release is of a return").contains("ck_stock_action_return_steps");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RETURN_EXIT", "WRITE_OFF_BROKEN", 1, null, another))).contains("ck_stock_action_return_steps");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "WRITE_OFF", "WRITE_OFF_RETURNED", 1, null, null)))
+                .as("the ordinary write-off never carries the returned reason").contains("ck_stock_action_return_steps");
+        assertThat(refusal(actionSql(UUID.randomUUID(), child, "RELIST_IN", "SALE", 1, null, null))).contains("ck_stock_action_return_steps");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "SALE", "RELISTED_MARKED_DOWN", 1, null, null))).contains("ck_stock_action_return_steps");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RELEASE", "RETURN", 1, null, null))).as("an outcome names its piece").contains("ck_stock_action_assesses");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "SALE", "SALE", 1, null, another))).as("only an outcome does").contains("ck_stock_action_assesses");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RESTOCK", "SALE", 1, null, null))).contains("ck_stock_action_kind");
+    }
+
+    @Test
+    @DisplayName("every kind and reason that existed before is still accepted")
+    void theOldKindsStillInsert() throws SQLException {
+        UUID v = variant("SELLABLE");
+        UUID sale = action(v, "SALE", "SALE", 2, null);
+        UUID writeOff = action(v, "WRITE_OFF", "WRITE_OFF_LOST", 1, null);
+        action(v, "GIVE_AWAY", "GIVEN_AWAY_GIFT", 1, null);
+        action(v, "TAKE_BACK", "TAKEN_BACK", 1, writeOff.toString());
+        action(v, "TAKE_BACK", "BOX_SWAPPED", 2, sale.toString());
+        action(v, "RECEIPT", "CONSIGNMENT_RECEIVED", 5, null);
+        action(v, "CORRECTION", "COST_CORRECTED", 5, null);
+        action(v, "TAKE_BACK", "CANCELLED_BEFORE_DISPATCH", 1, action(v, "SALE", "SALE", 1, null).toString());
+
+        assertThat(one("SELECT count(*) FROM stock_action WHERE variant_id = '" + v + "'")).isEqualTo("9");
+    }
+
+    @Test
+    @DisplayName("a returned piece is one piece: it comes back, is released or leaves one at a time")
+    void aReturnIsOnePiece() throws SQLException {
+        UUID v = variant("SELLABLE");
+        UUID sale = action(v, "SALE", "SALE", 4, null);
+        UUID piece = returnedPiece(v, sale);
+
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "TAKE_BACK", "RETURN", 2, sale, null))).contains("ck_stock_action_return_steps");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RETURN_EXIT", "WRITE_OFF_RETURNED", 2, null, piece))).contains("ck_stock_action_return_steps");
+    }
+
+    @Test
+    @DisplayName("an outcome decides a returned piece, and a piece is decided once")
+    void anOutcomeDecidesOnePieceOnce() throws SQLException {
+        UUID v = variant("SELLABLE");
+        UUID sale = action(v, "SALE", "SALE", 3, null);
+        UUID piece = returnedPiece(v, sale);
+        UUID writeOff = action(v, "WRITE_OFF", "WRITE_OFF_LOST", 1, null);
+        UUID ordinaryTakeBack = action(v, "TAKE_BACK", "TAKEN_BACK", 1, writeOff.toString());
+
+        exec(actionSql(UUID.randomUUID(), v, "RELEASE", "RETURN", 1, null, piece));
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RETURN_EXIT", "WRITE_OFF_RETURNED", 1, null, piece)))
+                .as("it was already decided").contains("uq_stock_action_assessed_once");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RELEASE", "RETURN", 1, null, ordinaryTakeBack)))
+                .as("an ordinary take-back is not a returned piece").contains("an outcome decides a returned piece");
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "RELEASE", "RETURN", 1, null, sale))).contains("an outcome decides a returned piece");
+    }
+
+    @Test
+    @DisplayName("the database itself never lets more be taken back than an action moved")
+    void neverMoreTakenBackThanMoved() throws SQLException {
+        UUID v = variant("SELLABLE");
+        UUID sale = action(v, "SALE", "SALE", 2, null);
+
+        returnedPiece(v, sale);
+        action(v, "TAKE_BACK", "CANCELLED_BEFORE_DISPATCH", 1, sale.toString());
+        assertThat(refusal(actionSql(UUID.randomUUID(), v, "TAKE_BACK", "RETURN", 1, sale, null))).contains("already taken back");
+    }
+
+    @Test
+    @DisplayName("pieces waiting to be looked at are goods, are counted on hand, and never push the row past what it holds")
+    void quarantineStaysWithinStock() throws SQLException {
+        UUID v = variant("SELLABLE");
+        UUID box = variant("PACKAGING");
+        exec("UPDATE inventory SET on_hand = 3, reserved = 1, quarantined = 2 WHERE variant_id = '" + v + "'");
+
+        assertThat(refusal("UPDATE inventory SET quarantined = 3 WHERE variant_id = '" + v + "'")).contains("inventory_committed_within_stock");
+        assertThat(refusal("UPDATE inventory SET quarantined = -1 WHERE variant_id = '" + v + "'")).contains("inventory_quarantined_nonnegative");
+        assertThat(refusal("UPDATE inventory SET on_hand = 5, quarantined = 1 WHERE variant_id = '" + box + "'"))
+                .as("a box that went out does not come back").contains("inventory_quarantine_only_sellable");
+    }
+
+    private static String childLotSql(UUID id, UUID variant, UUID line, int received, UUID source, UUID sourceAction) {
+        return """
+                INSERT INTO cost_lot (id, variant_id, kind, sku, product_title, variant_title, consignment_id, consignment_reference,
+                        consignment_line_id, supplier_id, supplier_name, received_at, fifo_tiebreak, slice_position, revision,
+                        qty_received, qty_remaining, unit_cost, is_estimated, source_lot_id, source_action_id)
+                VALUES ('%s', '%s', 'SELLABLE', 'RING-1-R-0000ABCD', 'Ring', 'Ring - M - returned, marked down', '%s', 'C-000001',
+                        '%s', NULL, NULL, '2026-11-12T10:00:00Z', 1, 1, 1, %d, %d, 1528.99, false, %s, %s)"""
+                .formatted(id, variant, UUID.randomUUID(), line, received, received, source == null ? "NULL" : "'" + source + "'",
+                        sourceAction == null ? "NULL" : "'" + sourceAction + "'");
+    }
+
+    @Test
+    @DisplayName("a marked-down lot is one piece of goods, and says both the lot it came from and the movement that took it out")
+    void aChildLotIsOnePieceAndPointsAtItsSource() throws SQLException {
+        UUID v = variant("SELLABLE"), child = variant("SELLABLE");
+        UUID line = UUID.randomUUID();
+        UUID source = lot(v, line, 1, 1, 10, 10, "1528.99");
+        UUID exit = UUID.randomUUID();
+
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 1, source, exit))).isNull();
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 2, source, UUID.randomUUID()))).contains("ck_cost_lot_child_is_one");
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 1, source, null))).contains("ck_cost_lot_child_whole");
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 1, null, UUID.randomUUID()))).contains("ck_cost_lot_child_whole");
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 1, UUID.randomUUID(), UUID.randomUUID()))).as("the source is a lot").contains("cost_lot");
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 1, source, exit))).as("one lot per piece moved, per revision").contains("uq_cost_lot_child");
+    }
+
+    @Test
+    @DisplayName("a line still has each slice of each revision once among its own lots; a marked-down lot of the same line does not count")
+    void rootSlicesStayUnique() throws SQLException {
+        UUID v = variant("SELLABLE"), child = variant("SELLABLE");
+        UUID line = UUID.randomUUID();
+        UUID source = lot(v, line, 1, 1, 10, 10, "1528.99");
+
+        assertThat(refusal(childLotSql(UUID.randomUUID(), child, line, 1, source, UUID.randomUUID()))).as("same line, revision 1, slice 1: a child").isNull();
+        assertThatThrownBy(() -> lot(v, line, 1, 1, 4, 4, "1528.99")).hasMessageContaining("uq_cost_lot_slice");
+    }
+
+    @Test
+    @DisplayName("where a marked-down lot came from can never be changed")
+    void aLotsSourceNeverChanges() throws SQLException {
+        UUID v = variant("SELLABLE"), child = variant("SELLABLE");
+        UUID line = UUID.randomUUID();
+        UUID source = lot(v, line, 1, 1, 10, 10, "1528.99");
+        UUID other = lot(v, UUID.randomUUID(), 1, 1, 10, 10, "1600.00");
+        UUID id = UUID.randomUUID();
+        exec(childLotSql(id, child, line, 1, source, UUID.randomUUID()));
+
+        assertThat(refusal("UPDATE cost_lot SET source_lot_id = '" + other + "' WHERE id = '" + id + "'")).contains("cost_lot");
+        assertThat(refusal("UPDATE cost_lot SET source_action_id = '" + UUID.randomUUID() + "' WHERE id = '" + id + "'")).contains("cost_lot");
+        assertThat(refusal("UPDATE cost_lot SET qty_remaining = 0 WHERE id = '" + id + "'")).as("what is left may still change").isNull();
+    }
+
+    @Test
+    @DisplayName("a reversed sale, a returned piece and a marked-down relist are records: never changed after the fact, never removed")
+    void theReturnRecordsAreRecords() throws SQLException {
+        UUID reversal = UUID.randomUUID(), piece = UUID.randomUUID(), variant = UUID.randomUUID();
+        exec("""
+                INSERT INTO sale_reversal (id, kind, order_id, reservation_id, occurred_at, request_digest, recorded_at, actor)
+                VALUES ('%s', 'RETURN', '%s', NULL, now(), '%s', now(), 'service:order')""".formatted(reversal, UUID.randomUUID(), "a".repeat(64)));
+        exec("""
+                INSERT INTO returned_piece (piece_id, reversal_id, sale_line_id, variant_id, restored_at)
+                VALUES ('%s', '%s', '%s', '%s', now())""".formatted(piece, reversal, UUID.randomUUID(), variant));
+
+        assertThat(refusal("UPDATE sale_reversal SET order_id = '" + UUID.randomUUID() + "' WHERE id = '" + reversal + "'")).isNotNull();
+        assertThat(refusal("DELETE FROM sale_reversal WHERE id = '" + reversal + "'")).isNotNull();
+        assertThat(refusal("INSERT INTO sale_reversal (id, kind, order_id, reservation_id, occurred_at, request_digest, recorded_at, actor) "
+                + "VALUES ('" + UUID.randomUUID() + "', 'CANCELLATION', '" + UUID.randomUUID() + "', NULL, now(), '" + "a".repeat(64) + "', now(), 'x')"))
+                .as("a cancellation names the hold it undoes").contains("sale_reversal_cancellation_names_hold");
+        assertThat(refusal("UPDATE returned_piece SET variant_id = '" + UUID.randomUUID() + "' WHERE piece_id = '" + piece + "'")).isNotNull();
+        assertThat(refusal("UPDATE returned_piece SET outcome = 'RELEASED' WHERE piece_id = '" + piece + "'"))
+                .as("an outcome comes whole: what, by which movement, when, by whom").contains("returned_piece_outcome_whole");
+        assertThat(refusal("UPDATE returned_piece SET outcome = 'RELISTED', outcome_action_id = '" + UUID.randomUUID()
+                + "', outcome_at = now(), outcome_actor = 'x' WHERE piece_id = '" + piece + "'")).as("relisted names its new listing").contains("returned_piece_child");
+        assertThat(refusal("UPDATE returned_piece SET outcome = 'RELEASED', outcome_action_id = '" + UUID.randomUUID()
+                + "', outcome_at = now(), outcome_actor = 'service:order' WHERE piece_id = '" + piece + "'")).isNull();
+        assertThat(refusal("UPDATE returned_piece SET outcome = 'WRITTEN_OFF' WHERE piece_id = '" + piece + "'")).as("decided once").isNotNull();
+        assertThat(refusal("DELETE FROM returned_piece WHERE piece_id = '" + piece + "'")).isNotNull();
+        assertThat(refusal("TRUNCATE returned_piece CASCADE")).isNotNull();
+    }
 
     @Test
     @DisplayName("outbox_catch_up exists, as the event log module's reference defines it")

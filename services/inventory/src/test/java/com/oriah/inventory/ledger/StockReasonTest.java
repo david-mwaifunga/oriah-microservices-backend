@@ -21,7 +21,15 @@ class StockReasonTest {
         assertThat(Arrays.stream(StockReason.values()).map(Enum::name)).containsExactlyInAnyOrder(
                 "CONSIGNMENT_RECEIVED", "SALE", "RETURN", "WRITE_OFF_LOST", "WRITE_OFF_STOLEN", "WRITE_OFF_BROKEN",
                 "GIVEN_AWAY_MODEL", "GIVEN_AWAY_INFLUENCER", "GIVEN_AWAY_GIFT", "GIVEN_AWAY_PRIZE", "TAKEN_BACK",
-                "CANCELLED_BEFORE_DISPATCH", "RELISTED_MARKED_DOWN", "BOX_SWAPPED", "COST_CORRECTED");
+                "CANCELLED_BEFORE_DISPATCH", "RELISTED_MARKED_DOWN", "BOX_SWAPPED", "COST_CORRECTED", "WRITE_OFF_RETURNED");
+    }
+
+    @Test
+    @DisplayName("a returned piece that cannot be sold is written off under a reason of its own (Phase 12), which the ordinary write-off door never takes")
+    void aReturnedPieceIsWrittenOffUnderItsOwnReason() {
+        assertThat(StockReason.WRITE_OFF_RETURNED.category()).isEqualTo(StockReason.Category.RETURNED_WRITE_OFF);
+        assertThat(StockReason.WRITE_OFF_RETURNED.isWriteOffOrGiveAway())
+                .as("it leaves through the assessment of a return, where the piece is known, never through the write-off door").isFalse();
     }
 
     @Test

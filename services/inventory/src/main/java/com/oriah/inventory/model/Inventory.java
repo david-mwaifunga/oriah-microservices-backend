@@ -59,6 +59,10 @@ public class Inventory extends BaseEntity {
     @Column(name = "committed", nullable = false)
     private int committed;
 
+    /** Returned pieces waiting to be looked at (Phase 12); always 0 for boxes. See {@link #quarantined()}. */
+    @Column(name = "quarantined", nullable = false)
+    private int quarantined;
+
     /** {@code SELLABLE} or {@code PACKAGING}, taken from the receipt that created the row; never changes. */
     @Column(name = "kind", nullable = false, updatable = false)
     private String kind;
@@ -119,9 +123,49 @@ public class Inventory extends BaseEntity {
         return committed;
     }
 
-    /** What can still be promised to a product or reserved by an order: held, less what is set aside and what is reserved. */
+    /** Returned pieces waiting to be looked at: on the shelf and counted in {@link #onHand()}, never free. Always 0 for boxes. */
+    public int quarantined() {
+        return quarantined;
+    }
+
+    /**
+     * One piece a customer sent back is on the shelf again, but not for sale: nobody has looked at it yet.
+     *
+     * @throws IllegalStateException if this row is packaging: a box that went out does not come back
+     */
+    public void takeBackToQuarantine() {
+        if (!"SELLABLE".equals(kind)) {
+            throw new IllegalStateException("only goods come back from a customer: variant " + variantId + " is packaging");
+        }
+        this.onHand += 1;
+        this.quarantined += 1;
+    }
+
+    /** A returned piece was looked at and is fine: it is ordinary stock again. */
+    public void releaseQuarantine() {
+        requireAPieceWaiting();
+        this.quarantined -= 1;
+    }
+
+    /** A returned piece leaves: written off as not sellable, or moved to a marked-down listing of its own. */
+    public void exitQuarantined() {
+        requireAPieceWaiting();
+        this.quarantined -= 1;
+        this.onHand -= 1;
+    }
+
+    private void requireAPieceWaiting() {
+        if (quarantined < 1) {
+            throw new IllegalStateException("no returned piece of variant " + variantId + " is waiting to be looked at");
+        }
+    }
+
+    /**
+     * What can still be promised to a product or reserved by an order: held, less what is set aside, what is reserved, and the returned
+     * pieces nobody has looked at yet.
+     */
     public int free() {
-        return onHand - reserved - committed;
+        return onHand - reserved - committed - quarantined;
     }
 
     /** What an order may still reserve: the same as {@link #free()}. Boxes promised to a product are not for the next order to take. */
@@ -276,7 +320,8 @@ public class Inventory extends BaseEntity {
      */
     public int writeOff(int qty) {
         requirePositive(qty);
-        int unreserved = onHand - reserved;
+        // A returned piece that is waiting is never taken by this door: it leaves only through the assessment of its return.
+        int unreserved = onHand - reserved - quarantined;
         if (qty > unreserved) {
             throw InsufficientStockException.cannot("write off", qty, unreserved, "available");
         }

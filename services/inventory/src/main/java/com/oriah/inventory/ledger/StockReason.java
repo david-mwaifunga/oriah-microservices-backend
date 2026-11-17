@@ -10,7 +10,9 @@ import java.util.Arrays;
  *
  * <p>Wired in Phase 5: {@code CONSIGNMENT_RECEIVED}, {@code SALE}, the write-offs, the give-aways,
  * {@code TAKEN_BACK} and {@code COST_CORRECTED}. {@code RETURN}, {@code CANCELLED_BEFORE_DISPATCH},
- * {@code RELISTED_MARKED_DOWN} and {@code BOX_SWAPPED} exist so Phases 7 and 12 only add behaviour.
+ * {@code RELISTED_MARKED_DOWN} and {@code BOX_SWAPPED} existed from the start so Phases 7 and 12 only added behaviour.
+ * Phase 12 added one reason after all, {@code WRITE_OFF_RETURNED}: a returned piece that cannot be sold must show on a
+ * line of its own in the books, apart from stock lost, stolen or broken in the shop.
  */
 public enum StockReason {
 
@@ -36,10 +38,15 @@ public enum StockReason {
     /** A box was swapped on a paid order (Phase 7). */
     BOX_SWAPPED(Category.BOX_SWAP),
     /** A lot was closed and its units reopened at a corrected cost: a valuation transfer, not an event in the shop. */
-    COST_CORRECTED(Category.COST_CORRECTION);
+    COST_CORRECTED(Category.COST_CORRECTION),
+    /**
+     * A returned piece was looked at and cannot be sold (Phase 12). A reason of its own, not one of the write-off door's: this piece is
+     * known (it is the one that came back, in the lot it went back to), and it leaves through the assessment of its return.
+     */
+    WRITE_OFF_RETURNED(Category.RETURNED_WRITE_OFF);
 
     /** What a report by reason groups on. */
-    public enum Category { RECEIPT, SALE, RETURN, WRITE_OFF, GIVE_AWAY, TAKE_BACK, CANCELLATION, MARKDOWN, BOX_SWAP, COST_CORRECTION }
+    public enum Category { RECEIPT, SALE, RETURN, WRITE_OFF, GIVE_AWAY, TAKE_BACK, CANCELLATION, MARKDOWN, BOX_SWAP, COST_CORRECTION, RETURNED_WRITE_OFF }
 
     private final Category category;
 
