@@ -106,6 +106,8 @@ public class GatewayRoutesConfig {
         // Generous, but NOT absent: this path serves bytes anonymously, which
         // makes it the cheapest bandwidth-amplification target in the stack.
         registerImageRateLimit("catalog-images-route");
+        // ZynlePay's callback is the one payment path open to the world: each sender is limited, under the route's own id.
+        registerCallbackRateLimit("payment-callback-route");
 
         RouteLocatorBuilder.Builder routes = builder.routes();
 
@@ -202,6 +204,17 @@ public class GatewayRoutesConfig {
         // ------------------------ authenticated ------------------------
         routes = simple(routes, "customer-route", "/api/v1/customers/**", "customer");
         routes = simple(routes, "cart-route", "/api/v1/carts/**", "cart");
+        // Phase 13: ZynlePay's callback, before the payment route so that it is the one matched. It needs no token (see SecurityConfig), so it is
+        // bounded here: a body of at most 16 KB (payment itself reads at most 8), and a limit per sender. POST to this exact path only: reading
+        // it, and every other payment path, goes the usual way. No retry and no fallback: a message that is lost is found by payment asking
+        // ZynlePay itself.
+        routes = routes.route("payment-callback-route", r -> r
+                .path("/api/v1/payments/zynlepay/callback").and().method(org.springframework.http.HttpMethod.POST)
+                .filters(f -> f.setRequestSize(org.springframework.util.unit.DataSize.ofKilobytes(16))
+                        .requestRateLimiter(c -> c
+                                .setRateLimiter(redisRateLimiter)
+                                .setKeyResolver(ipKeyResolver)))
+                .uri("lb://payment"));
         routes = simple(routes, "payment-route", "/api/v1/payments/**", "payment");
         routes = simple(routes, "order-route", "/api/v1/orders/**", "order");
         routes = simple(routes, "promotion-route", "/api/v1/promotions/**", "promotion");
@@ -318,6 +331,19 @@ public class GatewayRoutesConfig {
         redisRateLimiter.getConfig().put(routeId, new RedisRateLimiter.Config()
                 .setReplenishRate(IMAGE_REPLENISH_RATE)
                 .setBurstCapacity(IMAGE_BURST_CAPACITY));
+    }
+
+    /**
+     * The callback's allowance per sender: ZynlePay sends one message per payment (a few on a retry), so 5 a second with a burst of 20 is far
+     * more than it needs and far less than a flood. A message that is turned away costs nothing: payment asks ZynlePay itself on its own schedule.
+     */
+    private static final int CALLBACK_REPLENISH_RATE = 5;
+    private static final int CALLBACK_BURST_CAPACITY = 20;
+
+    private void registerCallbackRateLimit(String routeId) {
+        redisRateLimiter.getConfig().put(routeId, new RedisRateLimiter.Config()
+                .setReplenishRate(CALLBACK_REPLENISH_RATE)
+                .setBurstCapacity(CALLBACK_BURST_CAPACITY));
     }
 
     private void registerStorefrontRateLimit(String routeId) {

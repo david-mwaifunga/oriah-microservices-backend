@@ -81,6 +81,7 @@ class RouteSnapshotTest {
             "customer-admin-route",
             "cart-route",
             "payment-route",
+            "payment-callback-route",
             "order-route",
             "order-admin-route",
             "promotion-route",
@@ -132,6 +133,9 @@ class RouteSnapshotTest {
     @Autowired
     private RouteLocator routeLocator;
 
+    @Autowired
+    private org.springframework.cloud.gateway.filter.ratelimit.RedisRateLimiter redisRateLimiter;
+
     @Test
     @DisplayName("route id set is exactly the 40-route snapshot")
     void routeIdSetIsExactlyTheSnapshot() {
@@ -160,6 +164,7 @@ class RouteSnapshotTest {
                 .containsEntry("customer-admin-route", "lb://customer")
                 .containsEntry("cart-route", "lb://cart")
                 .containsEntry("payment-route", "lb://payment")
+                .containsEntry("payment-callback-route", "lb://payment")
                 .containsEntry("order-route", "lb://order")
                 .containsEntry("order-admin-route", "lb://order")
                 .containsEntry("promotion-route", "lb://promotion")
@@ -277,6 +282,39 @@ class RouteSnapshotTest {
         return routes.stream()
                 .sorted(Comparator.comparingInt(Route::getOrder))
                 .toList();
+    }
+
+    @Test
+    @DisplayName("Phase 13: ZynlePay's callback has a route of its own, for POST only: bounded in size and limited per sender, where the rest of payment is not")
+    void theProviderCallbackHasItsOwnRoute() {
+        String callback = "/api/v1/payments/zynlepay/callback";
+
+        assertThat(firstMatchingRouteId(MockServerHttpRequest.post(callback).build())).isEqualTo("payment-callback-route");
+        // Reading it, or any other payment path, goes the usual way (and is then refused or served as usual).
+        assertThat(firstMatchingRouteId(MockServerHttpRequest.get(callback).build())).isEqualTo("payment-route");
+        assertThat(firstMatchingRouteId(MockServerHttpRequest.post("/api/v1/payments/provider-payments").build())).isEqualTo("payment-route");
+        assertThat(firstMatchingRouteId(MockServerHttpRequest.post(callback + "/more").build())).isEqualTo("payment-route");
+
+        Route route = routes().stream().filter(r -> r.getId().equals("payment-callback-route")).findFirst().orElseThrow();
+        assertThat(route.getFilters().toString()).as("its filters").contains("RequestSize").contains("RequestRateLimiter");
+        var limit = redisRateLimiter.getConfig().get("payment-callback-route");
+        assertThat(limit).as("a limit registered under the route's own id: without one every callback would be a 500").isNotNull();
+        assertThat(limit.getReplenishRate()).isEqualTo(5);
+        assertThat(limit.getBurstCapacity()).isEqualTo(20);
+    }
+
+    private String firstMatchingRouteId(MockServerHttpRequest request) {
+        ServerWebExchange exchange = MockServerWebExchange.from(request);
+        for (Route route : routes()) {
+            Boolean matched = Mono.from(route.getPredicate().apply(exchange))
+                    .defaultIfEmpty(false)
+                    .onErrorReturn(false)
+                    .block();
+            if (Boolean.TRUE.equals(matched)) {
+                return route.getId();
+            }
+        }
+        return null;
     }
 
     /**

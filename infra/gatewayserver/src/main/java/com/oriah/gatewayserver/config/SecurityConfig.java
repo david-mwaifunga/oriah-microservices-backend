@@ -169,6 +169,13 @@ public class SecurityConfig {
                         // so that any future write under that prefix is not
                         // swept in by this permit.
                         .pathMatchers(HttpMethod.POST, "/api/v1/variants/pricing").permitAll()
+                        // Phase 13: ZynlePay's callback. ZynlePay sends no token, so this one path, POST only, needs none. The message is not
+                        // signed and payment trusts it with nothing (it can only bring forward the moment payment asks ZynlePay itself); its
+                        // route bounds the body and limits each sender.
+                        .pathMatchers(HttpMethod.POST, PROVIDER_CALLBACK).permitAll()
+                        // Phase 13: only the payment service asks an order to take a payment, service to service with the shopper's own token.
+                        // Refused to everyone here, before the rule that lets a shopper reach their own orders.
+                        .pathMatchers("/api/v1/orders/*/provider-payment/**").denyAll()
 
                         // Admin roles, each one the role the owning service
                         // actually checks. hasRole adds the ROLE_ prefix
@@ -223,6 +230,12 @@ public class SecurityConfig {
                         // Phase 7: rejecting a false payment claim is the staff's, like confirming one. Before the PAYMENT_ADMIN prefix below,
                         // which guards what is left of /payments (money held for customers).
                         .pathMatchers("/api/v1/admin/payments/claims/**").hasRole("SALES_AGENT")
+                        // Phase 13: the people who confirm money see the payments through ZynlePay and may ask ZynlePay about one, so they never
+                        // chase or key by hand what is on its way. Exactly these three, each with its method: SETTLING one (/resolve) and anything
+                        // else under the prefix falls through to PAYMENT_ADMIN below, which only the owner holds.
+                        .pathMatchers(HttpMethod.GET, "/api/v1/admin/payments/provider-payments", "/api/v1/admin/payments/provider-payments/*")
+                        .hasRole("SALES_AGENT")
+                        .pathMatchers(HttpMethod.POST, "/api/v1/admin/payments/provider-payments/*/check").hasRole("SALES_AGENT")
                         .pathMatchers("/api/v1/admin/procurement/**").hasRole("PROCUREMENT_ADMIN")
                         .pathMatchers("/api/v1/admin/shipping/**").hasRole("SHIPPING_ADMIN")
                         .pathMatchers("/api/v1/admin/finance/**").hasRole("FINANCE_ADMIN")
@@ -305,10 +318,29 @@ public class SecurityConfig {
                         .authenticationEntryPoint(problems.authenticationEntryPoint())
                         .accessDeniedHandler(problems.accessDeniedHandler()))
                 .oauth2ResourceServer(oauth2 -> oauth2
+                        .bearerTokenConverter(SecurityConfig::bearerToken)
                         .jwt(jwt -> jwt.jwtAuthenticationConverter(reactiveKeycloakConverter()))
                         .authenticationEntryPoint(problems.authenticationEntryPoint())
                         .accessDeniedHandler(problems.accessDeniedHandler()))
                 .build();
+    }
+
+    /** ZynlePay's callback (Phase 13): the one path of payment that needs no token. */
+    static final String PROVIDER_CALLBACK = "/api/v1/payments/zynlepay/callback";
+
+    private static final org.springframework.security.oauth2.server.resource.web.server.authentication.ServerBearerTokenAuthenticationConverter BEARER =
+            new org.springframework.security.oauth2.server.resource.web.server.authentication.ServerBearerTokenAuthenticationConverter();
+
+    /**
+     * The caller's token, as everywhere, except on ZynlePay's callback: whatever Authorization header a message there carries is not a token
+     * of ours and is not judged as one. A bad one would otherwise be a 401 before the open door is reached, and ZynlePay's message would be lost.
+     */
+    private static reactor.core.publisher.Mono<org.springframework.security.core.Authentication> bearerToken(
+            org.springframework.web.server.ServerWebExchange exchange) {
+        if (HttpMethod.POST.equals(exchange.getRequest().getMethod()) && PROVIDER_CALLBACK.equals(exchange.getRequest().getPath().value())) {
+            return reactor.core.publisher.Mono.empty();
+        }
+        return BEARER.convert(exchange);
     }
 
     /**

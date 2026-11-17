@@ -491,6 +491,71 @@ class GatewaySecurityConfigTest {
         as(jobRole).post().uri("/api/v1/admin/inventory/returned-pieces/" + id + "/outcome").exchange().expectStatus().isForbidden();
     }
 
+    // ------------------------------------------------------------------
+    // Phase 13: payments through ZynlePay
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("Phase 13: ZynlePay's callback needs no token (ZynlePay sends none), on that one path and for POST only; a stray token there is not judged")
+    void theProviderCallbackIsPublicAndNarrow() {
+        assertAdmitted(client.post().uri("/api/v1/payments/zynlepay/callback"));
+        // Whatever Authorization header ZynlePay's message carries is not a token of ours: judged as one, it would be a 401 before the open door.
+        assertAdmitted(client.post().uri("/api/v1/payments/zynlepay/callback").header("Authorization", "Bearer not-a-token-of-ours"));
+
+        client.get().uri("/api/v1/payments/zynlepay/callback").exchange().expectStatus().isUnauthorized();
+        client.post().uri("/api/v1/payments/zynlepay/callback/more").exchange().expectStatus().isUnauthorized();
+        client.post().uri("/api/v1/payments/zynlepay/other").exchange().expectStatus().isUnauthorized();
+        client.post().uri("/api/v1/payments/provider-payments").exchange().expectStatus().isUnauthorized();
+        // And a bad token is still a bad token everywhere else.
+        client.get().uri("/api/v1/payments/contact-info").header("Authorization", "Bearer not-a-token-of-ours").exchange().expectStatus().isUnauthorized();
+    }
+
+    @ParameterizedTest(name = "{0} cannot ask an order to take a payment through the gateway")
+    @DisplayName("Phase 13: only the payment service asks an order to take a payment (service to service): nobody reaches that door through the gateway")
+    @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
+    void nobodyAsksAnOrderToTakeAPayment(String jobRole) {
+        String path = "/api/v1/orders/00000000-0000-0000-0000-000000000001/provider-payment";
+        as(jobRole).post().uri(path).exchange().expectStatus().isForbidden();
+        client.mutateWith(mockJwt().authorities(authority("ROLE_USER"))).post().uri(path).exchange().expectStatus().isForbidden();
+        client.post().uri(path).exchange().expectStatus().isUnauthorized();
+        // The shopper's own doors beside it are untouched.
+        assertAdmitted(client.mutateWith(mockJwt().authorities(authority("ROLE_USER"))).post()
+                .uri("/api/v1/orders/00000000-0000-0000-0000-000000000001/payment-claim"));
+        // The stand-in for ZynlePay inside payment is internal, like every internal door.
+        as(jobRole).post().uri("/internal/zynlepay-sim/transactions/OZ7K2M9Q4T8X1B5D/decide").exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("Phase 13: staff who confirm money see the ZynlePay payments and may ask ZynlePay about one; only the owner settles one")
+    void staffSeeProviderPaymentsAndTheOwnerSettlesThem() {
+        String id = "00000000-0000-0000-0000-000000000001";
+        String list = "/api/v1/admin/payments/provider-payments";
+        for (String jobRole : new String[] {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"}) {
+            boolean confirmsMoney = RealmRolesTest.JOB_ROLES.get(jobRole).contains("SALES_AGENT");
+            boolean owner = RealmRolesTest.JOB_ROLES.get(jobRole).contains("PAYMENT_ADMIN");
+            if (confirmsMoney) {
+                assertAdmitted(as(jobRole).get().uri(list));
+                assertAdmitted(as(jobRole).get().uri(list + "/" + id));
+                assertAdmitted(as(jobRole).post().uri(list + "/" + id + "/check"));
+            } else {
+                as(jobRole).get().uri(list).exchange().expectStatus().isForbidden();
+                as(jobRole).get().uri(list + "/" + id).exchange().expectStatus().isForbidden();
+                as(jobRole).post().uri(list + "/" + id + "/check").exchange().expectStatus().isForbidden();
+            }
+            if (owner) {
+                assertAdmitted(as(jobRole).post().uri(list + "/" + id + "/resolve"));
+            } else {
+                as(jobRole).post().uri(list + "/" + id + "/resolve").exchange().expectStatus().isForbidden();
+            }
+        }
+        // The two sets differ in this realm, or this test would prove nothing about the narrower rule.
+        org.assertj.core.api.Assertions.assertThat(RealmRolesTest.JOB_ROLES.get("SALES")).contains("SALES_AGENT").doesNotContain("PAYMENT_ADMIN");
+        org.assertj.core.api.Assertions.assertThat(RealmRolesTest.JOB_ROLES.get("OWNER")).contains("SALES_AGENT", "PAYMENT_ADMIN");
+        // Reading is not a way into deciding: a POST to the list itself, or anything else under it, is the owner's.
+        as("SALES").post().uri(list).exchange().expectStatus().isForbidden();
+        as("SALES").post().uri(list + "/" + id + "/check/more").exchange().expectStatus().isForbidden();
+    }
+
     @Test
     @DisplayName("Phase 12: refunds are the owner's: what is owed, the money check, paying out and voiding a payout need PAYMENT_ADMIN, which only OWNER holds")
     void onlyTheOwnerPaysRefunds() {
