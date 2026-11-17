@@ -55,7 +55,9 @@ public final class SendDecision {
      * confirmed these go as the short note. Every other message (placed, cancelled, expired) is one a person can cause alone, for free, with
      * a made-up address, so to an unconfirmed address it is not emailed at all.
      */
-    private static final Set<String> MONEY_STANDS_BEHIND_IT = Set.of("order.paid", "order.fulfilled", "order.shipped", "order.delivered");
+    private static final Set<String> MONEY_STANDS_BEHIND_IT = Set.of("order.paid", "order.fulfilled", "order.shipped", "order.delivered",
+            // Phase 12: only a PAID order is cancelled this way, only a dispatched one comes back, and a payout is the owner's own act.
+            "order.sale_cancelled", "order.return_recorded", "payment.paid_out");
 
     /**
      * In this order:

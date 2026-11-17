@@ -139,6 +139,20 @@ public class ConfirmationWatch {
     }
 
     /**
+     * The sale this confirmation paid has been corrected (Phase 12: a paid order cancelled, or pieces returned): the order system has dealt
+     * with it, so "a cancelled payment record paid a sale anyway" has its answer.
+     *
+     * @return whether the money record was cancelled (voided), as far as notification has heard: if so nobody knows yet whether the money
+     *         arrived, and the customer is promised no amount
+     */
+    public boolean corrected(UUID confirmationId, UUID orderId, Instant at, Instant now) {
+        lock(confirmationId, orderId, at);
+        Watch watch = read(confirmationId);
+        alerts.resolve(Kind.VOID_AFTER_SALE, confirmationId.toString(), "SALE_CORRECTED", now);
+        return watch.voidedAt() != null;
+    }
+
+    /**
      * The last note of each "money recorded but the sale has not completed" alert that just closed by the clock: after two weeks of reminders
      * nobody answered, and an alert about money already taken must not end in silence. Called by the dispatcher right after the alert clock.
      *

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import com.oriah.notification.model.MessageKind;
 import com.oriah.notification.text.MessageTexts.OrderWords;
+import com.oriah.notification.text.MessageTexts.RefundWords;
 import com.oriah.notification.text.MessageTexts.ShopLines;
 import com.oriah.notification.text.MessageTexts.Text;
 
@@ -191,6 +192,9 @@ class ShopperTextsTest {
     @DisplayName("every kind of message has its words, in plain letters, and none states a setting of another service")
     void everyTextIsPlainAndStatesNoSetting() {
         for (MessageKind kind : MessageKind.values()) {
+            if (kind.aboutARefund()) {
+                continue;   // written from a correction or a payout, never from a snapshot: checked the same way just below
+            }
             for (OrderWords order : Arrays.asList(unpaid(), paid("DELIVERY"), paid("SELF_COLLECT"))) {
                 Text text = MessageTexts.forShopper(kind, order, NO_LINES);
                 String all = text.subject() + " " + text.body();
@@ -201,6 +205,100 @@ class ShopperTextsTest {
             }
         }
         assertThat(MessageTexts.shortForm().body()).matches("\\p{ASCII}+");
+        for (boolean customerBears : new boolean[] {true, false}) {
+            for (boolean sorry : new boolean[] {true, false}) {
+                for (boolean moneyRecordCancelled : new boolean[] {true, false}) {
+                    RefundWords refund = refund(2, "180.00", "45.00", customerBears, sorry, moneyRecordCancelled);
+                    for (Text text : Arrays.asList(MessageTexts.paidOrderCancelled(refund, NO_LINES), MessageTexts.returnReceived(refund, NO_LINES))) {
+                        String all = text.subject() + " " + text.body();
+                        assertThat(all).isNotBlank().matches("\\p{ASCII}+").doesNotContainIgnoringCase("minute").doesNotContainIgnoringCase("hour")
+                                .doesNotContain(ORDER.toString());
+                    }
+                }
+            }
+        }
+        Text paid = MessageTexts.refundPaid(ORDER, "OR-000123", new BigDecimal("225.00"), new BigDecimal("5.00"), "ZMW");
+        assertThat(paid.subject() + " " + paid.body()).matches("\\p{ASCII}+").doesNotContain(ORDER.toString());
+    }
+
+    // ---- Phase 12: a paid order cancelled, a return, a refund paid ------------------------------------------------------------------------
+
+    private static RefundWords refund(int pieces, String forPieces, String forDelivery, boolean customerBears, boolean pieceUnavailable, boolean moneyRecordCancelled) {
+        BigDecimal goods = new BigDecimal(forPieces);
+        BigDecimal delivery = new BigDecimal(forDelivery);
+        return new RefundWords(ORDER, "OR-000123", pieces, goods, delivery, goods.add(delivery), "ZMW", customerBears, pieceUnavailable, moneyRecordCancelled);
+    }
+
+    @Test
+    @DisplayName("a paid order cancelled before it left: what is paid back line by line, who bears the sending charge, and that the customer will be asked how")
+    void paidOrderCancelled() {
+        Text withDelivery = MessageTexts.paidOrderCancelled(refund(2, "180.00", "45.00", true, false, false), NO_LINES);
+        assertThat(withDelivery.subject()).isEqualTo("Order OR-000123 has been cancelled");
+        assertThat(withDelivery.body()).isEqualTo("Order OR-000123 has been cancelled before it left us. We will pay you back K225.00: K180.00 for your pieces and "
+                + "K45.00 for delivery. The charge for sending the money is taken from this amount. We will be in touch about how you would like to be paid.");
+
+        Text piecesOnly = MessageTexts.paidOrderCancelled(refund(2, "180.00", "0.00", true, false, false), NO_LINES);
+        assertThat(piecesOnly.body()).isEqualTo("Order OR-000123 has been cancelled before it left us. We will pay you back K180.00 for your pieces. "
+                + "The charge for sending the money is taken from this amount. We will be in touch about how you would like to be paid.");
+
+        Text oriahBears = MessageTexts.paidOrderCancelled(refund(2, "180.00", "0.00", false, false, false), NO_LINES);
+        assertThat(oriahBears.body()).contains("We carry the charge for sending the money.").doesNotContain("taken from this amount");
+    }
+
+    @Test
+    @DisplayName("a piece that is no longer available: the words say sorry, and who bears the sending charge follows what the event says, never the reason")
+    void aPieceNoLongerAvailableSaysSorry() {
+        Text customerBears = MessageTexts.paidOrderCancelled(refund(2, "180.00", "45.00", true, true, false), NO_LINES);
+        assertThat(customerBears.subject()).isEqualTo("We are sorry: order OR-000123 has been cancelled");
+        assertThat(customerBears.body()).isEqualTo("We are sorry. A piece in order OR-000123 is no longer available, so we have cancelled the order. We will pay you back "
+                + "K225.00: K180.00 for your pieces and K45.00 for delivery. The charge for sending the money is taken from this amount. "
+                + "We will be in touch about how you would like to be paid.");
+
+        assertThat(MessageTexts.paidOrderCancelled(refund(2, "180.00", "45.00", false, true, false), NO_LINES).body())
+                .contains("We carry the charge for sending the money.");
+    }
+
+    @Test
+    @DisplayName("when the money record of the sale was cancelled, no amount is promised: for a cancellation and for a return")
+    void aCancelledMoneyRecordPromisesNoAmount() {
+        Text cancelled = MessageTexts.paidOrderCancelled(refund(2, "180.00", "45.00", true, false, true), NO_LINES);
+        assertThat(cancelled.body()).isEqualTo("Order OR-000123 has been cancelled. We will contact you about any money you sent us.").doesNotContain("K");
+
+        Text returned = MessageTexts.returnReceived(refund(1, "90.00", "0.00", true, false, true), NO_LINES);
+        assertThat(returned.body()).isEqualTo("We have received 1 piece back from order OR-000123. We will contact you about any money you sent us.");
+    }
+
+    @Test
+    @DisplayName("a return received: how many pieces, what is paid back, and that delivery is not; the owner's contact line follows when she has written one")
+    void returnReceived() {
+        Text one = MessageTexts.returnReceived(refund(1, "90.00", "0.00", true, false, false), NO_LINES);
+        assertThat(one.subject()).isEqualTo("We have received your return for order OR-000123");
+        assertThat(one.body()).isEqualTo("We have received 1 piece back from order OR-000123. We will pay you back K90.00. Delivery is not paid back. "
+                + "The charge for sending the money is taken from this amount.");
+
+        Text two = MessageTexts.returnReceived(refund(2, "180.00", "0.00", true, false, false), new ShopLines(null, null, "Call us on the shop line."));
+        assertThat(two.body()).startsWith("We have received 2 pieces back from order OR-000123. We will pay you back K180.00.").endsWith("Call us on the shop line.");
+    }
+
+    @Test
+    @DisplayName("a refund paid: what the customer received, and when the sending charge was taken off, the sum that shows it")
+    void refundPaid() {
+        Text withheld = MessageTexts.refundPaid(ORDER, "OR-000123", new BigDecimal("90.00"), new BigDecimal("2.50"), "ZMW");
+        assertThat(withheld.subject()).isEqualTo("Your refund for order OR-000123 has been paid");
+        assertThat(withheld.body()).isEqualTo("We have paid back K87.50 for order OR-000123: K90.00 less K2.50 for the charge of sending it.");
+
+        assertThat(MessageTexts.refundPaid(ORDER, "OR-000123", new BigDecimal("90.00"), new BigDecimal("0.00"), "ZMW").body())
+                .isEqualTo("We have paid back K90.00 for order OR-000123.");
+    }
+
+    @Test
+    @DisplayName("a kind about a refund is never written from a snapshot of the order: asking for it that way is refused")
+    void refundWordsAreNotWrittenFromASnapshot() {
+        for (MessageKind kind : MessageKind.values()) {
+            if (kind.aboutARefund()) {
+                org.assertj.core.api.Assertions.assertThatThrownBy(() -> MessageTexts.forShopper(kind, paid("DELIVERY"), NO_LINES)).isInstanceOf(IllegalArgumentException.class);
+            }
+        }
     }
 
     @Test

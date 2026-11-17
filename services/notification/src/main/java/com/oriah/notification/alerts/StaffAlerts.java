@@ -51,7 +51,9 @@ public class StaffAlerts {
     /** What kind of thing an alert is about, and which of the two groups of mailboxes is told. */
     public enum Kind {
         PAYMENT_TO_CONFIRM(false), SETTLEMENT_STUCK(false), VOID_AFTER_SALE(false), CLAIM_EMAIL_LIMIT(false), EMAIL_DOWN(false),
-        BELOW_COST(true), BELOW_COST_CHECK_DOWN(true);
+        BELOW_COST(true), BELOW_COST_CHECK_DOWN(true),
+        /** A refund is owed to a customer and is not recorded as paid (Phase 12). Its subject is the debt's id. */
+        REFUND_TO_PAY(false);
 
         private final boolean cost;
 
@@ -440,10 +442,11 @@ public class StaffAlerts {
      * reminder, not one for every day that was missed, seconds apart.
      */
     private Instant nextReminder(Reminder reminder, Instant now) {
-        if (reminder.kind() != Kind.SETTLEMENT_STUCK) {
+        if (reminder.kind() != Kind.SETTLEMENT_STUCK && reminder.kind() != Kind.REFUND_TO_PAY) {
             return null;
         }
-        Duration every = settings.alerts().settlement().remindEvery();
+        // A refund that is owed is told of every week for as long as it is owed: it has no closing time, so the reminders never run out.
+        Duration every = reminder.kind() == Kind.REFUND_TO_PAY ? settings.alerts().refundToPay().remindEvery() : settings.alerts().settlement().remindEvery();
         Instant next = reminder.remindAt().plus(every);
         while (!next.isAfter(now)) {
             next = next.plus(every);

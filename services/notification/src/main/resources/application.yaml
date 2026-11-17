@@ -265,7 +265,7 @@ oriah:
         read-timeout: PT30S
         write-timeout: PT30S
       # The kinds of message that are emailed as well as shown on the website; every other kind is website only.
-      emailed: PAID,READY_TO_COLLECT,ON_ITS_WAY,DELIVERED,PAYMENT_NOT_CONFIRMED
+      emailed: PAID,READY_TO_COLLECT,ON_ITS_WAY,DELIVERED,PAYMENT_NOT_CONFIRMED,PAID_ORDER_CANCELLED,RETURN_RECEIVED,REFUND_PAID
     send:
       # The dispatcher: the one job that sends. On in every profile; the test configuration turns it off and calls it itself.
       enabled: true
@@ -336,6 +336,11 @@ oriah:
       void-after-sale:
         # "A cancelled payment record paid a sale anyway" stays open this long: no fact ends it, a person puts the books right.
         open-for: P7D
+      refund-to-pay:
+        # A refund owed to a customer is listed at once. Staff are emailed about it only after it has stood this long ...
+        remind-after: P3D
+        # ... and then this often, for as long as it is owed. It never closes by itself.
+        remind-every: P7D
       payment-to-confirm:
         # Anyone can open an account and say they have paid. At most this many "a customer says they have paid" alerts are emailed
         # in any 24 hours; beyond it they are listed only and ONE email says so. At least 1: there is no "off".

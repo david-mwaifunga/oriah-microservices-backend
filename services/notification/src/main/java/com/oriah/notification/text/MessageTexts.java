@@ -69,8 +69,107 @@ public final class MessageTexts {
         }
     }
 
+    /**
+     * What a message about a cancelled paid order or a return says. Every figure is from the event that caused the message.
+     *
+     * @param pieces              how many pieces came back (a return) or were on the order (a cancellation)
+     * @param forPieces           what is owed for the pieces: their list price less their discount
+     * @param forDelivery         the delivery charge that is paid back (a cancellation before dispatch only); zero for a return
+     * @param owed                both together
+     * @param customerBearsCharge true when the charge for sending the money back comes off what the customer receives (the event says who)
+     * @param pieceUnavailable    true when the shop cancelled because a piece was no longer there: the words say sorry
+     * @param moneyRecordCancelled true when the money record that paid the sale was itself cancelled since: nobody knows yet whether the money
+     *                            arrived, so no amount is promised
+     */
+    public record RefundWords(UUID orderId, String receiptNumber, int pieces, BigDecimal forPieces, BigDecimal forDelivery, BigDecimal owed, String currency,
+                              boolean customerBearsCharge, boolean pieceUnavailable, boolean moneyRecordCancelled) {
+
+        String name() {
+            return OrderName.of(orderId, receiptNumber);
+        }
+
+        String pieceCount() {
+            return pieces == 1 ? "1 piece" : pieces + " pieces";
+        }
+
+        /** "K225.00: K180.00 for your pieces and K45.00 for delivery", or "K180.00 for your pieces" when no delivery is paid back. */
+        String whatIsPaidBack() {
+            return forDelivery.signum() > 0
+                    ? Kwacha.write(owed, currency) + ": " + Kwacha.write(forPieces, currency) + " for your pieces and " + Kwacha.write(forDelivery, currency) + " for delivery"
+                    : Kwacha.write(owed, currency) + " for your pieces";
+        }
+
+        String whoBearsTheCharge() {
+            return customerBearsCharge ? " The charge for sending the money is taken from this amount." : " We carry the charge for sending the money.";
+        }
+    }
+
+    private static final String WE_WILL_BE_IN_TOUCH = " We will be in touch about how you would like to be paid.";
+    private static final String ABOUT_ANY_MONEY = " We will contact you about any money you sent us.";
+
+    /** A paid order was cancelled before it left the shop (Phase 12): what will be paid back, and that the customer will be asked how. */
+    public static Text paidOrderCancelled(RefundWords refund, ShopLines shop) {
+        if (refund.moneyRecordCancelled() || refund.owed().signum() <= 0) {
+            return new Text("Order " + refund.name() + " has been cancelled",
+                    "Order " + refund.name() + " has been cancelled." + (refund.moneyRecordCancelled() ? ABOUT_ANY_MONEY : "") + line(shop.contactLine()));
+        }
+        if (refund.pieceUnavailable()) {
+            return new Text("We are sorry: order " + refund.name() + " has been cancelled",
+                    "We are sorry. A piece in order " + refund.name() + " is no longer available, so we have cancelled the order. We will pay you back "
+                            + refund.whatIsPaidBack() + "." + refund.whoBearsTheCharge() + WE_WILL_BE_IN_TOUCH + line(shop.contactLine()));
+        }
+        return new Text("Order " + refund.name() + " has been cancelled",
+                "Order " + refund.name() + " has been cancelled before it left us. We will pay you back " + refund.whatIsPaidBack() + "."
+                        + refund.whoBearsTheCharge() + WE_WILL_BE_IN_TOUCH + line(shop.contactLine()));
+    }
+
+    /** Pieces came back after the parcel had gone (Phase 12): how many, what will be paid back, and that delivery is not. */
+    public static Text returnReceived(RefundWords refund, ShopLines shop) {
+        String received = "We have received " + refund.pieceCount() + " back from order " + refund.name() + ".";
+        if (refund.moneyRecordCancelled() || refund.owed().signum() <= 0) {
+            return new Text("We have received your return for order " + refund.name(),
+                    received + (refund.moneyRecordCancelled() ? ABOUT_ANY_MONEY : "") + line(shop.contactLine()));
+        }
+        return new Text("We have received your return for order " + refund.name(),
+                received + " We will pay you back " + Kwacha.write(refund.owed(), refund.currency()) + ". Delivery is not paid back."
+                        + refund.whoBearsTheCharge() + line(shop.contactLine()));
+    }
+
+    /**
+     * A refund was paid (Phase 12): what the customer received, and, when the charge for sending it was taken off, how that comes about.
+     *
+     * @param gross    what was owed and paid back
+     * @param withheld the charge for sending it that the customer bore; zero when none was
+     */
+    public static Text refundPaid(UUID orderId, String receiptNumber, BigDecimal gross, BigDecimal withheld, String currency) {
+        String order = OrderName.of(orderId, receiptNumber);
+        String received = Kwacha.write(gross.subtract(withheld), currency);
+        return new Text("Your refund for order " + order + " has been paid",
+                withheld.signum() > 0
+                        ? "We have paid back " + received + " for order " + order + ": " + Kwacha.write(gross, currency) + " less " + Kwacha.write(withheld, currency)
+                                + " for the charge of sending it."
+                        : "We have paid back " + received + " for order " + order + ".");
+    }
+
+    private static final java.time.format.DateTimeFormatter DAY = java.time.format.DateTimeFormatter.ofPattern("d MMMM", java.util.Locale.ENGLISH);
+
+    /**
+     * To staff who look after money (Phase 12): a refund has been owed and is not recorded as paid. Written for everyone who reads the money
+     * list, so it says who acts. The amount is the one in the fact that raised it.
+     */
+    public static Text refundToPay(UUID orderId, String receiptNumber, BigDecimal owed, String currency, java.time.Instant owedSince, java.time.ZoneId zone) {
+        String order = OrderName.of(orderId, receiptNumber);
+        return new Text("A refund is waiting to be paid - order " + order,
+                "A refund of " + Kwacha.write(owed, currency) + " for order " + order + " has been owed since " + DAY.format(owedSince.atZone(zone))
+                        + " and is not recorded as paid. The owner pays it under " + Screens.REFUNDS_OWED + ".");
+    }
+
     /** The words for a customer with an account: shown in the website's bell, and for some kinds also emailed. */
     public static Text forShopper(MessageKind kind, OrderWords order, ShopLines shop) {
+        if (kind.aboutARefund()) {
+            throw new IllegalArgumentException("the words about a refund carry figures a snapshot of the order does not have: they are written from the correction "
+                    + "or the payout (paidOrderCancelled, returnReceived, refundPaid)");
+        }
         return switch (kind) {
             case PLACED -> new Text("We are holding your order",
                     "Thank you. We are holding the pieces in order " + order.code() + " for you. The total is " + order.money() + ". "
@@ -105,6 +204,7 @@ public final class MessageTexts {
                     "We could not complete order " + order.name() + " with the payment you told us about, so the order has been closed "
                             + "and the pieces are no longer held for you. If you did pay, your money is safe with us: please contact us with "
                             + "your payment reference and we will put it right." + line(shop.contactLine()));
+            case PAID_ORDER_CANCELLED, RETURN_RECEIVED, REFUND_PAID -> throw new IllegalStateException("refused above");
         };
     }
 

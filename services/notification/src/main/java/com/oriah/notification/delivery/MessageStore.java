@@ -64,7 +64,9 @@ public class MessageStore {
      *
      * <p>A customer's messages about one order go out in the order their events happened: a message is left out while an EARLIER message of the
      * same order (a lower {@code event_seq}) is still waiting, so "on its way" never overtakes "payment received". Staff rows and rows no event
-     * caused are never part of an order's queue. No lock is taken here: {@link #claim} is what takes a row.
+     * caused are never part of an order's queue. A message that names another one to wait behind ({@code after_message_id}: "your refund has
+     * been paid" behind the cancellation it follows) is left out while that one is still waiting. No lock is taken here: {@link #claim} is
+     * what takes a row.
      */
     public List<Due> due(Instant now, int limit) {
         return jdbc.query("""
@@ -74,6 +76,8 @@ public class MessageStore {
                            SELECT 1 FROM notification_log earlier
                             WHERE earlier.order_id = m.order_id AND earlier.recipient_kind = 'SHOPPER' AND earlier.status = 'RECORDED'
                               AND earlier.event_seq < m.event_seq))
+                   AND NOT (m.after_message_id IS NOT NULL AND EXISTS (
+                           SELECT 1 FROM notification_log before WHERE before.id = m.after_message_id AND before.status = 'RECORDED'))
                  ORDER BY (m.recipient_kind = 'STAFF') DESC, m.recorded_at, m.staff_to NULLS LAST, m.id
                  LIMIT ?""", MessageStore::due, Timestamp.from(now), limit);
     }

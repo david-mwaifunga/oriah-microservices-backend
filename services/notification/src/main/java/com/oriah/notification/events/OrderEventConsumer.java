@@ -93,7 +93,10 @@ public class OrderEventConsumer {
             .handles(ORDER, "order.cancelled", 1)
             .handles(ORDER, "order.expired", 1)
             .handles(ORDER, "order.payment_submitted", 1)
-            .handles(ORDER, "order.payment_unsettled", 1);
+            .handles(ORDER, "order.payment_unsettled", 1)
+            // Phase 12: a PAID order cancelled before it left, and pieces that came back. Facts with a shape of their own, never snapshots.
+            .handles(ORDER, "order.sale_cancelled", 1)
+            .handles(ORDER, "order.return_recorded", 1);
 
     /** The steps of a dispatch. One keyed long after it happened is not announced: the customer already has the parcel. */
     private static final Set<String> DISPATCH_STEPS = Set.of("order.fulfilled", "order.shipped", "order.delivered");
@@ -101,8 +104,9 @@ public class OrderEventConsumer {
 
     @Bean
     public Consumer<Message<byte[]>> orderEvents(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts,
-                                                 ConfirmationWatch watch, NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
-        return new Handler(inbox, repository, orderRefs, alerts, watch, settings, clock, objectMapper);
+                                                 ConfirmationWatch watch, com.oriah.notification.alerts.RefundWatch refunds, NotificationSettings settings,
+                                                 Clock clock, ObjectMapper objectMapper) {
+        return new Handler(inbox, repository, orderRefs, alerts, watch, refunds, settings, clock, objectMapper);
     }
 
     static class Handler implements Consumer<Message<byte[]>> {
@@ -111,12 +115,14 @@ public class OrderEventConsumer {
         private final OrderRefs orderRefs;
         private final StaffAlerts alerts;
         private final ConfirmationWatch watch;
+        private final com.oriah.notification.alerts.RefundWatch refunds;
         private final NotificationSettings settings;
         private final Clock clock;
         private final ObjectMapper objectMapper;
 
         Handler(Inbox inbox, NotificationLogRepository repository, OrderRefs orderRefs, StaffAlerts alerts, ConfirmationWatch watch,
-                NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
+                com.oriah.notification.alerts.RefundWatch refunds, NotificationSettings settings, Clock clock, ObjectMapper objectMapper) {
+            this.refunds = refunds;
             this.inbox = inbox;
             this.repository = repository;
             this.orderRefs = orderRefs;
@@ -144,6 +150,11 @@ public class OrderEventConsumer {
             }
             if ("order.payment_unsettled".equals(type)) {
                 unsettled(message, facts);
+                return;
+            }
+            if ("order.sale_cancelled".equals(type) || "order.return_recorded".equals(type)) {
+                // A correction of a paid sale is a fact with a shape of its own too: it is never read as a snapshot of the order.
+                corrected(message, facts);
                 return;
             }
             OrderEventPayload payload = read(message.getPayload(), OrderEventPayload.class);
@@ -247,6 +258,60 @@ public class OrderEventConsumer {
         }
 
         /**
+         * {@code order.sale_cancelled} and {@code order.return_recorded} (Phase 12): a paid order was cancelled before it left, or pieces came
+         * back. The customer is told what will be paid back, in the figures of this event; staff are alerted that a refund is owed. A caller
+         * (a phone order) gets no words: staff are on the phone with them to arrange the payout. Only ids, codes, amounts and counts are read.
+         */
+        private void corrected(Message<byte[]> message, EnvelopeFacts facts) {
+            CorrectionFact fact = read(message.getPayload(), CorrectionFact.class);
+            String type = facts.eventType();
+            if (fact.orderId() == null || !fact.orderId().equals(facts.aggregateId())) {
+                throw new IllegalArgumentException("a sale correction names order " + fact.orderId() + " but arrived in an envelope for order "
+                        + facts.aggregateId() + "; refused, so no customer is told about another order");
+            }
+            if (fact.correctionId() == null || fact.owedGross() == null || fact.goodsAtList() == null || fact.discounts() == null
+                    || fact.deliveryRefunded() == null || fact.currency() == null || fact.occurredAt() == null) {
+                throw new IllegalArgumentException(type + " for order " + fact.orderId() + " does not say which correction it is, what is owed or when");
+            }
+            boolean phone = "PHONE".equals(fact.channel());
+            boolean hasOwner = fact.keycloakId() != null && !fact.keycloakId().isBlank();
+            if (!hasOwner && !phone) {
+                throw new IllegalArgumentException("order event " + type + " for order " + fact.orderId() + " has no owner and is not a phone order");
+            }
+            boolean cancellation = "order.sale_cancelled".equals(type);
+            Instant now = clock.instant();
+            orderRefs.note(fact.orderId(), phone ? null : fact.keycloakId(), phone, phone ? new PhoneExtras(fact.saleKind()).takenLive() : null,
+                    fact.receiptNumber(), null, now);
+            if (cancellation) {
+                orderRefs.cancelled(fact.orderId(), facts.recordedAt(), now);
+            }
+            // The confirmation's row first, then the debt's, then the alerts: the order every consumer takes them in.
+            boolean moneyRecordCancelled = fact.confirmationId() != null && watch.corrected(fact.confirmationId(), fact.orderId(), facts.recordedAt(), now);
+
+            java.util.UUID messageId = null;
+            if (!phone) {
+                MessageKind kind = cancellation ? MessageKind.PAID_ORDER_CANCELLED : MessageKind.RETURN_RECEIVED;
+                OrderRefs.OrderRef known = orderRefs.find(fact.orderId()).orElseThrow();
+                MessageTexts.RefundWords words = new MessageTexts.RefundWords(fact.orderId(), known.receiptNumber(), fact.pieces(),
+                        fact.goodsAtList().subtract(fact.discounts()), fact.deliveryRefunded(), fact.owedGross(), fact.currency(),
+                        !"ORIAH".equals(fact.feeBearer()), "PIECE_UNAVAILABLE".equals(fact.reasonCode()), moneyRecordCancelled);
+                Text text = cancellation ? MessageTexts.paidOrderCancelled(words, shopLines()) : MessageTexts.returnReceived(words, shopLines());
+                Instant sendBefore = facts.recordedAt().plus(settings.send().window());
+                StatusReason notSentBecause = whyNotEmailed(kind, type, facts, now, sendBefore);
+                NotificationLog row = repository.save(NotificationLog.forShopper(fact.orderId(), fact.keycloakId(), type, text.subject(), text.body(),
+                        facts.eventId(), facts.seq(), facts.recordedAt(), now, notSentBecause, sendBefore));
+                messageId = row.id();
+                log.info("{} for order {} written down as a message: {}", type, fact.orderId(),
+                        notSentBecause == null ? "waiting to be emailed" : "not emailed (" + notSentBecause + ")");
+            } else {
+                log.info("{} for order {} was recorded for a caller with no account: no words are written for it", type, fact.orderId());
+            }
+            if (fact.owedGross().signum() > 0) {
+                refunds.owed(fact.correctionId(), fact.orderId(), fact.owedGross(), fact.currency(), fact.occurredAt(), messageId, now);
+            }
+        }
+
+        /**
          * A customer who ordered by phone has no account and no email, and no machine holds or uses their phone number. For a sale taken LIVE on
          * the phone the words are written down for sales staff to send from the shop's own WhatsApp (a BY_HAND row, in nobody's bell). Nothing is
          * written for a sale typed in later from paper, however soon it was typed (that customer already has their goods), nor for a phone order
@@ -319,6 +384,26 @@ public class OrderEventConsumer {
                         + " but arrived in an envelope for order " + facts.aggregateId()
                         + "; refused, so no customer is told about another order");
             }
+        }
+    }
+
+    /**
+     * What a correction of a paid sale says that a message or an alert uses (Phase 12): which correction, of which order and confirmation, why
+     * (a CODE), what is owed and how it is made up, who bears the sending charge, and how many pieces. The lines' prices, the pieces' ids and
+     * everything else are not declared.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record CorrectionFact(java.util.UUID correctionId, java.util.UUID orderId, String reasonCode, java.util.UUID confirmationId, String receiptNumber,
+                          Instant occurredAt, String currency, java.util.List<Line> lines, java.math.BigDecimal goodsAtList, java.math.BigDecimal discounts,
+                          java.math.BigDecimal deliveryRefunded, java.math.BigDecimal owedGross, String feeBearer, String keycloakId, String channel,
+                          String saleKind) {
+
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        record Line(int quantity) {
+        }
+
+        int pieces() {
+            return lines == null ? 0 : lines.stream().mapToInt(Line::quantity).sum();
         }
     }
 

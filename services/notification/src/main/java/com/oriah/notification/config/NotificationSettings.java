@@ -108,7 +108,16 @@ public record NotificationSettings(@NotNull ZoneId zone, String siteUrl, @NotNul
     public record Alerts(@NotNull @Valid SandboxRecipients sandboxRecipients, @NotNull Duration maxFactAge, @NotNull Duration retellAfter,
                          @Min(0) int retellMax, @NotNull Duration downAfter, @NotNull Duration listUnansweredFor, @NotNull Duration settleDelay,
                          @NotNull @Valid PaymentToConfirm paymentToConfirm, @NotNull @Valid Hold hold, @NotNull @Valid Settlement settlement,
-                         @NotNull @Valid VoidAfterSale voidAfterSale) {
+                         @NotNull @Valid VoidAfterSale voidAfterSale, @NotNull @Valid RefundToPay refundToPay) {
+    }
+
+    /**
+     * A refund owed to a customer that is not recorded as paid (Phase 12). It is listed at once; these say when it is emailed.
+     *
+     * @param remindAfter how long it may stand before staff are emailed about it
+     * @param remindEvery and how often after that, for as long as it is owed (it never closes by the clock)
+     */
+    public record RefundToPay(@NotNull Duration remindAfter, @NotNull Duration remindEvery) {
     }
 
     /**

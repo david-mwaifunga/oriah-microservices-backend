@@ -13,6 +13,9 @@ public final class Screens {
     /** Where every priced piece stands against what it cost. */
     public static final String BELOW_COST = "Prices, Below cost";
 
+    /** Where the owner pays a refund that is owed (Phase 12). */
+    public static final String REFUNDS_OWED = "Payments, Refunds owed";
+
     private Screens() {
     }
 }

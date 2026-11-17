@@ -98,6 +98,10 @@ public class NotificationLog extends BaseEntity {
     private Long eventSeq;
 
     /** When the event's producer wrote it down: what "too late to send" is measured from. */
+    /** The message this one waits behind, if any: it is not sent while that one is still waiting. */
+    @Column(name = "after_message_id")
+    private UUID afterMessageId;
+
     @Column(name = "event_recorded_at")
     private Instant eventRecordedAt;
 
@@ -140,6 +144,22 @@ public class NotificationLog extends BaseEntity {
             row.status = MessageStatus.NOT_SENT;
             row.statusReason = notSentBecause;
         }
+        return row;
+    }
+
+    /**
+     * A customer's message that waits behind ANOTHER message of theirs, named by its id (Phase 12: "your refund has been paid" behind the
+     * cancellation or the return it follows). It carries no event sequence: its event is of another topic and aggregate than the order's, so
+     * it is not part of the order's queue by number.
+     *
+     * @param afterMessageId the message it must not overtake; null when there is none (and then it simply goes when it is due)
+     */
+    public static NotificationLog forShopperAfter(UUID orderId, String keycloakId, String eventType, String subject, String body, UUID eventId,
+                                                  Instant eventRecordedAt, Instant now, StatusReason notSentBecause, Instant sendBefore,
+                                                  UUID afterMessageId) {
+        NotificationLog row = forShopper(orderId, keycloakId, eventType, subject, body, eventId, 0, eventRecordedAt, now, notSentBecause, sendBefore);
+        row.eventSeq = null;
+        row.afterMessageId = afterMessageId;
         return row;
     }
 

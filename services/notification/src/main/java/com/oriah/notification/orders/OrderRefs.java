@@ -59,6 +59,11 @@ public class OrderRefs {
                 Timestamp.from(now));
     }
 
+    /** A PAID order was cancelled before it left (Phase 12). Kept from the first time it is heard; a repeat changes nothing. */
+    public void cancelled(UUID orderId, Instant at, Instant now) {
+        jdbc.update("UPDATE order_ref SET cancelled_at = COALESCE(cancelled_at, ?), updated_at = ? WHERE order_id = ?", Timestamp.from(at), Timestamp.from(now), orderId);
+    }
+
     public Optional<OrderRef> find(UUID orderId) {
         List<OrderRef> found = jdbc.query("""
                 SELECT order_id, keycloak_id, phone_order, live_phone_sale, receipt_number, paid_at FROM order_ref WHERE order_id = ?""",

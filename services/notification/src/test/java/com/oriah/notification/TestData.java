@@ -21,6 +21,8 @@ public final class TestData {
         jdbc.update("DELETE FROM staff_alert");
         jdbc.update("DELETE FROM order_ref");
         jdbc.update("DELETE FROM confirmation_watch");
+        jdbc.update("DELETE FROM refund_watch_payout");
+        jdbc.update("DELETE FROM refund_watch");
         jdbc.update("DELETE FROM recipient_contact");
         jdbc.update("UPDATE below_cost_poll SET leased_until = NULL, last_attempt_at = NULL, last_success_at = NULL, down_since = NULL, last_failure = NULL");
         jdbc.update("UPDATE dispatch_state SET server_failing_since = NULL, server_failures = 0, quiet_until = NULL");

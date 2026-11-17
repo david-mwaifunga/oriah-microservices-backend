@@ -27,7 +27,21 @@ public enum MessageKind {
     /** order.expired with no payment claimed: it was simply not paid in time. */
     EXPIRED_UNPAID,
     /** order.expired after the customer said they had paid: the claim was rejected, time ran out, or the money came too late to pay it. */
-    PAYMENT_NOT_CONFIRMED;
+    PAYMENT_NOT_CONFIRMED,
+    /** order.sale_cancelled (Phase 12): a PAID order cancelled before it left the shop; money is owed back. */
+    PAID_ORDER_CANCELLED,
+    /** order.return_recorded (Phase 12): pieces came back after the parcel had gone. */
+    RETURN_RECEIVED,
+    /** payment.paid_out for a refund (Phase 12): the money has gone back to the customer. */
+    REFUND_PAID;
+
+    /**
+     * The three kinds about money going back. Their words carry figures of the correction or the payout (what is owed, what was withheld), which
+     * an order's snapshot does not have, so they are written by their own methods of {@code MessageTexts}, never from a snapshot.
+     */
+    public boolean aboutARefund() {
+        return this == PAID_ORDER_CANCELLED || this == RETURN_RECEIVED || this == REFUND_PAID;
+    }
 
     private static final String COLLECTED_BY_THE_CUSTOMER = "SELF_COLLECT";
     private static final String A_PAYMENT_WAS_CLAIMED = "PAYMENT_SUBMITTED";
