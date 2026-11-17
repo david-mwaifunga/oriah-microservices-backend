@@ -163,6 +163,26 @@
     "request": "GET /api/v1/products/not-a-uuid",
     "status": 400
   },
+  "400-paid-cancellation-other-without-a-note": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "the reason OTHER needs a note of 5 to 200 characters saying why",
+      "instance": "/api/v1/admin/orders/<uuid>/cancellation",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/note-required"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/cancellation  (as admin)",
+    "status": 400
+  },
   "400-payment-claim-in-cash": {
     "contentType": "application/problem+json",
     "problem": {
@@ -181,6 +201,26 @@
       "type": "https://oriah.dev/problems/bad-request"
     },
     "request": "POST /api/v1/orders/<uuid>/payment-claim  (as user)",
+    "status": 400
+  },
+  "400-payout-without-a-key": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Required header 'Idempotency-Key' is missing",
+      "instance": "/api/v1/admin/payments/payouts",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "POST /api/v1/admin/payments/payouts  (as admin)",
     "status": 400
   },
   "400-preview-a-town-for-a-pickup": {
@@ -265,6 +305,46 @@
       "type": "https://oriah.dev/problems/validation"
     },
     "request": "POST /api/v1/admin/orders/recorded  (as admin)",
+    "status": 400
+  },
+  "400-return-without-a-key": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Idempotency-Key must be 1 to 128 characters",
+      "instance": "/api/v1/admin/orders/<uuid>/returns",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/bad-request"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/returns  (as admin)",
+    "status": 400
+  },
+  "400-returns-in-a-state-that-is-not-one": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "state is one of AWAITING_ASSESSMENT, IN_FLIGHT, ALL",
+      "instance": "/api/v1/admin/orders/returns",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/invalid-state"
+    },
+    "request": "GET /api/v1/admin/orders/returns?state=SOMETHING  (as admin)",
     "status": 400
   },
   "400-staff-alerts-unknown-state": {
@@ -697,6 +777,25 @@
     "request": "POST /api/v1/admin/inventory/<uuid>/confirm  (as admin)",
     "status": 403
   },
+  "403-sale-reversal-by-the-owner-at-the-edge": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/admin/inventory/sale-reversals",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "POST /api/v1/admin/inventory/sale-reversals  (as admin)",
+    "status": 403
+  },
   "403-staff-alerts-as-a-shopper": {
     "contentType": "application/problem+json",
     "problem": {
@@ -754,6 +853,26 @@
     "request": "GET /api/v1/admin/inventory/write-offs  (as user)",
     "status": 403
   },
+  "404-abandon-of-no-correction": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Correction not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/corrections/<uuid>/abandon",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/corrections/<uuid>/abandon  (as admin)",
+    "status": 404
+  },
   "404-amend-unknown-consignment": {
     "contentType": "application/problem+json",
     "problem": {
@@ -772,6 +891,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/admin/procurement/consignments/<uuid>/amendments  (as admin)",
+    "status": 404
+  },
+  "404-assessment-of-no-return": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Return not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/returns/<uuid>/pieces/<uuid>/assessment",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/returns/<uuid>/pieces/<uuid>/assessment  (as admin)",
     "status": 404
   },
   "404-box-swap-on-an-unknown-order": {
@@ -874,6 +1013,26 @@
     "request": "GET /api/v1/admin/finance/tax-entries/<uuid>  (as admin)",
     "status": 404
   },
+  "404-no-paid-cancellation-to-read": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Cancellation not found with the given input data orderId : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/cancellation",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/orders/<uuid>/cancellation  (as admin)",
+    "status": 404
+  },
   "404-pack-an-unknown-order": {
     "contentType": "application/problem+json",
     "problem": {
@@ -892,6 +1051,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "POST /api/v1/admin/orders/<uuid>/dispatch/pack  (as admin)",
+    "status": 404
+  },
+  "404-paid-cancellation-of-no-order": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Order not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/<uuid>/cancellation",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "POST /api/v1/admin/orders/<uuid>/cancellation  (as admin)",
     "status": 404
   },
   "404-payment-claim-for-an-unknown-order": {
@@ -932,6 +1111,26 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/payments/intents/<uuid>  (as user)",
+    "status": 404
+  },
+  "404-payout-nobody-made": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "there is no payout <uuid>",
+      "instance": "/api/v1/admin/payments/payouts/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/payout-not-found"
+    },
+    "request": "GET /api/v1/admin/payments/payouts/<uuid>  (as admin)",
     "status": 404
   },
   "404-pricing-unknown-variant": {
@@ -1052,6 +1251,46 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/admin/orders/recorded/<uuid>/receipt  (as admin)",
+    "status": 404
+  },
+  "404-refund-nobody-owes": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "there is no refund owed under <uuid>",
+      "instance": "/api/v1/admin/payments/refunds-due/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/refund-due-not-found"
+    },
+    "request": "GET /api/v1/admin/payments/refunds-due/<uuid>  (as admin)",
+    "status": 404
+  },
+  "404-return-nobody-recorded": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Return not found with the given input data id : '<uuid>'",
+      "instance": "/api/v1/admin/orders/returns/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/orders/returns/<uuid>  (as admin)",
     "status": 404
   },
   "404-shipping-rates-retired": {

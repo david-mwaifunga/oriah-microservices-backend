@@ -170,6 +170,24 @@ CASES = [
     ("401-staff-messages-without-a-token", "GET", "/api/v1/admin/notifications/messages?status=BY_HAND", None, None),
     ("403-staff-messages-as-a-shopper", "GET", "/api/v1/admin/notifications/messages?status=BY_HAND", "user", None),
     ("400-staff-messages-neither-order-nor-work-list", "GET", "/api/v1/admin/notifications/messages", "admin", None),
+    # Phase 12 (returns and refunds). None of these writes anything: each is refused before a correction, a debt or a payout exists. A paid order that
+    # is not there cannot be cancelled or returned; "other" says why; a return needs its Idempotency-Key; the work lists know their states; a refund
+    # nobody owes and a payout nobody made are named 404s; a payout needs its key too; and the stock system's own door (a sale's reversal) is closed
+    # at the edge even to the owner.
+    ("404-paid-cancellation-of-no-order", "POST", "/api/v1/admin/orders/" + MISSING + "/cancellation", "admin", {"reasonCode": "CUSTOMER_ASKED"}),
+    ("404-no-paid-cancellation-to-read", "GET", "/api/v1/admin/orders/" + MISSING + "/cancellation", "admin", None),
+    ("400-paid-cancellation-other-without-a-note", "POST", "/api/v1/admin/orders/" + MISSING + "/cancellation", "admin", {"reasonCode": "OTHER"}),
+    ("400-return-without-a-key", "POST", "/api/v1/admin/orders/" + MISSING + "/returns", "admin",
+     {"reasonCode": "CHANGED_MIND", "lines": [{"lineId": MISSING, "quantity": 1}]}),
+    ("404-return-nobody-recorded", "GET", "/api/v1/admin/orders/returns/" + MISSING, "admin", None),
+    ("400-returns-in-a-state-that-is-not-one", "GET", "/api/v1/admin/orders/returns?state=SOMETHING", "admin", None),
+    ("404-assessment-of-no-return", "POST", "/api/v1/admin/orders/returns/" + MISSING + "/pieces/" + MISSING + "/assessment", "admin", {"outcome": "FINE"}),
+    ("404-abandon-of-no-correction", "POST", "/api/v1/admin/orders/corrections/" + MISSING + "/abandon", "admin", {}),
+    ("404-refund-nobody-owes", "GET", "/api/v1/admin/payments/refunds-due/" + MISSING, "admin", None),
+    ("404-payout-nobody-made", "GET", "/api/v1/admin/payments/payouts/" + MISSING, "admin", None),
+    ("400-payout-without-a-key", "POST", "/api/v1/admin/payments/payouts", "admin",
+     {"refundDueId": MISSING, "method": "CASH", "customerFee": 0.00, "sendCharge": 0.00}),
+    ("403-sale-reversal-by-the-owner-at-the-edge", "POST", "/api/v1/admin/inventory/sale-reversals", "admin", {}),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

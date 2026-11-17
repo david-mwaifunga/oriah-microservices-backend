@@ -327,6 +327,19 @@ payment event type (Phases 12 and 13) must be declared by notification, as
 well as by order and finance, before payment emits it**: an undeclared type
 is refused and dead-lettered.
 
+**Phase 12 added six types, each declared by every consumer of its topic before
+its producer was built** (the six contract JSON files were written first, and each
+producer's bytes are pinned to its file). On `oriah.order`, aggregate `order`:
+`order.sale_cancelled` and `order.return_recorded` (a paid sale corrected; handled
+by payment, finance and notification, ignored by inventory, which is asked
+directly). On `oriah.payment`: `payment.refund_due_recorded` and
+`payment.refund_closed` (aggregate `refund_due`), `payment.paid_out` and
+`payment.payout_voided` (aggregate `money_out`); finance and notification handle
+all four, and order handles the last three only to remember whether a refund is
+still owed (it ignores `payment.refund_due_recorded`). A paid order that is
+cancelled is announced as `order.sale_cancelled`, never as `order.cancelled`:
+that type would tell inventory to release a hold that was sold.
+
 **The dead-letter record** (the contract for anyone reading a dead-letter
 topic): the original key, body and headers, exactly as they arrived, plus
 Spring Kafka's `kafka_dlt-*` headers:

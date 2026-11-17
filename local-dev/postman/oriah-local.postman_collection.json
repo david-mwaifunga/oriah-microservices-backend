@@ -1382,6 +1382,46 @@
           }
         },
         {
+          "name": "List one returned piece as a marked-down variant of its product",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/products/:id/variants/marked-down",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "products",
+                ":id",
+                "variants",
+                "marked-down"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"sourceVariantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"pieceId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Made for ONE returned piece. Unpriced until the pricing endpoint prices it; never promoted, never the product's 'from' price, and it does not keep a product published by itself. Its SKU is the source's (cut to 53 characters), then -R- and the first eight characters of the piece id. Idempotent by piece."
+          }
+        },
+        {
           "name": "Name up to 100 variants",
           "request": {
             "method": "POST",
@@ -2277,6 +2317,139 @@
               ]
             },
             "description": "Pieces and boxes go back where they came from. Releasing a reservation that is not held (sold, released, expired) changes nothing."
+          }
+        },
+        {
+          "name": "Say what becomes of a returned piece: back on sale, written off, or moved to a marked-down listing",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/returned-pieces/:pieceId/outcome",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "returned-pieces",
+                ":pieceId",
+                "outcome"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "pieceId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"\",\n  \"childVariantId\": \"00000000-0000-0000-0000-000000000000\",\n  \"occurredAt\": \"2026-11-08T10:00:00Z\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "One transaction, once per piece. RELEASED: ordinary stock again, nothing moves. WRITTEN_OFF: out of the lot it went back to, at that lot's cost. RELISTED: into a one-piece lot of its own marked-down listing, at the cost it had; nothing is recognised. The same answer again is a repeat (replay: true)."
+          }
+        },
+        {
+          "name": "Put a cancelled or returned sale back into stock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/sale-reversals",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "sale-reversals"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reversalId\": \"00000000-0000-0000-0000-000000000000\",\n  \"kind\": \"\",\n  \"orderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"reservationId\": \"00000000-0000-0000-0000-000000000000\",\n  \"occurredAt\": \"2026-11-08T10:00:00Z\",\n  \"goods\": [\n    {\n      \"saleLineId\": \"00000000-0000-0000-0000-000000000000\",\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1\n    }\n  ],\n  \"boxes\": [\n    {\n      \"boxLineId\": \"00000000-0000-0000-0000-000000000000\",\n      \"boxVariantId\": \"00000000-0000-0000-0000-000000000000\",\n      \"productId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1\n    }\n  ],\n  \"pieces\": [\n    {\n      \"pieceId\": \"00000000-0000-0000-0000-000000000000\",\n      \"saleLineId\": \"00000000-0000-0000-0000-000000000000\",\n      \"variantId\": \"00000000-0000-0000-0000-000000000000\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "One transaction, keyed by the reversal id. A cancellation returns the lines and their boxes to the lots they came out of, as ordinary stock; a return puts each piece back into its lot and holds it there, not for sale, until it is assessed (the box stays sold). Dated to the day of the correction. The same request again answers it (replay: true) and changes nothing."
+          }
+        },
+        {
+          "name": "What was done under a reversal id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/sale-reversals/:reversalId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "sale-reversals",
+                ":reversalId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "reversalId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Waits for an attempt in flight under the same id. A 404 named reversal-not-found therefore proves nothing moved; any other failure proves nothing."
+          }
+        },
+        {
+          "name": "Give a reversal id up, for good",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/inventory/sale-reversals/:reversalId/abandon",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "inventory",
+                "sale-reversals",
+                ":reversalId",
+                "abandon"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "reversalId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Waits for an attempt in flight under the same id. If the reversal was applied, nothing is abandoned (applied: true) and the order system finishes its correction. Otherwise the id is remembered as abandoned (applied: false): every later request under it is 409 reversal-abandoned and moves nothing, so 'nothing moved' stays true. Asked again, the answer is the same."
           }
         },
         {
@@ -3202,7 +3375,252 @@
               ],
               "variable": []
             },
-            "description": "`status` is OWED (the default), VOIDED (its confirmation was voided as keyed wrongly) or ALL."
+            "description": "`status` is OWED (the default), VOIDED (its confirmation was voided as keyed wrongly), REPAID (it was paid back) or ALL. `feeBearer` says who bears the provider's charge when it is paid back, from why it was held."
+          }
+        },
+        {
+          "name": "Money paid back, newest first (at most 200)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/payouts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "payouts"
+              ],
+              "query": [
+                {
+                  "key": "purpose",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "since",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "`purpose` is REFUND or HELD_MONEY (both when absent); `since` keeps the payouts recorded from that moment on."
+          }
+        },
+        {
+          "name": "Record money paid back to a customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/payouts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "payouts"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refundDueId\": \"00000000-0000-0000-0000-000000000000\",\n  \"heldMoneyId\": \"00000000-0000-0000-0000-000000000000\",\n  \"method\": \"\",\n  \"reference\": \"\",\n  \"customerFee\": 0.0,\n  \"sendCharge\": 0.0,\n  \"paidAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Name the refund owed (refundDueId) or the held money (heldMoneyId), how it was sent, the provider's reference (cash needs none), what the provider charged Oriah (sendCharge) and how much of that the customer bore (customerFee, never more than the charge; 0.00 when Oriah bears it). The amount paid back is the debt's own: `gross` and `net` are never accepted. `Idempotency-Key` is required: the same key and request answers the same payout (200)."
+          }
+        },
+        {
+          "name": "One payout, and whether it was cancelled",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/payouts/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "payouts",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Cancel a payout recorded wrongly",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/payouts/:id/void",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "payouts",
+                ":id",
+                "void"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Once, with a reason of 10 to 200 characters. The debt it paid is owed again, its reference is free, and it is announced as payment.payout_voided. Then record the payout afresh."
+          }
+        },
+        {
+          "name": "Refunds owed to customers, the oldest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/refunds-due",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "refunds-due"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "`status` is OWED (the default), IN_QUESTION (the payment record of the sale was cancelled after it paid: say whether the money arrived), PAID, CLOSED or ALL. Each says how the money first came in, so it can be sent back the same way."
+          }
+        },
+        {
+          "name": "One refund owed, with its payout once it is paid",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/refunds-due/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "refunds-due",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Say whether the money of a refund in question ever arrived",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/refunds-due/:id/money-check",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "refunds-due",
+                ":id",
+                "money-check"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moneyArrived\": false,\n  \"reason\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "For a refund whose sale was paid by a payment record that was cancelled afterwards. Said once, with what was looked at (10 to 200 characters). Arrived: the refund is owed and can be paid. Never arrived: it is closed and announced as payment.refund_closed."
           }
         },
         {
@@ -3312,6 +3730,67 @@
               "variable": []
             },
             "description": "Each carries the method and reference the shopper gave, for staff to find in the bank or the provider's records and confirm (or reject). With orderId: that one order if it can still take money (waiting for payment, claimed, or lapsed), so money can be confirmed for a customer who never typed a reference. At most 100."
+          }
+        },
+        {
+          "name": "Paid cancellations and returns, by where they stand with the stock system",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/corrections",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "corrections"
+              ],
+              "query": [
+                {
+                  "key": "state",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "state is REQUESTED (the default: what is waiting, the longest first; stuck: true once it has waited longer than the threshold), DONE, REFUSED or ALL (newest first). At most 100."
+          }
+        },
+        {
+          "name": "Give up a correction that is stuck with the stock system",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/corrections/:correctionId/abandon",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "corrections",
+                ":correctionId",
+                "abandon"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "correctionId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Allowed only while it is REQUESTED, and only when the stock system itself says it holds no such reversal: then nothing moved, the attempt is REFUSED (abandoned-nothing-moved) and the order is free again. If the stock DID go back the correction is finished instead and the reply is 409 it-did-move. Any other answer from the stock system proves nothing: 503, nothing changed."
           }
         },
         {
@@ -3540,7 +4019,7 @@
                 }
               ]
             },
-            "description": "The caller's phone and the parcel's address are shown while the order is alive and withheld once it is delivered. A web order is 404."
+            "description": "The caller's phone and the parcel's address are shown while the order is alive and withheld once it is delivered. A web order is 404. Since Phase 12 it also carries the returns and cancellations that are done and what is owed for each (no reason, actor or cost); a reader who also holds PAYMENT_ADMIN reads the caller's phone in full while a refund is owed, and that read is logged."
           }
         },
         {
@@ -3603,6 +4082,165 @@
               ]
             },
             "description": "Ours, never a tax invoice, with no VAT line: the receipt number, the day it was paid, the caller's name only, every line and the total."
+          }
+        },
+        {
+          "name": "Returns, by where they stand",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/returns",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "returns"
+              ],
+              "query": [
+                {
+                  "key": "state",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "page",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "size",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "state is AWAITING_ASSESSMENT (the default: received, with a piece nobody has finished looking at, the longest waiting first), IN_FLIGHT (the stock system has not settled them) or ALL (newest first). A page is at most 50. No cost, no note, no actor."
+          }
+        },
+        {
+          "name": "One return: its lines, its pieces and what is owed",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/returns/:returnId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "returns",
+                ":returnId"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "returnId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Link a return to the new order the customer took instead",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/returns/:returnId/exchange",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "returns",
+                ":returnId",
+                "exchange"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "returnId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"newOrderId\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "An exchange is a return and a new order, linked: nothing else happens. The refund for the return is paid like any refund and the new order is paid like any sale; no money is netted between them and nothing is announced. One link per return and one per new order; the same pair again answers the same link (200, replay: true)."
+          }
+        },
+        {
+          "name": "Say what became of a piece that came back",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/returns/:returnId/pieces/:pieceId/assessment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                "returns",
+                ":returnId",
+                "pieces",
+                ":pieceId",
+                "assessment"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "returnId",
+                  "value": "",
+                  "description": ""
+                },
+                {
+                  "key": "pieceId",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"\",\n  \"note\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "FINE puts the piece back on sale. MARKED_DOWN (also needs CATALOG_ADMIN) lists it on its own, to be priced lower, and moves it there. UNSELLABLE (also needs STOCK_WRITE_OFF, and a note) writes it off. Until the stock system has recorded the outcome the piece is held, not for sale: if its answer settles nothing the reply is 202 with state IN_PROGRESS and the same request, or the job, finishes it. An assessment is made once: the same outcome again is a replay, another is refused."
           }
         },
         {
@@ -3701,6 +4339,75 @@
               }
             },
             "description": "Inventory reverses the original box's sale and sells the replacement, both dated to the day of the SALE (a swap never moves it); the line then carries the new box. Only a PAID order that has not been fulfilled. Send the same amendmentId to retry after a lost reply: a repeat answers the same swap (replay: true). Without one, the id is worked out from the line as it stands and the box asked for, so a plain retry of the same request is just as safe. The reason is judged trimmed."
+          }
+        },
+        {
+          "name": "The latest attempt to cancel this paid order",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/cancellation",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "cancellation"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "The cancellation that stands, or the last one the stock system refused (state REFUSED, with why)."
+          }
+        },
+        {
+          "name": "Cancel a paid order that has not been dispatched",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/cancellation",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "cancellation"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reasonCode\": \"\",\n  \"note\": \"\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Every piece and its box go back to stock and everything that was paid is owed to the customer, delivery included (a delivery that was waived, or that the recipient pays the courier for, was never paid and is not owed). The order becomes CANCELLED and forgets its recipient and address; the sale itself is never rewritten. Only a PAID or FULFILLED (packed) order: once dispatched or handed over, what comes back is a return. The stock system is asked between two short steps: if its answer settles nothing the reply is 202 with state REQUESTED, nothing else can be done to the order meanwhile, and the same request (or the job, by itself) finishes it. The same reason asked again answers the cancellation that stands (200, replay: true)."
           }
         },
         {
@@ -3929,6 +4636,52 @@
               }
             },
             "description": "The parcel goes by the option the shopper chose. When Oriah pays the courier the fare it charged is required (K0.00 if nothing); when the recipient pays the courier, or it is Oriah's own delivery, a fare is refused. Never for a pickup (hand it over). Refused while a box swap on the order is with inventory. The delivery charge is never changed."
+          }
+        },
+        {
+          "name": "Record pieces that came back after dispatch or hand-over",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/orders/:id/returns",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "orders",
+                ":id",
+                "returns"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reasonCode\": \"\",\n  \"returnedAt\": \"2026-11-08T10:00:00Z\",\n  \"backdateReason\": \"\",\n  \"note\": \"\",\n  \"confirmDuplicate\": false,\n  \"lines\": [\n    {\n      \"lineId\": \"00000000-0000-0000-0000-000000000000\",\n      \"quantity\": 1\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The customer is owed each returned piece's own list price less its own discount: never delivery, never the box. Each piece is put back into the lot it was sold from and held there, not for sale, until it is assessed (POST /api/v1/admin/orders/returns/{returnId}/pieces/{pieceId}/assessment). The order's status does not change and nothing of the sale is rewritten. Only a SHIPPED or DELIVERED order (a paid one that has not gone out is cancelled instead). Dated when the parcel came back. A repeat with the same Idempotency-Key and request answers the same return (200, replay: true). The stock system is asked between two short steps: if its answer settles nothing the reply is 202 with state REQUESTED and the same request, or the job, finishes it."
           }
         },
         {

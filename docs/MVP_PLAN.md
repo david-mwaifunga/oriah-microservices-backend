@@ -2469,6 +2469,19 @@ the pricing prefix refuses either role alone): give notification its own client 
 
 ### Phase 12 — Returns, refunds and exchanges *(new — the client pulled this in)*
 
+> **Status: built, 2026-11-17.** Committed in `oriah-api` (not pushed) in slices S0 to S16 (`f90e065` to `208c897`) and the review fixes (`b0924cc`, `6fe1336`, `aa14b0f`,
+> `ac1894e`, `9f4019c`): the six event contracts and the first declarations; the cost engine's held units and inventory V13 (sale reversals, returned pieces, the marked-down
+> child lot); catalog V8 (marked-down variants); finance V4 (corrections, debts, payouts, the report's refunds memo); notification V11 (three customer messages, the
+> `REFUND_TO_PAY` alert); payment V8 (the debt, the money check, payouts and their voids, held money repaid); order V16 (the paid cancellation, returns, assessment, the
+> exchange link, the correction job); the gateway's two denied prefixes; then inventory V14, order V17, payment V9 and notification V12 from the reviews.
+> **Proved live on the full container stack on 2026-11-17: the smoke test (new step 20k) passed, on its first run, on images rebuilt from the final committed code
+> (`9f4019c`: catalog, inventory, finance, notification, payment, order and the gateway), with the new migrations applied over the existing data and no ERROR-level line in
+> any service's log since that start. The OpenAPI gate is additions-only with no new waiver and the audit passes; twelve error goldens were added (all 80 verify); Postman was
+> regenerated and its check passes.**
+> Design: `../.codex-tmp/plan-p12-FINAL.md` over `plan-p12-final-wf.md`. The contract-level detail is the **"Built in Phase 12"** block of `../CLAUDE.md`; what the frontend
+> must do, and the owner's 16 questions in plain words, are in `FRONTEND_WORK.md`. **The text below is the plan as it stood before the build** (what it calls
+> "structurally impossible today" is now built).
+
 `CLIENT_DECISIONS.md` §1.2. Depends on Phase 5's source-lot column.
 
 > **From Phase 11 (2026-11-16).** Notification now reads `oriah.payment` as well as `oriah.order`, so **any new payment or order event type this phase adds (a refund, a return, a

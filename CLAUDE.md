@@ -6,8 +6,9 @@ Read this first. Then **`docs/CLIENT_DECISIONS.md`** — the client's answers of
 document here**. Then **`docs/MVP_PLAN.md`** — the live plan, carrying the
 settled design decisions and the arithmetic. Then `docs/PROGRESS.md` **from the
 top** — it is newest-first, and only the topmost entry describes the current
-state (2026-11-16: Phase 11 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
-(Deliver)"**, **"Built in Phase 9 (Phone orders)"**, **"Built in Phase 10 (Finance)"** and **"Built in Phase 11 (Notifications)"** blocks below are the contract-level detail).
+state (2026-11-17: Phase 12 complete; the **"Built in Phase 7 (Sell)"**, **"Built in Phase 8
+(Deliver)"**, **"Built in Phase 9 (Phone orders)"**, **"Built in Phase 10 (Finance)"**, **"Built in Phase 11 (Notifications)"** and **"Built in Phase 12 (Returns, refunds
+and exchanges)"** blocks below are the contract-level detail).
 
 ---
 
@@ -710,6 +711,127 @@ carries a name, a phone, an address, a payment reference, a cost or a selling pr
   Phase 13: declare any new payment event type first; the card path's `payment.succeeded` / `payment.failed` are ignored today; item H1. Frontend stage: the alerts list and banner, the "messages waiting to be sent"
   list, the bell on `recordedAt`, one `/me` call per session.
 
+### Built in Phase 12 (Returns, refunds and exchanges): undoing a paid sale without editing it
+
+Design: `../.codex-tmp/plan-p12-FINAL.md` (its 25 amendments, AM1 to AM7 from Codex's design review and AV1 to AV18 from the design run's verifiers, win over
+`plan-p12-final-wf.md`, a judged design run of three designs and five critics). Slices S0 to S16 are the commits `f90e065` to `208c897`, and the review fixes `b0924cc` (inventory), `6fe1336` (order), `aa14b0f` (payment), `ac1894e`
+(notification) and `9f4019c` (the second round); nothing is pushed. **Proved live on the full container stack on 2026-11-17: the smoke test (new step 20k) passed, on its first run, on images rebuilt from the final committed code
+(`9f4019c`: catalog, inventory, finance, notification, payment, order and the gateway), with the new migrations applied over the existing data and no ERROR-level line in
+any service's log since that start. The OpenAPI gate is additions-only with no new waiver and the audit passes; twelve error goldens were added (all 80 verify); Postman was
+regenerated and its check passes.** The frontend is not
+changed (`docs/FRONTEND_WORK.md`, Phase 12, says what it must do and carries the owner's 16 questions in plain words, with every sum line by line in Kwacha).
+
+**A paid sale is never edited.** Undoing one is a **correction**: a record of its own that points back at the sale's lines. Two kinds: a **paid cancellation** (before the order
+is dispatched or handed over: every piece and its box go back to stock and **everything that was paid is owed, delivery included**) and a **return** (after: the pieces that came
+back are owed at their own list price less their own per-piece discount; **never delivery, never the box**). The refund is a **debt** that `payment` keeps and only the owner pays.
+An **exchange** is a return and a new order, linked: no money is netted. **No order status was added:** a return changes no status; the only new edge is PAID or FULFILLED to
+CANCELLED, taken only by the paid cancellation.
+
+- **`order` (V16, V17) owns the correction.** `order_correction` (`CANCELLATION` | `RETURN`; `REQUESTED` / `DONE` / `REFUSED`; the amounts, the reason, who bears the sending charge,
+  all frozen by a trigger), `order_correction_line` (a database trigger holds each line to exactly the sale line's price, discount, product and promotion, and to never more than
+  was sold less every correction not refused), `order_return_piece` (one row per piece that came back: `AWAITING` / `IN_PROGRESS` / `DONE`) and `order_exchange`. None can be
+  deleted. `orders` and `order_items` are not changed.
+  - **The shape of every correction:** T1 under the order's row lock (`OrderLocks`) decides and writes it `REQUESTED`; inventory is asked **outside any transaction**, keyed by
+    the correction's id (the request is rebuilt from what is stored, so every try is the same bytes); T2 marks it `DONE` and appends the event. `CorrectionReplies` (pure) says
+    which of inventory's answers PROVE nothing moved, and **only a refusal inventory NAMES is proof** (400 `invalid-occurred-at`; 404 `sale-line-not-found`,
+    `reservation-not-found`; 409 `not-a-sale`, `reservation-not-consumed`, `box-line-not-live`, `reversal-abandoned`): only those end an attempt (`REFUSED`, 409 `cancellation-refused` / `return-refused`; a new request is a new attempt with a new id). A timeout, a 5xx, **any bare status** (400, 401, 403, 404, 422: a 401 or 403 is about who is asking at that moment, not about the request), a
+    typed 404 nobody listed, `reversal-id-used`, `more-than-outstanding` or an unknown 409 leave it `REQUESTED` (202): **while it is, the order cannot be packed, shipped, handed over, re-boxed,
+    re-addressed or corrected again** (`CorrectionGuard`: 409 `correction-in-progress`).
+  - **`CorrectionJob`** (a fourth scheduled thread: `spring.task.scheduling.pool.size` is 4; `oriah.sales.correction-job.*`, 15 s) asks inventory whether it holds the reversal
+    (`GET /sale-reversals/{id}`, which waits out one in flight): a 200 finishes T2; only the typed 404 `reversal-not-found` re-sends the request; anything else waits (15 s
+    doubling to 5 minutes). It also drives returned pieces whose outcome inventory has not recorded. Beyond `oriah.sales.correction-stuck-after` (PT5M) a correction is `stuck`
+    (an ERROR line, the gauge `order.corrections.stuck`, `stuck: true` in the list).
+  - **`POST` / `GET /api/v1/admin/orders/{id}/cancellation`** (ORDER_ADMIN) `{reasonCode, note?}`: 201, 200 (`replay`), 202. Only PAID or FULFILLED with no dispatch step. The
+    order becomes CANCELLED, **its hold stays CONSUMED** and it forgets its recipient and address (a phone order keeps its caller: the refund is theirs). Never dated before the
+    money arrived (AV7). `Order.cancelPaid()` is the only way there: `transitionTo`, the shopper's cancel, the staff transition (409 `use-the-paid-cancellation`) and
+    `OrderEventLog.moved` all refuse it, so **`order.cancelled` is never written for a paid order**.
+  - **`POST /api/v1/admin/orders/{id}/returns`** (ORDER_ADMIN; `Idempotency-Key` + a fingerprint, answered before any rule; `BACKDATE_SALE` and a reason past 72 hours): only
+    SHIPPED or DELIVERED; `lines[{lineId, quantity}]`; 409 `more-than-was-sold`, `similar-return-just-recorded` (the same pieces within `oriah.sales.return-duplicate-window`,
+    PT10M, unless `confirmDuplicate`); dated when the parcel came back, never before it went out. Each piece's id is derived (`return-piece:<return>:<line>:<n>`) and is
+    inventory's id for it. `GET /returns?state=AWAITING_ASSESSMENT|IN_FLIGHT|ALL`, `GET /returns/{id}`.
+  - **`POST /returns/{returnId}/pieces/{pieceId}/assessment`** `{outcome, note?}`: `FINE`, `MARKED_DOWN` (**also `CATALOG_ADMIN`**) or `UNSELLABLE` (**also `STOCK_WRITE_OFF`
+    and a note**), both checked from the token before anything is read. Marked down: catalog is asked FIRST, with the person's own token, for a listing whose id is derived from
+    the piece; then the decision is written `IN_PROGRESS`; then inventory is asked as the machine. A refusal that proves inventory recorded nothing takes the decision back,
+    whole; anything else stays `IN_PROGRESS` (202) for the job. **Until inventory has recorded the outcome the piece is held, not for sale.** An assessment is made once.
+  - **`POST /returns/{returnId}/exchange`** `{newOrderId}`: one link per return and per new order, no time rule (AM7), no event.
+  - **`GET /corrections?state=`** and **`POST /corrections/{id}/abandon`**: order asks inventory to **abandon the reversal id** (inventory remembers it under the reversal's
+    own lock, so a request still on its way is refused by name and can never put the stock back afterwards); only then is the attempt `REFUSED`. If the reversal had been
+    applied, the correction is finished instead and the answer is 409 `it-did-move`; no answer from inventory is 503 `inventory-unavailable` and changes nothing.
+  - **Reads.** The order's answers gain trailing `corrections[{id, kind, state, occurredAt, pieces, owedGross, currency, exchangedForOrderId?}]` and, on the NEW order of an
+    exchange, `exchange{returnId, returnedOrderId}`. The shopper and a salesperson see only corrections that are DONE, with no reason and no actor; ORDER_ADMIN also reads
+    `reasonCode`, `recordedBy` and every attempt. No answer carries a note, a cost or a payout. A reader of a recorded order who also holds `PAYMENT_ADMIN` reads the caller's
+    phone in full **while a refund is still owed** (logged): order remembers payment's payout, payout-cancelled and debt-closed facts (V17 `order_refund_fact`, append-only;
+    it handles `payment.paid_out`, `payment.payout_voided` and `payment.refund_closed` for this alone and ignores `payment.refund_due_recorded`). The packer is told 409 `order-cancelled` for an order paid and then cancelled; a parcel whose every piece came
+    back leaves the "on the way" list and is not delivered (409 `fully-returned`).
+  - **Who bears the sending charge** is a setting per reason, read at start (a missing one refuses to start), written on the correction and carried on its event:
+    `oriah.refunds.bearer.cancellation.*` and `.return.*`, **all `CUSTOMER`** (AM3: CLIENT_DECISIONS is the baseline; owner question 1 asks about faults of the shop's).
+- **`inventory` (V13, V14): machine-only doors** (`INVENTORY_ADMIN` **and** the service account; the gateway denies them to everyone).
+  `POST /api/v1/admin/inventory/sale-reversals` (one transaction keyed by the reversal id): a CANCELLATION takes goods and boxes back at the lots they left (a box returns to
+  its product's set-aside when that record still stands); a RETURN puts each piece back into the newest lot its sale line drained and **quarantines** it (`inventory.quarantined`;
+  `reserved + committed + quarantined <= on_hand`). `GET .../{id}` takes the reversal's lock and answers the typed 404 `reversal-not-found`. `POST .../{id}/abandon` (V14 `sale_reversal_abandoned`) records that an id
+  was given up, unless it was applied (`applied: true`); a later request under an abandoned id is 409 `reversal-abandoned`. The staff stock list shows `quarantined` and
+  leaves held pieces out of `available` and `free`.
+  `POST .../returned-pieces/{pieceId}/outcome`: `RELEASED` (on sale again), `WRITTEN_OFF` (reason `WRITE_OFF_RETURNED`, at the piece's own lot's cost) or `RELISTED` (the piece
+  moves to a **one-unit child lot** of a marked-down variant, at its source lot's cost; the lot family is re-followed after every conform, so a late older receipt or a cost
+  correction moves the child's cost too, AM1). The FIFO engine knows held units; reconciliation gains `quarantineMismatches`, `familyMismatches`, `strandedChildren`.
+- **`catalog` (V8):** `condition` (`NEW` | `MARKED_DOWN`), `sourceVariantId`, `markdown_piece_id`. `POST /api/v1/admin/products/{id}/variants/marked-down` (CATALOG_ADMIN,
+  idempotent by piece) makes the listing unpriced; its title ends " - returned, marked down" everywhere; it is priced only while its lot's cost is known (409
+  `markdown-cost-not-ready`, AM5) and takes no promotion.
+- **`payment` (V8, V9) keeps the debt and the money out, all `PAYMENT_ADMIN`.** `refund_due` is made from order's event (never typed): `OWED`, or `IN_QUESTION` when the
+  confirmation that paid the sale was voided afterwards (the owner says once, `POST /refunds-due/{id}/money-check`, whether the money arrived; "no" closes it and announces
+  `payment.refund_closed`). **The answer is about the payment, not one debt:** it settles every debt in question out of that confirmation, a debt recorded later takes it,
+  and an opposite answer is 409 `already-checked` (V9 holds it with a trigger). `POST /api/v1/admin/payments/payouts` (`Idempotency-Key`; `refundDueId` | `heldMoneyId`, `method`, `reference` used once, `customerFee <= sendCharge
+  <= oriah.refunds.max-send-charge` 500.00; **gross and net are never typed**; `paidAt` not before it was owed, `BACKDATE_SALE` past 72 hours) and `POST .../payouts/{id}/void`
+  (the debt is owed again). **Held money is paid back through the same door** and becomes `REPAID`; a repaid record is not voided (409 `held-money-repaid`); `WRONG_DATE` money
+  is voided and keyed again. Who bears the charge on held money: `oriah.refunds.bearer.held.*` (WRONG_AMOUNT, ALREADY_PAID, ORDER_CANCELLED: the customer; PIECE_SOLD,
+  ORDER_UNKNOWN: Oriah). A reference that paid a sale after its void is not reused (`reference-paid-a-sale`).
+- **`finance` (V4)** books each fact once, in any order, replay equal to live (`CorrectionDerivation`, `PayoutDerivation`, `FeeDerivation`): a correction takes the goods at
+  list price, the discounts, the delivery charge and the waiver memo back **on the day of the cancellation or return, never the sale's**; its stock cost comes back from
+  `stock.cost_recorded`; the debt is a memo (`MEMO_REFUNDS_OWED`) that the payout clears; the payout's send charge is a payment charge and the part the customer bore reduces it
+  (`REFUND_FEE_RECOVERED`); a payout void undoes its rows; a debt closed because the money never came removes the fee that never happened. The report gains the `refunds` memo,
+  "returned, not sellable" stock and `status.refundsOwedWithoutDebt` (`oriah.finance.refund-debt-grace`, PT24H).
+- **`notification` (V11, V12):** "we have cancelled your order", "we have received your return" and "your refund has been paid" (each with its sums, the last written only once the
+  correction is known and waiting behind the correction's own message, AM4), emailed like "payment received"; one staff alert `REFUND_TO_PAY` (reminder after
+  `alerts.refund-to-pay` P3D, then P7D; ended by `PAID_OUT`, `MONEY_NEVER_CAME` or `SALE_CORRECTED`). A payout cancelled before its "refund paid" message went out withdraws that message
+  (`NOT_SENT / SUPERSEDED`; `FAILED / OUTCOME_UNKNOWN` if a try may already have handed it over); a sale's correction is remembered (`confirmation_watch.corrected_at`), so a cancelled money record heard afterwards raises no alert. A phone
+  order's caller is told by staff.
+- **Six new event types**, each declared by every consumer of its topic before its producer's slice (the six contract JSON files were written first, AV15, and each producer's
+  bytes are pinned to them): on `oriah.order` **`order.sale_cancelled`** and **`order.return_recorded`** (aggregate `order`; the correction, its lines and pieces, what is owed,
+  who bears the charge; dated to the correction; no note, reason text or person); on `oriah.payment` **`payment.refund_due_recorded`**, **`payment.refund_closed`** (aggregate
+  `refund_due`), **`payment.paid_out`**, **`payment.payout_voided`** (aggregate `money_out`; no reference, name or typed reason). `stock.cost_recorded` is unchanged (new reason
+  values: `RETURN`, `CANCELLED_BEFORE_DISPATCH`, `WRITE_OFF_RETURNED`, `RELISTED_MARKED_DOWN`).
+- **Gateway:** `/api/v1/admin/inventory/sale-reversals/**` and `/returned-pieces/**` are denied to everyone; the rest falls under existing rules (ORDER_ADMIN, PAYMENT_ADMIN,
+  CATALOG_ADMIN). No realm change.
+- **Problem types added** (409 unless noted). order: `use-the-paid-cancellation`, `cancellation-not-allowed`, `already-cancelled`, `correction-in-progress`,
+  `order-too-old-to-correct`, `cancellation-refused`, `return-not-allowed`, `more-than-was-sold`, `similar-return-just-recorded`, `return-refused`, `return-not-received-yet`,
+  `piece-already-assessed`, `assessment-in-progress`, `exchange-needs-another-order`, `not-an-exchange-order`, `exchange-already-recorded`, `not-in-flight`, `it-did-move`,
+  `order-cancelled`, `fully-returned`; 400 `invalid-line`, `note-required`, `invalid-note` (a note counted in characters, as the database counts), `invalid-state`; 404 `order-not-found`; 503 `inventory-unavailable`, `catalog-unavailable`.
+  payment: `already-paid-out`, `money-check-needed`, `refund-closed`, `not-in-question`, `already-checked`, `oriah-bears-this-charge`, `payout-reference-already-used`,
+  `payout-already-voided`, `held-money-repaid`, `held-money-voided`, `void-and-key-again`, `reference-paid-a-sale`; 400 `amount-is-not-typed`, `invalid-customer-fee`,
+  `invalid-send-charge`, `cash-has-no-charge`, `paid-before-it-was-owed`; 404 `refund-due-not-found`, `payout-not-found`, `held-money-not-found`. inventory (to order only):
+  `reversal-not-found` (404), `reversal-abandoned`, `reversal-id-used`, `more-than-outstanding`, `box-line-not-live`, `not-a-sale`, `reservation-not-consumed`, `piece-outcome-recorded`,
+  `markdown-variant-not-known-yet`, `markdown-variant-of-another-product`, `markdown-variant-in-use`, `already-marked-down`. catalog: `markdown-piece-used`,
+  `already-marked-down`, `markdown-cost-not-ready`.
+- **Rollout order:** stop the gateway; start catalog (V8), inventory (V13, V14), finance (V4), notification (V11, V12), payment (V8, V9), order (V16, V17), each running
+  before the next; start the gateway last. No back-fill and no realm change.
+- **Known limits, recorded (not defects):** the box of a returned piece is never taken back (it stays sold); a returned piece of a marked-down listing can be marked down only once
+  (409 `already-marked-down`); a customer cannot ask for a return on the website (staff record it); there is no time limit on returns (owner question 14).
+- **Reviewed (2026-11-17): Codex's code review (NOT SOUND: 2 P1, 3 P2), a six-lens read-only panel (12 agents, a skeptic on every lens: 14 raised, 11 standing, none P1),
+  Codex's second pass on the fixes (NOT SOUND: 3 P1, 3 P2, 1 P3) and a four-lens skeptic check of the fix commits (5 standing, all P3).** Fixed test-first, and what to keep
+  when touching this code: **an abandon is decided and remembered by inventory**, never read-then-written by order (a retry already on its way could put the stock back
+  for an order that carried on as paid: Codex P1 and the panel); **whether the money arrived is said once per payment**, not per debt (two returns of one sale could be
+  answered opposite ways: Codex P1); **only a refusal inventory names is proof** (a 401 or 403 can answer a repeat of a request that did move stock); a cancelled payout
+  withdraws its unsent "refund paid" message; order remembers payment's three facts so the caller's phone is not readable for ever; two requests with one
+  Idempotency-Key for different orders, and two exchange links to one new order, queue and answer the typed 409; words a person types are counted in characters; the
+  staff stock list does not offer a held piece; a standing non-cash payout must carry its reference key. **Declined, recorded:** Codex's three upgrade findings (debts,
+  processed-event markers and watch rows written by an earlier Phase 12 build) assume a database that ran that build; none ever did, and nothing goes live before every
+  phase is built. A "refund paid" email that the mail server takes at the very moment its payout is cancelled still goes (the row then reads SENT, which is what
+  happened). **Honesty note:** the four large order test classes and several review-fix tests were written before their code but first ran green; each was then proven
+  by breaking 3 to 7 rules at a time and seeing the matching tests fail (payment's money-check fix was not given that check).
+- **Hand-offs.** Phase 13: the card path's refunds go through the same `refund_due` and `money_out`; declare any new payment event type in order, finance and notification
+  first. Phase 14: a return is the credit note and the exchange link pairs it with the new invoice; every correction is published with full line detail and no tax column.
+  Frontend stage: the screens of `docs/FRONTEND_WORK.md` Phase 12.
+
 ---
 
 ## Stack
@@ -733,14 +855,14 @@ promotion, shipping, customer, review, search, notification, **procurement**
 (Phases 2 and 4: suppliers, purchase orders, consignments with the landed-cost
 allocator, receiving, invoices, and corrections of a received consignment's cost; Flyway V1-V7;
 **inventory since Phase 5 is cost-bearing**: lots, the stock ledger, write-offs, cost reads, since Phase 6 the boxes
-set aside for products and **since Phase 7 the reservations that hold stock for an order**; Flyway V1-V11; **catalog since Phase 6** holds the dated price
-history and the default box, and **since Phase 7 works out each piece's promotion**; Flyway V1-V6 (Phase 7 added none);
-**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver) **and since Phase 8 its dispatch** (the steps, the packer's list and slip, the recipient, the correction) **and since Phase 9 the sales staff record for a caller with no account**; Flyway V1-V14;
-**payment since Phase 7 records staff-confirmed money**; Flyway V1-V7; **promotion since Phase 7 keeps scoped, dated
+set aside for products and **since Phase 7 the reservations that hold stock for an order**, **since Phase 12 sale reversals and returned pieces**; Flyway V1-V14; **catalog since Phase 6** holds the dated price
+history and the default box, and **since Phase 7 works out each piece's promotion**, **since Phase 12 marked-down variants**; Flyway V1-V8;
+**order since Phase 7 owns the sale** (placement, the hold, the payment claim, settling confirmed money, the delivery waiver) **and since Phase 8 its dispatch** (the steps, the packer's list and slip, the recipient, the correction) **and since Phase 9 the sales staff record for a caller with no account** **and since Phase 12 the corrections of a paid sale** (paid cancellation, returns, assessment, exchange); Flyway V1-V17;
+**payment since Phase 7 records staff-confirmed money** **and since Phase 12 refunds owed and money paid back**; Flyway V1-V9; **promotion since Phase 7 keeps scoped, dated
 promotions**; Flyway V1-V3; **shipping since Phase 7 keeps delivery prices per town and option**; Flyway V1-V2).
 `checkout` is **stateless** and owns no database. **`shipping` was stateless until Phase 7 and now has its own Postgres**
 (host port 5445), so 12 of the first 13 services own a database; **`finance` (Phase 10) is the 14th and owns one too, so 13 of the 14.** **`notification` since Phase 11** really sends email (SMTP), keeps what became of every message, raises staff alerts and reads
-`oriah.payment` as well as `oriah.order`; Flyway V1-V10.
+`oriah.payment` as well as `oriah.order`; Flyway V1-V12. **`finance`** is at Flyway V1-V4 since Phase 12.
 
 **3 infra modules** in `infra/`: configserver, eurekaserver, gatewayserver.
 
@@ -912,7 +1034,7 @@ Phase 2's status block in `docs/MVP_PLAN.md`.
 > a console edit, which drifts from the committed files. At go-live, realm
 > changes go through an idempotent admin-API step instead.
 
-`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20j**, not a quick
+`smoke-test.ps1` is **20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 7b, 7c, 8b and 20b to 20k**, not a quick
 probe (it starts by running `scripts/check_service_registry.py`, which stops it if
 any list that names the services is missing one): the full admin + customer saga through the gateway (product, stock,
 cart, checkout **quote then commit**, the held order, the shopper's payment claim, **staff confirming the money**, the
@@ -943,7 +1065,11 @@ emailed to alice with its receipt number and K180.00; a payment claim emails the
 a rejected claim ends the alert and tells the customer; the ring step 20f left below cost is emailed to the cost mailbox with no
 figure; a live phone sale's words wait in the sales work list and a paper sale has none; every caught email is to an `@oriah.local`
 mailbox while `nora@example.com` reads `NOT_SENT / SANDBOX`; notification's machine token holds exactly two roles and is 403 at the
-gateway; the owner without `USER` reads both staff lists. (Step 1 opens alice's bell once, which is how notification learns her address.)
+gateway; the owner without `USER` reads both staff lists. (Step 1 opens alice's bell once, which is how notification learns her address.) **Step 20k (Phase 12) undoes paid sales:** a paid phone sale is cancelled (the staff transition is 409
+`use-the-paid-cancellation`; everything paid is owed; the ring is back on sale); one of two rings is returned after hand-over (only the piece is owed; it is in stock but
+held); the owner pays both refunds (cash with no charge; mobile money where the customer bears K2.50); the returned ring is marked down, priced K80.00 and sold once; the
+second ring is written off; K85.00 held for an order already paid is paid back; an exchange is linked; the stock system's doors are 403 even to the owner; finance books
+the cancellation and no event is dead-lettered.
 
 ### Keycloak
 
@@ -1191,8 +1317,8 @@ Follow-ups found during Phase 1 — **fixed 2026-11-10**:
   explicitly above that: a must-do in `docs/FRONTEND_WORK.md`.
 - **payment runs three scheduled jobs** (the outbox relay, the settlement watcher that announces
   confirmed money again, and, only while the card path is on, the reconciler that settles intents
-  stuck `CHARGING`), so its scheduling pool is 3; **order** runs three (the relay, the hold job and
-  the settlement job: pool 3) and **inventory** two (the relay and the reservation sweeper: pool 2).
+  stuck `CHARGING`), so its scheduling pool is 3; **order** runs four since Phase 12 (the relay, the hold job, the settlement job and
+  the correction job: pool 4) and **inventory** two (the relay and the reservation sweeper: pool 2).
   **Notification** runs two since Phase 11 (the dispatcher that sends, the below-cost check: pool 2).
   Add a thread for any further `@Scheduled` job.
 - ✅ **Closed by Phase 7** (these were "still open, owned by Phase 7"): a charge that went through after a
@@ -1322,6 +1448,8 @@ The user's persistent `~/.claude/projects/.../memory/` holds:
 - `project-oriah-requirements-locked.md` — `docs/CLIENT_DECISIONS.md` is the
   baseline; tax = ZRA Smart Invoice, deferred past the MVP (core integration-ready);
   delivery per town; promotions per product, category or shop
+- `project-oriah-phase12-plan.md` — **the MVP plan's Phase 12 "Returns, refunds and exchanges"**: the design files, what Codex and the panels changed, what was built, the
+  traps and the hand-offs to Phases 13 and 14. Read it before touching corrections, refunds or returned stock
 - `project-oriah-phase11-plan.md` — **the MVP plan's Phase 11 "Notifications"**: the design files, what Codex and the panel changed, what was built, the mail-library facts and the
   traps, the limits recorded and the hand-offs to Phases 12 and 13. Read it before touching notification
 - `project-oriah-phase10-plan.md` — **the MVP plan's Phase 10 "Finance"**: the design files, what Codex and the panel changed, what was built, the limits recorded and the hand-offs to

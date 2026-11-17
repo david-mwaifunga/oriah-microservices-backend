@@ -20,7 +20,72 @@ update this before ending and read it at the start.
 
 ---
 
-## CURRENT STATE — 2026-11-16 (MVP_PLAN Phase 11 complete: notifications, real email and staff alerts)
+## CURRENT STATE — 2026-11-17 (MVP_PLAN Phase 12 complete: returns, refunds and exchanges)
+
+Phase 12 of `MVP_PLAN.md` is built, tested, reviewed (Codex on the design and twice on the code, a six-lens read-only panel and a skeptic check of the fixes) and committed
+(**not pushed**). **Proved live on the full container stack on 2026-11-17: the smoke test (new step 20k) passed, on its first run, on images rebuilt from the final committed code
+(`9f4019c`: catalog, inventory, finance, notification, payment, order and the gateway), with the new migrations applied over the existing data and no ERROR-level line in
+any service's log since that start. The OpenAPI gate is additions-only with no new waiver and the audit passes; twelve error goldens were added (all 80 verify); Postman was
+regenerated and its check passes.**
+
+**What exists now.** A paid sale is never edited: undoing one is a **correction**, a record of its own that points back at the sale. An order administrator (the owner or the
+manager) **cancels a paid order before it is dispatched** (every piece and its box go back to stock; everything that was paid is owed, delivery included) or **records pieces
+that came back** after dispatch or hand-over (each piece is owed at its own price less its own discount; never delivery, never the box; the order's status does not change).
+Each returned piece is held, not for sale, until someone says what became of it: **fine** (on sale again), **marked down** (a listing of its own, priced lower, at the cost of
+the lot it came from) or **not sellable** (written off; only the owner). The refund is a **debt payment keeps**, made by the system and never typed; **only the owner pays it**,
+by any method, recording what it cost to send and how much of that the customer bore; a payout keyed by mistake is cancelled and the debt is owed again. Money held for a
+customer is paid back the same way. An **exchange** is a return and a new order, linked; no money is netted. Finance takes the revenue and the cost back on the day of the
+correction, the customer is told (cancelled, return received, refund paid) and staff are reminded of a refund still owed. The contract-level detail is the **"Built in
+Phase 12"** block of `../CLAUDE.md`; the design is `../.codex-tmp/plan-p12-FINAL.md`.
+
+**The sums, as the client reads them** (the plan's examples, each tested to the ngwee):
+
+| A paid order cancelled before dispatch | |
+|---|---|
+| 2 rings at K100.00 | K200.00 |
+| Less the promotion, 2 x K10.00 | - K20.00 |
+| Delivery that was paid | + K45.00 |
+| **Owed to the customer** | **K225.00** |
+| Charge for sending it back (the customer bears it) | - K5.00 |
+| **The customer receives** | **K220.00** |
+
+| One ring of two returned after hand-over | |
+|---|---|
+| 1 ring at K100.00 less its K10.00 promotion | K90.00 |
+| **Owed to the customer** (no delivery, no box) | **K90.00** |
+| Charge for sending it back (the customer bears it) | - K2.50 |
+| **The customer receives** | **K87.50** |
+
+**Tests (each run by me; Maven's own totals):** order 783/783 (it was 641 before the phase); payment 315/315; notification 444/444; gateway 307/307; inventory, catalog and
+finance each passed their whole suite after their last change (inventory's after the review fix). The smoke test passed end to end with step 20k.
+
+**Reviews.** Codex's design review (NOT SOUND, 3 P1) and the design run's own verifiers gave the 25 amendments of `plan-p12-FINAL.md`. Codex's code review (NOT SOUND: 2 P1, 3
+P2) and the panel (12 agents; 14 raised, 11 standing, none P1) overlapped on the three serious points, all fixed test-first: **abandoning a stuck correction is now decided and
+remembered by the stock system** (order used to read "nothing moved" and then write it down, while a retry already on its way could put the stock back for an order that
+carried on as paid); **whether the money arrived is said once per payment**, not per refund; **a cancelled payout withdraws its unsent "refund paid" message**. Codex's second
+pass (NOT SOUND: 3 P1, 3 P2, 1 P3) and a skeptic check of the fix commits (5 standing, all P3) then gave: only a refusal the stock system NAMES proves nothing moved; the
+database rule takes the payment's lock; notes are counted in characters end to end. Declined, recorded: three "upgrade" findings that assume a database which ran an earlier
+Phase 12 build (none ever did).
+
+**Honesty notes (TDD).** Tests were written before the code they demand, but several could not be seen failing for the right reason, because they did not compile until the
+code existed: the four large order classes (`PaidCancellationTest`, `ReturnRecordingTest`, `ReturnAssessmentTest`, `ExchangeAndReadsTest`), the contract-bytes test, the
+four-threads test, and the order and payment review-fix tests. Each of the four large classes and the order review fixes was then proven by breaking 3 to 7 rules at a time
+and seeing the matching tests fail (scripts kept in the session's scratchpad); payment's money-check fix did not get that check. Earlier in the phase three inventory tests
+(set-aside gone, a swap of a swap, two at once), catalog's domain tests, the piece-outcome HTTP test and payment's slice 9 to 10 tests were written with or just after their
+code. Test counts I quoted mid-phase from my own reading of report files were off; the totals above are Maven's.
+
+**Known limits, recorded.** The box of a returned piece stays sold; a marked-down piece that comes back again cannot be marked down a second time; a customer cannot ask for a
+return on the website; there is no time limit on returns (owner question 14); a "refund paid" email the mail server takes at the very moment its payout is cancelled still
+goes. **Not proven live** (module tests with injected failures or a test clock prove them): a lost reply between inventory and order and the job that finishes it, a refusal
+that ends an attempt, abandoning a stuck correction, the three-day reminder, a payout cancelled after its month was reported, money that never arrived for a sale whose record
+was cancelled, the 72-hour rule.
+
+**What is next (as of 2026-11-17):** Phase 13 (ZynlePay, mobile money and cards), then Phase 14 (tax, after the MVP), then the frontend stage. The owner's 16 questions for
+this phase are in `FRONTEND_WORK.md`, each with the default that is built.
+
+---
+
+## 2026-11-16 — MVP_PLAN Phase 11 complete: notifications, real email and staff alerts (history: it was the current state until Phase 12)
 
 Phase 11 of `MVP_PLAN.md` is built, tested, reviewed (Codex on the design and twice on the code, and a six-lens read-only panel) and committed (**not pushed**). **Proved live on the full container stack on 2026-11-16: the smoke test (new step 20j) passed, on its first run, on images rebuilt from the final committed code (notification `4e6c870`; order, payment and the gateway from the same tree), with no ERROR-level line in any of the 15 services' logs or Keycloak's since that start. The run before it, on the images of `0baa787`, passed every step through 20i and stopped in 20j on slips in the new script block only (a claim rejection answers 201; a PowerShell array piped as one object; a poll made with another person's token). The OpenAPI gate is additions-only with no new waiver and the audit passes; six error goldens were added (all 68 verify); Postman was regenerated and its check passes.**
 

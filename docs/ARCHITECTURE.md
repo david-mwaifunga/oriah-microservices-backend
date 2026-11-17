@@ -1633,3 +1633,34 @@ explains the visibility choice so it's not mysterious for the next reader.
 - Initializr auto-generated `com.oriah.catalog_service` because the original artifact id was `catalog-service` and Java doesn't allow hyphens in package names.
 - We renamed the module to just `catalog` (no `-service` suffix) since it lives under `services/` already — `services/catalog/` reads cleaner than `services/catalog-service/`.
 - Future services follow the same convention: `services/cart/`, `services/order/`, etc.
+
+---
+
+## Returns and refunds: a correction, never an edit (Phase 12)
+
+**Why a paid sale is not edited.** The client's first rule for tax-readiness is that a paid sale is never changed: every later fact points back at it. So cancelling a paid
+order or taking a piece back does not rewrite the order's lines, totals, receipt number or payment date. It writes a **correction**: a record of its own (`order_correction`)
+with the lines it undoes, copied exactly from the sale and held to it by the database, and what the customer is owed for them. A Smart Invoice service can later read a
+correction as a credit note without the core carrying a tax column.
+
+**Why two kinds and one line between them.** Before the parcel is dispatched (or a pickup handed over) the sale is undone whole: the pieces and their boxes go back and
+everything paid is owed, delivery included. After that line the customer keeps the delivery they received, so a return owes the pieces only, and the box stays against the
+sale. The dispatch record of Phase 8 is that line.
+
+**Why three services, and who owns what.** `order` owns the sale, so it owns the correction and decides who may make one. `inventory` owns stock and cost, so it puts the
+units back at the lot and cost they left at, in one local transaction, behind doors only the order system may use. `payment` owns money, so the refund is a debt it keeps,
+made from order's event (nobody types a debt) and paid only by the owner. Nothing is shared but events: finance and notification read them like any other fact.
+
+**Why a correction is written before the stock is asked.** Order cannot hold a database transaction open across a call to inventory. So it writes the correction `REQUESTED`
+under the order's lock, asks inventory outside any transaction using the correction's id as the key, and finishes in a second transaction. In between, nothing else may
+happen to that order. The hard part is an answer that is lost: order must never conclude "nothing moved" from silence. **Only a refusal inventory names is proof**; every
+other answer leaves the correction waiting, and a job asks again. Giving one up for good is decided by inventory, under the same lock a reversal takes, and remembered there,
+so a request still on its way can never be applied afterwards. (The first build read "there is none" and wrote that down on order's side; both reviews found the race.)
+
+**Why a returned piece is held.** A piece that comes back is in the building but nobody has looked at it. Counting it as sellable would let a damaged ring be sold online.
+So inventory puts it back in its lot and counts it as `quarantined` until order records what became of it. A marked-down piece becomes a variant of its own with a one-unit
+lot at its source lot's cost, so its price is judged against what that very piece cost, and a later correction of the source consignment's bill moves its cost too.
+
+**Why the refund is not the negation of the payment.** Three charges are kept apart: what the provider took when the customer paid (Oriah's cost, never taken back), what it
+cost Oriah to send the refund, and the part of that the customer bore. Who bears the sending charge is a setting per reason, written on the correction when it is recorded.
+Finance books each fact once, in any order of arrival, dated to the correction or the payout and never to the original sale.

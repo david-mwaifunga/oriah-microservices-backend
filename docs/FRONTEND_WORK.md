@@ -866,33 +866,169 @@ published price (built: yes, with a written reason either way)? 9. Do you sell o
 
 ### Phase 12 — Returns, refunds and exchanges
 
+> **Built 2026-11-17 (backend only: `oriah-web` is not changed).** A paid sale is never edited: undoing one is a **correction**, a record of its own that points back at the sale.
+> Two kinds: a **paid cancellation** (before the order is dispatched or handed over: everything goes back to stock and everything that was paid is owed, delivery included) and a
+> **return** (after: the pieces that came back are owed at their own price less their own discount; never delivery, never the box). The refund itself is a **debt** that `payment`
+> keeps and only the owner pays (`PAYMENT_ADMIN`). An **exchange** is a return and a new order, linked; no money is netted between them.
+>
+> **Every sum in Kwacha, as the screens must show it** (the plan's worked examples):
+>
+> | A paid order cancelled before dispatch | |
+> |---|---|
+> | 2 rings at K100.00 | K200.00 |
+> | Less the promotion, 2 x K10.00 | - K20.00 |
+> | Delivery that was paid | + K45.00 |
+> | **Owed to the customer** | **K225.00** |
+> | Charge for sending it back by mobile money (the customer bears it) | - K5.00 |
+> | **The customer receives** | **K220.00** |
+>
+> | One ring of two returned after hand-over | |
+> |---|---|
+> | 1 ring at K100.00 | K100.00 |
+> | Less its promotion | - K10.00 |
+> | **Owed to the customer** (no delivery, no box) | **K90.00** |
+> | Charge for sending it back (the customer bears it) | - K2.50 |
+> | **The customer receives** | **K87.50** |
+>
+> **Order, all `ORDER_ADMIN`** (the owner and the manager; a salesperson and a packer are 403):
+> - **`POST /api/v1/admin/orders/{id}/cancellation`** `{reasonCode, note?}`. `reasonCode` is `CUSTOMER_ASKED`, `PIECE_UNAVAILABLE`, `SHOP_ERROR` or `OTHER` (`OTHER` needs a
+>   `note` of 5 to 200 characters). Answers `{correctionId, orderId, state, reasonCode, cancelledAt, goodsAtList, discounts, deliveryRefunded, waiverTakenBack, owedGross, feeBearer,
+>   currency, refusedCode?, replay}`. **201** cancelled; **200** the same cancellation asked again (`replay: true`); **202** recorded but the stock system has not answered yet
+>   (`state: REQUESTED`: show "being cancelled", offer "try again", it also finishes by itself within minutes). Only a `PAID` or `FULFILLED` (packed) order. 409:
+>   `cancellation-not-allowed` (with `use: a-return` once it has gone out, `use: the-cancel-door` for an unpaid order), `already-cancelled`, `box-swap-in-progress`,
+>   `correction-in-progress`, `payment-being-applied`, `order-too-old-to-correct`, `cancellation-refused` (the stock system refused; nothing changed; `refusedCode` says why).
+>   **`GET` on the same path** reads the latest attempt (404 when there is none).
+> - **`POST /api/v1/admin/orders/{id}/returns`** with a required **`Idempotency-Key`** (1 to 128 characters) and `{reasonCode, returnedAt?, backdateReason?, note?,
+>   confirmDuplicate?, lines[{lineId, quantity}]}`. `reasonCode`: `CHANGED_MIND`, `WRONG_SIZE`, `FAULTY`, `NOT_AS_DESCRIBED`, `WRONG_ITEM_SENT`, `DAMAGED_IN_TRANSIT`,
+>   `NOT_DELIVERED`, `OTHER` (needs a note). Answers `{returnId, orderId, receiptNumber, state, reasonCode, returnedAt, lines[{lineId, title, quantity, unitPrice,
+>   discountPerPiece, lineRefund}], pieces[{pieceId, lineId, pieceNo, state, outcome?, markdownVariantId?, assessedAt?}], owedGross, feeBearer, currency, exchange?, refusedCode?,
+>   replay}`. 201 / 200 (same key and request) / 202 as above. Only a `SHIPPED` or `DELIVERED` order. 409: `return-not-allowed` (`use: the-paid-cancellation`),
+>   `more-than-was-sold` (names `lineId`, `sold`, `alreadyReturned`), `similar-return-just-recorded` (the same pieces of this order were returned in the last ten minutes: ask "is
+>   this another parcel?" and send again with `confirmDuplicate: true`), `idempotency-key-reused`, `correction-in-progress`, `order-too-old-to-correct`, `return-refused`. 400:
+>   `invalid-line`, `invalid-occurred-at` (before the order went out, or in the future), `backdate-reason-required`, `note-required`, `invalid-note` (a note is 5 to 200
+>   characters, counted as characters: an emoji is one). 403: a parcel that came back more than 72
+>   hours ago needs `BACKDATE_SALE`. **The order's status does not change.**
+> - **`GET /api/v1/admin/orders/returns?state=AWAITING_ASSESSMENT|IN_FLIGHT|ALL&page&size`** (the work list: returns with a piece nobody has finished looking at, the longest
+>   waiting first; a page is at most 50) and **`GET /api/v1/admin/orders/returns/{returnId}`**.
+> - **`POST /api/v1/admin/orders/returns/{returnId}/pieces/{pieceId}/assessment`** `{outcome, note?}`: `FINE` (back on sale), `MARKED_DOWN` (**also needs `CATALOG_ADMIN`**: the
+>   piece becomes a listing of its own, unpriced until someone prices it), `UNSELLABLE` (**also needs `STOCK_WRITE_OFF`**, which only the owner holds, **and a note**). Answers
+>   `{pieceId, state, outcome, assessedAt?, markdownVariantId?, replay}`: 200 done, 202 `IN_PROGRESS` (the stock system has not recorded it yet; it finishes by itself). An
+>   assessment is made once: 409 `piece-already-assessed`, `assessment-in-progress`, `return-not-received-yet`, or the catalogue's or stock system's own reason
+>   (`already-marked-down`, `sku-unavailable` ...); 503 `catalog-unavailable`. Until it is done the piece is **held, not for sale**.
+> - **`POST /api/v1/admin/orders/returns/{returnId}/exchange`** `{newOrderId}` answers `{exchangeId, returnId, returnedOrderId, newOrderId, replay}` (201, or 200 for the same
+>   pair). 409: `exchange-needs-another-order`, `not-an-exchange-order` (the new order was cancelled or lapsed), `exchange-already-recorded`, `return-not-received-yet`; 404
+>   `order-not-found`.
+> - **`GET /api/v1/admin/orders/corrections?state=REQUESTED|DONE|REFUSED|ALL`** (cancellations and returns by where they stand with the stock system; `stuck: true` after five
+>   minutes) and **`POST /api/v1/admin/orders/corrections/{id}/abandon`** (gives a stuck one up: the stock system records that the attempt was abandoned, so it can never
+>   be applied afterwards; 409 `it-did-move` when the stock had already gone back, and the correction is finished instead; 409 `not-in-flight`; 503 when the stock system cannot
+>   be asked, and nothing changes).
+> - **While a cancellation or a return is `REQUESTED`** the order cannot be packed, shipped, handed over, re-boxed, re-addressed or corrected again: every such door answers 409
+>   `correction-in-progress` (with `correctionId`). The old doors never cancel a paid order: staff get 409 `use-the-paid-cancellation`.
+> - **The packer** is told plainly when an order was paid and then cancelled: the slip and the steps answer 409 `order-cancelled` ("... any piece already packed goes back on the
+>   shelf"). A parcel whose every piece came back leaves the "on the way" list and cannot be marked delivered (409 `fully-returned`).
+>
+> **The order's own answers gain two trailing fields** (`GET /api/v1/orders/{id}`, `/orders/me`, `GET /api/v1/admin/orders[/{id}]`, `GET /api/v1/admin/orders/recorded/{id}`):
+> `corrections[{id, kind, state, occurredAt, pieces, owedGross, currency, exchangedForOrderId?}]` (absent when nothing was corrected) and, only on an order taken INSTEAD of
+> returned pieces, `exchange{returnId, returnedOrderId}`. The shopper and a salesperson see only corrections that are done, with no reason and no actor; the order administrator
+> also reads `reasonCode`, `recordedBy` and every attempt. **No answer carries a note, a cost or a payout.** A paid order that was cancelled reads `status: CANCELLED` and keeps its
+> `receiptNumber` and `paidAt`.
+>
+> **Payment, all `PAYMENT_ADMIN`** (today only the owner; the manager is 403):
+> - **`GET /api/v1/admin/payments/refunds-due?status=OWED|IN_QUESTION|PAID|CLOSED|ALL`** and **`/{id}`**: each debt with `kind`, `orderId`, `owedGross`, `feeBearer`, `owedSince`,
+>   `status`, how the customer first paid (`originalMethod`, `originalReference`, `originalFee`, `originalArrivedAt`: where to send it back to) and its `payout` once paid. A debt
+>   is made by the system from the cancellation or return; **nobody types one**.
+> - **`POST /api/v1/admin/payments/refunds-due/{id}/money-check`** `{moneyArrived, reason}` (the reason is 10 to 200 characters; 409 `not-in-question`, `already-checked`).
+>   **The answer is about the payment, so it is given once and settles every refund in question out of that same payment** (two returns of one order); the screen should say so: only for a debt `IN_QUESTION` (the money record that paid the sale was later cancelled): the
+>   owner says once whether the money really arrived. Yes: it becomes payable. No: nothing is owed.
+> - **`POST /api/v1/admin/payments/payouts`** with a required `Idempotency-Key` and `{refundDueId | heldMoneyId, method, reference?, customerFee, sendCharge, paidAt?,
+>   backdateReason?}`: `method` is `CASH`, `MTN`, `AIRTEL`, `ZAMTEL` or `BANK_TRANSFER` (**any method, not necessarily the one the customer paid with**); every method but cash
+>   needs a `reference`, used once; `sendCharge` is what the provider charged Oriah to send it (K0.00 for cash, at most K500.00); `customerFee` is how much of that the customer
+>   bore (never more than `sendCharge`; K0.00 when Oriah bears it). **The amount is never typed** (a body carrying `gross` or `net` is 400): the answer says `gross`, `customerFee`,
+>   `net` (what the customer received) and `sendCharge`. 400: `amount-is-not-typed`, `invalid-customer-fee`, `invalid-send-charge`, `cash-has-no-charge`,
+>   `paid-before-it-was-owed`. 409: `already-paid-out`, `money-check-needed`, `refund-closed`, `oriah-bears-this-charge` (a fee typed where Oriah bears the charge),
+>   `payout-reference-already-used`, `idempotency-key-reused`, `held-money-voided`, `void-and-key-again` (money keyed on the wrong day).
+> - **`GET /api/v1/admin/payments/payouts[/{id}]`** and **`POST .../payouts/{id}/void`** `{reason}` (a payout keyed by mistake: the debt is owed again; 409 `payout-already-voided`).
+> - **Held money** (`GET /api/v1/admin/payments/held-money?status=OWED|VOIDED|REPAID|ALL`) is paid back through the same payout door with `heldMoneyId`. A repaid record can no
+>   longer be cancelled (409 `held-money-repaid`); money keyed on the wrong day is cancelled and keyed again, never paid out.
+>
+> **Inventory.** The staff stock list (`GET /api/v1/admin/inventory`) gains `quarantined` (returned pieces waiting to be looked at): they are on hand but not in `available`
+> or `free`.
+>
+> **Catalog.** A variant gains `condition` (`NEW` | `MARKED_DOWN`) and `sourceVariantId`. A marked-down variant is one returned piece: its title ends " - returned, marked
+> down", it is created **unpriced** by the assessment, it is priced through the usual pricing door (409 `markdown-cost-not-ready` until its stock has arrived), it never takes a
+> promotion, and it holds exactly one piece.
+>
+> **Notification.** Three new customer messages, emailed like "payment received": "we have cancelled your order ... we will pay you back K..." (with the split between pieces
+> and delivery), "we have received your return ... we will pay you back K...", and "your refund has been paid: K... (K... less the K... charge for sending it)". One new staff
+> alert, `REFUND_TO_PAY` (audience `MONEY`), raised when a refund is owed, reminding after 3 days and then weekly, ended by `PAID_OUT`, `MONEY_NEVER_CAME` or `SALE_CORRECTED`.
+> A customer who ordered by phone gets nothing written: staff tell them.
+>
+> **Finance.** The profit report's month gains a `refunds` memo (owed at month start, newly owed, paid, charges for sending and how much of them customers bore, owed at month
+> end), a line for stock written off as "returned, not sellable", and `status.refundsOwedWithoutDebt` (a correction finance has heard of whose debt payment has not announced
+> within a day: a fault to look at). A cancelled or returned sale takes its revenue and its cost of goods back on the day of the cancellation or return, never the day of the sale.
+> **To add to `oriah-web`'s `scripts/codegen.mjs`:** nothing new; regenerate order, payment, catalog, notification and finance.
+
 **Admin screens**
 
-- Cancel a paid order before dispatch. This is the PAID → CANCELLED edge Phase 7 refuses. Refunds need PAYMENT_ADMIN, per 'the 403 on refunds in 12', so today only OWNER can do it, because MANAGER lacks PAYMENT_ADMIN. It refunds the goods and 'the delivery charge in full', returns the box to its source lot, and records the refund's gross, fee and net; the customer bears the payment charge. A courier charge already incurred before dispatch is entered as a period expense (Phase 10).
-- A return after dispatch refunds goods only: the unit's revenue after its per-piece discount. Delivery revenue stays, packaging that went out stays against the sale, and a return can be partial by quantity.
-- A refund records how it was paid ('any method', not necessarily the original one) and the charge Oriah paid to send it.
-- The piece's disposition is fine (relisted at normal price), sellable but not fine (relisted marked down as its own variant, 'returned — marked down', with that variant's price), or unsellable (written off under STOCK_WRITE_OFF).
-- A markdown may go below cost after the warning with a typed reason, and listing it re-runs the promotion below-cost check. The plan names no capability for the markdown relisting, so settle one.
-- An exchange is entered as a return plus a new sale, linked to each other, never as a swap or an edit ('a paid sale is never edited').
-- Pay back money held for a customer (Phase 7) without touching revenue. Oriah bears the transfer charge after a lapsed hold or rejected claim; the customer bears it for a wrong amount.
-- The Orders screen shows the new states after DELIVERED and the path back from SHIPPED, with each refund pointing at the sale it reverses. The Payments screen shows REFUNDED, reachable for the first time.
+- **Cancel a paid order** (on the order's page, while it is PAID or packed): pick the reason, see the sums line by line as above before confirming, then show the result. Handle
+  202 ("the stock system has not answered; it will finish by itself") and 409 `correction-in-progress` on every other button of that order.
+- **Record a return** (on a dispatched or delivered order): tick the pieces that came back per line, the reason, when it came back; show what is owed. The ten-minute
+  "is this another parcel?" question is the `similar-return-just-recorded` answer. Generate one `Idempotency-Key` per form, and reuse it on retry.
+- **Pieces to look at** (the work list `?state=AWAITING_ASSESSMENT`): for each piece three buttons, shown only to who may press them: Fine; Marked down (needs `CATALOG_ADMIN`;
+  afterwards send the person to price the new listing); Not sellable (owner only, with a note).
+- **Refunds to pay** (owner only): the debts list with how the customer paid, a "pay" form (method, reference, what it cost to send, how much of that the customer bears) that
+  shows gross, fee and net before saving, the money check for a debt in question, and a "cancel this payout" button. The same form pays held money back.
+- **Link an exchange** on a return's page (choose the new order). The return's refund and the new order's payment stay separate: for cash, K90.00 paid back and K120.00
+  received, never K30.00.
+- **Corrections waiting on the stock system**, with the "give up" button (owner and manager), for the rare one that is stuck.
+- The alert emails name one more screen by these exact words: **"Refunds to pay"**.
 
 **Storefront**
 
-- Order pages show a cancellation or return and its refund (gross, fee, net) against the original order. The plan has no customer-initiated return request: staff record returns.
-- The product page shows a marked-down returned piece as its own option at its own price, so 'a full-price buyer can never be sent it'.
-- The '30-day returns' promise went in Phase 0; the returns copy reads 'Returns and exchanges by arrangement', from `src/lib/shop/promises.ts`. The plan sets no return window, so the owner confirms or replaces that wording.
+- **Order pages** show each correction from `corrections[]`: "Cancelled, K225.00 to be paid back" or "1 piece returned, K90.00 to be paid back", against the original order. The
+  refund's payout (fee, net) is not on the order's answer; the customer reads it in the "refund paid" message.
+- **A returned order is still DELIVERED** (or SHIPPED): draw the return beside the status, not as a new status. No order status was added in this phase; `CANCELLED` can now
+  follow `PAID` or `FULFILLED`.
+- **The product page** must treat a `MARKED_DOWN` variant as its own option at its own price ("returned, marked down"), hide it once its one piece is sold, and never offer a
+  promotion on it; a full-price buyer can never be sent it because it is a different variant with its own stock.
+- No customer-initiated return request: staff record returns.
+- The returns wording stays "Returns and exchanges by arrangement" (`src/lib/shop/promises.ts`) until the owner answers question 14.
 
 **What it breaks in oriah-web today**
 
-- New order states break the strict OrderStatusEnum again (storefront /orders and /orders/[id], /admin/orders, the dashboard) unless parsing is made tolerant once, in Phase 7.
-- The storefront StateTimeline and the admin NEXT_STATE map have no path back from SHIPPED and nothing after DELIVERED.
-- No Playwright spec covers returns, so nothing else breaks beyond status parsing.
+- Nothing is removed and the OpenAPI changes are additions only. The storefront's timeline assumes a cancelled order was never paid: a paid-then-cancelled order now reads
+  `CANCELLED` with a `receiptNumber`, a `paidAt` and a `corrections[]` entry.
+- The admin "transition to CANCELLED" button on a paid order now answers 409 `use-the-paid-cancellation` (it answered a generic 409 before).
+- No Playwright spec covers returns or refunds.
 
-**Needs from the owner**
+**Needs from the owner, in plain words (none blocks the build; each default is what is built)**
 
-- Any return policy wording to publish in place of 'Returns and exchanges by arrangement', since the plan sets no return window or condition.
-- For each returned piece, the assessment and the markdown price.
+1. **When you pay a customer back, who pays the charge for sending the money?** *Built: the customer, always, as you told us; it is taken from what they receive. You can type
+   K0.00 on any one refund to carry it yourself.* Should a fault of the shop's (a faulty piece, the wrong piece sent, a piece that was sold before we could send it) be on you
+   instead? It is one setting per reason.
+2. **Should the customer also pay back the charge the provider took when they first paid you?** Take a K225.00 payment where MTN kept K3.40. *Built: no. The K3.40 stays your
+   cost. The customer bears only the charge for sending the refund, and never more than it actually cost.*
+3. **Money held because the amount was wrong.** K1,000.00 arrived and Airtel kept K10.00. *Built: you owe K1,000.00. The customer pays the charge for sending it back (they get
+   K991.50 if sending costs K8.50), and the K10.00 stays your cost.*
+4. **Other held money.** *Built: the customer pays the sending charge when they paid twice or paid for a cancelled order. You pay it when the piece sold before their money
+   arrived, or when the order number was keyed wrongly. Money keyed on the wrong day is cancelled and keyed again, never paid out.* Right?
+5. **Your manager may cancel a paid order, take in a return, and say a piece is fine or marked down. Only you write a piece off and only you send money back.** Right?
+6. **A marked-down piece takes no promotion on top of its price.** Right?
+7. **A marked-down piece priced below what it cost still sends the "below cost" email,** like any other piece. Keep that, or stay quiet for marked-down pieces?
+8. **A parcel that came back more than three days ago** can be recorded only by you, with a reason (the same rule as a late sale). Right?
+9. **A customer who ordered by phone gets no written message about a cancellation or a refund;** staff tell them on the call. Do you want words to send by WhatsApp, as for a
+   payment?
+10. **You are reminded by email when a refund has been owed for 3 days, then every week until it is paid.** Right number of days?
+11. **An exchange is recorded as money back plus a new payment,** even when only the difference changes hands. For cash: K90.00 paid back and K120.00 received, not K30.00.
+    Workable at the counter?
+12. **A sale paid by a money record that was later cancelled:** after the sale is cancelled or taken back, you say once whether the money really arrived. If yes, it is paid
+    back. If no, nothing is owed and the fee that never happened leaves the books. Right?
+13. **To pay back a phone customer after delivery, you (only you) can see the caller's full phone number while money is owed to them,** and every look is recorded. A website
+    customer's delivery details are still forgotten when a paid order is cancelled; you reach them by replying to their order email. Right?
+14. **Is there a time limit or a condition for returns?** *Built: none; the person recording it decides each case.* This is also the wording the website shows.
+15. **The words of the three customer messages,** and the line telling customers how to send you their details for a refund.
+16. **An order that costs K0.00** (a 100% promotion and free delivery) cannot be paid and simply lapses today. *Built: unchanged.* Should a promotion that takes a piece to K0.00
+    be refused when it is set up?
 
 ### Phase 13 — Payment integration: ZynlePay, for mobile money and cards
 

@@ -4,7 +4,7 @@
 #
 # Drives the full backend through the gateway. Each step is listed under the
 # banner it prints, so a failure on screen can be found here by its number.
-# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20j.
+# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20k.
 #
 # Phase 7 "Sell": the sale is placed, HELD, claimed, confirmed BY STAFF and settled
 # asynchronously (steps 2b-6j). Checkout never touches money: there is no card, and
@@ -3968,6 +3968,275 @@ $watchHeld = Get-NotificationSql "SELECT count(*) FROM confirmation_watch WHERE 
 Require ($watchHeld -ceq "1") "notification never noted that the wrong amount of step 6e ($wrongId) could not pay its order"
 Write-Host "    notification's own identity holds exactly CATALOG_ADMIN and COST_VIEWER and is refused at the gateway (403); the owner without USER reads both staff lists and has no bell; payment's topic is read (the sale's confirmation is known as paid, the wrong amount as unsettled)" -ForegroundColor Gray
 Write-Host "    not proven live (module tests on a test clock or a scripted mail server prove them): the hold reminder, 'money recorded but the sale has not completed' with its reminders and last note, a cancelled record that paid a sale, the claim-email limit, telling an alert again, 'the check is not running', 'emails are not going out', the pause switch, real TLS and sign-in" -ForegroundColor DarkGray
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+Write-Host "[20k/20] Returns and refunds (Phase 12): a paid order is cancelled and its stock is back; a ring comes back, is paid for, marked down and sold again; another is written off; held money is repaid; an exchange is linked..." -ForegroundColor Cyan
+Refresh-Tokens
+$saraH = @{ Authorization = "Bearer $(Get-Jwt 'sara')" }
+$daveH = @{ Authorization = "Bearer $(Get-Jwt 'dave')" }
+$payBase = "$gw/admin/payments"
+$p12Tag = [guid]::NewGuid().ToString("N").Substring(0, 8).ToUpper()
+
+# One number from inventory's own row of a variant (on_hand, quarantined ...).
+function Get-InventoryNumber($Variant, [string]$Column) {
+    $rows = Invoke-DockerText @("exec", "oriah-postgres-inventory", "psql", "-U", "inventory", "-d", "inventory", "-t", "-A", "-c", "SELECT $Column FROM inventory WHERE variant_id = '$Variant'")
+    $text = (@($rows | Where-Object { $_ -match "^\d+$" }) -join "").Trim()
+    if ($text -eq "") { return -1 }
+    return [int]$text
+}
+function Wait-InventoryNumber($Variant, [string]$Column, [int]$Want, [string]$What, [int]$Seconds = 90) {
+    $got = Wait-Until { if ((Get-InventoryNumber $Variant $Column) -eq $Want) { "yes" } } $Seconds 2
+    if (-not $got) { Fail "$What`: inventory's $Column of $Variant is $(Get-InventoryNumber $Variant $Column) after $Seconds s, expected $Want" }
+}
+# Every record parked on a dead-letter topic, added up: the number must not grow while this step runs. -1 when Kafka's tool could not be read.
+function Get-DeadLetterTotal {
+    $lines = Invoke-DockerText @("exec", "oriah-kafka", "/opt/kafka/bin/kafka-get-offsets.sh", "--bootstrap-server", "kafka:9092")
+    $dlq = @($lines | Where-Object { $_ -match '\.dlq\.[^:]+:\d+:\d+$' })
+    if ($dlq.Count -eq 0) { return -1 }
+    $sum = 0
+    foreach ($l in $dlq) { $sum += [long](($l -split ":")[-1]) }
+    return $sum
+}
+# A phone sale of $Quantity sale rings for a caller with no account, collected, paid in cash by staff: its id, its total and its first line.
+function New-PaidPhoneSale([int]$Quantity, [string]$Caller, $Variant = $saleVariantId) {
+    $line = @(@{ variantId = "$Variant"; quantity = $Quantity })
+    $preview = Wait-Until { $p = Invoke-Api POST "$recorded/preview" $mayaH @{ kind = "LIVE_PHONE"; lines = $line; delivery = @{ mode = "PICKUP" } }; if ($p.Status -eq 200) { $p } } 60 3
+    if (-not $preview) { Fail "previewing a phone sale of $Quantity x $Variant for $Caller never answered 200: $((Invoke-Api POST "$recorded/preview" $mayaH @{ kind = "LIVE_PHONE"; lines = $line; delivery = @{ mode = "PICKUP" } }).Json | ConvertTo-Json -Compress -Depth 5)" }
+    $total = [decimal]$preview.Json.total
+    $made = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12") }) @{ kind = "LIVE_PHONE"; caller = @{ name = $Caller; phone = "097 555 0101" }; lines = $line; delivery = @{ mode = "PICKUP" }; expectedTotal = $total }
+    Assert-Reply $made "recording the phone sale for $Caller" 201
+    $id = "$($made.Json.id)"
+    Assert-Reply (Confirm-Money @{ orderId = $id; method = "CASH"; gross = $total } (New-Key "smoke-p12-money")) "staff confirming the cash of $Caller" 201
+    $paid = Wait-RecordedStatus $id "PAID" 90
+    return @{ Id = $id; Total = $total; LineId = "$($paid.lines[0].lineId)" }
+}
+# The refund payment owes for an order (it learns of it from order's event), or nothing yet.
+function Wait-RefundDue($OrderId, [string]$Amount) {
+    $due = Wait-Until {
+        $l = Invoke-Api GET "$payBase/refunds-due?status=OWED" $mayaH $null
+        $mine = @(@($l.Json) | Where-Object { $_ -and ("$($_.orderId)" -ceq "$OrderId") -and (Same-Money $_.owedGross $Amount) })
+        if ($mine.Count -ge 1) { $mine[0] }
+    } 90 2
+    if (-not $due) { Fail "payment never listed a refund of K$Amount owed for order $OrderId" }
+    return $due
+}
+function Wait-ReturnDone($ReturnId) {
+    $r = Wait-Until { $v = Invoke-Api GET "$gw/admin/orders/returns/$ReturnId" $mayaH $null; if (($v.Status -eq 200) -and ("$($v.Json.state)" -ceq "DONE")) { $v.Json } } 120 3
+    if (-not $r) { Fail "return $ReturnId was not DONE after 120 s: $((Invoke-Api GET "$gw/admin/orders/returns/$ReturnId" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)" }
+    return $r
+}
+function Wait-PieceDone($ReturnId, $PieceId) {
+    $p = Wait-Until {
+        $v = Invoke-Api GET "$gw/admin/orders/returns/$ReturnId" $mayaH $null
+        $piece = @(@($v.Json.pieces) | Where-Object { $_ -and ("$($_.pieceId)" -ceq "$PieceId") -and ("$($_.state)" -ceq "DONE") })
+        if ($piece.Count -eq 1) { $piece[0] }
+    } 150 3
+    if (-not $p) { Fail "piece $PieceId of return $ReturnId was not DONE after 150 s: $((Invoke-Api GET "$gw/admin/orders/returns/$ReturnId" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 6)" }
+    return $p
+}
+
+$dlqBefore = Get-DeadLetterTotal
+$finErrorsBefore = @(@((Invoke-Api GET "$finBase/anomalies?status=OPEN" $mayaH $null).Json) | Where-Object { $_ -and ("$($_.severity)" -ceq "ERROR") }).Count
+
+# --- (a) a paid order is cancelled before it is packed: the ring is back on sale, everything paid is owed, and the old doors still refuse ---------------------
+$onHandStart = Get-InventoryNumber $saleVariantId "on_hand"
+$p12A = New-PaidPhoneSale 1 "Smoke Cancelled"
+Wait-InventoryNumber $saleVariantId "on_hand" ($onHandStart - 1) "the paid phone sale sold one ring"
+$oldDoor = Invoke-Api POST "$gw/admin/orders/$($p12A.Id)/transition" $mayaH @{ targetStatus = "CANCELLED" }
+Require (($oldDoor.Status -eq 409) -and "$($oldDoor.Json.type)".EndsWith("/use-the-paid-cancellation")) "the staff transition on a paid order gave $($oldDoor.Status) '$($oldDoor.Json.type)', expected 409 use-the-paid-cancellation"
+$cancelled = Invoke-Api POST "$gw/admin/orders/$($p12A.Id)/cancellation" $mayaH @{ reasonCode = "CUSTOMER_ASKED" }
+Assert-Reply $cancelled "cancelling the paid phone order" @(201, 202)
+$cancelRead = Wait-Until { $c = Invoke-Api GET "$gw/admin/orders/$($p12A.Id)/cancellation" $mayaH $null; if (($c.Status -eq 200) -and ("$($c.Json.state)" -ceq "DONE")) { $c.Json } } 120 3
+Require ($null -ne $cancelRead) "the cancellation was not DONE after 120 s: $((Invoke-Api GET "$gw/admin/orders/$($p12A.Id)/cancellation" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)"
+Require ((Same-Money $cancelRead.owedGross "$($p12A.Total)") -and ("$($cancelRead.feeBearer)" -ceq "CUSTOMER") -and (Same-Money $cancelRead.deliveryRefunded "0.00")) "the cancellation reads $($cancelRead | ConvertTo-Json -Compress -Depth 5): everything paid (K$($p12A.Total)) is owed and the customer bears the sending charge"
+Require ("$((Invoke-Api GET "$recorded/$($p12A.Id)" $mayaH $null).Json.status)" -ceq "CANCELLED") "the cancelled order is not CANCELLED"
+Wait-InventoryNumber $saleVariantId "on_hand" $onHandStart "the cancelled sale's ring is back"
+Require (@(Get-LedgerRows $saleVariantId "CANCELLED_BEFORE_DISPATCH").Count -ge 1) "the ledger holds no CANCELLED_BEFORE_DISPATCH row for the sale ring"
+$cancelAgain = Invoke-Api POST "$gw/admin/orders/$($p12A.Id)/cancellation" $mayaH @{ reasonCode = "CUSTOMER_ASKED" }
+Require (($cancelAgain.Status -eq 200) -and ($cancelAgain.Json.replay -eq $true) -and ("$($cancelAgain.Json.correctionId)" -ceq "$($cancelRead.correctionId)")) "the same cancellation again gave $($cancelAgain.Status) $($cancelAgain.Json | ConvertTo-Json -Compress -Depth 4), expected 200 with the same cancellation (replay)"
+$cancelOther = Invoke-Api POST "$gw/admin/orders/$($p12A.Id)/cancellation" $mayaH @{ reasonCode = "SHOP_ERROR" }
+Require (($cancelOther.Status -eq 409) -and "$($cancelOther.Json.type)".EndsWith("/already-cancelled")) "another reason on a cancelled order gave $($cancelOther.Status) '$($cancelOther.Json.type)', expected 409 already-cancelled"
+$cancelEvent = Get-OrderEventPayload $p12A.Id "order.sale_cancelled"
+Require (($cancelEvent -match '"kind":"CANCELLATION"') -and ($cancelEvent -match '"channel":"PHONE"') -and ($cancelEvent -notmatch "Smoke Cancelled") -and ($cancelEvent -notmatch "975550101")) "order.sale_cancelled should say CANCELLATION and PHONE and carry nothing personal; it reads $cancelEvent"
+Require ((Get-OrderEventPayload $p12A.Id "order.cancelled") -ceq "") "a paid cancellation must never be announced as a plain order.cancelled"
+$dueA = Wait-RefundDue $p12A.Id "$($p12A.Total)"
+Write-Host "    a paid phone sale cancelled: the staff transition is 409 use-the-paid-cancellation; the cancellation owes K$($p12A.Total) (all that was paid), the order is CANCELLED, the ring is back on sale, a repeat is the same cancellation and another reason is 409; order.sale_cancelled carries nothing personal; payment lists the refund as owed" -ForegroundColor Gray
+
+# --- (b) one of two rings comes back after hand-over: only the piece is owed; it is held, not for sale, until someone looks at it ------------------------------
+$p12B = New-PaidPhoneSale 2 "Smoke Returner"
+Assert-Reply (Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/dispatch/pack" $mayaH @{}) "packing the two rings" 200
+Assert-Reply (Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/dispatch/deliver" $mayaH @{}) "handing the two rings over" 200
+$perRing = $p12B.Total / 2
+$quarantinedStart = Get-InventoryNumber $saleVariantId "quarantined"
+$onHandSold = Get-InventoryNumber $saleVariantId "on_hand"
+$tooEarly = Invoke-Api POST "$gw/admin/orders/$($p12A.Id)/returns" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-ret") }) @{ reasonCode = "CHANGED_MIND"; lines = @(@{ lineId = $p12A.LineId; quantity = 1 }) }
+Require (($tooEarly.Status -eq 409) -and "$($tooEarly.Json.type)".EndsWith("/return-not-allowed")) "a return on a cancelled order gave $($tooEarly.Status) '$($tooEarly.Json.type)', expected 409 return-not-allowed"
+$tooMany = Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/returns" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-ret") }) @{ reasonCode = "CHANGED_MIND"; lines = @(@{ lineId = $p12B.LineId; quantity = 3 }) }
+Require (($tooMany.Status -eq 409) -and "$($tooMany.Json.type)".EndsWith("/more-than-was-sold") -and ([int]$tooMany.Json.sold -eq 2)) "returning three of two gave $($tooMany.Status) '$($tooMany.Json.type)', expected 409 more-than-was-sold naming 2 sold"
+$retKey = New-Key "smoke-p12-ret"
+$retBody = @{ reasonCode = "CHANGED_MIND"; lines = @(@{ lineId = $p12B.LineId; quantity = 1 }) }
+$ret = Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/returns" ($mayaH + @{ "Idempotency-Key" = $retKey }) $retBody
+Assert-Reply $ret "recording one ring of two as returned" @(201, 202)
+$returnId = "$($ret.Json.returnId)"
+$retDone = Wait-ReturnDone $returnId
+$pieceId = "$($retDone.pieces[0].pieceId)"
+Require ((Same-Money $retDone.owedGross "$perRing") -and (@($retDone.pieces).Count -eq 1) -and ("$($retDone.pieces[0].state)" -ceq "AWAITING")) "the return reads $($retDone | ConvertTo-Json -Compress -Depth 6): K$perRing owed for one ring, one piece waiting"
+$retAgain = Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/returns" ($mayaH + @{ "Idempotency-Key" = $retKey }) $retBody
+Require (($retAgain.Status -eq 200) -and ($retAgain.Json.replay -eq $true) -and ("$($retAgain.Json.returnId)" -ceq $returnId)) "the same key and request again gave $($retAgain.Status), expected 200 with the same return (replay)"
+$retSimilar = Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/returns" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-ret") }) $retBody
+Require (($retSimilar.Status -eq 409) -and "$($retSimilar.Json.type)".EndsWith("/similar-return-just-recorded")) "the same pieces again under a new key gave $($retSimilar.Status) '$($retSimilar.Json.type)', expected 409 similar-return-just-recorded"
+Wait-InventoryNumber $saleVariantId "on_hand" ($onHandSold + 1) "the returned ring is back in stock"
+Wait-InventoryNumber $saleVariantId "quarantined" ($quarantinedStart + 1) "the returned ring is held, not for sale"
+Require ("$((Invoke-Api GET "$recorded/$($p12B.Id)" $mayaH $null).Json.status)" -ceq "DELIVERED") "a return changed the order's status"
+Require (@(Get-LedgerRows $saleVariantId "RETURN").Count -ge 1) "the ledger holds no RETURN row for the sale ring"
+Assert-Reconciled $saleVariantId "the sale ring after a return"
+$recon = Invoke-Api GET "$gw/admin/inventory/reconciliation?variantId=$saleVariantId" $mayaH $null
+Require ((@(@($recon.Json.quarantineMismatches) | Where-Object { $_ }).Count -eq 0) -and (@(@($recon.Json.familyMismatches) | Where-Object { $_ }).Count -eq 0)) "the reconciliation found a held piece or a marked-down lot out of step: $($recon.Json | ConvertTo-Json -Compress -Depth 5)"
+$returnEvent = Get-OrderEventPayload $p12B.Id "order.return_recorded"
+Require (($returnEvent -match '"kind":"RETURN"') -and ($returnEvent -match [regex]::Escape($pieceId)) -and ($returnEvent -notmatch "Smoke Returner")) "order.return_recorded should name the piece and carry nothing personal; it reads $returnEvent"
+$dueB = Wait-RefundDue $p12B.Id "$perRing"
+Write-Host "    one of two rings returned after hand-over: three of two is 409 more-than-was-sold, the return owes K$perRing (the piece only), the ring is back in stock but held (quarantined), the order stays DELIVERED, a repeat is the same return, the same pieces under a new key need confirming, reconciliation is clean" -ForegroundColor Gray
+
+# --- (c) the owner pays both refunds: cash with no charge, and mobile money where the customer bears the K2.50 it cost to send -------------------------------
+$payA = Invoke-Api POST "$payBase/payouts" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-pay") }) @{ refundDueId = "$($dueA.id)"; method = "CASH"; customerFee = 0.00; sendCharge = 0.00 }
+Assert-Reply $payA "paying the cancelled order's refund in cash" 201
+Require ((Same-Money $payA.Json.net "$($p12A.Total)") -and (Same-Money $payA.Json.gross "$($p12A.Total)")) "the cash payout reads $($payA.Json | ConvertTo-Json -Compress -Depth 4): the whole K$($p12A.Total)"
+$payTwice = Invoke-Api POST "$payBase/payouts" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-pay") }) @{ refundDueId = "$($dueA.id)"; method = "CASH"; customerFee = 0.00; sendCharge = 0.00 }
+Require (($payTwice.Status -eq 409) -and "$($payTwice.Json.type)".EndsWith("/already-paid-out")) "paying the same refund twice gave $($payTwice.Status) '$($payTwice.Json.type)', expected 409 already-paid-out"
+$feeTooBig = Invoke-Api POST "$payBase/payouts" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-pay") }) @{ refundDueId = "$($dueB.id)"; method = "MTN"; reference = "SMOKE-RF-$p12Tag"; customerFee = 3.00; sendCharge = 2.50 }
+Require ($feeTooBig.Status -eq 400) "a customer fee above the send charge gave $($feeTooBig.Status), expected 400"
+$typedNet = Invoke-Api POST "$payBase/payouts" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-pay") }) @{ refundDueId = "$($dueB.id)"; method = "MTN"; reference = "SMOKE-RF-$p12Tag"; customerFee = 2.50; sendCharge = 2.50; net = 1.00 }
+Require ($typedNet.Status -eq 400) "a payout that types its net gave $($typedNet.Status), expected 400: the amount is the debt's own"
+$payB = Invoke-Api POST "$payBase/payouts" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-pay") }) @{ refundDueId = "$($dueB.id)"; method = "MTN"; reference = "SMOKE-RF-$p12Tag"; customerFee = 2.50; sendCharge = 2.50 }
+Assert-Reply $payB "paying the return's refund by mobile money" 201
+Require ((Same-Money $payB.Json.net "$($perRing - 2.50)") -and (Same-Money $payB.Json.customerFee "2.50") -and (Same-Money $payB.Json.sendCharge "2.50")) "the mobile-money payout reads $($payB.Json | ConvertTo-Json -Compress -Depth 4): K$perRing less K2.50"
+$dueBRead = Invoke-Api GET "$payBase/refunds-due/$($dueB.id)" $mayaH $null
+Require (($dueBRead.Status -eq 200) -and ("$($dueBRead.Json.status)" -cne "OWED") -and (Same-Money $dueBRead.Json.payout.net "$($perRing - 2.50)")) "the paid refund reads $($dueBRead.Json | ConvertTo-Json -Compress -Depth 5)"
+Write-Host "    refunds paid by the owner: K$($p12A.Total) in cash with no charge; K$perRing by mobile money where the customer bore the K2.50 charge and received K$($perRing - 2.50); a second payout is 409 already-paid-out, a fee above the charge and a typed net are 400" -ForegroundColor Gray
+
+# --- (d) the returned ring is marked down: a listing of its own, priced lower, sold once by phone ---------------------------------------------------------------
+$assess = Invoke-Api POST "$gw/admin/orders/returns/$returnId/pieces/$pieceId/assessment" $mayaH @{ outcome = "MARKED_DOWN" }
+Assert-Reply $assess "assessing the returned ring as marked down" @(200, 202)
+$pieceDone = Wait-PieceDone $returnId $pieceId
+$childVariant = "$($pieceDone.markdownVariantId)"
+Require (("$($pieceDone.outcome)" -ceq "MARKED_DOWN") -and ($childVariant -match '^[0-9a-f-]{36}$')) "the assessed piece reads $($pieceDone | ConvertTo-Json -Compress -Depth 4)"
+Wait-InventoryNumber $saleVariantId "quarantined" $quarantinedStart "the marked-down ring left the held pieces of its old listing"
+Wait-InventoryNumber $childVariant "on_hand" 1 "the marked-down listing holds its one ring"
+$childLots = @(Get-OpenLots $childVariant)
+Require (($childLots.Count -eq 1) -and ([int]$childLots[0].qtyRemaining -eq 1)) "the marked-down listing should hold one lot of one ring; it holds $(Describe-Lots $childLots)"
+$childPrice = Wait-Until {
+    $p = Invoke-Api PUT "$gw/admin/pricing/variants/$childVariant/price" $mayaH @{ unitPrice = 80.00; expectedPriceId = $null }
+    if (($p.Status -eq 409) -and "$($p.Json.type)".EndsWith("/below-landed-cost")) {
+        $p = Invoke-Api PUT "$gw/admin/pricing/variants/$childVariant/price" $mayaH @{ unitPrice = 80.00; expectedPriceId = $null; belowCostReason = "smoke: a returned ring sold cheaper"; acknowledgedFloor = $p.Json.floor }
+    }
+    if ($p.Status -eq 200) { $p }
+} 90 3
+Require ($null -ne $childPrice) "the marked-down ring could not be priced K80.00: $((Invoke-Api PUT "$gw/admin/pricing/variants/$childVariant/price" $mayaH @{ unitPrice = 80.00; expectedPriceId = $null }).Json | ConvertTo-Json -Compress -Depth 5)"
+$p12D = New-PaidPhoneSale 1 "Smoke Bargain" $childVariant
+Require (Same-Money $p12D.Total "80.00") "the marked-down ring sold for K$($p12D.Total), expected K80.00 with no promotion taken off"
+Wait-InventoryNumber $childVariant "on_hand" 0 "the marked-down ring is sold"
+$soldOut = Invoke-Api POST $recorded ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12") }) @{ kind = "LIVE_PHONE"; caller = @{ name = "Smoke Too Late"; phone = "097 555 0102" }; lines = @(@{ variantId = $childVariant; quantity = 1 }); delivery = @{ mode = "PICKUP" }; expectedTotal = 80.00 }
+Require (($soldOut.Status -eq 409) -and "$($soldOut.Json.type)".EndsWith("/insufficient-stock")) "a second sale of the one marked-down ring gave $($soldOut.Status) '$($soldOut.Json.type)', expected 409 insufficient-stock"
+Assert-Reconciled $childVariant "the marked-down ring"
+Write-Host "    the returned ring was marked down: its own listing ($childVariant) with a one-ring lot, priced K80.00, sold once by phone for K80.00 with no promotion; a second sale is 409 insufficient-stock" -ForegroundColor Gray
+
+# --- (e) the other ring comes back and is not sellable: written off at its own lot's cost ------------------------------------------------------------------------
+$ret2 = Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/returns" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-ret") }) @{ reasonCode = "FAULTY"; confirmDuplicate = $true; lines = @(@{ lineId = $p12B.LineId; quantity = 1 }) }
+Assert-Reply $ret2 "recording the second ring as returned" @(201, 202)
+$return2Id = "$($ret2.Json.returnId)"
+$ret2Done = Wait-ReturnDone $return2Id
+$piece2Id = "$($ret2Done.pieces[0].pieceId)"
+$noNote = Invoke-Api POST "$gw/admin/orders/returns/$return2Id/pieces/$piece2Id/assessment" $mayaH @{ outcome = "UNSELLABLE" }
+Require (($noNote.Status -eq 400) -and "$($noNote.Json.type)".EndsWith("/note-required")) "writing a piece off with no note gave $($noNote.Status) '$($noNote.Json.type)', expected 400 note-required"
+$writeOffsBefore = @(Get-LedgerRows $saleVariantId "WRITE_OFF_RETURNED").Count
+$unsellable = Invoke-Api POST "$gw/admin/orders/returns/$return2Id/pieces/$piece2Id/assessment" $mayaH @{ outcome = "UNSELLABLE"; note = "smoke: the clasp came back broken" }
+Assert-Reply $unsellable "assessing the second ring as not sellable" @(200, 202)
+Wait-PieceDone $return2Id $piece2Id | Out-Null
+$writtenOff = Wait-Until { if (@(Get-LedgerRows $saleVariantId "WRITE_OFF_RETURNED").Count -eq ($writeOffsBefore + 1)) { "yes" } } 60 3
+Require ($null -ne $writtenOff) "the ledger gained no WRITE_OFF_RETURNED row for the ring that was not sellable"
+$changeMind = Invoke-Api POST "$gw/admin/orders/returns/$return2Id/pieces/$piece2Id/assessment" $mayaH @{ outcome = "FINE" }
+Require (($changeMind.Status -eq 409) -and "$($changeMind.Json.type)".EndsWith("/piece-already-assessed")) "assessing a written-off piece again gave $($changeMind.Status) '$($changeMind.Json.type)', expected 409 piece-already-assessed"
+$allBack = Invoke-Api POST "$gw/admin/orders/$($p12B.Id)/returns" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-ret") }) @{ reasonCode = "FAULTY"; confirmDuplicate = $true; lines = @(@{ lineId = $p12B.LineId; quantity = 1 }) }
+Require (($allBack.Status -eq 409) -and "$($allBack.Json.type)".EndsWith("/more-than-was-sold") -and ([int]$allBack.Json.alreadyReturned -eq 2)) "a third ring of two gave $($allBack.Status) '$($allBack.Json.type)', expected 409 more-than-was-sold with 2 already returned"
+Assert-Reconciled $saleVariantId "the sale ring after a write-off of a returned piece"
+Write-Host "    the second ring came back faulty: no note is 400, with a note it is written off (a WRITE_OFF_RETURNED row), assessing it again is 409, and a third ring of two is 409 more-than-was-sold" -ForegroundColor Gray
+
+# --- (f) money that could not pay a sale is held, then paid back; a repaid record can no longer be cancelled -----------------------------------------------------
+$heldConfirm = Confirm-Money @{ orderId = $p12B.Id; method = "MTN"; reference = "SMOKE-HM-$p12Tag"; gross = 85.00 } (New-Key "smoke-p12-held")
+Assert-Reply $heldConfirm "confirming K85.00 for an order that is already paid" 201
+Wait-Confirmation "$($heldConfirm.Json.id)" "HELD" 90 | Out-Null
+$heldRow = Wait-Until { $h = Invoke-Api GET "$payBase/held-money" $mayaH $null; $m = @(@($h.Json) | Where-Object { $_ -and ("$($_.confirmationId)" -ceq "$($heldConfirm.Json.id)") }); if ($m.Count -eq 1) { $m[0] } } 60 2
+Require ($null -ne $heldRow) "the held K85.00 is not on the held-money list"
+$repay = Invoke-Api POST "$payBase/payouts" ($mayaH + @{ "Idempotency-Key" = (New-Key "smoke-p12-pay") }) @{ heldMoneyId = "$($heldRow.id)"; method = "MTN"; reference = "SMOKE-HR-$p12Tag"; customerFee = 2.00; sendCharge = 2.00 }
+Assert-Reply $repay "paying the held money back" 201
+Require ((Same-Money $repay.Json.net "83.00") -and ("$($repay.Json.purpose)" -ceq "HELD_MONEY")) "the held-money payout reads $($repay.Json | ConvertTo-Json -Compress -Depth 4): K85.00 less K2.00"
+$repaidList = Invoke-Api GET "$payBase/held-money?status=REPAID" $mayaH $null
+Require (@(@($repaidList.Json) | Where-Object { $_ -and ("$($_.id)" -ceq "$($heldRow.id)") }).Count -eq 1) "the repaid money is not listed as REPAID"
+$voidRepaid = Invoke-Api POST "$payBase/confirmations/$($heldConfirm.Json.id)/void" $mayaH @{ reason = "smoke: trying to cancel a record that was paid back" }
+Require (($voidRepaid.Status -eq 409) -and "$($voidRepaid.Json.type)".EndsWith("/held-money-repaid")) "voiding a repaid record gave $($voidRepaid.Status) '$($voidRepaid.Json.type)', expected 409 held-money-repaid"
+Write-Host "    K85.00 sent for an order already paid was held, then paid back by mobile money (K83.00 after the K2.00 charge the customer bears); it is listed as REPAID and its record can no longer be cancelled (409 held-money-repaid)" -ForegroundColor Gray
+
+# --- (g) an exchange: the first return is linked to the order the caller took instead; no money is netted ------------------------------------------------------
+$link = Invoke-Api POST "$gw/admin/orders/returns/$returnId/exchange" $mayaH @{ newOrderId = $p12D.Id }
+Assert-Reply $link "linking the return to the new order" 201
+$linkAgain = Invoke-Api POST "$gw/admin/orders/returns/$returnId/exchange" $mayaH @{ newOrderId = $p12D.Id }
+Require (($linkAgain.Status -eq 200) -and ($linkAgain.Json.replay -eq $true)) "the same link again gave $($linkAgain.Status), expected 200 (replay)"
+$linkSelf = Invoke-Api POST "$gw/admin/orders/returns/$return2Id/exchange" $mayaH @{ newOrderId = $p12B.Id }
+Require (($linkSelf.Status -eq 409) -and "$($linkSelf.Json.type)".EndsWith("/exchange-needs-another-order")) "exchanging a return for its own order gave $($linkSelf.Status) '$($linkSelf.Json.type)', expected 409 exchange-needs-another-order"
+$staffOld = Invoke-Api GET "$gw/admin/orders/$($p12B.Id)" $mayaH $null
+$staffNew = Invoke-Api GET "$gw/admin/orders/$($p12D.Id)" $mayaH $null
+$oldCorrection = @(@($staffOld.Json.corrections) | Where-Object { $_ -and ("$($_.id)" -ceq $returnId) })
+Require (($oldCorrection.Count -eq 1) -and ("$($oldCorrection[0].exchangedForOrderId)" -ceq "$($p12D.Id)") -and ("$($staffNew.Json.exchange.returnedOrderId)" -ceq "$($p12B.Id)")) "the two orders do not show the exchange: $($staffOld.Json.corrections | ConvertTo-Json -Compress -Depth 5) / $($staffNew.Json.exchange | ConvertTo-Json -Compress)"
+$saraReads = Invoke-Api GET "$recorded/$($p12B.Id)" $saraH $null
+$saraJson = "$($saraReads.Json | ConvertTo-Json -Compress -Depth 8)"
+Require (($saraReads.Status -eq 200) -and (@($saraReads.Json.corrections).Count -eq 2) -and ($saraJson -cnotmatch "reasonCode|recordedBy|user:|unitCost|margin") -and ("$($saraReads.Json.caller.phone)" -cmatch '\*')) "sara's read of the returned order should show two returns with what is owed and no reason, actor or cost, and a masked phone; it reads $saraJson"
+Write-Host "    an exchange links the first return to the order taken instead (a repeat is the same link; a return's own order is refused); the administrator's reads of both orders show it, and a salesperson sees the two returns with what is owed and no reason, actor or cost" -ForegroundColor Gray
+
+# --- (h) the doors: the stock system's own doors are closed to every person; a salesperson and a packer reach none of this --------------------------------------
+foreach ($closed in @(
+    @{ M = "POST"; U = "$gw/admin/inventory/sale-reversals"; B = @{} },
+    @{ M = "GET";  U = "$gw/admin/inventory/sale-reversals/$returnId" },
+    @{ M = "POST"; U = "$gw/admin/inventory/returned-pieces/$pieceId/outcome"; B = @{ outcome = "RELEASED" } })) {
+    $shut = Invoke-Api $closed.M $closed.U $mayaH $closed.B
+    Require ($shut.Status -eq 403) "the owner $($closed.M) $($closed.U) gave $($shut.Status), expected 403: only the order system reverses a sale or decides a piece"
+}
+foreach ($who in @(@{ N = "sara"; H = $saraH }, @{ N = "dave"; H = $daveH })) {
+    foreach ($no in @(
+        @{ M = "POST"; U = "$gw/admin/orders/$($p12D.Id)/cancellation"; B = @{ reasonCode = "CUSTOMER_ASKED" } },
+        @{ M = "POST"; U = "$gw/admin/orders/$($p12D.Id)/returns"; B = @{ reasonCode = "FAULTY"; lines = @(@{ lineId = $p12D.LineId; quantity = 1 }) } },
+        @{ M = "GET";  U = "$gw/admin/orders/returns" },
+        @{ M = "POST"; U = "$gw/admin/orders/returns/$return2Id/pieces/$piece2Id/assessment"; B = @{ outcome = "FINE" } },
+        @{ M = "POST"; U = "$gw/admin/orders/returns/$return2Id/exchange"; B = @{ newOrderId = $p12D.Id } },
+        @{ M = "GET";  U = "$gw/admin/orders/corrections" },
+        @{ M = "GET";  U = "$payBase/refunds-due" },
+        @{ M = "GET";  U = "$payBase/payouts" },
+        @{ M = "POST"; U = "$payBase/payouts"; B = @{ refundDueId = "$($dueA.id)"; method = "CASH"; customerFee = 0.00; sendCharge = 0.00 } })) {
+        $denied = Invoke-Api $no.M $no.U $who.H $no.B
+        Require ($denied.Status -eq 403) "$($who.N) $($no.M) $($no.U) gave $($denied.Status), expected 403"
+    }
+}
+Require ("$((Invoke-Api GET "$recorded/$($p12D.Id)" $mayaH $null).Json.status)" -ceq "PAID") "a refused cancellation changed the order"
+
+# --- (i) the books and the dead letters: nothing new is open in finance, and no event was parked while this step ran ---------------------------------------------
+$finQuiet = Wait-Until {
+    $now = @(@((Invoke-Api GET "$finBase/anomalies?status=OPEN" $mayaH $null).Json) | Where-Object { $_ -and ("$($_.severity)" -ceq "ERROR") }).Count
+    if ($now -le $finErrorsBefore) { "yes" }
+} 90 5
+Require ($null -ne $finQuiet) "finance has more open errors than before this step: $((Invoke-Api GET "$finBase/anomalies?status=OPEN" $mayaH $null).Json | ConvertTo-Json -Compress -Depth 5)"
+$finBooked = Wait-Until {
+    $e = Invoke-Api GET "$finBase/reports/profit/$finMonth/entries?orderId=$($p12A.Id)&size=100" $mayaH $null
+    $rows = @(@($e.Json.items) | Where-Object { $_ -and ("$($_.key)" -cmatch "^corr:") })
+    if (($e.Status -eq 200) -and ($rows.Count -ge 1)) { $rows }
+} 120 5
+Require ($null -ne $finBooked) "finance booked no correction (corr:...) row for the cancelled order $($p12A.Id)"
+$dlqAfter = Get-DeadLetterTotal
+if (($dlqBefore -ge 0) -and ($dlqAfter -ge 0)) {
+    Require ($dlqAfter -eq $dlqBefore) "$($dlqAfter - $dlqBefore) event(s) were parked on a dead-letter topic during this step: a consumer could not apply one of the new facts"
+    $dlqNote = "no event was parked on a dead-letter topic"
+}
+else { $dlqNote = "the dead-letter topics could not be counted (Kafka's offsets tool gave nothing)" }
+Write-Host "    the stock system's three doors are 403 even to the owner; sara and dave are 403 on nine doors each (cancellation, returns, assessment, exchange, corrections, refunds owed, payouts); finance has no new open error and booked the cancellation; $dlqNote" -ForegroundColor Gray
+Write-Host "    not proven live (module tests with injected failures or a test clock prove them): a reply lost between inventory and order and the job that finishes it, a refusal that ends an attempt, abandoning a stuck correction, the reminder that a refund is still owed, a payout cancelled after its month was reported, money that never arrived for a sale whose record was cancelled, the 72-hour rule (maya may back-date)" -ForegroundColor Gray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green
