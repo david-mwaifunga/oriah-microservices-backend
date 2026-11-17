@@ -44,8 +44,11 @@ public class SaleApplier {
     private final AnomalyService anomalies;
     private final BusinessCalendar calendar;
     private final FeeDerivation derivation;
+    private final CorrectionDerivation corrections;
 
-    public SaleApplier(JdbcTemplate jdbc, Locks locks, LedgerWriter ledger, AnomalyService anomalies, BusinessCalendar calendar, FeeDerivation derivation) {
+    public SaleApplier(JdbcTemplate jdbc, Locks locks, LedgerWriter ledger, AnomalyService anomalies, BusinessCalendar calendar, FeeDerivation derivation,
+                       CorrectionDerivation corrections) {
+        this.corrections = corrections;
         this.jdbc = jdbc;
         this.locks = locks;
         this.ledger = ledger;
@@ -89,6 +92,8 @@ public class SaleApplier {
         }
         // The sale is one of the facts about this confirmation's money: a void that was already seen is now a void of money that paid a sale, a fee that differs is a mismatch.
         derivation.derive(p.confirmationId(), ctx);
+        // A cancellation or a return of this sale that finance heard of first can now be compared with it (and its waiver taken back).
+        corrections.derive(p.orderId(), ctx);
     }
 
     // ------------------------------------------------------------------ what a sale is

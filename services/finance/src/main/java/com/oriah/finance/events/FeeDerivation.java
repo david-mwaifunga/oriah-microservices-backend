@@ -39,6 +39,7 @@ public class FeeDerivation {
 
     static final String FEE_DESCRIPTION = "Payment charge on a confirmation";
     static final String VOID_REASON = "the confirmation was voided";
+    static final String NEVER_ARRIVED_REASON = "the money never arrived";
 
     private final JdbcTemplate jdbc;
     private final LedgerWriter ledger;
@@ -76,8 +77,13 @@ public class FeeDerivation {
             if (feeEntry != null && keyExists("fee-void:" + conf) && !keyExists("fee-reinstated:" + conf)) {
                 putFeeBack(conf, confirmed, sold, feeEntry);
             }
-            anomalies.raise("paid-after-void", conf.toString(), Severity.ERROR,
-                    Map.of("confirmationId", conf.toString(), "orderId", String.valueOf(sold.orderId())), ctx.eventId());
+            if (moneyNeverArrived(conf)) {
+                // The owner has said what became of the money: the question is settled, and is not asked again.
+                anomalies.autoResolve("paid-after-void", conf.toString());
+            } else {
+                anomalies.raise("paid-after-void", conf.toString(), Severity.ERROR,
+                        Map.of("confirmationId", conf.toString(), "orderId", String.valueOf(sold.orderId())), ctx.eventId());
+            }
         }
         if (confirmed != null && sold != null && confirmed.fee().compareTo(sold.fee()) != 0) {
             anomalies.raise("fee-mismatch", conf.toString(), Severity.ERROR,
@@ -89,6 +95,42 @@ public class FeeDerivation {
         }
         if (voided != null && held != null && heldEntry != null && "HELD".equals(voided.outcome())) {
             clearHeld(conf, held, voided, heldEntry);
+        }
+        if (moneyNeverArrived(conf)) {
+            removeFeeThatNeverCame(conf);
+        }
+    }
+
+    // ------------------------------------------------------------------ money that never arrived (Phase 12)
+
+    /** A refund owed for this confirmation was closed without a payout: the owner confirmed the money never came in. */
+    private boolean moneyNeverArrived(UUID conf) {
+        return jdbc.queryForObject("SELECT count(*) FROM refund_close_fact WHERE confirmation_id = ?", Long.class, conf) > 0;
+    }
+
+    /**
+     * A fee on money that never arrived was never charged, so whichever fee row stands is reversed, on that row's own day: the fee that was put back when the cancelled
+     * money record turned out to have paid a sale ({@code fee-reinstated}), or the fee itself when the sale was heard of first and the fee was never taken back.
+     */
+    private void removeFeeThatNeverCame(UUID conf) {
+        Map<String, Object> close = jdbc.queryForList("SELECT order_id, actor, source_event_id FROM refund_close_fact WHERE confirmation_id = ? ORDER BY closed_at LIMIT 1", conf)
+                .get(0);
+        for (String[] candidate : new String[][] {{"fee-reinstated:" + conf, "fee-unreinstated:" + conf}, {"fee:" + conf, "fee-never-came:" + conf}}) {
+            List<Map<String, Object>> standing = jdbc.queryForList("""
+                    SELECT entry_id, amount, occurred_at, effect_day FROM ledger_entry l
+                     WHERE entry_key = ? AND NOT EXISTS (SELECT 1 FROM ledger_entry r WHERE r.reverses_entry_id = l.entry_id)""", candidate[0]);
+            if (standing.isEmpty()) {
+                continue;
+            }
+            Map<String, Object> fee = standing.get(0);
+            var posted = ledger.post(Entry.of(candidate[1], "EXPENSE", ((BigDecimal) fee.get("amount")).negate(), ((Timestamp) fee.get("occurred_at")).toInstant(),
+                    ((java.sql.Date) fee.get("effect_day")).toLocalDate(), "REFUND_CLOSED", (String) close.get("actor")).category("PAYMENT_CHARGES")
+                    .event((UUID) close.get("source_event_id"), "payment", null).order((UUID) close.get("order_id")).confirmation(conf)
+                    .reverses(((Number) fee.get("entry_id")).longValue()));
+            if (posted.inserted()) {
+                expenses.posted(posted.entryId(), "REVERSAL", "PAYMENT_CHARGES", FEE_DESCRIPTION, NEVER_ARRIVED_REASON, (UUID) close.get("order_id"), conf);
+            }
+            return;
         }
     }
 

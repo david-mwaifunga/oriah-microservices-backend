@@ -194,6 +194,27 @@ class ExpenseHttpTest {
     }
 
     @Test
+    @DisplayName("a courier fare can be typed for a paid order that was cancelled before it left: the courier was booked and paid although the parcel never went")
+    void aFareForACancelledOrderCanBeTyped() throws Exception {
+        UUID cancelled = UUID.randomUUID();
+        UUID returned = UUID.randomUUID();
+        jdbc.update("INSERT INTO order_ref (order_id) VALUES (?)", cancelled);
+        jdbc.update("INSERT INTO order_ref (order_id) VALUES (?)", returned);
+        String correction = """
+                INSERT INTO sale_correction (correction_id, kind, order_id, confirmation_id, sale_arrived_at, occurred_at, goods_at_list, discounts, delivery_refunded,
+                                             waiver_taken_back, owed_gross, actor, source_event_id)
+                VALUES (?, ?, ?, ?, now(), now(), 200.00, 0.00, 0.00, 0.00, 200.00, 'user:kc-test', ?)""";
+        jdbc.update(correction, UUID.randomUUID(), "CANCELLATION", cancelled, UUID.randomUUID(), UUID.randomUUID());
+        jdbc.update(correction, UUID.randomUUID(), "RETURN", returned, UUID.randomUUID(), UUID.randomUUID());
+        String base = "\"category\":\"COURIER_FARE\",\"amount\":35.00,\"expenseDate\":\"2026-10-14\",\"description\":\"Yango booking\"";
+
+        JsonNode fine = ok(send(PATH, key(), "{" + base + ",\"linkedOrderId\":\"" + cancelled + "\"}", bookkeeper()), 201);
+        assertThat(fine.get("linkedOrderId").asText()).isEqualTo(cancelled.toString());
+        // A return says nothing about a parcel that never went: such an order was dispatched, and finance knows that from its dispatch.
+        assertThat(type(ok(send(PATH, key(), "{" + base + ",\"linkedOrderId\":\"" + returned + "\"}", bookkeeper()), 409))).endsWith("/order-not-dispatched-yet");
+    }
+
+    @Test
     @DisplayName("a courier fare typed in names an order that finance knows and that has been dispatched, and is refused while a posted fare stands: it can never be counted twice")
     void aKeyedCourierFare() throws Exception {
         UUID unknown = UUID.randomUUID();

@@ -163,7 +163,9 @@ public class ExpenseService {
         if (jdbc.queryForObject("SELECT count(*) FROM order_ref WHERE order_id = ?", Long.class, order) == 0) {
             throw new FinanceProblem(HttpStatus.CONFLICT, "order-not-known-yet", "Finance has not heard of order " + order + " yet: try again in a moment, or check the order number");
         }
-        if (jdbc.queryForObject("SELECT count(*) FROM dispatch_fact WHERE order_id = ?", Long.class, order) == 0) {
+        // Dispatched, or a paid order cancelled before it left: its courier may already have been booked and paid, though the parcel never went.
+        if (jdbc.queryForObject("SELECT count(*) FROM dispatch_fact WHERE order_id = ?", Long.class, order) == 0
+                && jdbc.queryForObject("SELECT count(*) FROM sale_correction WHERE order_id = ? AND kind = 'CANCELLATION'", Long.class, order) == 0) {
             throw new FinanceProblem(HttpStatus.CONFLICT, "order-not-dispatched-yet", "Order " + order + " has not been dispatched yet: a courier fare is entered after the parcel has gone");
         }
         locks.order(order);

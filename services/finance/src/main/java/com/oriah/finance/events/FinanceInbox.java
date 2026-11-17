@@ -17,6 +17,7 @@ public final class FinanceInbox {
     /** The aggregate types, spelled as each producer writes them into its outbox. */
     static final String ORDER = "order";
     static final String CONFIRMATION = "payment_confirmation";
+    static final String REFUND_DUE = "refund_due";
     static final String STOCK_ACTION = "stock_action";
     static final String CONSIGNMENT_LINE = "consignment_line";
     static final String CONSIGNMENT = "consignment";
@@ -31,11 +32,17 @@ public final class FinanceInbox {
             .handles(ORDER, "order.shipped", 1)
             .handles(ORDER, "order.created", 1)
             .ignores("order.cancelled", "order.expired", "order.fulfilled", "order.delivered", "order.payment_submitted", "order.payment_unsettled")
+            // order, Phase 12: a paid order cancelled before it left, and pieces that came back
+            .handles(ORDER, "order.sale_cancelled", 1)
+            .handles(ORDER, "order.return_recorded", 1)
             // payment: money that came in, was taken back, or is owed back; its claims and the card path (switched off until Phase 13) are not money finance books
             .handles(CONFIRMATION, "payment.confirmed", 1)
             .handles(CONFIRMATION, "payment.voided", 1)
             .handles(CONFIRMATION, "payment.held", 1)
             .ignores("payment.rejected", "payment.succeeded", "payment.failed")
+            // payment, Phase 12: what is owed for a correction, and a debt closed without a payout
+            .handles(REFUND_DUE, "payment.refund_due_recorded", 1)
+            .handles(REFUND_DUE, "payment.refund_closed", 1)
             // inventory: what every stock movement cost; a hold and a box swap are not costs (the swap's movements arrive as costs)
             .handles(STOCK_ACTION, "stock.cost_recorded", 1)
             .ignores("reservation.consumed", "reservation.expired", "box.swapped")

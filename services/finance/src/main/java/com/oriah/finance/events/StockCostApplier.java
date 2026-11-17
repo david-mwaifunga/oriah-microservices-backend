@@ -40,6 +40,7 @@ public class StockCostApplier {
             "GIVEN_AWAY_PRIZE", "WRITE_OFF_RETURNED");
     /** A returned piece moved to its own marked-down listing: it changed shelf, and released no cost. */
     private static final String MOVES_NO_COST = "RELISTED_MARKED_DOWN";
+    private static final Set<String> BACK_FROM_A_SALE = Set.of("RETURN", "CANCELLED_BEFORE_DISPATCH");
     private static final Set<String> ROLES = Set.of("ORIGINAL", "RECUT_REVERSAL", "RECUT_REPLACEMENT");
 
     private final Locks locks;
@@ -82,6 +83,10 @@ public class StockCostApplier {
                 .movement(c.movementId()).consignment(null, c.consignmentLineId()).variant(c.variantId()).product(c.productId()).stockKind(c.kind()).estimated(c.estimated());
         if ("SALE".equals(c.actionKind())) {
             entry.saleLine(c.actionId());
+        } else if (BACK_FROM_A_SALE.contains(c.reason()) && "SELLABLE".equals(c.kind()) && c.reversesActionId() != null) {
+            // A piece that came back, or was cancelled before it left: the action it reverses IS the sale line it was sold on. (A box is sold under a line of its own,
+            // which is no sale line of the order.)
+            entry.saleLine(c.reversesActionId());
         }
         ledger.post(entry);
         if (c.productId() == null) {

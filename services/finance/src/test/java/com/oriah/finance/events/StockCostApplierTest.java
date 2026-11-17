@@ -190,6 +190,33 @@ class StockCostApplierTest {
     }
 
     @Test
+    @DisplayName("a piece that came back, or was cancelled before it left, takes its cost out of cost of goods on that day, tied to the sale line it was sold on; a box is tied to no line")
+    void aReturnIsTiedToItsSaleLine() {
+        for (String reason : List.of("RETURN", "CANCELLED_BEFORE_DISPATCH")) {
+            Stock back = row().writeOff(reason, 1, "65.50");
+            back.actionKind = "TAKE_BACK";
+            back.reversesActionId = UUID.randomUUID();
+            back.reversesReason = "SALE";
+
+            apply(back);
+
+            Map<String, Object> e = entry(back);
+            assertThat(e.get("account")).as(reason).isEqualTo("COGS_GOODS");
+            assertThat((BigDecimal) e.get("amount")).isEqualByComparingTo("-65.50");
+            assertThat(e.get("sale_line_id")).as("the line the piece was sold on").isEqualTo(back.reversesActionId);
+        }
+        Stock box = row().writeOff("CANCELLED_BEFORE_DISPATCH", 2, "3.00").set("kind", "PACKAGING");
+        box.actionKind = "TAKE_BACK";
+        box.reversesActionId = UUID.randomUUID();
+
+        apply(box);
+
+        assertThat(entry(box).get("account")).isEqualTo("COGS_PACKAGING");
+        assertThat((BigDecimal) entry(box).get("amount")).isEqualByComparingTo("-6.00");
+        assertThat(entry(box).get("sale_line_id")).isNull();
+    }
+
+    @Test
     @DisplayName("a returned piece that cannot be sold again is stock written off, at the cost of the lot it went back to, under its own reason: never cost of goods")
     void aReturnedWriteOffIsStockOut() {
         Stock s = row().writeOff("WRITE_OFF_RETURNED", -1, "65.50");

@@ -23,14 +23,19 @@ public class FinanceDispatcher {
     private final PeriodCostApplier periods;
     private final StockCostApplier stock;
     private final FactApplier facts;
+    private final CorrectionApplier corrections;
+    private final RefundDueApplier refundDues;
 
-    public FinanceDispatcher(SaleApplier sales, FareApplier fares, PaymentApplier payments, PeriodCostApplier periods, StockCostApplier stock, FactApplier facts) {
+    public FinanceDispatcher(SaleApplier sales, FareApplier fares, PaymentApplier payments, PeriodCostApplier periods, StockCostApplier stock, FactApplier facts,
+                             CorrectionApplier corrections, RefundDueApplier refundDues) {
         this.sales = sales;
         this.fares = fares;
         this.payments = payments;
         this.periods = periods;
         this.stock = stock;
         this.facts = facts;
+        this.corrections = corrections;
+        this.refundDues = refundDues;
     }
 
     public void apply(Message<byte[]> message) {
@@ -41,6 +46,8 @@ public class FinanceDispatcher {
             case "order.shipped" -> fares.apply(ctx, body);
             case "order.created" -> facts.orderCreated(ctx, body);
             case "payment.confirmed", "payment.voided", "payment.held" -> payments.apply(ctx, body);
+            case "order.sale_cancelled", "order.return_recorded" -> corrections.apply(ctx, body);
+            case "payment.refund_due_recorded", "payment.refund_closed" -> refundDues.apply(ctx, body);
             case "consignment.period_costs" -> periods.apply(ctx, body);
             case "stock.cost_recorded" -> stock.apply(ctx, body);
             case "consignment.received", "consignment.amended" -> facts.consignmentLine(ctx, body);

@@ -262,4 +262,36 @@ class FinanceInboxTest {
         assertThat(processed(surprise)).isFalse();
         assertThat(open("event-refused", eventId(surprise))).isTrue();
     }
+
+    @Test
+    @DisplayName("the refund facts of Phase 12 are declared and applied: a cancelled sale and a return from order's topic, a debt and a closed debt from payment's")
+    void theRefundFactsAreApplied() {
+        Paid paid = aSale();
+        orderEvents.accept(orderPaid(paid));
+        RefundEvents.Corrected cancelled = RefundEvents.Corrected.cancelling(paid);
+        Message<byte[]> cancellation = relay("order.sale_cancelled", "order", paid.order, cancelled.occurredAt, "order", cancelled.body());
+        Message<byte[]> debt = relay("payment.refund_due_recorded", "refund_due", cancelled.id, cancelled.occurredAt, "payment",
+                RefundEvents.due(cancelled.id, paid.order, paid.confirmation, "1000.00", "OWED", cancelled.occurredAt));
+        Instant closedAt = cancelled.occurredAt.plusSeconds(3600);
+        Message<byte[]> closed = relay("payment.refund_closed", "refund_due", cancelled.id, closedAt, "payment",
+                RefundEvents.closed(cancelled.id, paid.order, paid.confirmation, "1000.00", closedAt));
+
+        orderEvents.accept(cancellation);
+        paymentEvents.accept(debt);
+        paymentEvents.accept(closed);
+
+        assertThat(processed(cancellation)).isTrue();
+        assertThat(processed(debt)).isTrue();
+        assertThat(processed(closed)).isTrue();
+        assertThat(sum(paid.order, "REVENUE_GOODS")).as("sold, then cancelled").isEqualByComparingTo("0.00");
+        assertThat(sum(paid.order, "MEMO_REFUNDS_OWED")).as("owed, then closed").isEqualByComparingTo("0.00");
+
+        Paid other = aSale();
+        orderEvents.accept(orderPaid(other));
+        RefundEvents.Corrected back = RefundEvents.Corrected.returning(other, other.lines.get(0), 1);
+        Message<byte[]> returned = relay("order.return_recorded", "order", other.order, back.occurredAt, "order", back.body());
+        orderEvents.accept(returned);
+        assertThat(processed(returned)).isTrue();
+        assertThat(sum(other.order, "MEMO_REFUNDS_OWED")).isEqualByComparingTo("1000.00");
+    }
 }

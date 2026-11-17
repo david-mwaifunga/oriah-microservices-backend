@@ -66,6 +66,8 @@ public class LedgerWriter {
         String stockKind;
         boolean estimated;
         Long reversesEntryId;
+        UUID correctionId;
+        UUID payoutId;
 
         private Entry(String key, String account, BigDecimal amount, Instant occurredAt, LocalDate effectDay, String source, String actor) {
             this.key = key;
@@ -98,6 +100,10 @@ public class LedgerWriter {
         public Entry stockKind(String v) { this.stockKind = v; return this; }
         public Entry estimated(boolean v) { this.estimated = v; return this; }
         public Entry reverses(Long v) { this.reversesEntryId = v; return this; }
+        /** The correction of a paid sale (a cancellation, a return) this row belongs to. */
+        public Entry correction(UUID v) { this.correctionId = v; return this; }
+        /** The payout (a refund, held money returned) this row belongs to. */
+        public Entry payout(UUID v) { this.payoutId = v; return this; }
     }
 
     /**
@@ -115,13 +121,13 @@ public class LedgerWriter {
         List<Long> inserted = jdbc.query("""
                 INSERT INTO ledger_entry (entry_key, account, category, reason, amount, occurred_at, effect_day, source_recorded_at, source, source_event_id, producer,
                                           outbox_id, order_id, sale_line_id, confirmation_id, consignment_id, consignment_line_id, variant_id, product_id,
-                                          stock_action_id, movement_id, promotion_id, stock_kind, estimated, reverses_entry_id, actor)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          stock_action_id, movement_id, promotion_id, stock_kind, estimated, reverses_entry_id, actor, correction_id, payout_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (entry_key) DO NOTHING RETURNING entry_id""",
                 (rs, n) -> rs.getLong(1), e.key, e.account, e.category, e.reason, amount, Timestamp.from(e.occurredAt), e.effectDay,
                 e.sourceRecordedAt == null ? null : Timestamp.from(e.sourceRecordedAt), e.source, e.sourceEventId, e.producer, e.outboxId, e.orderId, e.saleLineId,
                 e.confirmationId, e.consignmentId, e.consignmentLineId, e.variantId, e.productId, e.stockActionId, e.movementId, e.promotionId, e.stockKind,
-                e.estimated, e.reversesEntryId, e.actor);
+                e.estimated, e.reversesEntryId, e.actor, e.correctionId, e.payoutId);
         if (!inserted.isEmpty()) {
             return new Posted(true, inserted.get(0));
         }
