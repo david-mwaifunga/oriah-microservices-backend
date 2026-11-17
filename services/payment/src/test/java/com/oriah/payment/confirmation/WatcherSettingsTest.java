@@ -33,7 +33,7 @@ class WatcherSettingsTest {
     }
 
     @Test
-    @DisplayName("a confirmation is stuck after five minutes, money is in Kwacha and may be dated 72 hours back, and the card path is off")
+    @DisplayName("a confirmation is stuck after five minutes, money is in Kwacha and may be dated 72 hours back, and the first card path's switch is gone with it")
     void theSalesSettings() throws IOException {
         PropertySource<?> yaml = shipped();
 
@@ -41,11 +41,12 @@ class WatcherSettingsTest {
         assertThat(yaml.getProperty("oriah.payment.currency")).isEqualTo("ZMW");
         assertThat(yaml.getProperty("oriah.sales.backdate-window")).as("the one 72-hour setting, shared with order").isEqualTo("PT72H");
         assertThat(yaml.getProperty("oriah.payment.backdate-window")).as("payment keeps no window of its own").isNull();
-        assertThat(yaml.getProperty("oriah.payment.card.enabled")).isEqualTo(false);
+        assertThat(yaml.getProperty("oriah.payment.card.enabled")).as("retired in Phase 13").isNull();
+        assertThat(yaml.getProperty("oriah.payment.reconciler.enabled")).as("retired in Phase 13").isNull();
     }
 
     @Test
-    @DisplayName("the scheduling pool has three threads: the relay, the reconciler and the watcher each get one")
+    @DisplayName("the scheduling pool has three threads: the relay, the watcher and the ZynlePay checker each get one")
     void threeJobsThreeThreads() throws IOException {
         assertThat(shipped().getProperty("spring.task.scheduling.pool.size")).isEqualTo(3);
     }

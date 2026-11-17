@@ -20,7 +20,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import com.oriah.payment.TestcontainersConfiguration;
 import com.oriah.payment.dto.ConfirmPaymentRequest;
-import com.oriah.payment.service.PaymentReconciler;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,8 +27,8 @@ import static org.mockito.Mockito.doAnswer;
 
 /**
  * The watcher runs by itself, and a pass that is slow does not hold anything else back (Phase 7). The scheduling pool has one thread for each job: the
- * outbox relay (which announces every payment event), the card reconciler and the watcher. With fewer, a pass waiting on a slow database would hold
- * back every payment announcement, the very thing the watcher exists to make sure happens.
+ * outbox relay (which announces every payment event), the watcher, and the checker that asks ZynlePay about a payment (Phase 13). With fewer, a
+ * pass waiting on a slow database would hold back every payment announcement, the very thing the watcher exists to make sure happens.
  *
  * <p>Its own context: the schedule is OFF in every other test (a pass landing mid-test would announce what the test is counting), and here it is on,
  * quickly, with a settlement window of nothing so a confirmation is due at once.
@@ -39,7 +38,6 @@ import static org.mockito.Mockito.doAnswer;
 @TestPropertySource(properties = {
         "eureka.client.enabled=false",
         "oriah.payment.watcher.enabled=true", "oriah.payment.watcher.delay=200",
-        "oriah.payment.reconciler.enabled=true", "oriah.payment.reconciler.delay=200",
         "oriah.sales.settlement-stuck-after=PT0S"})
 class WatcherScheduleTest {
 
@@ -63,9 +61,6 @@ class WatcherScheduleTest {
 
     @MockitoSpyBean
     private SettlementWatcher watcher;
-
-    @MockitoSpyBean
-    private PaymentReconciler reconciler;
 
     private UUID confirmed() {
         return confirmations.confirm(new ConfirmPaymentRequest(UUID.randomUUID(), "MTN", "MP" + UUID.randomUUID().toString().replace("-", "").substring(0, 10),
@@ -97,26 +92,21 @@ class WatcherScheduleTest {
     }
 
     @Test
-    @DisplayName("a slow watcher pass AND a slow reconciler pass at the same time do not hold back the relay: a payment announced meanwhile still reaches the log")
-    void slowPassesDoNotHoldBackTheRelay() throws Exception {
-        CountDownLatch bothAreSlow = new CountDownLatch(2);
+    @DisplayName("a slow watcher pass does not hold back the relay: a payment announced meanwhile still reaches the log")
+    void aSlowPassDoesNotHoldBackTheRelay() throws Exception {
+        CountDownLatch slow = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         doAnswer(call -> {
-            bothAreSlow.countDown();
+            slow.countDown();
             release.await(20, TimeUnit.SECONDS);
             return 0;
         }).when(watcher).reemitDue(any());
-        doAnswer(call -> {
-            bothAreSlow.countDown();
-            release.await(20, TimeUnit.SECONDS);
-            return null;
-        }).when(reconciler).reconcile();
         try {
-            assertThat(bothAreSlow.await(10, TimeUnit.SECONDS)).as("both passes are inside their slow call").isTrue();
+            assertThat(slow.await(10, TimeUnit.SECONDS)).as("the watcher is inside its slow call").isTrue();
 
             UUID id = confirmed();
 
-            assertThat(publishedWithin10s(id)).as("payment.confirmed reached oriah.payment while both other jobs were stuck").isNotNull();
+            assertThat(publishedWithin10s(id)).as("payment.confirmed reached oriah.payment while the watcher was stuck").isNotNull();
         } finally {
             release.countDown();
         }

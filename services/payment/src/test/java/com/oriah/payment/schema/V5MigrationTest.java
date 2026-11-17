@@ -178,8 +178,9 @@ class V5MigrationTest {
         return db;
     }
 
+    /** To V5 and no further: V10 (Phase 13) drops these tables, and what this test reads is what V5 did to them. */
     private static void migrateToLatest(DataSource db) {
-        Flyway.configure().dataSource(db).locations("classpath:db/migration").load().migrate();
+        Flyway.configure().dataSource(db).locations("classpath:db/migration").target("5").load().migrate();
     }
 
     private static DataSource dataSource(String database) {

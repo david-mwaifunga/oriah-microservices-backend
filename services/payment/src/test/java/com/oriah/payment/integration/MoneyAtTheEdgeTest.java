@@ -18,8 +18,6 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.oriah.money.MoneyEdgeGuard;
 import com.oriah.payment.TestcontainersConfiguration;
-import com.oriah.payment.model.PaymentIntent;
-import com.oriah.payment.repository.PaymentIntentRepository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,7 +42,7 @@ class MoneyAtTheEdgeTest {
     private MockMvc mvc;
 
     @Autowired
-    private PaymentIntentRepository intents;
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @MockitoBean
     @SuppressWarnings("unused")
@@ -58,23 +56,16 @@ class MoneyAtTheEdgeTest {
     }
 
     @Test
-    @DisplayName("an intent for a fraction of a ngwee is a 400, and nothing is stored")
+    @DisplayName("money confirmed for a fraction of a ngwee is a 400, and nothing is recorded")
     void anAmountFinerThanANgweeIsRefused() throws Exception {
-        long before = intents.count();
-        mvc.perform(post("/api/v1/payments/intents")
-                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_USER")).jwt(j -> j.subject("kc-alice")))
+        long before = jdbc.queryForObject("SELECT count(*) FROM payment_confirmation", Long.class);
+        mvc.perform(post("/api/v1/admin/payments/confirmations")
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT")).jwt(j -> j.subject("kc-sara")))
+                        .header("Idempotency-Key", "edge-" + UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"amount\":100.005,\"currency\":\"ZMW\"}"))
+                        .content("{\"orderId\":\"" + UUID.randomUUID() + "\",\"method\":\"CASH\",\"gross\":100.005}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("amount")));
-        assertThat(intents.count()).isEqualTo(before);
-    }
-
-    @Test
-    @DisplayName("an intent cannot be built for a fraction of a ngwee")
-    void theAggregateRefusesItToo() {
-        assertThatThrownBy(() -> new PaymentIntent(UUID.randomUUID(), "kc-alice", new BigDecimal("100.005"), "ZMW"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("100.005");
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("gross")));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_confirmation", Long.class)).isEqualTo(before);
     }
 }

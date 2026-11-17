@@ -17,14 +17,15 @@ spring:
   task:
     scheduling:
       # Three scheduled jobs run here, each on a thread of its own: the outbox
-      # relay (shared/oriah-events), the payment reconciler (card path) and, since
-      # Phase 7, the settlement watcher that announces confirmed money again while
-      # order has not answered. Spring Boot's default is ONE thread for all of
-      # them, so a reconciler or watcher pass waiting on a slow database or gateway
-      # would hold back every payment announcement, and a relay round waiting on a
-      # stopped Kafka (up to about 25 s) would hold back both.
-      # ReconcilerScheduleTest and WatcherScheduleTest prove it. Add a thread for
-      # any further @Scheduled job.
+      # relay (shared/oriah-events), the settlement watcher that announces
+      # confirmed money again while order has not answered (Phase 7), and the
+      # checker that asks ZynlePay what became of a payment (Phase 13; it took
+      # the thread of the first card path's reconciler, retired with it).
+      # Spring Boot's default is ONE thread for all of them, so a pass waiting
+      # on a slow database or on ZynlePay would hold back every payment
+      # announcement, and a relay round waiting on a stopped Kafka (up to about
+      # 25 s) would hold back both. WatcherScheduleTest proves it. Add a thread
+      # for any further @Scheduled job.
       pool:
         size: 3
   security:
@@ -37,35 +38,23 @@ spring:
     # top-level `spring:` key is refused by Spring Boot's loader.
     openfeign:
       circuitbreaker:
-        # Stays off. OrderClient sends the caller's own token, read from
-        # SecurityContextHolder, which belongs to the request thread; Spring
-        # Cloud's circuit-breaker integration runs the call on another thread,
-        # so the token would be dropped and order would answer 401 to every
-        # ownership check. Order and checkout document the same trap.
+        # Stays off. A call to order made for a shopper carries the shopper's
+        # own token, read from SecurityContextHolder, which belongs to the
+        # request thread; Spring Cloud's circuit-breaker integration runs the
+        # call on another thread, so the token would be dropped and order
+        # would answer 401. Order and checkout document the same trap.
         enabled: false
       client:
         config:
-          # Creating an intent (the card path, off unless
-          # oriah.payment.card.enabled) asks order whose order it is
-          # (OrderOwnership). Feign's own defaults here would give order 10 s
-          # to connect and 60 s to answer, which would hold payment, and
-          # whoever waits on payment, for a minute. With these, a hanging
-          # order costs payment at most 1 s + 3 s = 4 s, and payment answers
-          # 503 with Retry-After (OrderUnavailableException) rather than wait.
-          #
-          # Nothing calls payment's create today: Phase 7 removed the call
-          # from checkout, which now places an order and leaves the payment to
-          # staff. When ZynlePay (Phase 13) gives the card path a caller, that
-          # caller's wait must leave room for these 4 s plus payment's own
-          # write (one short database transaction); restate the budget then,
-          # and make CreateIntentBudgetTest read the caller's configuration.
-          #
-          # The read is one order by id, so 3 s is generous.
+          # Starting a payment through ZynlePay (Phase 13) asks order, once, to
+          # take the attempt and hold the pieces for it. Feign's own defaults
+          # would give order 10 s to connect and 60 s to answer; these bound
+          # it. The whole budget of a start is restated beside the code that
+          # makes the call.
           #
           # Keyed by the client's NAME (@FeignClient(name = "order")): Spring
           # Cloud silently uses the defaults for a name it has no config for,
-          # so a misspelled key looks exactly like an omitted one -- the test
-          # asserts the name as well.
+          # so a misspelled key looks exactly like an omitted one.
           order:
             connect-timeout: 1000
             read-timeout: 3000
@@ -213,15 +202,6 @@ oriah:
 
   payment:
     # -------------------------------------------------------------------------
-    # The card path (Phase 7): the intent endpoints (/api/v1/payments/intents), the service behind them, the fake card gateway, the
-    # reconciler below and the Feign client to order. OFF: money reaches an order only by a person confirming it (staff confirmations,
-    # /api/v1/admin/payments/confirmations), so there is no second road to PAID. Phase 13 turns it on when ZynlePay makes a card charge a
-    # confirmation. Exactly true or false; the tests run with it on (src/test/resources/config/application.yaml).
-    # -------------------------------------------------------------------------
-    card:
-      enabled: false
-
-    # -------------------------------------------------------------------------
     # Staff-confirmed money (Phase 7).
     #
     # currency: the one currency the shop takes. A confirmation names it or takes it; any other is refused.
@@ -243,27 +223,6 @@ oriah:
       enabled: true
       delay: 30000
       max-emit-attempts: 10
-
-    # -------------------------------------------------------------------------
-    # The reconciler (PaymentReconciler): settles intents whose charge outcome
-    # never reached payment -- a gateway timeout, a crash, or a failure to
-    # record the answer -- by asking the gateway about the charge reference.
-    #
-    # charging-age: how long an intent must have been CHARGING before it is
-    #   asked about. A confirm still waiting on the gateway is CHARGING too,
-    #   and asking too early would void a charge that was about to go through,
-    #   so this must stay well above the longest gateway call.
-    # delay: milliseconds between the end of one pass and the start of the
-    #   next.
-    #
-    # On in every profile: without it a lost answer stays CHARGING for good.
-    # (The tests switch it off and call it themselves; see
-    # src/test/resources/config/application.yaml.)
-    # -------------------------------------------------------------------------
-    reconciler:
-      enabled: true
-      charging-age: 120s
-      delay: 30000
 
     # ---------------------------------------------------------------------------
     # Local fallback for GET /api/v1/payments/contact-info.

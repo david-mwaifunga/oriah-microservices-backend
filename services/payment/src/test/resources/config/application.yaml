@@ -5,26 +5,11 @@
 # every other key still comes from the main file. Only the test classpath has
 # this file, so the service as shipped never sees it.
 #
-# The reconciler's schedule is off in tests. A test context stays alive for
-# the whole run once it has started, and a pass landing mid-test would settle
-# the CHARGING intents a test is asserting on (ConfirmChargeFlowTest's timeout
-# and trap, for one), or race a test that calls the reconciler itself. Tests
-# call PaymentReconciler.reconcile() directly; ReconcilerScheduleTest switches
-# the schedule back on to prove it, and ReconcilerSettingsTest pins that the
-# main file ships it on.
-#
-# The card path is ON in tests (oriah.payment.card.enabled): the shipped file has it off (Phase 7: money reaches an order only by a person
-# confirming it), but the card path's own tests, and the code that stays until Phase 13 turns it on, still run against it. Set here and not in
-# each test's @TestPropertySource so that every test keeps the same properties and therefore the same cached Spring context.
-# CardPathSwitchTest switches it off for itself to prove the off state.
-#
-# The settlement watcher's schedule is off in tests too, for the same reason: a pass landing mid-test would announce again the very confirmations
-# a test is counting. Tests call SettlementWatcher.reemitDue(now) themselves; WatcherScheduleTest switches the schedule back on to prove it.
+# The settlement watcher's schedule is off in tests. A test context stays alive for the whole run once it has started, and a pass landing
+# mid-test would announce again the very confirmations a test is counting. Tests call SettlementWatcher.reemitDue(now) themselves;
+# WatcherScheduleTest switches the schedule back on to prove it. Set here and not in each test's @TestPropertySource so that every test keeps
+# the same properties and therefore the same cached Spring context.
 oriah:
   payment:
-    card:
-      enabled: true
-    reconciler:
-      enabled: false
     watcher:
       enabled: false
