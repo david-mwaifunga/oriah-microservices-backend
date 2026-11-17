@@ -12,5 +12,5 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record PaymentConfirmed(UUID confirmationId, UUID orderId, String method, BigDecimal gross, BigDecimal fee, BigDecimal net, String currency, Instant arrivedAt,
-                               Instant confirmedAt, int attempt) {
+                               Instant confirmedAt, int attempt, String provider) {
 }

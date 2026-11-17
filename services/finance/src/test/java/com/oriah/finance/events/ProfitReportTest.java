@@ -238,6 +238,72 @@ class ProfitReportTest {
         assertThat(named(checks, "method", "AIRTEL").get("difference").decimalValue()).isEqualByComparingTo("4.00");
     }
 
+    /** {@code payment.confirmed} as payment announces money a provider collected: the staff shape, another method, and the provider at the end. */
+    private static byte[] collectedBy(String provider, String method, byte[] confirmed) {
+        String json = new String(confirmed, java.nio.charset.StandardCharsets.UTF_8).replace("\"method\":\"MTN\"", "\"method\":\"" + method + "\"");
+        return (json.substring(0, json.length() - 1) + ",\"provider\":\"" + provider + "\",\"providerPaymentId\":\"" + UUID.randomUUID() + "\"}")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    @Test
+    @DisplayName("Phase 13: the fees of payments ZynlePay collected are set against ZynlePay's own statement, whichever wallet or card they came by: "
+            + "K4.50 (MTN) + K6.30 (card) = K10.80 against a statement of K11.00 leaves K0.20; a fee on money staff confirmed from MTN directly stays under MTN")
+    void aZynlePayStatementLinesUpAcrossWalletsAndCards() throws Exception {
+        Instant arrived = Instant.parse("2019-05-10T08:00:00Z");
+        Paid byWallet = new Paid().line(Sold.of(UUID.randomUUID(), 1, "180.00", "0.00")).fee("4.50").arrived("2019-05-10T08:00:00Z");
+        Paid byCard = new Paid().line(Sold.of(UUID.randomUUID(), 1, "180.00", "0.00")).fee("6.30").arrived("2019-05-10T08:00:00Z");
+        Paid direct = new Paid().line(Sold.of(UUID.randomUUID(), 1, "180.00", "0.00")).fee("3.00").arrived("2019-05-10T08:00:00Z");
+        payments.apply(Events.confirmedContext(byWallet.confirmation, arrived),
+                collectedBy("ZYNLEPAY", "MTN", Events.confirmed(byWallet.confirmation, byWallet.order, "180.00", "4.50", arrived, 1)));
+        payments.apply(Events.confirmedContext(byCard.confirmation, arrived),
+                collectedBy("ZYNLEPAY", "CARD", Events.confirmed(byCard.confirmation, byCard.order, "180.00", "6.30", arrived, 1)));
+        payments.apply(Events.confirmedContext(direct.confirmation, arrived), Events.confirmed(direct.confirmation, direct.order, "180.00", "3.00", arrived, 1));
+        sale(byWallet);
+        sale(byCard);
+        sale(direct);
+        for (String body : List.of("{\"month\":\"2019-05\",\"method\":\"ZYNLEPAY\",\"statementFees\":11.00}",
+                "{\"month\":\"2019-05\",\"method\":\"MTN\",\"statementFees\":3.00}")) {
+            mvc.perform(post("/api/v1/admin/finance/statement-checks").with(bookkeeper()).header("Idempotency-Key", "k-" + UUID.randomUUID())
+                    .contentType(MediaType.APPLICATION_JSON).content(body)).andReturn();
+        }
+
+        JsonNode checks = report("2019-05").get("memo").get("statementChecks");
+
+        assertThat(named(checks, "method", "ZYNLEPAY").get("recordedFees").decimalValue()).isEqualByComparingTo("10.80");
+        assertThat(named(checks, "method", "ZYNLEPAY").get("difference").decimalValue()).isEqualByComparingTo("0.20");
+        assertThat(named(checks, "method", "MTN").get("recordedFees").decimalValue()).as("the fee on MTN money staff confirmed themselves, and no ZynlePay fee")
+                .isEqualByComparingTo("3.00");
+        assertThat(named(checks, "method", "MTN").get("difference").decimalValue()).isEqualByComparingTo("0.00");
+        assertThat(checks.toString()).as("a card payment has no statement of its own: it is on ZynlePay's").doesNotContain("\"CARD\"");
+    }
+
+    @Test
+    @DisplayName("Phase 13: whichever announcement of a ZynlePay payment arrives first, finance ends up knowing it was ZynlePay's; two that disagree are flagged, and nothing is posted twice")
+    void theProviderIsKnownWhicheverAnnouncementArrivesFirst() throws Exception {
+        Instant arrived = Instant.parse("2019-07-10T08:00:00Z");
+        UUID confirmation = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
+        byte[] bare = Events.confirmed(confirmation, order, "180.00", "4.50", arrived, 2);
+
+        // An announcement that does not say (one written before this field, or replayed out of order), then the one that does.
+        payments.apply(Events.confirmedContext(confirmation, arrived), bare);
+        payments.apply(Events.confirmedContext(confirmation, arrived), collectedBy("ZYNLEPAY", "MTN", Events.confirmed(confirmation, order, "180.00", "4.50", arrived, 1)));
+
+        assertThat(jdbc.queryForObject("SELECT provider FROM confirmation_provider WHERE confirmation_id = ?", String.class, confirmation))
+                .isEqualTo("ZYNLEPAY");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_entry WHERE confirmation_id = ? AND category = 'PAYMENT_CHARGES'", Long.class, confirmation))
+                .as("the fee is posted once").isEqualTo(1);
+        long flagged = jdbc.queryForObject("SELECT count(*) FROM anomaly_log WHERE code = 'confirmation-differs' AND action = 'RAISE' AND subject = ?", Long.class, confirmation.toString());
+        assertThat(flagged).isZero();
+
+        payments.apply(Events.confirmedContext(confirmation, arrived), collectedBy("OTHERPAY", "MTN", Events.confirmed(confirmation, order, "180.00", "4.50", arrived, 3)));
+
+        assertThat(jdbc.queryForObject("SELECT provider FROM confirmation_provider WHERE confirmation_id = ?", String.class, confirmation))
+                .as("what was first known stands").isEqualTo("ZYNLEPAY");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM anomaly_log WHERE code = 'confirmation-differs' AND action = 'RAISE' AND subject = ?", Long.class, confirmation.toString()))
+                .isEqualTo(flagged + 1);
+    }
+
     @Test
     @DisplayName("a month with nothing in it reports zeros on every line, not an error")
     void aQuietMonth() throws Exception {

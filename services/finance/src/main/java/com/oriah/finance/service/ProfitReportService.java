@@ -250,9 +250,14 @@ public class ProfitReportService {
         jdbc.query("SELECT DISTINCT ON (method) method, statement_fees FROM statement_check WHERE month = ? AND entered_at <= ? ORDER BY method, id DESC",
                 rs -> { statements.put(rs.getString(1), rs.getBigDecimal(2)); }, first, cut);
         Map<String, BigDecimal> recorded = new TreeMap<>();
+        // A fee is set against the statement it is on: the provider's that collected the money (ZynlePay, for every wallet and card that came through
+        // it: Phase 13), otherwise the wallet's or bank's own, for money a person confirmed.
         jdbc.query("""
-                SELECT cf.method, sum(l.amount) FROM ledger_entry l JOIN confirmation_fact cf ON cf.confirmation_id = l.confirmation_id AND cf.kind = 'CONFIRMED'
-                 WHERE l.account = 'EXPENSE' AND l.category IN ('PAYMENT_CHARGES', 'PAYMENT_CHARGES_ADJUSTMENT') AND l.effect_month = ? AND l.recorded_at <= ? GROUP BY cf.method""",
+                SELECT COALESCE(cp.provider, cf.method), sum(l.amount)
+                  FROM ledger_entry l JOIN confirmation_fact cf ON cf.confirmation_id = l.confirmation_id AND cf.kind = 'CONFIRMED'
+                  LEFT JOIN confirmation_provider cp ON cp.confirmation_id = cf.confirmation_id
+                 WHERE l.account = 'EXPENSE' AND l.category IN ('PAYMENT_CHARGES', 'PAYMENT_CHARGES_ADJUSTMENT') AND l.effect_month = ? AND l.recorded_at <= ?
+                 GROUP BY COALESCE(cp.provider, cf.method)""",
                 rs -> { recorded.merge(rs.getString(1), rs.getBigDecimal(2), BigDecimal::add); }, first, cut);
         jdbc.query("""
                 SELECT x.provider, sum(l.amount) FROM ledger_entry l JOIN expense x ON x.ledger_entry_id = l.entry_id

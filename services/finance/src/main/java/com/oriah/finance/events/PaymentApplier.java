@@ -69,15 +69,30 @@ public class PaymentApplier {
         if (ctx.occurredAt() == null || !ctx.occurredAt().truncatedTo(ChronoUnit.MICROS).equals(p.arrivedAt().truncatedTo(ChronoUnit.MICROS))) {
             throw new IllegalArgumentException("the envelope says the money arrived at " + ctx.occurredAt() + " but the body says arrivedAt " + p.arrivedAt());
         }
+        String provider = p.provider() == null || p.provider().isBlank() ? null : p.provider().strip();
+        if (provider != null && !provider.matches("[A-Z]{2,16}")) {
+            throw new IllegalArgumentException("provider is a plain code such as ZYNLEPAY, was '" + p.provider() + "'");
+        }
         locks.writer();
         locks.confirmation(p.confirmationId());
         int inserted = jdbc.update("""
                 INSERT INTO confirmation_fact (confirmation_id, kind, order_id, method, gross, fee, arrived_at, actor, source_recorded_at, source_event_id)
                 VALUES (?, 'CONFIRMED', ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (confirmation_id, kind) DO NOTHING""",
                 p.confirmationId(), p.orderId(), p.method(), p.gross(), p.fee(), Timestamp.from(p.arrivedAt()), ctx.actor(), instant(ctx.recordedAt()), ctx.eventId());
+        // Who collected the money (Phase 13) is the same on every announcement of it. It is kept once, by whichever announcement first says it
+        // (one written before the field, or the first to arrive out of order, does not say); two that name different providers are a fault to see.
+        boolean anotherProvider = false;
+        if (provider != null) {
+            jdbc.update("INSERT INTO confirmation_provider (confirmation_id, provider, source_event_id) VALUES (?, ?, ?) ON CONFLICT (confirmation_id) DO NOTHING",
+                    p.confirmationId(), provider, ctx.eventId());
+            anotherProvider = !provider.equals(jdbc.queryForObject("SELECT provider FROM confirmation_provider WHERE confirmation_id = ?", String.class,
+                    p.confirmationId()));
+        }
         if (inserted == 0) {
-            Map<String, Object> held = jdbc.queryForMap("SELECT gross, fee, order_id FROM confirmation_fact WHERE confirmation_id = ? AND kind = 'CONFIRMED'", p.confirmationId());
-            if (((BigDecimal) held.get("gross")).compareTo(p.gross()) != 0 || ((BigDecimal) held.get("fee")).compareTo(p.fee()) != 0 || !p.orderId().equals(held.get("order_id"))) {
+            Map<String, Object> held = jdbc.queryForMap("SELECT gross, fee, order_id FROM confirmation_fact WHERE confirmation_id = ? AND kind = 'CONFIRMED'",
+                    p.confirmationId());
+            if (anotherProvider || ((BigDecimal) held.get("gross")).compareTo(p.gross()) != 0 || ((BigDecimal) held.get("fee")).compareTo(p.fee()) != 0
+                    || !p.orderId().equals(held.get("order_id"))) {
                 anomalies.raise("confirmation-differs", p.confirmationId().toString(), Severity.ERROR,
                         Map.of("confirmationId", p.confirmationId().toString(), "attempt", p.attempt()), ctx.eventId());
             }
