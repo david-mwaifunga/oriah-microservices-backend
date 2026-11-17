@@ -109,7 +109,7 @@ public class SaleReversalService {
      * @return the reversal; the same request again under the same id answers it ({@code replay}) and changes nothing
      * @throws CommitmentProblem 404 {@code sale-line-not-found}, {@code reservation-not-found}; 409 {@code reversal-id-used},
      *                           {@code not-a-sale}, {@code reservation-not-consumed}, {@code box-line-not-live},
-     *                           {@code more-than-outstanding}, {@code piece-id-used}; 400 {@code invalid-occurred-at}
+     *                           {@code more-than-outstanding}, {@code piece-id-used}, {@code reversal-abandoned}; 400 {@code invalid-occurred-at}
      * @throws IllegalArgumentException the request is not one of the two shapes
      */
     @Transactional
@@ -125,7 +125,11 @@ public class SaleReversalService {
             }
             return view(stored.get(), true);
         }
-
+        if (abandoned(id)) {
+            // The order system gave this id up (it was told nothing had moved, and wrote that down): a request that was still on its way must not
+            // move stock for an order that now carries on as paid.
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "reversal-abandoned", "reversal " + id + " was abandoned: nothing is done under it");
+        }
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
         Instant when = request.occurredAt().truncatedTo(ChronoUnit.MICROS);
         if (when.isAfter(now.plus(CLOCK_ALLOWANCE))) {
@@ -229,8 +233,34 @@ public class SaleReversalService {
         return stored(reversalId).map(stored -> view(stored, false));
     }
 
-    // ---------------------------------------------------------------- the rules
+    /** What became of an abandon: {@code applied} is true when the reversal had already been done (nothing is abandoned then). */
+    public record Abandoned(UUID reversalId, boolean applied) {
+    }
 
+    /**
+     * The order system gives a reversal id up. Under the reversal's own lock (so it waits out an attempt in flight): if the reversal was applied,
+     * nothing is abandoned and the answer says so; otherwise the id is remembered as abandoned, and every later request under it is refused
+     * ({@code reversal-abandoned}) and moves nothing. Asked again, the answer is the same.
+     */
+    @Transactional
+    public Abandoned abandon(UUID reversalId, String actor) {
+        lock(reversalId);
+        if (stored(reversalId).isPresent()) {
+            return new Abandoned(reversalId, true);
+        }
+        int written = jdbc.update("INSERT INTO sale_reversal_abandoned (id, abandoned_at, actor) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING", reversalId,
+                java.sql.Timestamp.from(clock.instant().truncatedTo(ChronoUnit.MICROS)), actor);
+        if (written == 1) {
+            log.warn("Reversal {} was abandoned by the order system before anything moved: no request under this id will be applied", reversalId);
+        }
+        return new Abandoned(reversalId, false);
+    }
+
+    private boolean abandoned(UUID reversalId) {
+        return exists("SELECT EXISTS (SELECT 1 FROM sale_reversal_abandoned WHERE id = ?)", reversalId);
+    }
+
+    // ---------------------------------------------------------------- the rules
     private static void requireShape(Request request) {
         if (request == null || request.reversalId() == null || request.orderId() == null || request.occurredAt() == null || request.goods() == null
                 || request.boxes() == null || request.pieces() == null) {

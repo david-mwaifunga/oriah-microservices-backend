@@ -99,7 +99,8 @@ public class SaleReversalController {
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "404", description = "sale-line-not-found, reservation-not-found",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
-    @ApiResponse(responseCode = "409", description = "reversal-id-used, not-a-sale, reservation-not-consumed, box-line-not-live, more-than-outstanding, piece-id-used",
+    @ApiResponse(responseCode = "409", description = "reversal-id-used, not-a-sale, reservation-not-consumed, box-line-not-live, more-than-outstanding, piece-id-used, "
+            + "reversal-abandoned (the order system gave this id up: nothing is done under it)",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping
     public ResponseEntity<Reversal> reverse(@Valid @RequestBody ReversalRequest request, @AuthenticationPrincipal Jwt jwt) {
@@ -123,6 +124,16 @@ public class SaleReversalController {
                 "nothing was done under reversal " + reversalId)));
     }
 
+    @Operation(operationId = "abandonSaleReversal", summary = "Give a reversal id up, for good",
+            description = "Waits for an attempt in flight under the same id. If the reversal was applied, nothing is abandoned (applied: true) and the order "
+                    + "system finishes its correction. Otherwise the id is remembered as abandoned (applied: false): every later request under it is 409 "
+                    + "reversal-abandoned and moves nothing, so 'nothing moved' stays true. Asked again, the answer is the same.")
+    @ApiResponse(responseCode = "200", description = "Whether the reversal had been applied")
+    @PostMapping("/{reversalId}/abandon")
+    public ResponseEntity<SaleReversalService.Abandoned> abandon(@PathVariable UUID reversalId, @AuthenticationPrincipal Jwt jwt) {
+        String actor = jwt == null || jwt.getSubject() == null ? "system:unknown" : "user:" + jwt.getSubject();
+        return ResponseEntity.ok(reversals.abandon(reversalId, actor));
+    }
     private static <T> List<T> orEmpty(List<T> list) {
         return list == null ? List.of() : list;
     }

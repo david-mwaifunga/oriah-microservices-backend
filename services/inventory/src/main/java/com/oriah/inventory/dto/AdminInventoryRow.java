@@ -12,7 +12,7 @@ import java.util.UUID;
  * not arrived yet still has stock worth seeing, so it lists with a null title
  * rather than being hidden by an inner join.
  *
- * <p>{@code available} is {@code onHand - reserved}, computed rather than
+ * <p>{@code available} is {@code onHand - reserved - committed - quarantined}, computed rather than
  * stored. It is included so callers do not each re-derive it and disagree.
  */
 public record AdminInventoryRow(
@@ -22,7 +22,9 @@ public record AdminInventoryRow(
         int reserved,
         int available,
         // Boxes set aside for products (packaging only; 0 for goods), and what is free to promise or reserve: the same figure as
-        // `available`, under the name the box counts use. onHand == free + committed + reserved.
+        // `available`, under the name the box counts use. onHand == free + committed + reserved + quarantined.
         int committed,
-        int free
+        int free,
+        // Returned pieces waiting to be looked at (Phase 12): in stock, not for sale, so not in `available` or `free`. 0 for boxes.
+        int quarantined
 ) {}

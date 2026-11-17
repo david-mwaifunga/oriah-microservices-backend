@@ -208,6 +208,68 @@ class SaleReversalHttpTest {
     }
 
     @Test
+    @DisplayName("a reversal id the order system gave up is never applied afterwards: the abandon is remembered, a late request under that id is 409 reversal-abandoned and moves nothing, and the read still says there is none")
+    void anAbandonedIdIsNeverApplied() throws Exception {
+        UUID id = UUID.randomUUID();
+        int onHand = jdbc.queryForObject("SELECT on_hand FROM inventory WHERE variant_id = ?", Integer.class, ring);
+
+        mvc.perform(post(REVERSALS + "/" + id + "/abandon").with(machine()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.reversalId").value(id.toString())).andExpect(jsonPath("$.applied").value(false));
+        // The request that was on its way arrives after all: it is refused by name, and nothing moves.
+        mvc.perform(post(REVERSALS).with(machine()).contentType(MediaType.APPLICATION_JSON).content(cancellation(id)))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.type").value("https://oriah.dev/problems/reversal-abandoned"));
+        mvc.perform(post(REVERSALS).with(machine()).contentType(MediaType.APPLICATION_JSON).content(returnOf(id, UUID.randomUUID())))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.type").value("https://oriah.dev/problems/reversal-abandoned"));
+
+        assertThat(jdbc.queryForObject("SELECT on_hand FROM inventory WHERE variant_id = ?", Integer.class, ring)).isEqualTo(onHand);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM sale_reversal WHERE id = ?", Integer.class, id)).isZero();
+        mvc.perform(get(REVERSALS + "/" + id).with(machine()))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.type").value("https://oriah.dev/problems/reversal-not-found"));
+        // Asked again, the answer is the same, and it is still one record.
+        mvc.perform(post(REVERSALS + "/" + id + "/abandon").with(machine())).andExpect(status().isOk()).andExpect(jsonPath("$.applied").value(false));
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM sale_reversal_abandoned WHERE id = ?", Integer.class, id)).isEqualTo(1);
+        // The sale itself can still be reversed under a new id.
+        mvc.perform(post(REVERSALS).with(machine()).contentType(MediaType.APPLICATION_JSON).content(cancellation(UUID.randomUUID()))).andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("abandoning a reversal that WAS applied changes nothing and says so (applied: true), so the order system finishes its correction instead; a person is refused")
+    void abandoningOneThatWasAppliedSaysSo() throws Exception {
+        UUID id = UUID.randomUUID();
+        mvc.perform(post(REVERSALS).with(machine()).contentType(MediaType.APPLICATION_JSON).content(cancellation(id))).andExpect(status().isOk());
+
+        mvc.perform(post(REVERSALS + "/" + id + "/abandon").with(machine()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.reversalId").value(id.toString())).andExpect(jsonPath("$.applied").value(true));
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM sale_reversal_abandoned WHERE id = ?", Integer.class, id)).isZero();
+        mvc.perform(post(REVERSALS).with(machine()).contentType(MediaType.APPLICATION_JSON).content(cancellation(id)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.replay").value(true));
+        mvc.perform(post(REVERSALS + "/" + UUID.randomUUID() + "/abandon").with(person())).andExpect(status().isForbidden());
+        mvc.perform(post(REVERSALS + "/" + UUID.randomUUID() + "/abandon")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("a returned piece that is waiting to be looked at is in stock but not for sale: the staff stock list counts it as held, not as available")
+    void theStockListDoesNotOfferAHeldPiece() throws Exception {
+        // 5 rings received, 2 sold: 3 on hand, all free. One of the two comes back: 4 on hand, 1 of them held.
+        mvc.perform(post(REVERSALS).with(machine()).contentType(MediaType.APPLICATION_JSON).content(returnOf(UUID.randomUUID(), UUID.randomUUID())))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/admin/inventory").param("size", "100").with(person()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[?(@.variantId == '" + ring + "')].onHand").value(4))
+                .andExpect(jsonPath("$.content[?(@.variantId == '" + ring + "')].quarantined").value(1))
+                .andExpect(jsonPath("$.content[?(@.variantId == '" + ring + "')].available").value(3))
+                .andExpect(jsonPath("$.content[?(@.variantId == '" + ring + "')].free").value(3));
+        // With every other ring held or gone, it is out of stock to a buyer.
+        jdbc.update("UPDATE inventory SET on_hand = 1 WHERE variant_id = ?", ring);
+        mvc.perform(get("/api/v1/admin/inventory").param("size", "100").param("outOfStock", "true").with(person()))
+                .andExpect(jsonPath("$.content[?(@.variantId == '" + ring + "')].available").value(0));
+        mvc.perform(get("/api/v1/admin/inventory").param("size", "100").param("outOfStock", "false").with(person()))
+                .andExpect(jsonPath("$.content[?(@.variantId == '" + ring + "')]").isEmpty());
+    }
+
+    @Test
     @DisplayName("a person with INVENTORY_ADMIN is refused on both doors, and so is a call with no token")
     void onlyTheOrderSystem() throws Exception {
         mvc.perform(post(REVERSALS).with(person()).contentType(MediaType.APPLICATION_JSON).content(cancellation(UUID.randomUUID())))

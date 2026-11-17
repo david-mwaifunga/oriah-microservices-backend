@@ -54,14 +54,15 @@ public interface InventoryRepository extends JpaRepository<Inventory, UUID> {
     @Query("""
             select new com.oriah.inventory.dto.AdminInventoryRow(
                        i.variantId, p.title, i.onHand, i.reserved,
-                       i.onHand - i.reserved - i.committed, i.committed, i.onHand - i.reserved - i.committed)
+                       i.onHand - i.reserved - i.committed - i.quarantined, i.committed, i.onHand - i.reserved - i.committed - i.quarantined,
+                       i.quarantined)
             from Inventory i
             left join ProductRef p on p.variantId = i.variantId
             where i.deleted = false
               and (:outOfStock is null
-                   or (:outOfStock = true  and i.onHand - i.reserved - i.committed <= 0)
-                   or (:outOfStock = false and i.onHand - i.reserved - i.committed > 0))
-            order by i.onHand - i.reserved - i.committed asc, i.variantId asc
+                   or (:outOfStock = true  and i.onHand - i.reserved - i.committed - i.quarantined <= 0)
+                   or (:outOfStock = false and i.onHand - i.reserved - i.committed - i.quarantined > 0))
+            order by i.onHand - i.reserved - i.committed - i.quarantined asc, i.variantId asc
             """)
     Page<AdminInventoryRow> findAdminRows(@Param("outOfStock") Boolean outOfStock,
                                           Pageable pageable);
