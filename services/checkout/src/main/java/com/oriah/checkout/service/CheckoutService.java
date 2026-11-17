@@ -291,9 +291,16 @@ public class CheckoutService {
     /**
      * Run a Feign call with the full Resilience4j decoration and return null on failure. For {@link #preview}'s cart read only: a null here means "no data,
      * carry on", which is right for a read and wrong for anything that places an order.
+     *
+     * <p>Except when the call was turned away (the rate limiter refused it, or the circuit is open): the service was never asked, so "no data" would be
+     * a guess shown as an empty bag. That is 503 with {@code Retry-After} (item H1).
      */
     private <T> T safeCall(java.util.function.Supplier<T> call, String name) {
-        return resilient.call(name, call, null);
+        try {
+            return resilient.callOrBusy(name, call, null);
+        } catch (com.oriah.checkout.resilience.NothingSentException e) {
+            throw new DownstreamUnavailableException(name, e);
+        }
     }
 
     /**

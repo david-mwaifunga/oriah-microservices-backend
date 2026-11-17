@@ -523,6 +523,38 @@ class ResilienceConfigResolutionTest {
                 .isEqualTo(30_000L);
     }
 
+    @ParameterizedTest(name = "{0}: the breaker judges after 10 calls, not the library's 100")
+    @DisplayName("the breaker's minimum number of calls is pinned (H1)")
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "order"})
+    void theBreakerJudgesAfterTenCalls(String client) {
+        // Left unset, Resilience4j waits for 100 calls before it judges at all: a dead downstream would take a
+        // hundred failed requests to cut off, and every "N failures leave it closed" test below would pass for the
+        // wrong reason (nothing opens a breaker in 20 calls when the minimum is 100).
+        assertThat(circuitBreakerRegistry.circuitBreaker(client).getCircuitBreakerConfig().getMinimumNumberOfCalls())
+                .as("%s minimum number of calls", client).isEqualTo(10);
+    }
+
+    @ParameterizedTest(name = "{0}: one throttled shopper does not shut it for everyone")
+    @DisplayName("a refusal by the rate limiter is not a failure of the downstream (H1)")
+    @ValueSource(strings = {"cart", "catalog", "customer", "shipping", "order"})
+    void aThrottledShopperDoesNotOpenTheBreakerForOthers(String client) {
+        // The limiter sits inside the breaker, so its refusal reaches the breaker as an exception. Counted as a
+        // failure, a burst from ONE account opened the breaker and gave EVERY shopper a 503 for 30 seconds, though
+        // the downstream had not been asked anything.
+        var breaker = circuitBreakerRegistry.circuitBreaker(client);
+        breaker.reset();
+        var refused = io.github.resilience4j.ratelimiter.RequestNotPermitted.createRequestNotPermitted(
+                rateLimiterRegistry.rateLimiter(client));
+
+        for (int i = 0; i < 20; i++) {
+            breaker.onError(0, java.util.concurrent.TimeUnit.NANOSECONDS, refused);
+        }
+
+        assertThat(breaker.getState())
+                .isEqualTo(io.github.resilience4j.circuitbreaker.CircuitBreaker.State.CLOSED);
+        breaker.reset();
+    }
+
     @Test
     @DisplayName("retry still refuses to retry a 4xx")
     void retryStillIgnoresClientErrors() {

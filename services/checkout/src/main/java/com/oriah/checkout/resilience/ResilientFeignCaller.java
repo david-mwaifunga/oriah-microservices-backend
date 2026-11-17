@@ -99,6 +99,38 @@ public class ResilientFeignCaller {
     }
 
     /**
+     * {@link #call}, except that being TURNED AWAY is not "no data": when the rate limiter refused the call or the circuit was open, the service was
+     * never asked, so nothing is known about what it would have said. That is thrown (as the {@link NothingSentException}) for the caller to answer
+     * "busy, try again"; a fallback there would show a shopper an empty bag that is not empty (item H1). Every other failure still gives
+     * {@code fallback}.
+     */
+    public <T> T callOrBusy(String name, Supplier<T> supplier, T fallback) {
+        try {
+            return callOrThrow(name, supplier);
+        } catch (NothingSentException e) {
+            if (turnedAway(e)) {
+                throw e;
+            }
+            return fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static boolean turnedAway(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof io.github.resilience4j.ratelimiter.RequestNotPermitted
+                    || c instanceof io.github.resilience4j.circuitbreaker.CallNotPermittedException) {
+                return true;
+            }
+            if (c.getCause() == c) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Run the call with the same decoration as {@link #call}, and let the
      * failure out.
      *

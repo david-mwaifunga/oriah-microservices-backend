@@ -48,6 +48,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -183,6 +184,37 @@ class DownstreamProblemPassThroughTest {
     private String digestOfAPreview() throws Exception {
         return com.jayway.jsonpath.JsonPath.read(preview().andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString(), "$.quoteDigest");
+    }
+
+    // ------------------------------------------------------------ a throttled or cut-off bag read is "busy", never an empty bag (H1)
+
+    @Autowired
+    private io.github.resilience4j.ratelimiter.RateLimiterRegistry limiters;
+
+    @Test
+    @DisplayName("preview while the cart read is throttled: 503 with Retry-After, not a 200 with an empty bag")
+    void aThrottledPreviewIsServiceUnavailableNotAnEmptyBag() throws Exception {
+        // Every permit of this second is taken, as a burst from one account takes them: the read is refused before cart is asked anything.
+        limiters.rateLimiter("cart").drainPermissions();
+        try {
+            preview().andExpect(status().isServiceUnavailable())
+                    .andExpect(header().string("Retry-After", "5"))
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON));
+            verify(cart, never()).getMyCart();
+        } finally {
+            // A fresh limiter from the same settings: the next test must not inherit this second's empty bucket.
+            limiters.remove("cart");
+        }
+    }
+
+    @Test
+    @DisplayName("preview while the cart circuit is open: 503 with Retry-After, not a 200 with an empty bag")
+    void aPreviewBehindAnOpenCircuitIsServiceUnavailableNotAnEmptyBag() throws Exception {
+        breakers.circuitBreaker("cart").transitionToOpenState();
+
+        preview().andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "5"));
+        org.mockito.Mockito.verify(cart, org.mockito.Mockito.never()).getMyCart();
     }
 
     // ------------------------------------------------------------ shipping's refusals the shopper can act on
