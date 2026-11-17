@@ -3069,53 +3069,6 @@
       "name": "payment",
       "item": [
         {
-          "name": "All payment intents, newest first, optionally filtered by status",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/payments",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "payments"
-              ],
-              "query": [
-                {
-                  "key": "page",
-                  "value": "",
-                  "disabled": true,
-                  "description": ""
-                },
-                {
-                  "key": "size",
-                  "value": "",
-                  "disabled": true,
-                  "description": ""
-                },
-                {
-                  "key": "status",
-                  "value": "",
-                  "disabled": true,
-                  "description": ""
-                },
-                {
-                  "key": "sort",
-                  "value": "",
-                  "disabled": true,
-                  "description": ""
-                }
-              ],
-              "variable": []
-            },
-            "description": ""
-          }
-        },
-        {
           "name": "Claims, newest first; optionally of one order",
           "request": {
             "method": "GET",
@@ -3524,6 +3477,150 @@
           }
         },
         {
+          "name": "Payments through ZynlePay and where each stands",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/provider-payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "provider-payments"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                },
+                {
+                  "key": "orderId",
+                  "value": "",
+                  "disabled": true,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": "`status` is OPEN (the default: not yet sent, in flight, or waiting for the owner; oldest first), PENDING, UNRESOLVED, FAILED, VERIFIED or ALL (newest first). At most 200. A payment that is PENDING or UNRESOLVED is on its way or with the owner: the customer is not asked to pay again and nothing is confirmed by hand. `payerPhone` is masked except for the owner."
+          }
+        },
+        {
+          "name": "One payment through ZynlePay, with every time ZynlePay was asked about it",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/provider-payments/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "provider-payments",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Ask ZynlePay about this payment now",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/provider-payments/:id/check",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "provider-payments",
+                ":id",
+                "check"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": "Asks ZynlePay exactly as the system does by itself and applies its answer the same way: if ZynlePay says it was paid for the amount asked, the money is recorded. It decides nothing on a person's word. `checkedJustNow` means ZynlePay was already being asked, so it was not asked twice."
+          }
+        },
+        {
+          "name": "The owner settles a payment ZynlePay did not: paid or not paid",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/admin/payments/provider-payments/:id/resolve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "payments",
+                "provider-payments",
+                ":id",
+                "resolve"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"outcome\": \"\",\n  \"evidence\": \"\",\n  \"arrivedAt\": \"2026-11-08T10:00:00Z\",\n  \"gross\": 0.0,\n  \"overridePending\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "PAYMENT_ADMIN. `outcome` is PAID or NOT_PAID; `evidence` (10 to 200 characters) says what was looked at in ZynlePay's own records, and is kept with the decision only. ZynlePay is asked once more first: if it says paid the money is recorded as ZynlePay's (`verifiedByCheck`), if it says failed a PAID is refused, and if it has not said failed a NOT_PAID is refused unless `overridePending` is true. `gross` is given only where ZynlePay reported another amount than was asked, and is one of those two figures. `arrivedAt` dates the money (now if absent; more than 72 hours back needs BACKDATE_SALE). `Idempotency-Key` is required."
+          }
+        },
+        {
           "name": "Refunds owed to customers, the oldest first",
           "request": {
             "method": "GET",
@@ -3624,29 +3721,6 @@
           }
         },
         {
-          "name": "Exact ledger totals: counts by status and captured money per currency",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/v1/admin/payments/summary",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "payments",
-                "summary"
-              ],
-              "query": [],
-              "variable": []
-            },
-            "description": ""
-          }
-        },
-        {
           "name": "Who owns the payment service, and how to reach them",
           "request": {
             "method": "GET",
@@ -3666,6 +3740,125 @@
               "variable": []
             },
             "description": ""
+          }
+        },
+        {
+          "name": "The caller's own payments through ZynlePay for one order, newest first",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/provider-payments?orderId=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payments",
+                "provider-payments"
+              ],
+              "query": [
+                {
+                  "key": "orderId",
+                  "value": "",
+                  "disabled": false,
+                  "description": ""
+                }
+              ],
+              "variable": []
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Start paying an order by mobile money or by card",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Idempotency-Key",
+                "value": "{{$guid}}",
+                "disabled": false,
+                "description": ""
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/provider-payments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payments",
+                "provider-payments"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"00000000-0000-0000-0000-000000000000\",\n  \"channel\": \"MOBILE_MONEY\",\n  \"phone\": \"0961234567\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The amount is the order's own total: send none. For mobile money give the wallet's number; the customer then approves a prompt on that phone (`nextStep: APPROVE_ON_PHONE`). For a card, send the customer to `redirectUrl` (`nextStep: OPEN_CARD_PAGE`): the card is typed on ZynlePay's own page, never here. Then read the payment again every `checkAgainInSeconds` until it is VERIFIED (the order will show as paid) or FAILED (a new payment may be started). `Idempotency-Key` is required: the same key and request answers the same payment (200) and nothing is asked twice."
+          }
+        },
+        {
+          "name": "One of the caller's own payments through ZynlePay",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/provider-payments/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payments",
+                "provider-payments",
+                ":id"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "ZynlePay says a payment has finished (no token; it only makes Oriah ask ZynlePay sooner)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/zynlepay/callback",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "payments",
+                "zynlepay",
+                "callback"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "description": "Sent by ZynlePay, as JSON or as a form, naming `reference_no`. It is not signed, so nothing it says is acted on: Oriah asks ZynlePay itself about that payment and acts on that answer. The answer here is always `{\"received\":true}`, whether or not the reference is known."
           }
         }
       ]
@@ -4904,6 +5097,44 @@
               }
             },
             "description": "Not money: staff confirm the payment (or tell you they cannot find it). Giving a reference stretches the hold on your pieces to a day so they have time to look. Only an order waiting for payment can take one, and only once: the same reference again is the same claim, another is refused."
+          }
+        },
+        {
+          "name": "Payment asks the order to take a payment through ZynlePay (internal)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/:id/provider-payment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "orders",
+                ":id",
+                "provider-payment"
+              ],
+              "query": [],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "",
+                  "description": ""
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerPaymentId\": \"00000000-0000-0000-0000-000000000000\",\n  \"supersedes\": \"00000000-0000-0000-0000-000000000000\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Called by the payment service only, with the shopper's own token, before it asks ZynlePay for any money; the gateway refuses this path to everyone. The order must be the caller's, waiting for payment and holding its pieces. It then carries the attempt (nothing else may pay or end it meanwhile) and holds its pieces for 45 minutes. The answer is what is owed. The same attempt again is the same answer."
           }
         }
       ]
