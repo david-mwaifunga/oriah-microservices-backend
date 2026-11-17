@@ -552,3 +552,21 @@ shipping|schema removed|RateRequest
 shipping|schema removed|RateResponse
 shipping|schema removed|ShippingOption
 
+# ---------------------------------------------------------------------------
+# Phase 13 (ZynlePay): the first card path is deleted, and its admin list goes with it.
+# ---------------------------------------------------------------------------
+#
+# GET /api/v1/admin/payments and /summary listed the first card path's payment intents. That path (a card charged in one call through a fake gateway)
+# was switched off in Phase 7 and is deleted in Phase 13 with its tables (payment V10): ZynlePay does not work that way. A payment through ZynlePay is
+# read at GET /api/v1/admin/payments/provider-payments, and the money it becomes at the confirmations lists. The two paths now answer 404, and their
+# schemas (with the paging schemas only they used) leave the contract. oriah-web's admin page that reads them must go (docs/FRONTEND_WORK.md, Phase 13).
+
+payment|path removed|/api/v1/admin/payments
+payment|path removed|/api/v1/admin/payments/summary
+payment|schema removed|AdminPaymentResponse
+payment|schema removed|AdminPaymentSummary
+payment|schema removed|CurrencyTotal
+payment|schema removed|PageAdminPaymentResponse
+payment|schema removed|PageableObject
+payment|schema removed|SortObject
+

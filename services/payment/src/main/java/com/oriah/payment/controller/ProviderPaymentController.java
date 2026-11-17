@@ -90,6 +90,8 @@ public class ProviderPaymentController {
 
     @Operation(operationId = "listProviderPayments", summary = "The caller's own payments through ZynlePay for one order, newest first")
     @ApiResponse(responseCode = "200", description = "At most twenty; empty when there are none, or the order is not the caller's")
+    @ApiResponse(responseCode = "400", description = "`orderId` is missing or is not an id",
+            content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping
     public List<ProviderPaymentView> mine(@RequestParam("orderId") UUID orderId, @AuthenticationPrincipal Jwt jwt) {
         return payments.mine(jwt.getSubject(), orderId);

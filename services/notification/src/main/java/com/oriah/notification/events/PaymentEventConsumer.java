@@ -49,7 +49,7 @@ public class PaymentEventConsumer {
 
     /**
      * The same consumer name as for order's events: one service, one name in {@code processed_event}. A rejected claim is about a claim, not
-     * about money (order ends the order and says so on its own topic); the card path's two types appear only if the card path is switched on.
+     * about money (order ends the order and says so on its own topic); the first card path's two types were retired in Phase 13 and stay declared for any old history.
      */
     static final InboxConsumer NOTIFICATION = InboxConsumer.named("notification")
             .handles(CONFIRMATION, "payment.confirmed", 1)

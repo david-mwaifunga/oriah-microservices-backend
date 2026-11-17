@@ -188,6 +188,18 @@ CASES = [
     ("400-payout-without-a-key", "POST", "/api/v1/admin/payments/payouts", "admin",
      {"refundDueId": MISSING, "method": "CASH", "customerFee": 0.00, "sendCharge": 0.00}),
     ("403-sale-reversal-by-the-owner-at-the-edge", "POST", "/api/v1/admin/inventory/sale-reversals", "admin", {}),
+    # Phase 13 (paying through ZynlePay). None of these writes anything or asks ZynlePay anything: a payment needs its Idempotency-Key; a payment
+    # nobody started is a named 404 for the shopper and for staff; the staff list knows its filters; the order's own door for payment is closed
+    # at the edge even to the owner; and the old list of card intents is gone. (The refusals of a typed amount or card are in the smoke test:
+    # they need a key, and this script sends none.)
+    ("400-provider-payment-without-a-key", "POST", "/api/v1/payments/provider-payments", "user",
+     {"orderId": MISSING, "channel": "MOBILE_MONEY", "phone": "0960000001"}),
+    ("404-provider-payment-nobody-started", "GET", "/api/v1/payments/provider-payments/" + MISSING, "user", None),
+    ("404-provider-payment-staff-never-saw", "GET", "/api/v1/admin/payments/provider-payments/" + MISSING, "admin", None),
+    ("400-provider-payments-in-a-status-that-is-not-one", "GET", "/api/v1/admin/payments/provider-payments?status=SOMETHING", "admin", None),
+    ("403-order-payment-door-by-the-owner-at-the-edge", "POST", "/api/v1/orders/" + MISSING + "/provider-payment", "admin",
+     {"providerPaymentId": MISSING}),
+    ("404-card-intent-list-retired", "GET", "/api/v1/admin/payments", "admin", None),
     ("404-unmapped-path-under-prefix", "GET", "/api/v1/products/does/not/exist", None, None),
 
     # --- 400: validation and binding --------------------------------------

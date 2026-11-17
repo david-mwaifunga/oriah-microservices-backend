@@ -4,7 +4,7 @@
 #
 # Drives the full backend through the gateway. Each step is listed under the
 # banner it prints, so a failure on screen can be found here by its number.
-# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20k.
+# It is 20 numbered steps plus 2b, 4b, 5b, 6b to 6j, 8b and 20b to 20l.
 #
 # Phase 7 "Sell": the sale is placed, HELD, claimed, confirmed BY STAFF and settled
 # asynchronously (steps 2b-6j). Checkout never touches money: there is no card, and
@@ -4237,6 +4237,215 @@ if (($dlqBefore -ge 0) -and ($dlqAfter -ge 0)) {
 else { $dlqNote = "the dead-letter topics could not be counted (Kafka's offsets tool gave nothing)" }
 Write-Host "    the stock system's three doors are 403 even to the owner; sara and dave are 403 on nine doors each (cancellation, returns, assessment, exchange, corrections, refunds owed, payouts); finance has no new open error and booked the cancellation; $dlqNote" -ForegroundColor Gray
 Write-Host "    not proven live (module tests with injected failures or a test clock prove them): a reply lost between inventory and order and the job that finishes it, a refusal that ends an attempt, abandoning a stuck correction, the reminder that a refund is still owed, a payout cancelled after its month was reported, money that never arrived for a sale whose record was cancelled, the 72-hour rule (maya may back-date)" -ForegroundColor Gray
+
+# ---------------------------------------------------------------------------------------------------------------------------------------------
+# [20l] Phase 13: paying through ZynlePay (mobile money and cards).
+#
+# The stack is never live: payment talks to its own stand-in for ZynlePay (SIMULATOR mode), which answers in ZynlePay's JSON and whose doors
+# (under /internal/zynlepay-sim on payment's own port, refused at the gateway) let this script say how a payment ends. The last digit of the
+# payer's number picks the case: ...1 is paid or declined when told, ...2 declines by itself, ...3 never decides.
+#
+# What this proves end to end, through the gateway: the amount is the order's own; a forged "payment done" message changes nothing; only
+# ZynlePay's own answer to payment's own question makes money, recorded as the same payment record staff write, with its fee; the order is
+# closed to everything else meanwhile; a payment ZynlePay never settles goes to the owner and staff are told; a card is paid on the provider's
+# page; and the doors that must be shut are shut.
+# ---------------------------------------------------------------------------------------------------------------------------------------------
+Write-Host "[20l/20] Paying through ZynlePay (Phase 13): mobile money paid, declined and retried, never answered and settled by the owner; a card; a forged callback; the doors that must be shut..." -ForegroundColor Cyan
+Refresh-Tokens
+$saraH = @{ Authorization = "Bearer $(Get-Jwt 'sara')" }
+$ppBase = "$gw/payments/provider-payments"
+$ppAdmin = "$gw/admin/payments/provider-payments"
+$simBase = "http://localhost:8085/internal/zynlepay-sim"
+$dlqBefore13 = Get-DeadLetterTotal
+Clear-LiveOrders
+# The earlier steps have sold most of the sale's twelve rings. This step sells four more, so it receives its own stock first: six rings and
+# six of each box, the way all stock arrives (a received consignment).
+$ringsBefore13 = Get-InventoryNumber $saleVariantId "on_hand"
+$po13 = Invoke-Api POST "$procBase/purchase-orders" $mayaH @{
+    supplierId = $sup.Json.id; note = "smoke: stock for the ZynlePay step"
+    lines = @(
+        @{ variantId = $saleVariantId;  quantity = 6; totalPaid = 60.00 },
+        @{ variantId = $saleSmallBoxId; quantity = 6; totalPaid = 12.00 },
+        @{ variantId = $saleLargeBoxId; quantity = 6; totalPaid = 18.00 }) }
+Assert-Reply $po13 "placing the ZynlePay step's purchase order" 201
+$sc13 = Invoke-Api POST "$procBase/consignments" $mayaH @{ purchaseOrders = @(@{ id = $po13.Json.id; version = $po13.Json.version }) }
+Assert-Reply $sc13 "starting the ZynlePay step's consignment" 201
+$sk13 = Invoke-Api PUT "$procBase/consignments/$($sc13.Json.id)/cost-lines" $mayaH @{ version = [long]$sc13.Json.version; costLines = @(@{ costType = "COURIER_INBOUND"; amount = 18.00 }) }
+Assert-Reply $sk13 "keying the ZynlePay step's courier charge" 200
+$before13 = Invoke-Api GET "$procBase/consignments/$($sc13.Json.id)" $mayaH $null
+$sr13 = Invoke-Api POST "$procBase/consignments/$($sc13.Json.id)/receive" $mayaH @{ version = [long]$before13.Json.version }
+Assert-Reply $sr13 "receiving the ZynlePay step's consignment" 200
+Wait-InventoryNumber $saleVariantId "on_hand" ($ringsBefore13 + 6) "the ZynlePay step's six rings arrived" 120
+
+# A new order of alice's for one sale ring (K100.00), waiting for payment.
+function New-OrderToPay {
+    $r = Place-SaleOrder $aliceH 1
+    Require ($r.Status -eq 201) "placing an order to pay answered $($r.Status): $($r.Json | ConvertTo-Json -Compress -Depth 4)"
+    Require (Same-Money $r.Json.total "100.00") "the order to pay totals $($r.Json.total), expected 100.00"
+    return "$($r.Json.id)"
+}
+function Start-ProviderPayment($OrderId, [string]$Channel, $Phone, $Key) {
+    $body = @{ orderId = $OrderId; channel = $Channel }
+    if ($Phone) { $body.phone = $Phone }
+    return (Invoke-Api POST $ppBase ($aliceH + @{ "Idempotency-Key" = $Key }) $body)
+}
+# Staff's own view of an attempt (the shopper's view carries no reference).
+function Get-Attempt($Id, $Headers = $mayaH) {
+    return (Invoke-Api GET "$ppAdmin/$Id" $Headers $null)
+}
+function Wait-Attempt($Id, [string]$Status, [int]$Seconds = 120) {
+    $got = Wait-Until { $a = Get-Attempt $Id; if (($a.Status -eq 200) -and ("$($a.Json.status)" -ceq $Status)) { $a.Json } } $Seconds 2
+    if (-not $got) { $a = Get-Attempt $Id; Fail "provider payment $Id is '$($a.Json.status) $($a.Json.failureCode) $($a.Json.unresolvedReason)' $Seconds s later, expected '$Status'" }
+    return $got
+}
+# Tells the stand-in how a pending payment ends, as the customer approving or refusing on their phone would.
+function Decide-AtZynlePay([string]$Reference, [string]$Outcome) {
+    $r = Invoke-Api POST "$simBase/transactions/$Reference/decide" $null @{ outcome = $Outcome }
+    Require ($r.Status -eq 200) "the stand-in for ZynlePay answered $($r.Status) to deciding $Reference"
+}
+
+# (a) Mobile money: the amount is the order's own, one attempt at a time, and the order is closed to everything else.
+$oA = New-OrderToPay
+$typed = Invoke-Api POST $ppBase ($aliceH + @{ "Idempotency-Key" = (New-Key "p13") }) @{ orderId = $oA; channel = "MOBILE_MONEY"; phone = "0960000001"; amount = 1.00 }
+Require (($typed.Status -eq 400) -and ("$($typed.Json.type)".EndsWith("/amount-is-not-typed"))) "a start carrying an amount answered $($typed.Status) $($typed.Json.type), expected 400 amount-is-not-typed"
+$cardy = Invoke-Api POST $ppBase ($aliceH + @{ "Idempotency-Key" = (New-Key "p13") }) @{ orderId = $oA; channel = "CARD"; cardNumber = "4242424242424242" }
+Require (($cardy.Status -eq 400) -and ("$($cardy.Json.type)".EndsWith("/card-details-not-accepted"))) "a start carrying a card number answered $($cardy.Status) $($cardy.Json.type), expected 400 card-details-not-accepted"
+$keyA = New-Key "p13"
+$startA = Start-ProviderPayment $oA "MOBILE_MONEY" "096 000 0001" $keyA
+Require ($startA.Status -eq 201) "starting a mobile-money payment answered $($startA.Status): $($startA.Json | ConvertTo-Json -Compress -Depth 4)"
+Require ("$($startA.Json.status)" -ceq "PENDING") "the new payment is $($startA.Json.status), expected PENDING"
+Require (Same-Money $startA.Json.amount "100.00") "the payment is for $($startA.Json.amount), expected the order's 100.00"
+Require ("$($startA.Json.method)" -ceq "MTN") "the payment's method is $($startA.Json.method), expected MTN from the number's prefix"
+Require ("$($startA.Json.phoneMasked)" -ceq "+2609*****001") "the shopper is shown the number as '$($startA.Json.phoneMasked)', expected +2609*****001"
+Require ("$($startA.Json.nextStep)" -ceq "APPROVE_ON_PHONE") "the next step is $($startA.Json.nextStep), expected APPROVE_ON_PHONE"
+$attemptA = "$($startA.Json.id)"
+$againA = Start-ProviderPayment $oA "MOBILE_MONEY" "096 000 0001" $keyA
+Require (($againA.Status -eq 200) -and ("$($againA.Json.id)" -ceq $attemptA)) "the same key again answered $($againA.Status) with $($againA.Json.id), expected 200 and the same payment"
+$secondA = Start-ProviderPayment $oA "MOBILE_MONEY" "096 000 0001" (New-Key "p13")
+Require (($secondA.Status -eq 409) -and ("$($secondA.Json.type)".EndsWith("/provider-payment-in-progress"))) "a second payment for the same order answered $($secondA.Status) $($secondA.Json.type), expected 409 provider-payment-in-progress"
+$cancelA = Invoke-Api POST "$gw/orders/$oA/cancel" $aliceH $null
+Require (($cancelA.Status -eq 409) -and ("$($cancelA.Json.type)".EndsWith("/provider-payment-in-progress"))) "cancelling an order with a payment in flight answered $($cancelA.Status) $($cancelA.Json.type), expected 409"
+$claimA = Invoke-Api POST "$gw/orders/$oA/payment-claim" $aliceH @{ method = "MTN"; reference = "SMOKE13A" }
+Require (($claimA.Status -eq 409) -and ("$($claimA.Json.type)".EndsWith("/provider-payment-in-progress"))) "claiming to have paid another way answered $($claimA.Status) $($claimA.Json.type), expected 409"
+$handA = Confirm-Money @{ orderId = $oA; method = "CASH"; gross = 100.00 } (New-Key "p13")
+Require (($handA.Status -eq 409) -and ("$($handA.Json.type)".EndsWith("/provider-payment-in-progress"))) "staff recording cash for an order with a payment in flight answered $($handA.Status) $($handA.Json.type), expected 409"
+$saraSees = Get-Attempt $attemptA $saraH
+Require (($saraSees.Status -eq 200) -and ("$($saraSees.Json.payerPhone)" -ceq "+2609*****001")) "sara sees the payment as $($saraSees.Status) with the number '$($saraSees.Json.payerPhone)', expected it masked"
+$mayaSees = Get-Attempt $attemptA
+Require ("$($mayaSees.Json.payerPhone)" -ceq "+260960000001") "the owner sees the number as '$($mayaSees.Json.payerPhone)', expected it whole"
+$refA = "$($mayaSees.Json.referenceNo)"
+Require ($refA -cmatch "^OZ[0-9A-Z]{14}$") "the payment's reference is '$refA', expected OZ and 14 characters"
+
+# (b) A forged "payment done" message: anybody can send one. It changes nothing.
+$forged = Invoke-Api POST "$gw/payments/zynlepay/callback" $null @{ reference_no = $refA; response_code = "100"; amount = "100.00" }
+Require ($forged.Status -eq 200) "the callback door answered $($forged.Status) to a message with no token, expected 200"
+Start-Sleep -Seconds 8
+$afterForged = Get-Attempt $attemptA
+Require ("$($afterForged.Json.status)" -ceq "PENDING") "after a forged 'paid' message the payment is $($afterForged.Json.status): a message must change nothing"
+Require (-not $afterForged.Json.confirmationId) "after a forged 'paid' message money was recorded ($($afterForged.Json.confirmationId))"
+Require ([int]$afterForged.Json.callbackCount -ge 1) "the forged message was not counted against the payment"
+Require ("$((Get-Order $oA).status)" -ceq "CREATED") "after a forged 'paid' message the order is $((Get-Order $oA).status), expected CREATED"
+
+# (c) The customer approves: ZynlePay's own answer to payment's own question makes it money.
+Decide-AtZynlePay $refA "PAID"
+$paidA = Wait-Attempt $attemptA "VERIFIED"
+$confA = Invoke-Api GET "$gw/admin/payments/confirmations/$($paidA.confirmationId)" $mayaH $null
+Require ($confA.Status -eq 200) "the payment's money record $($paidA.confirmationId) answered $($confA.Status)"
+Require ("$($confA.Json.method)" -ceq "MTN") "the money record's method is $($confA.Json.method), expected MTN"
+Require ("$($confA.Json.reference)" -ceq $refA) "the money record's reference is $($confA.Json.reference), expected the payment's own $refA"
+Require ("$($confA.Json.confirmedBy)" -ceq "system:zynlepay") "the money record was confirmed by '$($confA.Json.confirmedBy)', expected system:zynlepay"
+Require ((Same-Money $confA.Json.gross "100.00") -and (Same-Money $confA.Json.fee "2.50") -and (Same-Money $confA.Json.net "97.50")) "the money record is $($confA.Json.gross) in, $($confA.Json.fee) fee, $($confA.Json.net) net; expected 100.00, 2.50, 97.50"
+Wait-OrderStatus $oA "PAID" | Out-Null
+Wait-Confirmation "$($paidA.confirmationId)" "SETTLED" | Out-Null
+$shopperA = Invoke-Api GET "$ppBase/$attemptA" $aliceH $null
+Require (("$($shopperA.Json.status)" -ceq "VERIFIED") -and ("$($shopperA.Json.nextStep)" -ceq "DONE")) "the shopper's own read says $($shopperA.Json.status) / $($shopperA.Json.nextStep), expected VERIFIED / DONE"
+
+# (d) Declined, then paid by another wallet.
+$oB = New-OrderToPay
+$startB = Start-ProviderPayment $oB "MOBILE_MONEY" "0960000002" (New-Key "p13")
+Require ($startB.Status -eq 201) "starting the payment that will be declined answered $($startB.Status)"
+$declinedB = Wait-Attempt "$($startB.Json.id)" "FAILED"
+Require ("$($declinedB.failureCode)" -ceq "DECLINED") "the declined payment failed as $($declinedB.failureCode), expected DECLINED"
+$retryB = $null
+$retryDeadline = (Get-Date).AddSeconds(60)
+while ($true) {
+    $retryB = Start-ProviderPayment $oB "MOBILE_MONEY" "0970000001" (New-Key "p13")
+    if (($retryB.Status -eq 201) -or ((Get-Date) -gt $retryDeadline)) { break }
+    Start-Sleep -Seconds 2
+}
+Require ($retryB.Status -eq 201) "paying again after a decline answered $($retryB.Status) $($retryB.Json.type)"
+Require ("$($retryB.Json.method)" -ceq "AIRTEL") "the second payment's method is $($retryB.Json.method), expected AIRTEL"
+Decide-AtZynlePay "$((Get-Attempt "$($retryB.Json.id)").Json.referenceNo)" "PAID"
+Wait-Attempt "$($retryB.Json.id)" "VERIFIED" | Out-Null
+Wait-OrderStatus $oB "PAID" | Out-Null
+
+# (e) ZynlePay never answers: after the development stack's one minute the payment is the owner's, staff are told, and the owner settles it.
+$oC = New-OrderToPay
+$startC = Start-ProviderPayment $oC "MOBILE_MONEY" "0960000003" (New-Key "p13")
+Require ($startC.Status -eq 201) "starting the payment ZynlePay never answers answered $($startC.Status)"
+$attemptC = "$($startC.Json.id)"
+$unresolvedC = Wait-Attempt $attemptC "UNRESOLVED" 180
+Require ("$($unresolvedC.unresolvedReason)" -ceq "NO_ANSWER") "the unanswered payment is unresolved as $($unresolvedC.unresolvedReason), expected NO_ANSWER"
+$alertC = Wait-Until { $n = Get-NotificationSql "SELECT count(*) FROM staff_alert WHERE kind = 'PROVIDER_PAYMENT_UNRESOLVED' AND subject_id = '$attemptC' AND state = 'OPEN'"; if ($n -eq "1") { "yes" } } 90 3
+Require ($null -ne $alertC) "staff were not alerted to the payment ZynlePay did not settle (no open PROVIDER_PAYMENT_UNRESOLVED alert for $attemptC)"
+$alertWords = Get-NotificationSql "SELECT detail FROM staff_alert WHERE kind = 'PROVIDER_PAYMENT_UNRESOLVED' AND subject_id = '$attemptC'"
+Require (($alertWords -match "Do not ask the customer to pay again") -and ($alertWords -notmatch "260960000003") -and ($alertWords -notmatch "OZ[0-9A-Z]{14}")) "the alert's words are wrong or carry a number or a reference: $alertWords"
+$checkC = Invoke-Api POST "$ppAdmin/$attemptC/check" $saraH $null
+Require (($checkC.Status -eq 200) -and ("$($checkC.Json.status)" -ceq "UNRESOLVED")) "sara's 'check now' answered $($checkC.Status) $($checkC.Json.status), expected 200 UNRESOLVED"
+$evidence = @{ outcome = "PAID"; evidence = "smoke: the stand-in's own record shows it collected" }
+$saraDecides = Invoke-Api POST "$ppAdmin/$attemptC/resolve" ($saraH + @{ "Idempotency-Key" = (New-Key "p13") }) $evidence
+Require ($saraDecides.Status -eq 403) "sara settling a payment answered $($saraDecides.Status), expected 403: only the owner decides"
+$ownerDecides = Invoke-Api POST "$ppAdmin/$attemptC/resolve" ($mayaH + @{ "Idempotency-Key" = (New-Key "p13") }) $evidence
+Require (($ownerDecides.Status -eq 200) -and ("$($ownerDecides.Json.status)" -ceq "VERIFIED")) "the owner marking it paid answered $($ownerDecides.Status) $($ownerDecides.Json.type) $($ownerDecides.Json.status), expected 200 VERIFIED"
+$confC = Invoke-Api GET "$gw/admin/payments/confirmations/$($ownerDecides.Json.confirmationId)" $mayaH $null
+Require ("$($confC.Json.confirmedBy)" -cmatch "^user:") "the owner's record was confirmed by '$($confC.Json.confirmedBy)', expected the owner"
+Wait-OrderStatus $oC "PAID" | Out-Null
+$alertEnded = Wait-Until { $n = Get-NotificationSql "SELECT count(*) FROM staff_alert WHERE kind = 'PROVIDER_PAYMENT_UNRESOLVED' AND subject_id = '$attemptC' AND state = 'RESOLVED'"; if ($n -eq "1") { "yes" } } 90 3
+Require ($null -ne $alertEnded) "the alert for the payment the owner settled was not ended"
+
+# (f) A card: the customer is sent to the provider's own page; nothing of a card ever reaches Oriah.
+$oD = New-OrderToPay
+$startD = Start-ProviderPayment $oD "CARD" $null (New-Key "p13")
+Require ($startD.Status -eq 201) "starting a card payment answered $($startD.Status): $($startD.Json | ConvertTo-Json -Compress -Depth 4)"
+Require ("$($startD.Json.nextStep)" -ceq "OPEN_CARD_PAGE") "the card payment's next step is $($startD.Json.nextStep), expected OPEN_CARD_PAGE"
+Require ("$($startD.Json.redirectUrl)" -cmatch "^http://localhost:8085/internal/zynlepay-sim/card/OZ[0-9A-Z]{14}$") "the card page is '$($startD.Json.redirectUrl)', expected the stand-in's own page"
+$page = Invoke-WebRequest -Uri "$($startD.Json.redirectUrl)" -UseBasicParsing
+Require (($page.StatusCode -eq 200) -and ("$($page.Content)" -match "stand-in")) "the stand-in's card page answered $($page.StatusCode)"
+Decide-AtZynlePay "$((Get-Attempt "$($startD.Json.id)").Json.referenceNo)" "PAID"
+$paidD = Wait-Attempt "$($startD.Json.id)" "VERIFIED"
+$confD = Invoke-Api GET "$gw/admin/payments/confirmations/$($paidD.confirmationId)" $mayaH $null
+Require (("$($confD.Json.method)" -ceq "CARD") -and (Same-Money $confD.Json.fee "3.50")) "the card payment's record is $($confD.Json.method) with a fee of $($confD.Json.fee), expected CARD and 3.50"
+Wait-OrderStatus $oD "PAID" | Out-Null
+
+# (g) The doors that must be shut.
+$byHand = Confirm-Money @{ orderId = [guid]::NewGuid().ToString(); method = "MTN"; reference = $refA; gross = 100.00 } (New-Key "p13")
+Require (($byHand.Status -eq 409) -and ("$($byHand.Json.type)".EndsWith("/provider-payment-reference"))) "keying money by hand under a ZynlePay reference answered $($byHand.Status) $($byHand.Json.type), expected 409 provider-payment-reference"
+$cardByHand = Confirm-Money @{ orderId = [guid]::NewGuid().ToString(); method = "CARD"; reference = "SMOKE13CARD"; gross = 100.00 } (New-Key "p13")
+Require ($cardByHand.Status -eq 400) "staff keying a card payment answered $($cardByHand.Status), expected 400"
+$saraVoids = Invoke-Api POST "$gw/admin/payments/confirmations/$($paidA.confirmationId)/void" $saraH @{ reason = "smoke: sara may not cancel a ZynlePay record" }
+Require ($saraVoids.Status -eq 403) "sara cancelling a ZynlePay money record answered $($saraVoids.Status), expected 403"
+Require ((Invoke-Api GET "$gw/payments/zynlepay/callback" $null $null).Status -eq 401) "reading the callback door without a token did not answer 401"
+Require ((Invoke-Api POST "$gw/payments/zynlepay/other" $null @{ reference_no = $refA }).Status -eq 401) "another path beside the callback door is open without a token"
+$big = Invoke-Api POST "$gw/payments/zynlepay/callback" $null @{ reference_no = $refA; padding = ("x" * 20000) }
+Require ($big.Status -eq 413) "a callback of 20 KB answered $($big.Status), expected 413"
+$simAtEdge = Invoke-Api POST "http://localhost:8080/internal/zynlepay-sim/transactions/$refA/decide" $mayaH @{ outcome = "PAID" }
+Require ($simAtEdge.Status -eq 403) "the stand-in for ZynlePay answered $($simAtEdge.Status) through the gateway to the owner, expected 403"
+$orderDoor = Invoke-Api POST "$gw/orders/$oA/provider-payment" $aliceH @{ providerPaymentId = [guid]::NewGuid().ToString() }
+Require ($orderDoor.Status -eq 403) "the order's provider-payment door answered $($orderDoor.Status) through the gateway, expected 403"
+Require ((Invoke-Api GET "$gw/admin/payments" $mayaH $null).Status -eq 404) "the retired list of card intents did not answer 404"
+Require ((Invoke-Api GET "$ppAdmin" $aliceH $null).Status -eq 403) "a shopper reading the staff list of ZynlePay payments did not answer 403"
+
+# (h) Nothing was parked, and payment wrote no payer's number in its log.
+$dlqAfter13 = Get-DeadLetterTotal
+if (($dlqBefore13 -ge 0) -and ($dlqAfter13 -ge 0)) {
+    Require ($dlqAfter13 -eq $dlqBefore13) "$($dlqAfter13 - $dlqBefore13) event(s) were parked on a dead-letter topic during this step: a consumer could not apply one of the new facts"
+    $dlqNote13 = "no event was parked on a dead-letter topic"
+}
+else { $dlqNote13 = "the dead-letter topics could not be counted (Kafka's offsets tool gave nothing)" }
+$payLog = @(Invoke-DockerText @("logs", "--since", "30m", "oriah-payment")) -join "`n"
+Require ($payLog -notmatch "26096000000[123]") "payment's log carries a payer's whole number"
+Write-Host "    K100.00 by MTN was asked for under payment's own reference and recorded as K100.00 in, K2.50 fee, K97.50 net by system:zynlepay only after ZynlePay's own answer; a forged 'paid' message changed nothing; a decline was retried by Airtel; a payment ZynlePay never answered went to the owner, alerted staff and was settled by the owner (sara: 403); a card was paid on the provider's page (fee K3.50); every order ended PAID; $dlqNote13" -ForegroundColor Green
+Write-Host "    not proven live (module tests prove them): ZynlePay's real wire, paid for another amount, paid after failed, money already keyed by hand, the owner cancelling a ZynlePay record, a start whose answer is lost, the hourly limits (raised in this stack)" -ForegroundColor DarkGray
 
 Write-Host ""
 Write-Host "FULL BACKEND SMOKE TEST PASSED - $($servicePorts.Count) services + observability stack end-to-end" -ForegroundColor Green

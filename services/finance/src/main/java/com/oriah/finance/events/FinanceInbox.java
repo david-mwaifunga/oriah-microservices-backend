@@ -36,7 +36,7 @@ public final class FinanceInbox {
             // order, Phase 12: a paid order cancelled before it left, and pieces that came back
             .handles(ORDER, "order.sale_cancelled", 1)
             .handles(ORDER, "order.return_recorded", 1)
-            // payment: money that came in, was taken back, or is owed back; its claims and the card path (switched off until Phase 13) are not money finance books
+            // payment: money that came in, was taken back, or is owed back; its claims and the first card path's two types (retired in Phase 13; old history may hold them) are not money finance books
             .handles(CONFIRMATION, "payment.confirmed", 1)
             .handles(CONFIRMATION, "payment.voided", 1)
             .handles(CONFIRMATION, "payment.held", 1)

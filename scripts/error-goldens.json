@@ -265,6 +265,46 @@
     "request": "PUT /api/v1/admin/pricing/variants/<uuid>/price  (as admin)",
     "status": 400
   },
+  "400-provider-payment-without-a-key": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Required header 'Idempotency-Key' is missing",
+      "instance": "/api/v1/payments/provider-payments",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Validation Failed",
+      "type": "https://oriah.dev/problems/validation"
+    },
+    "request": "POST /api/v1/payments/provider-payments  (as user)",
+    "status": 400
+  },
+  "400-provider-payments-in-a-status-that-is-not-one": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "status must be one of OPEN, PENDING, UNRESOLVED, FAILED, VERIFIED, ALL, was 'SOMETHING'",
+      "instance": "/api/v1/admin/payments/provider-payments",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 400,
+      "title": "Bad Request",
+      "type": "https://oriah.dev/problems/bad-request"
+    },
+    "request": "GET /api/v1/admin/payments/provider-payments?status=SOMETHING  (as admin)",
+    "status": 400
+  },
   "400-purchase-order-without-lines": {
     "contentType": "application/problem+json",
     "problem": {
@@ -644,6 +684,25 @@
     "request": "GET /api/v1/admin/finance/status  (as user)",
     "status": 403
   },
+  "403-order-payment-door-by-the-owner-at-the-edge": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "Authenticated, but this account does not hold a role that permits this request.",
+      "instance": "/api/v1/orders/<uuid>/provider-payment",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "type"
+      ],
+      "status": 403,
+      "title": "Forbidden",
+      "type": "https://oriah.dev/problems/forbidden"
+    },
+    "request": "POST /api/v1/orders/<uuid>/provider-payment  (as admin)",
+    "status": 403
+  },
   "403-pack-as-a-shopper": {
     "contentType": "application/problem+json",
     "problem": {
@@ -933,6 +992,26 @@
     "request": "POST /api/v1/admin/orders/<uuid>/box-swaps  (as admin)",
     "status": 404
   },
+  "404-card-intent-list-retired": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "No static resource api/v1/admin/payments.",
+      "instance": "/api/v1/admin/payments",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/not-found"
+    },
+    "request": "GET /api/v1/admin/payments  (as admin)",
+    "status": 404
+  },
   "404-correct-delivery-of-an-unknown-order": {
     "contentType": "application/problem+json",
     "problem": {
@@ -1171,6 +1250,46 @@
       "type": "https://oriah.dev/problems/not-found"
     },
     "request": "GET /api/v1/promotions/NOSUCHCODE  (as user)",
+    "status": 404
+  },
+  "404-provider-payment-nobody-started": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "there is no such payment of yours",
+      "instance": "/api/v1/payments/provider-payments/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/provider-payment-not-found"
+    },
+    "request": "GET /api/v1/payments/provider-payments/<uuid>  (as user)",
+    "status": 404
+  },
+  "404-provider-payment-staff-never-saw": {
+    "contentType": "application/problem+json",
+    "problem": {
+      "detail": "there is no provider payment <uuid>",
+      "instance": "/api/v1/admin/payments/provider-payments/<uuid>",
+      "keys": [
+        "detail",
+        "instance",
+        "status",
+        "title",
+        "traceId",
+        "type"
+      ],
+      "status": 404,
+      "title": "Not Found",
+      "type": "https://oriah.dev/problems/provider-payment-not-found"
+    },
+    "request": "GET /api/v1/admin/payments/provider-payments/<uuid>  (as admin)",
     "status": 404
   },
   "404-quote-for-an-unknown-town": {

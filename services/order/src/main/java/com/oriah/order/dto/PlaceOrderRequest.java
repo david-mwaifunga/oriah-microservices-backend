@@ -70,10 +70,9 @@ public record PlaceOrderRequest(
          * {@code DEFAULT_CURRENCY = "ZMW"}, shipping's is configuration, and
          * payment's identical default was removed in the same pass.
          *
-         * <p>Upper-case specifically, because
-         * {@code PaymentIntentVerifier} compares this order's currency to the
-         * intent's with {@code equals}: a lower-case order could never be
-         * settled by an upper-case intent.
+         * <p>Upper-case specifically, because payment compares an order's
+         * currency to the money's with {@code equals}: a lower-case order
+         * could never be settled by upper-case money.
          */
         @NotBlank
         @Size(min = 3, max = 3)

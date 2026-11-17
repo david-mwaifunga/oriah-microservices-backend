@@ -55,7 +55,7 @@ NON_200_SUCCESS = {
     ("customer", "delete", "/api/v1/customers/me/addresses/{addressId}"): "204",
     ("cart", "delete", "/api/v1/carts/me"): "204",
     ("cart", "delete", "/api/v1/carts/me/items/{variantId}"): "204",
-    ("payment", "post", "/api/v1/payments/intents"): "201",
+    ("payment", "post", "/api/v1/payments/provider-payments"): "201",
     ("order", "post", "/api/v1/orders"): "201",
     ("promotion", "post", "/api/v1/admin/promotions"): "201",
     ("review", "post", "/api/v1/products/{productId}/reviews"): "201",
