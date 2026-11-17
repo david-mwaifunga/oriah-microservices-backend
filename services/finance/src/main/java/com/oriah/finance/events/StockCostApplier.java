@@ -24,15 +24,22 @@ import tools.jackson.core.JacksonException;
  * and the new one written, each on the day of ITS sale, so every month moves by exactly its own units' corrected cost. The signed sum is what the ledger holds in force.
  *
  * <p>The product is the one the event names, frozen on the row; an event that names none is booked to "not tied to a product yet" and raised, never guessed. A piece that cost
- * K0.00 is still a row (an estimated K0.00 lot that is sold must still count as an estimated sale). A reason that is not a cost (a receipt, a lot transfer) or not yet defined
- * (a marked-down relist, which a later phase defines) is refused, so it can never be silently dropped from the books.
+ * K0.00 is still a row (an estimated K0.00 lot that is sold must still count as an estimated sale). A reason that is not a cost (a receipt, a lot transfer) or that nobody
+ * defined is refused, so it can never be silently dropped from the books.
+ *
+ * <p><b>Returned pieces (Phase 12).</b> A piece that came back is a take-back of its sale (reason {@code RETURN}): its cost leaves cost of goods on the day it came back. If
+ * it is then found unsellable it is stock written off ({@code WRITE_OFF_RETURNED}), at the cost of the lot it went back to: counted once, as a write-off, never as cost of
+ * goods. If it is moved to a marked-down listing of its own ({@code RELISTED_MARKED_DOWN}) no cost is recognised at all: the piece only changed shelf, and its cost is
+ * released when the marked-down piece is sold. Inventory does not announce that move; if one ever arrives it is applied as nothing, on purpose, never refused.
  */
 @Component
 public class StockCostApplier {
 
     private static final Set<String> COST_OF_SALE = Set.of("SALE", "BOX_SWAPPED", "RETURN", "CANCELLED_BEFORE_DISPATCH");
     private static final Set<String> STOCK_OUT = Set.of("WRITE_OFF_LOST", "WRITE_OFF_STOLEN", "WRITE_OFF_BROKEN", "GIVEN_AWAY_MODEL", "GIVEN_AWAY_INFLUENCER", "GIVEN_AWAY_GIFT",
-            "GIVEN_AWAY_PRIZE");
+            "GIVEN_AWAY_PRIZE", "WRITE_OFF_RETURNED");
+    /** A returned piece moved to its own marked-down listing: it changed shelf, and released no cost. */
+    private static final String MOVES_NO_COST = "RELISTED_MARKED_DOWN";
     private static final Set<String> ROLES = Set.of("ORIGINAL", "RECUT_REVERSAL", "RECUT_REPLACEMENT");
 
     private final Locks locks;
@@ -51,6 +58,9 @@ public class StockCostApplier {
     public void apply(EventContext ctx, byte[] payload) {
         StockCost c = read(payload);
         validate(c);
+        if (MOVES_NO_COST.equals(c.reason())) {
+            return;
+        }
         String account;
         String reason = null;
         if (COST_OF_SALE.contains(c.reason())) {
@@ -62,7 +72,7 @@ public class StockCostApplier {
             account = "STOCK_OUT";
             reason = c.reversesReason() != null && STOCK_OUT.contains(c.reversesReason()) ? c.reversesReason() : "TAKEN_BACK";
         } else {
-            throw new IllegalArgumentException("a stock movement of reason " + c.reason() + " is not a cost finance books (a receipt moves no cost; a marked-down relist is not defined yet)");
+            throw new IllegalArgumentException("a stock movement of reason " + c.reason() + " is not a cost finance books (a receipt or a lot transfer moves no cost)");
         }
         BigDecimal amount = c.unitCost().multiply(BigDecimal.valueOf(-(long) c.qtyDelta()));
 

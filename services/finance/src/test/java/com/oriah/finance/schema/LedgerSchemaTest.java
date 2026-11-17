@@ -78,8 +78,11 @@ class LedgerSchemaTest {
     @DisplayName("every table that holds a fact, an expense, a tax, an issued month or an anomaly refuses edits, removal and emptying")
     void everyFactTableIsAppendOnly() {
         for (String table : List.of("expense", "tax_entry", "idempotency", "sale", "sale_line", "confirmation_fact", "dispatch_fact", "consignment_line_fact",
-                "anomaly_log", "report_issue", "statement_check", "skipped_fact", "processed_event")) {
-            String statement = "sale".equals(table) ? "TRUNCATE sale, sale_line" : "TRUNCATE " + table;   // sale_line points at sale
+                "anomaly_log", "report_issue", "statement_check", "skipped_fact", "processed_event",
+                "sale_correction", "sale_correction_line", "refund_due_fact", "payout_fact", "refund_close_fact")) {
+            // sale_line points at sale, and sale_correction_line at sale_correction
+            String statement = "sale".equals(table) ? "TRUNCATE sale, sale_line"
+                    : "sale_correction".equals(table) ? "TRUNCATE sale_correction, sale_correction_line" : "TRUNCATE " + table;
             assertThatThrownBy(() -> jdbc.execute(statement)).as(table + " refuses TRUNCATE").hasMessageContaining("append-only");
             // a row trigger only fires for a row, so an empty table cannot show it: the trigger itself must exist
             assertThat(jdbc.queryForObject("SELECT count(*) FROM pg_trigger WHERE tgrelid = ?::regclass AND tgname = ? AND NOT tgisinternal", Integer.class, table,
@@ -175,7 +178,8 @@ class LedgerSchemaTest {
 
         assertThat(keyable).contains("RENT_UTILITIES", "SALARIES_CASUAL_HELP", "BANK_MOBILE_ACCOUNT_FEES", "COURIER_FARE", "OTHER", "PAYMENT_CHARGES_ADJUSTMENT")
                 .doesNotContain("PAYMENT_CHARGES", "CONSIGNMENT_PERIOD_COST");
-        assertThat(postedOnly).containsExactly("CONSIGNMENT_PERIOD_COST", "PAYMENT_CHARGES");
+        assertThat(postedOnly).as("the sending charge a customer bore on a refund is posted by the system, never typed (Phase 12)")
+                .containsExactly("CONSIGNMENT_PERIOD_COST", "PAYMENT_CHARGES", "REFUND_FEE_RECOVERED");
         assertThat(jdbc.queryForObject("SELECT needs_order FROM expense_category WHERE code = 'COURIER_FARE'", Boolean.class)).isTrue();
         assertThat(jdbc.queryForObject("SELECT needs_provider FROM expense_category WHERE code = 'BANK_MOBILE_ACCOUNT_FEES'", Boolean.class)).isTrue();
         assertThat(jdbc.queryForObject("SELECT needs_confirmation FROM expense_category WHERE code = 'PAYMENT_CHARGES_ADJUSTMENT'", Boolean.class)).isTrue();
@@ -196,6 +200,67 @@ class LedgerSchemaTest {
         assertThat(jdbc.queryForObject("SELECT profit_sign FROM ledger_account WHERE code = 'COGS_GOODS'", Integer.class)).isEqualTo(-1);
         assertThat(jdbc.queryForObject("SELECT profit_sign FROM ledger_account WHERE code = 'MEMO_HELD_MONEY'", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT profit_sign FROM ledger_account WHERE code = 'MEMO_DELIVERY_WAIVED'", Integer.class)).isZero();
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_account", Integer.class)).isEqualTo(10);
+        assertThat(jdbc.queryForObject("SELECT profit_sign FROM ledger_account WHERE code = 'MEMO_REFUNDS_OWED'", Integer.class))
+                .as("a refund owed and not yet paid is shown, never profit (Phase 12)").isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_account", Integer.class)).isEqualTo(11);
+    }
+
+    // ------------------------------------------------------------------ Phase 12: refunds
+
+    @Test
+    @DisplayName("a row may come from a corrected sale, a payout, a payout taken back or a refund that was closed, and from nothing else new; the list has its own name")
+    void theSources() {
+        for (String source : List.of("SALE_CORRECTED", "PAID_OUT", "PAYOUT_VOIDED", "REFUND_CLOSED")) {
+            assertThat(jdbc.update("""
+                    INSERT INTO ledger_entry (entry_key, account, amount, occurred_at, effect_day, source, actor, correction_id, payout_id)
+                    VALUES (?, 'MEMO_REFUNDS_OWED', 10.00, now(), DATE '2026-11-12', ?, 'system:test', ?, ?)""",
+                    "test:" + UUID.randomUUID(), source, UUID.randomUUID(), UUID.randomUUID())).as(source).isEqualTo(1);
+        }
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO ledger_entry (entry_key, account, amount, occurred_at, effect_day, source, actor)
+                VALUES (?, 'MEMO_REFUNDS_OWED', 10.00, now(), DATE '2026-11-12', 'REFUND_GUESSED', 'system:test')""", "test:" + UUID.randomUUID()))
+                .hasMessageContaining("ck_ledger_source");
+    }
+
+    @Test
+    @DisplayName("the two lists V4 widened were replaced under names of their own, and exactly one constraint holds each")
+    void theReplacedConstraintsHaveTheirNames() {
+        assertThat(jdbc.queryForList("""
+                SELECT conname FROM pg_constraint WHERE conrelid = 'ledger_entry'::regclass AND contype = 'c'
+                   AND pg_get_constraintdef(oid) LIKE '%ORDER_PAID%'""", String.class)).containsExactly("ck_ledger_source");
+        assertThat(jdbc.queryForList("""
+                SELECT conname FROM pg_constraint WHERE conrelid = 'expense'::regclass AND contype = 'c'
+                   AND pg_get_constraintdef(oid) LIKE '%ADD%REVERSAL%'""", String.class)).containsExactly("ck_expense_kind");
+        assertThat(jdbc.queryForObject("""
+                SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'ck_expense_kind'""", String.class))
+                .as("a sending charge the customer bore is recorded as a recovery").contains("RECOVERY");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM information_schema.columns WHERE table_name = 'expense' AND column_name = 'linked_payout_id'",
+                Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a returned piece written off is a reason stock can leave for; a marked-down relist is not (it recognises no cost)")
+    void theStockOutReasons() {
+        assertThat(jdbc.queryForList("SELECT code FROM stock_out_reason", String.class)).contains("WRITE_OFF_RETURNED").doesNotContain("RELISTED_MARKED_DOWN");
+        assertThat(entry("STOCK_OUT", null, "WRITE_OFF_RETURNED", "65.50", "2026-11-12")).isPositive();
+    }
+
+    @Test
+    @DisplayName("a payout that was taken back says when, and one that stands does not; a payout is recorded once")
+    void theRefundFacts() {
+        String payout = """
+                INSERT INTO payout_fact (payout_id, kind, purpose, debt_id, order_id, confirmation_id, method, gross, customer_fee, send_charge, paid_at, voided_at,
+                                         actor, source_event_id)
+                VALUES (?, ?, 'REFUND', ?, ?, ?, 'MTN', 180.00, 2.50, 2.50, now(), ?, 'user:kc-test', ?)""";
+        UUID id = UUID.randomUUID();
+        java.sql.Timestamp voided = java.sql.Timestamp.from(java.time.Instant.now());
+        assertThat(jdbc.update(payout, id, "PAID_OUT", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), null, UUID.randomUUID())).isEqualTo(1);
+        assertThat(jdbc.update(payout, id, "VOIDED", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), voided, UUID.randomUUID())).isEqualTo(1);
+        assertThatThrownBy(() -> jdbc.update(payout, UUID.randomUUID(), "VOIDED", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), null, UUID.randomUUID()))
+                .hasMessageContaining("payout_fact_voided_dated");
+        assertThatThrownBy(() -> jdbc.update(payout, UUID.randomUUID(), "PAID_OUT", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), voided, UUID.randomUUID()))
+                .hasMessageContaining("payout_fact_voided_dated");
+        assertThatThrownBy(() -> jdbc.update(payout, id, "PAID_OUT", UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), null, UUID.randomUUID()))
+                .as("a payout is recorded once").isInstanceOf(org.springframework.dao.DuplicateKeyException.class);
     }
 }

@@ -190,10 +190,39 @@ class StockCostApplierTest {
     }
 
     @Test
-    @DisplayName("a reason that is not a cost (a receipt, a lot transfer) or not yet defined (a marked-down relist) is refused, and so is anything that breaks the event's own promises")
+    @DisplayName("a returned piece that cannot be sold again is stock written off, at the cost of the lot it went back to, under its own reason: never cost of goods")
+    void aReturnedWriteOffIsStockOut() {
+        Stock s = row().writeOff("WRITE_OFF_RETURNED", -1, "65.50");
+        s.actionKind = "RETURN_EXIT";
+
+        apply(s);
+
+        Map<String, Object> e = entry(s);
+        assertThat(e.get("account")).isEqualTo("STOCK_OUT");
+        assertThat(e.get("reason")).isEqualTo("WRITE_OFF_RETURNED");
+        assertThat((BigDecimal) e.get("amount")).isEqualByComparingTo("65.50");
+        assertThat(e.get("sale_line_id")).isNull();
+    }
+
+    @Test
+    @DisplayName("a returned piece moved to a marked-down listing of its own recognises no cost: nothing is booked, and nothing is refused or raised")
+    void aRelistBooksNothing() {
+        for (int delta : new int[] {-1, 1}) {
+            Stock s = row().writeOff("RELISTED_MARKED_DOWN", delta, "65.50");
+            s.actionKind = delta < 0 ? "RETURN_EXIT" : "RELIST_IN";
+
+            apply(s);
+
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM ledger_entry WHERE movement_id = ?", Long.class, s.movementId)).isZero();
+            assertThat(open("unattributed-product", s.actionId.toString())).isFalse();
+        }
+    }
+
+    @Test
+    @DisplayName("a reason that is not a cost (a receipt, a lot transfer) or that nobody defined is refused, and so is anything that breaks the event's own promises")
     void refusals() {
         List<Stock> broken = List.of(
-                row().set("reason", "RELISTED_MARKED_DOWN"), row().set("reason", "CONSIGNMENT_RECEIVED"), row().set("reason", "COST_CORRECTED"), row().set("reason", "SOMETHING_NEW"),
+                row().set("reason", "CONSIGNMENT_RECEIVED"), row().set("reason", "COST_CORRECTED"), row().set("reason", "SOMETHING_NEW"),
                 row().set("currency", "USD"), row().set("unitCost", new BigDecimal("-1.00")), row().set("unitCost", new BigDecimal("10.005")), row().set("qtyDelta", 0),
                 row().role("LOT_OPEN"), row().role("LOT_CLOSE"), row().set("kind", "GADGET"), row().set("movementId", null));
         for (Stock s : broken) {
