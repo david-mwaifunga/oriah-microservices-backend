@@ -176,4 +176,25 @@ class StatusRulesHttpTest {
         cancelAs("kc-bob", UUID.randomUUID()).andExpect(status().isNotFound());
         assertThat(orders.findById(alices.id()).orElseThrow().status()).isEqualTo(OrderStatus.CREATED);
     }
+
+    // ---------------------------------------------------------------- Phase 12: a paid order has its own cancellation
+
+    @Test
+    @DisplayName("the old doors never cancel a paid order, packed or not: staff are told to use the paid cancellation (409 use-the-paid-cancellation), the shopper keeps their 409; nothing changes and nothing is announced")
+    void theOldDoorsNeverCancelAPaidOrder() throws Exception {
+        Order paid = order("kc-alice", OrderStatus.PAID);
+        Order packed = order("kc-alice", OrderStatus.PAID, OrderStatus.FULFILLED);
+        long before = events(paid.id()) + events(packed.id());
+
+        for (Order order : new Order[] {paid, packed}) {
+            transition(order.id(), "CANCELLED").andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.type").value("https://oriah.dev/problems/use-the-paid-cancellation"))
+                    .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("/api/v1/admin/orders/" + order.id() + "/cancellation")));
+            cancelAs("kc-alice", order.id()).andExpect(status().isConflict());
+        }
+
+        assertThat(orders.findById(paid.id()).orElseThrow().status()).isEqualTo(OrderStatus.PAID);
+        assertThat(orders.findById(packed.id()).orElseThrow().status()).isEqualTo(OrderStatus.FULFILLED);
+        assertThat(events(paid.id()) + events(packed.id())).isEqualTo(before);
+    }
 }

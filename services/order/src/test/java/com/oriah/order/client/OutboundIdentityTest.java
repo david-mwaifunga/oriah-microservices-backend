@@ -188,6 +188,56 @@ class OutboundIdentityTest {
     }
 
     @Test
+    @DisplayName("undoing a paid sale (Phase 12) is asked of inventory as the order system too: the reversal, reading it back and a returned piece's outcome all carry the machine token, in the shapes inventory reads")
+    void inventorySeesTheServiceAccount() {
+        com.oriah.order.client.InventoryClient inventory = context.getBean(com.oriah.order.client.InventoryClient.class);
+        UUID reversal = UUID.fromString("c1a2b3c4-d5e6-4f70-8192-a3b4c5d6e7f8");
+        UUID order = UUID.fromString("0f9a4c2e-6b1d-4e8f-a3c5-7d9e1b2f4a60");
+        UUID reservation = UUID.fromString("9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d");
+        UUID line = UUID.fromString("7e9ab1c3-5b7d-4e9a-b1c3-df5b7d9f1ad6");
+        UUID boxLine = UUID.fromString("8fa0c2d4-6c8e-4fa0-c2d4-e06c8e0a2be7");
+        UUID box = UUID.fromString("b2d3f507-9f1b-42d3-f507-139f1b3d5e1a");
+        UUID product = UUID.fromString("2f4a6c8e-0b2d-4f4a-8c6e-8a0c2e4a6c81");
+        UUID piece = UUID.fromString("5a1e0f3c-7b2d-3c4e-9f60-1a2b3c4d5e6f");
+        UUID child = UUID.fromString("d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f70");
+        String reversals = "/api/v1/admin/inventory/sale-reversals";
+        String outcome = "/api/v1/admin/inventory/returned-pieces/" + piece + "/outcome";
+        String answer = "{\"reversalId\":\"" + reversal + "\",\"kind\":\"CANCELLATION\",\"orderId\":\"" + order + "\",\"occurredAt\":\"2026-11-05T09:15:00Z\","
+                + "\"recordedAt\":\"2026-11-05T09:15:01Z\",\"boxes\":[{\"boxLineId\":\"" + boxLine + "\",\"toSetAside\":1,\"toFree\":0}],\"replay\":false}";
+        WM.stubFor(post(urlEqualTo(reversals)).willReturn(okJson(answer)));
+        WM.stubFor(get(urlEqualTo(reversals + "/" + reversal)).willReturn(okJson(answer)));
+        WM.stubFor(post(urlEqualTo(outcome)).willReturn(okJson("{\"pieceId\":\"" + piece + "\",\"outcome\":\"RELISTED\",\"variantId\":\"" + VARIANT
+                + "\",\"childVariantId\":\"" + child + "\",\"occurredAt\":\"2026-11-08T10:00:00Z\",\"replay\":false}")));
+
+        var done = inventory.reverseSale(new com.oriah.order.client.InventoryClient.ReversalAsk(reversal, "CANCELLATION", order, reservation,
+                java.time.Instant.parse("2026-11-05T09:15:00.123456Z"),
+                java.util.List.of(new com.oriah.order.client.InventoryClient.GoodsAsk(line, VARIANT, 2)),
+                java.util.List.of(new com.oriah.order.client.InventoryClient.BoxAsk(boxLine, box, product, 2)), java.util.List.of()));
+        var read = inventory.reversal(reversal);
+        var decided = inventory.decidePiece(piece, new com.oriah.order.client.InventoryClient.PieceOutcomeAsk("RELISTED", child, java.time.Instant.parse("2026-11-08T10:00:00Z")));
+
+        assertThat(done.reversalId()).isEqualTo(reversal);
+        assertThat(done.replay()).isFalse();
+        assertThat(read.kind()).isEqualTo("CANCELLATION");
+        assertThat(decided.childVariantId()).isEqualTo(child);
+        var posted = WM.findAll(postRequestedFor(urlEqualTo(reversals)));
+        assertThat(posted).hasSize(1);
+        assertThat(authorizationOf(posted.get(0))).containsExactly("Bearer machine-token");
+        assertThat(posted.get(0).getBodyAsString()).isEqualTo("{\"reversalId\":\"" + reversal + "\",\"kind\":\"CANCELLATION\",\"orderId\":\"" + order
+                + "\",\"reservationId\":\"" + reservation + "\",\"occurredAt\":\"2026-11-05T09:15:00.123456Z\",\"goods\":[{\"saleLineId\":\"" + line
+                + "\",\"variantId\":\"" + VARIANT + "\",\"quantity\":2}],\"boxes\":[{\"boxLineId\":\"" + boxLine + "\",\"boxVariantId\":\"" + box
+                + "\",\"productId\":\"" + product + "\",\"quantity\":2}],\"pieces\":[]}");
+        var reads = WM.findAll(getRequestedFor(urlEqualTo(reversals + "/" + reversal)));
+        assertThat(reads).hasSize(1);
+        assertThat(authorizationOf(reads.get(0))).containsExactly("Bearer machine-token");
+        var outcomes = WM.findAll(postRequestedFor(urlEqualTo(outcome)));
+        assertThat(outcomes).hasSize(1);
+        assertThat(authorizationOf(outcomes.get(0))).containsExactly("Bearer machine-token");
+        assertThat(outcomes.get(0).getBodyAsString()).isEqualTo("{\"outcome\":\"RELISTED\",\"childVariantId\":\"" + child
+                + "\",\"occurredAt\":\"2026-11-08T10:00:00Z\"}");
+    }
+
+    @Test
     @DisplayName("inventory receives order's own machine token -- once, and never the shopper's: its reservation endpoints are for the order system only")
     void inventorySeesTheServiceAccountNotTheShopper() throws Exception {
         place(shopper("kc-alice", "shopper-token"));

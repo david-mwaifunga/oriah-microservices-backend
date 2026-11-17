@@ -44,6 +44,7 @@ public class OrderService {
     private final OrderHolds holds;
     private final AddressOwnership addresses;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final OrderLocks locks;
 
     public OrderService(OrderRepository repository,
                         OrderEventLog events,
@@ -51,7 +52,9 @@ public class OrderService {
                         OrderWriter writer,
                         OrderHolds holds,
                         AddressOwnership addresses,
-                        org.springframework.jdbc.core.JdbcTemplate jdbc) {
+                        org.springframework.jdbc.core.JdbcTemplate jdbc,
+                        OrderLocks locks) {
+        this.locks = locks;
         this.repository = repository;
         this.events = events;
         this.pricing = pricing;
@@ -163,7 +166,8 @@ public class OrderService {
      */
     @Transactional
     public Optional<Order> cancel(String owner, UUID orderId, String actor) {
-        return repository.findById(orderId)
+        // The order's lock first (Phase 12): a paid cancellation, a dispatch step and this cancel queue behind each other.
+        return locks.lock(orderId)
                 .filter(o -> o.isOwnedBy(owner))
                 .map(o -> move(requireNotBeingSettled(o), OrderStatus.CANCELLED, actor));
     }
@@ -228,13 +232,18 @@ public class OrderService {
      */
     @Transactional
     public Optional<Order> transition(UUID orderId, OrderStatus targetStatus, String actor) {
-        // The order is looked up FIRST: one that does not exist is a 404 whatever is asked of it.
-        return repository.findById(orderId).map(o -> {
+        // The order is looked up FIRST (under its lock): one that does not exist is a 404 whatever is asked of it.
+        return locks.lock(orderId).map(o -> {
             if (OrderStatus.isDispatchStep(targetStatus)) {
                 // Packing, sending and delivering keep the dispatch record the books and the refund line are read from (Phase 8): a person asking for the
                 // status alone would skip the fare, the date and the record.
                 throw new SalesProblem(HttpStatus.CONFLICT, "use-the-dispatch-steps", "an order is packed, shipped and delivered through its dispatch steps: "
                         + "POST /api/v1/admin/orders/" + o.id() + "/dispatch/pack, /ship or /deliver");
+            }
+            if (targetStatus == OrderStatus.CANCELLED && (o.status() == OrderStatus.PAID || o.status() == OrderStatus.FULFILLED)) {
+                // A paid order is undone by its paid cancellation (Phase 12), which puts the stock back and records what the customer is owed.
+                throw new SalesProblem(HttpStatus.CONFLICT, "use-the-paid-cancellation", "this order is paid: it is cancelled through its paid cancellation, "
+                        + "which puts the pieces back and records the refund: POST /api/v1/admin/orders/" + o.id() + "/cancellation");
             }
             if (!OrderStatus.adminMayRequest(targetStatus)) {
                 // Only money makes an order PAID (the settlement saga), only a lapsed hold or a rejected claim makes it EXPIRED, only the shopper's claim

@@ -44,9 +44,9 @@ class HoldJobScheduleTest {
     private JwtDecoder jwtDecoder;
 
     @Test
-    @DisplayName("the shipped pool has a thread for each of the three jobs")
+    @DisplayName("the shipped pool has a thread for each of the four jobs (the correction job is the fourth, Phase 12)")
     void theTestsRunWithThePoolAsShipped() {
-        assertThat(environment.getProperty("spring.task.scheduling.pool.size", Integer.class)).isEqualTo(3);
+        assertThat(environment.getProperty("spring.task.scheduling.pool.size", Integer.class)).isEqualTo(4);
     }
 
     @Test

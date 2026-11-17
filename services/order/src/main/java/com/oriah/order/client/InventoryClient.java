@@ -78,6 +78,61 @@ public interface InventoryClient {
     record ExtendAsk(Instant until) {
     }
 
+    // ------------------------------------------------------------------ Phase 12: a paid sale undone
+
+    /**
+     * Puts a paid sale's stock back, in one transaction keyed by {@code reversalId} (order's correction id): a CANCELLATION returns every piece to its
+     * lot, on sale again, and every box to its lot (and to the product's set-aside when it still stands); a RETURN puts each piece back into its lot
+     * and holds it there, not for sale, until it is assessed. A repeat of the same request answers it ({@code replay: true}) and moves nothing more.
+     * What each refusal means to order is {@code CorrectionReplies}'s to say: only some of them prove that nothing moved.
+     */
+    @PostMapping("/api/v1/admin/inventory/sale-reversals")
+    Reversal reverseSale(@RequestBody ReversalAsk body);
+
+    /**
+     * Whether inventory holds this reversal. It takes the reversal's own lock before it looks, so it waits out one that is being written; 404
+     * {@code reversal-not-found} is the ONLY answer that says nothing moved.
+     */
+    @GetMapping("/api/v1/admin/inventory/sale-reversals/{reversalId}")
+    Reversal reversal(@PathVariable("reversalId") UUID reversalId);
+
+    /**
+     * What became of a piece that came back: {@code RELEASED} (fine: on sale again), {@code WRITTEN_OFF} (not sellable) or {@code RELISTED} (moved
+     * to its own marked-down listing, {@code childVariantId}). Keyed by the piece: the same outcome again is answered once.
+     */
+    @PostMapping("/api/v1/admin/inventory/returned-pieces/{pieceId}/outcome")
+    PieceDecision decidePiece(@PathVariable("pieceId") UUID pieceId, @RequestBody PieceOutcomeAsk body);
+
+    /**
+     * @param reservationId a cancellation only: the hold the sale consumed
+     * @param goods         a cancellation only: every sale line, whole
+     * @param boxes         a cancellation only: the box sale that stands on each line (after any swap)
+     * @param pieces        a return only: one entry per piece that came back, each with the id order minted for it
+     */
+    record ReversalAsk(UUID reversalId, String kind, UUID orderId, UUID reservationId, Instant occurredAt, List<GoodsAsk> goods, List<BoxAsk> boxes,
+                       List<PieceAsk> pieces) {
+    }
+
+    record GoodsAsk(UUID saleLineId, UUID variantId, int quantity) {
+    }
+
+    record BoxAsk(UUID boxLineId, UUID boxVariantId, UUID productId, int quantity) {
+    }
+
+    record PieceAsk(UUID pieceId, UUID saleLineId, UUID variantId) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Reversal(UUID reversalId, String kind, UUID orderId, Instant occurredAt, Instant recordedAt, boolean replay) {
+    }
+
+    record PieceOutcomeAsk(String outcome, UUID childVariantId, Instant occurredAt) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record PieceDecision(UUID pieceId, String outcome, UUID variantId, UUID childVariantId, Instant occurredAt, boolean replay) {
+    }
+
     /**
      * @param holdSeconds how long to hold; null takes inventory's default (ten minutes), which is inventory's to know
      */

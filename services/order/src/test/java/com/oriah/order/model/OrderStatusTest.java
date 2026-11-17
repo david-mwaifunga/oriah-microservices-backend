@@ -17,15 +17,16 @@ class OrderStatusTest {
     }
 
     @Test
-    @DisplayName("an order is cancelled only while it is unpaid: from CREATED, never from PAID (a paid sale is not undone here; refunds are a later phase) and never from PAYMENT_SUBMITTED")
+    @DisplayName("an order is cancelled while it is unpaid (CREATED) or, since Phase 12, paid and not yet dispatched (PAID, FULFILLED: only through the paid cancellation, which refunds it); never once SHIPPED or DELIVERED, and never from PAYMENT_SUBMITTED")
     void cancellation() {
-        // Phase 7 retired PAID -> CANCELLED: a paid sale is never edited or undone by a status change; undoing one is a refund, and refunds are
-        // Phase 12. This assertion used to say the opposite.
+        // Phase 7 retired PAID -> CANCELLED (a paid sale is never undone by a status change alone). Phase 12 brings the edge back for the paid
+        // cancellation, a correction that puts the stock back and records what is owed: Order.cancelPaid() is the only caller that may take it
+        // (OrderCancelPaidTest), and the old doors still refuse a paid order (StatusRulesHttpTest).
         assertThat(OrderStatus.CREATED.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
-        assertThat(OrderStatus.PAID.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
+        assertThat(OrderStatus.PAID.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
         assertThat(OrderStatus.PAYMENT_SUBMITTED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
         assertThat(OrderStatus.EXPIRED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
-        assertThat(OrderStatus.FULFILLED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
+        assertThat(OrderStatus.FULFILLED.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
         assertThat(OrderStatus.SHIPPED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
         assertThat(OrderStatus.DELIVERED.canTransitionTo(OrderStatus.CANCELLED)).isFalse();
     }

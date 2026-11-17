@@ -5,13 +5,14 @@ spring:
     import: "optional:configserver:http://localhost:8888"
   task:
     scheduling:
-      # Three scheduled jobs run here, each on a thread of its own: the outbox relay (shared/oriah-events) and, since Phase 7, the hold job that
+      # Four scheduled jobs run here, each on a thread of its own: the outbox relay (shared/oriah-events) and, since Phase 7, the hold job that
       # finishes what a request left half done (a payment claim whose hold was not yet stretched, a placement inventory never answered) and the
-      # settlement job that asks inventory again for confirmed money whose sale could not be applied yet.
+      # settlement job that asks inventory again for confirmed money whose sale could not be applied yet; since Phase 12 the correction job, which
+      # asks inventory again for a paid cancellation or a return it has not settled.
       # Spring Boot's default is ONE thread for all of them, so a relay round waiting on a stopped Kafka (up to about 25 s) would hold the
       # jobs back, and a job pass waiting on a slow inventory would hold the relay back. Add a thread for any further @Scheduled job.
       pool:
-        size: 3
+        size: 4
   jpa:
     hibernate:
       ddl-auto: validate

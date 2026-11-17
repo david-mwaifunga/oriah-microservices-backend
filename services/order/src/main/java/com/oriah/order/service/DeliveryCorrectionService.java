@@ -34,10 +34,12 @@ public class DeliveryCorrectionService {
 
     private final OrderLocks locks;
     private final JdbcTemplate jdbc;
+    private final CorrectionGuard corrections;
 
-    public DeliveryCorrectionService(OrderLocks locks, JdbcTemplate jdbc) {
+    public DeliveryCorrectionService(OrderLocks locks, JdbcTemplate jdbc, CorrectionGuard corrections) {
         this.locks = locks;
         this.jdbc = jdbc;
+        this.corrections = corrections;
     }
 
     /**
@@ -51,6 +53,8 @@ public class DeliveryCorrectionService {
         if (order.status() != OrderStatus.PAID && !isPackedOrLater(order.status())) {
             throw new SalesProblem(HttpStatus.CONFLICT, "order-not-paid", "this order is " + order.status() + ", not paid: cancel it and place it again with the right details");
         }
+        // A cancellation that is with inventory forgets these details the moment it finishes: they are not corrected under it (Phase 12).
+        corrections.requireNoneInFlight(orderId);
         if (order.isSelfCollect()) {
             throw new SalesProblem(HttpStatus.CONFLICT, "no-delivery-details", "this order is collected by the shopper: nobody is delivered to");
         }

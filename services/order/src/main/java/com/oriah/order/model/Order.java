@@ -707,6 +707,22 @@ public class Order extends BaseEntity {
     }
 
     /**
+     * A paid order that has not been dispatched is cancelled by its correction (Phase 12): PAID or FULFILLED to CANCELLED. The ONLY way there:
+     * {@link #transitionTo} refuses the same edge, so nothing cancels a paid order without putting its stock back and recording what is owed.
+     * The hold stays CONSUMED (the pieces were sold; the correction, not a release, is what returned them) and nothing of the sale is rewritten:
+     * the receipt number, the day the money arrived, the lines and the totals stay as they were sold.
+     *
+     * @throws IllegalStateException the order is not PAID or FULFILLED
+     */
+    public void cancelPaid() {
+        if (status != OrderStatus.PAID && status != OrderStatus.FULFILLED) {
+            throw new IllegalStateException("order " + id + " is " + status + ": only a paid order that has not been dispatched is cancelled this way");
+        }
+        this.status = OrderStatus.CANCELLED;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
      * Drive the FSM. Throws if the requested transition isn't allowed
      * from the current state.
      */
@@ -714,6 +730,10 @@ public class Order extends BaseEntity {
         if (!status.canTransitionTo(next)) {
             throw new IllegalStateException(
                     "Cannot transition order " + id + " from " + status + " to " + next);
+        }
+        if (next == OrderStatus.CANCELLED && (status == OrderStatus.PAID || status == OrderStatus.FULFILLED)) {
+            // The edge exists for the paid cancellation alone (cancelPaid): undoing a sale puts its stock back and records what is owed.
+            throw new IllegalStateException("Cannot cancel order " + id + ": it is paid, and a paid order is cancelled only through its paid cancellation");
         }
         // The status graph cannot see the delivery option: a pickup is handed over, never shipped, and only a pickup is handed over (Phase 8).
         if (status == OrderStatus.FULFILLED && next == OrderStatus.SHIPPED && isSelfCollect()) {

@@ -68,16 +68,18 @@ public class DispatchService {
     private final JdbcTemplate jdbc;
     private final OrderEventLog events;
     private final BoxSwaps swaps;
+    private final CorrectionGuard corrections;
     private final Duration backdateWindow;
     private final BigDecimal maxFare;
 
-    public DispatchService(OrderLocks locks, JdbcTemplate jdbc, OrderEventLog events, BoxSwaps swaps,
+    public DispatchService(OrderLocks locks, JdbcTemplate jdbc, OrderEventLog events, BoxSwaps swaps, CorrectionGuard corrections,
                            @Value("${oriah.sales.backdate-window:PT72H}") Duration backdateWindow,
                            @Value("${oriah.sales.max-fare:5000.00}") BigDecimal maxFare) {
         this.locks = locks;
         this.jdbc = jdbc;
         this.events = events;
         this.swaps = swaps;
+        this.corrections = corrections;
         this.backdateWindow = backdateWindow;
         this.maxFare = maxFare;
     }
@@ -100,6 +102,8 @@ public class DispatchService {
         }
         // The packer packs the box the slip names: a swap that is with inventory may change it, so packing waits for it to be finished.
         swaps.requireNoneInFlight(orderId);
+        // A cancellation that is with inventory may have put the pieces back on the shelf already: nothing is packed until it is settled (Phase 12).
+        corrections.requireNoneInFlight(orderId);
         Dated when = DispatchDates.check(requestedAt, order.paidAt(), Instant.now(), backdateWindow, caller.mayBackdate(), backdateReason);
         insert(orderId, Step.PACKED, when, caller, null, null);
         OrderStatus previous = order.status();
@@ -128,6 +132,7 @@ public class DispatchService {
             throw new SalesProblem(HttpStatus.CONFLICT, "delivery-details-missing", "this order has no recipient or delivery address kept: it cannot be shipped");
         }
         swaps.requireNoneInFlight(orderId);
+        corrections.requireNoneInFlight(orderId);
         BigDecimal fare = FareRule.check(order.deliveryOption(), order.deliveryPayer(), farePaid, maxFare);
         Dated when = DispatchDates.check(requestedAt, instant(steps.get(Step.PACKED)), Instant.now(), backdateWindow, caller.mayBackdate(), backdateReason);
         insert(orderId, Step.DISPATCHED, when, caller, reference, fare);
@@ -156,6 +161,11 @@ public class DispatchService {
         } else {
             requireStatus(order, OrderStatus.SHIPPED, "deliver");
             notBefore = instant(steps.get(Step.DISPATCHED));
+        }
+        corrections.requireNoneInFlight(orderId);
+        if (corrections.everyPieceCameBack(orderId)) {
+            // Every piece of this parcel came back (it was refused at the door, or never arrived): there is nothing to mark delivered (Phase 12).
+            throw new SalesProblem(HttpStatus.CONFLICT, "fully-returned", "every piece of this order has been recorded as returned: it is not delivered");
         }
         Dated when = DispatchDates.check(requestedAt, notBefore, Instant.now(), backdateWindow, caller.mayBackdate(), backdateReason);
         insert(orderId, Step.DELIVERED, when, caller, null, null);

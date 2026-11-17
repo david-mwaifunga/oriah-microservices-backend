@@ -65,10 +65,12 @@ public class BoxSwaps {
 
     private final JdbcTemplate jdbc;
     private final OrderLocks locks;
+    private final CorrectionGuard corrections;
 
-    public BoxSwaps(JdbcTemplate jdbc, OrderLocks locks) {
+    public BoxSwaps(JdbcTemplate jdbc, OrderLocks locks, CorrectionGuard corrections) {
         this.jdbc = jdbc;
         this.locks = locks;
+        this.corrections = corrections;
     }
 
     /**
@@ -95,6 +97,8 @@ public class BoxSwaps {
         if (order.settlingConfirmationId() != null) {
             throw new SalesProblem(HttpStatus.CONFLICT, "payment-being-applied", "a confirmed payment is being applied to this order right now: try again in a moment");
         }
+        // A cancellation that is with inventory names the box that stood when it was recorded: the box does not change under it (Phase 12).
+        corrections.requireNoneInFlight(orderId);
         if (order.status() != OrderStatus.PAID && order.status() != OrderStatus.FULFILLED) {
             throw new SalesProblem(HttpStatus.CONFLICT, "box-swap-not-allowed",
                     "only a paid order that has not been dispatched can change its box; this one is " + order.status());

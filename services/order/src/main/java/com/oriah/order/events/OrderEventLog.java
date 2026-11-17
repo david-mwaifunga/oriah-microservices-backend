@@ -71,6 +71,7 @@ public class OrderEventLog {
             // A SHIPPED event without the dispatch would hide the courier fare from finance: it is appended only by shipped().
             throw new IllegalStateException("order.shipped is appended with its dispatch, through shipped()");
         }
+        refuseAPaidCancellation(order, previousStatus);
         return append(order, previousStatus, actor, null, null);
     }
 
@@ -83,6 +84,7 @@ public class OrderEventLog {
         if (order.status() == OrderStatus.SHIPPED) {
             throw new IllegalStateException("order.shipped is appended with its dispatch, through shipped()");
         }
+        refuseAPaidCancellation(order, previousStatus);
         return append(order, previousStatus, actor, occurredAt, null);
     }
 
@@ -151,6 +153,37 @@ public class OrderEventLog {
                 occurredAt,
                 actor,
                 new PaymentUnsettledEvent(confirmationId, orderId, reason, currency)));
+    }
+
+    /**
+     * {@code order.sale_cancelled} or {@code order.return_recorded} (Phase 12): a paid sale corrected, dated to the correction (when it was cancelled, or
+     * when the parcel came back). Written in the transaction that finished the correction.
+     *
+     * @param type  {@link SaleCorrectedEvent#CANCELLED} or {@link SaleCorrectedEvent#RETURNED}
+     * @param actor the person who recorded the correction, {@code user:<keycloak subject>} (also when a job finishes it for them)
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public AppendedEvent saleCorrected(String type, SaleCorrectedEvent correction, String actor) {
+        orders.flush();
+        return outbox.append(new EventDraft(
+                OrderEvent.AGGREGATE_TYPE,
+                correction.orderId().toString(),
+                type,
+                SaleCorrectedEvent.SCHEMA_VERSION,
+                OrderEvent.TOPIC,
+                correction.occurredAt(),
+                actor,
+                correction));
+    }
+
+    /**
+     * A paid order that was cancelled is announced by its correction as {@code order.sale_cancelled}, with what is owed. A plain
+     * {@code order.cancelled} for it would tell inventory to release a hold that was SOLD and tell finance nothing: it is never appended.
+     */
+    private static void refuseAPaidCancellation(Order order, OrderStatus previousStatus) {
+        if (order.status() == OrderStatus.CANCELLED && (previousStatus == OrderStatus.PAID || previousStatus == OrderStatus.FULFILLED)) {
+            throw new IllegalStateException("a paid order's cancellation is announced as order.sale_cancelled, by its correction");
+        }
     }
 
     private AppendedEvent append(Order order, OrderStatus previousStatus, String actor, java.time.Instant occurredAt, OrderEvent payload) {

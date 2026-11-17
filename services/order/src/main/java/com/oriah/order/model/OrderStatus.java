@@ -20,8 +20,10 @@ import java.util.Set;
  * if its pieces are still free. No person asks for PAID, EXPIRED or PAYMENT_SUBMITTED through the admin transition
  * ({@link #adminMayRequest}); the edges are here so that the saga and the sweeper can make them.
  *
- * <p>A paid sale is never undone by a status change: there is no PAID -&gt; CANCELLED (undoing a sale is a refund, Phase 12).
- * Once SHIPPED or beyond, no cancellation either: the order is out for delivery and returns go through a separate flow.
+ * <p>A paid sale is never undone by a status change alone. Since Phase 12 a paid order that has not been dispatched (PAID, or FULFILLED:
+ * packed, still on the shelf) can be CANCELLED, but only by its correction ({@code Order.cancelPaid()}), which puts the stock back and
+ * records what the customer is owed; {@code Order.transitionTo} refuses the same edge, so no other door can take it.
+ * Once SHIPPED or beyond, no cancellation: the parcel has left, and what comes back is a return (the status does not change).
  *
  * <p>{@link #canTransitionTo(OrderStatus)} is the single source of truth.
  * Add a new edge here and the test suite will tell you what callers
@@ -31,8 +33,8 @@ public enum OrderStatus {
     CREATED(Set.of("PAYMENT_SUBMITTED", "EXPIRED", "CANCELLED", "PAID")),
     PAYMENT_SUBMITTED(Set.of("PAID", "EXPIRED")),
     EXPIRED(Set.of("PAID")),
-    PAID(Set.of("FULFILLED")),
-    FULFILLED(Set.of("SHIPPED", "DELIVERED")),   // DELIVERED only for a pickup (handed over): Order.transitionTo knows the option, this enum cannot
+    PAID(Set.of("FULFILLED", "CANCELLED")),      // CANCELLED only through the paid cancellation (Order.cancelPaid)
+    FULFILLED(Set.of("SHIPPED", "DELIVERED", "CANCELLED")),   // DELIVERED only for a pickup (handed over): Order.transitionTo knows the option, this enum cannot
     SHIPPED(Set.of("DELIVERED")),
     DELIVERED(Set.of()),     // terminal
     CANCELLED(Set.of());     // terminal

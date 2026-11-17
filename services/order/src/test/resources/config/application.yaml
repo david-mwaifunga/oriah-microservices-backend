@@ -15,3 +15,7 @@ oriah:
       enabled: false
     settlement-job:
       enabled: false
+    # The correction job (Phase 12) is off in tests for the same reason: a pass landing mid-test would finish, or ask again for, the very correction a
+    # test is holding in flight. Tests call CorrectionJob.run() themselves; CorrectionJobScheduleTest switches the schedule back on to prove it.
+    correction-job:
+      enabled: false

@@ -42,9 +42,11 @@ class HoldJobSettingsTest {
     }
 
     @Test
-    @DisplayName("the scheduling pool has three threads: the relay, the hold job and the settlement job each get one")
-    void threeJobsThreeThreads() throws IOException {
-        assertThat(shipped().getProperty("spring.task.scheduling.pool.size")).isEqualTo(3);
+    @DisplayName("the scheduling pool has four threads: the relay, the hold job, the settlement job and (Phase 12) the correction job each get one")
+    void fourJobsFourThreads() throws IOException {
+        assertThat(shipped().getProperty("spring.task.scheduling.pool.size")).isEqualTo(4);
+        assertThat(shipped().getProperty("oriah.sales.correction-job.enabled")).isEqualTo(true);
+        assertThat(shipped().getProperty("oriah.sales.correction-job.delay")).isEqualTo(15000);
     }
 
     @Test
