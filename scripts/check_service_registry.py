@@ -149,7 +149,11 @@ DEFAULT_ROOT = HERE.parent.parent          # oriah-api/
 # ---- the watched files (relative to oriah-api/) ----------------------------
 COMPOSE = "docker-compose/default/docker-compose.yml"
 # What would let the development stack send real email (see check_compose).
-NEVER_IN_THE_DEV_COMPOSE = ("ORIAH_NOTIFICATION_LIVE", "ORIAH_SMTP_", "ORIAH_EMAIL_FROM", "MP_SMTP_RELAY")
+NEVER_IN_THE_DEV_COMPOSE = ("ORIAH_NOTIFICATION_LIVE", "ORIAH_SMTP_", "ORIAH_EMAIL_FROM", "MP_SMTP_RELAY",
+                            # Phase 13: the development stack never takes real money. ("ORIAH_ZYNLEPAY_" would also match the stand-in's own
+                            # settings, which begin ORIAH_PAYMENT_ZYNLEPAY_, so each word is spelled out.)
+                            "ORIAH_ZYNLEPAY_LIVE", "ORIAH_ZYNLEPAY_MERCHANT_ID", "ORIAH_ZYNLEPAY_API_ID", "ORIAH_ZYNLEPAY_API_KEY",
+                            "ORIAH_ZYNLEPAY_WIRE_CHECKED", "ORIAH_ZYNLEPAY_SANDBOX_")
 BUILD_IMAGES = "build-images.ps1"
 PROMETHEUS = "monitoring/prometheus.yml"
 DEV_STACK = "scripts/dev-stack.ps1"
@@ -779,7 +783,7 @@ def check_compose(ctx, rep):
         for word in NEVER_IN_THE_DEV_COMPOSE:
             if word in code:
                 rep.add("notification", "compose-service", COMPOSE,
-                        "line %d sets %s: the development stack must never be live or reach a real mail server" % (number, word))
+                        "line %d sets %s: the development stack must never be live, reach a real mail server or take real money" % (number, word))
 
     for name in sorted(ctx.services):
         s = ctx.services[name]

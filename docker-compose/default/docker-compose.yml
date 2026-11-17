@@ -1148,6 +1148,27 @@ services:
     environment:
       SPRING_DATASOURCE_USERNAME: payment
       SPRING_DATASOURCE_PASSWORD: payment
+      # Phase 13: payments through ZynlePay. This stack is NEVER live: it talks to payment's own stand-in for ZynlePay (SIMULATOR mode, the
+      # default), which runs inside this container under /internal/zynlepay-sim and takes no real credentials. ORIAH_ZYNLEPAY_LIVE and the
+      # ORIAH_ZYNLEPAY_* credentials must never appear in this file (scripts/check_service_registry.py refuses them).
+      #
+      # The stand-in sends its "payment done" messages to the gateway, as ZynlePay would from outside, so the public callback path is proved
+      # end to end.
+      ORIAH_PAYMENT_ZYNLEPAY_SIM_CALLBACKURL: http://gatewayserver:8080/api/v1/payments/zynlepay/callback
+      # The smoke test starts many payments from the same few people and numbers in one run.
+      ORIAH_PAYMENT_ZYNLEPAY_LIMITS_STARTSPERSHOPPERPERHOUR: "500"
+      ORIAH_PAYMENT_ZYNLEPAY_LIMITS_STARTSPERNUMBERPERHOUR: "500"
+      # A development clock: ZynlePay is asked every few seconds, and a payment it never answers becomes the owner's after one minute (thirty
+      # in production), so the smoke test can see it happen. give-up-after may not be shorter than fast-for, so those are lowered with it.
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_DELAY: "2000"
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_FIRSTCHECKAFTER: PT3S
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_FASTEVERY: PT3S
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_SLOWEVERY: PT5S
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_INDETERMINATEWAIT: PT5S
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_FASTFOR_MOBILEMONEY: PT1M
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_FASTFOR_CARD: PT1M
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_GIVEUPAFTER: PT1M
+      ORIAH_PAYMENT_ZYNLEPAY_POLL_CALLBACKMINGAP: PT2S
     ports:
       - "127.0.0.1:8085:8085"
     depends_on:
