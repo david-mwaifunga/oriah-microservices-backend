@@ -164,6 +164,25 @@ class ProductEventConsumerTest {
     }
 
     @Test
+    @DisplayName("a variant's SKU is kept beside its title, and follows the next snapshot: a marked-down piece's lot is labelled from here (Phase 12)")
+    void theSkuIsKept() {
+        UUID productId = UUID.randomUUID();
+        UUID variantId = UUID.randomUUID();
+        send(created(productId, "Aurelia", new VariantPayload(variantId, "AUR-M", "Aurelia - M", new java.math.BigDecimal("4500.00"), "ZMW", true)),
+                ProductCreatedEvent.TYPE);
+        assertThat(productRefs.findById(variantId).orElseThrow().sku()).isEqualTo("AUR-M");
+
+        send(updated(productId, "Aurelia", new VariantPayload(variantId, "AUR-M2", "Aurelia - M", new java.math.BigDecimal("4500.00"), "ZMW", true)),
+                ProductUpdatedEvent.TYPE);
+        assertThat(productRefs.findById(variantId).orElseThrow().sku()).isEqualTo("AUR-M2");
+
+        // A snapshot that carries no SKU (an older shape) never wipes one that is known.
+        send(updated(productId, "Aurelia", new VariantPayload(variantId, null, "Aurelia - M", new java.math.BigDecimal("4500.00"), "ZMW", true)),
+                ProductUpdatedEvent.TYPE);
+        assertThat(productRefs.findById(variantId).orElseThrow().sku()).isEqualTo("AUR-M2");
+    }
+
+    @Test
     @DisplayName("product.updated for an unknown variant is upserted")
     void updatedForUnknownIdInserts() {
         UUID productId = UUID.randomUUID();

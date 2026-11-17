@@ -101,10 +101,19 @@ class StockLedger {
 
     void insertAction(UUID id, UUID variantId, String kind, StockReason reason, int qty, Instant occurredAt, String actor, String note,
                       UUID reversesAction, String digest) {
+        insertAction(id, variantId, kind, reason, qty, occurredAt, actor, note, reversesAction, null, digest);
+    }
+
+    /**
+     * @param assessesAction only for the outcome of a returned piece ({@code RELEASE}, {@code RETURN_EXIT}): the take-back that put the piece
+     *                       back, which is the piece's id
+     */
+    void insertAction(UUID id, UUID variantId, String kind, StockReason reason, int qty, Instant occurredAt, String actor, String note,
+                      UUID reversesAction, UUID assessesAction, String digest) {
         jdbc.update("""
-                INSERT INTO stock_action (id, variant_id, kind, reason, qty, occurred_at, actor, note, reverses_action_id, request_digest)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                id, variantId, kind, reason.name(), qty, Timestamp.from(occurredAt), actor, note, reversesAction, digest);
+                INSERT INTO stock_action (id, variant_id, kind, reason, qty, occurred_at, actor, note, reverses_action_id, assesses_action_id, request_digest)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                id, variantId, kind, reason.name(), qty, Timestamp.from(occurredAt), actor, note, reversesAction, assessesAction, digest);
     }
 
     void insertLot(NewLot l) {
@@ -240,24 +249,30 @@ class StockLedger {
         List<Action> actions = new ArrayList<>();
         Map<UUID, ActionInfo> info = new HashMap<>();
         jdbc.query("""
-                SELECT id, seq, kind, reason, qty, occurred_at, reverses_action_id
+                SELECT id, seq, kind, reason, qty, occurred_at, reverses_action_id, assesses_action_id
                   FROM stock_action
-                 WHERE variant_id = ? AND kind IN ('SALE', 'WRITE_OFF', 'GIVE_AWAY', 'TAKE_BACK')
+                 WHERE variant_id = ? AND kind IN ('SALE', 'WRITE_OFF', 'GIVE_AWAY', 'TAKE_BACK', 'RELEASE', 'RETURN_EXIT')
                  ORDER BY seq""",
                 (RowCallbackHandler) rs -> {
                     UUID id = rs.getObject("id", UUID.class);
                     // A take-back puts units back where they came from. A RETURNED piece is put back and HELD there (not for sale
-                    // until somebody has looked at it); every other take-back is ordinary stock again.
-                    Kind kind = !"TAKE_BACK".equals(rs.getString("kind")) ? Kind.DRAIN
-                            : "RETURN".equals(rs.getString("reason")) ? Kind.RESTORE_HELD : Kind.RESTORE;
-                    actions.add(new Action(id, rs.getLong("seq"), kind, rs.getInt("qty"), rs.getObject("reverses_action_id", UUID.class)));
+                    // until somebody has looked at it); every other take-back is ordinary stock again. The held piece is then either
+                    // released (ordinary stock; nothing moves) or it leaves, out of the lot it is in.
+                    Kind kind = switch (rs.getString("kind")) {
+                        case "TAKE_BACK" -> "RETURN".equals(rs.getString("reason")) ? Kind.RESTORE_HELD : Kind.RESTORE;
+                        case "RELEASE" -> Kind.RELEASE;
+                        case "RETURN_EXIT" -> Kind.REDRAW;
+                        default -> Kind.DRAIN;
+                    };
+                    actions.add(new Action(id, rs.getLong("seq"), kind, rs.getInt("qty"), rs.getObject("reverses_action_id", UUID.class),
+                            rs.getObject("assesses_action_id", UUID.class)));
                     info.put(id, new ActionInfo(kind, StockReason.fromCode(rs.getString("reason")), rs.getTimestamp("occurred_at").toInstant()));
                 }, variantId);
 
         List<LiveChunk> live = jdbc.query("""
                 SELECT m.id, m.action_id, m.lot_id, abs(m.qty_delta) AS qty
                   FROM live_movement m JOIN stock_action a ON a.variant_id = m.variant_id AND a.id = m.action_id
-                 WHERE m.variant_id = ? AND a.kind IN ('SALE', 'WRITE_OFF', 'GIVE_AWAY', 'TAKE_BACK')""",
+                 WHERE m.variant_id = ? AND a.kind IN ('SALE', 'WRITE_OFF', 'GIVE_AWAY', 'TAKE_BACK', 'RELEASE', 'RETURN_EXIT')""",
                 (rs, n) -> new LiveChunk(rs.getLong("id"), rs.getObject("action_id", UUID.class), rs.getObject("lot_id", UUID.class),
                         rs.getInt("qty")),
                 variantId);
@@ -300,7 +315,8 @@ class StockLedger {
         Long firstOld = initial ? null : recut.reversedMovementIds().stream().min(Long::compare).orElseThrow();
         for (FifoConformer.Chunk chunk : recut.replacements()) {
             HeldLotRow lot = lots.get(chunk.lotId());
-            int delta = action.kind() == Kind.DRAIN ? -chunk.qty() : chunk.qty();
+            // Out of the lot for a drain and for a returned piece that leaves; into it for a restore.
+            int delta = action.kind() == Kind.DRAIN || action.kind() == Kind.REDRAW ? -chunk.qty() : chunk.qty();
             Long restores = null;
             if (action.kind() == Kind.RESTORE || action.kind() == Kind.RESTORE_HELD) {
                 UUID drain = jdbc.queryForObject("SELECT reverses_action_id FROM stock_action WHERE id = ?", UUID.class, recut.actionId());

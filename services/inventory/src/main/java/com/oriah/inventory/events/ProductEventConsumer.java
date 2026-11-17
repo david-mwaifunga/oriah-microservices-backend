@@ -270,8 +270,11 @@ public class ProductEventConsumer {
 
                 ProductRef existing = repository.findById(variant.variantId()).orElse(null);
                 if (existing == null) {
-                    repository.save(new ProductRef(variant.variantId(), productId, title));
+                    ProductRef ref = new ProductRef(variant.variantId(), productId, title);
+                    ref.learnSku(variant.sku());
+                    repository.save(ref);
                 } else {
+                    existing.learnSku(variant.sku());
                     // Managed entity; JPA dirty checking persists on commit.
                     // updateTitle deliberately does not clear productDeleted
                     // -- see its javadoc on why the flag is monotonic.

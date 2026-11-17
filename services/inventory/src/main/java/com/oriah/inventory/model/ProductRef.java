@@ -65,6 +65,10 @@ public class ProductRef extends BaseEntity {
     @Column(name = "product_deleted", nullable = false)
     private boolean productDeleted;
 
+    /** The variant's SKU as catalog last announced it; null for a row written before Phase 12 until its product's next snapshot. */
+    @Column(name = "sku", length = 64)
+    private String sku;
+
     /** JPA-only no-args constructor. Do not call from application code. */
     protected ProductRef() {}
 
@@ -88,6 +92,17 @@ public class ProductRef extends BaseEntity {
 
     public UUID productId() {
         return productId;
+    }
+
+    public String sku() {
+        return sku;
+    }
+
+    /** Keeps the SKU a snapshot carries. A snapshot with none (an older shape) leaves what is known alone. */
+    public void learnSku(String announced) {
+        if (announced != null && !announced.isBlank()) {
+            this.sku = announced.trim();
+        }
     }
 
     public boolean isProductDeleted() {
