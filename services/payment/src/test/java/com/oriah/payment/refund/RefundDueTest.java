@@ -30,6 +30,7 @@ import com.oriah.payment.TestcontainersConfiguration;
 import com.oriah.payment.confirmation.ConfirmationService;
 import com.oriah.payment.confirmation.Staff;
 import com.oriah.payment.dto.ConfirmPaymentRequest;
+import com.oriah.payment.exception.PaymentProblem;
 import com.oriah.payment.events.PaidOutEvent;
 import com.oriah.payment.events.PayoutVoidedEvent;
 import com.oriah.payment.events.RefundClosedEvent;
@@ -37,7 +38,6 @@ import com.oriah.payment.events.RefundDueRecordedEvent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 /**
  * What payment owes a customer after a sale was corrected (Phase 12). Order announces the correction (a paid order cancelled before it left, or
  * pieces that came back) and what is owed; payment keeps ONE debt per correction, under the correction's own id, and announces it. The debt is
@@ -59,6 +59,8 @@ class RefundDueTest {
     private Consumer<Message<byte[]>> orderEvents;
     @Autowired
     private ConfirmationService confirmations;
+    @Autowired
+    private RefundDues refunds;
     @Autowired
     private JdbcTemplate jdbc;
     @MockitoBean
@@ -222,8 +224,102 @@ class RefundDueTest {
         assertThat((String) events(correction).getFirst().get("payload")).contains("\"status\":\"IN_QUESTION\"");
     }
 
-    // ---------------------------------------------------------------- what is announced, to the byte
+    /** A sale of K270.00 paid by a money record that was cancelled before it settled: every debt out of it is in question. */
+    private UUID saleWhoseMoneyRecordWasCancelled(UUID order) {
+        UUID confirmation = confirmed(order, "270.00");
+        confirmations.voidConfirmation(confirmation, "keyed against the wrong order", SAM);
+        paid(order, confirmation);
+        return confirmation;
+    }
 
+    private List<String> eventTypes(UUID debt) {
+        return events(debt).stream().map(e -> (String) e.get("event_type")).toList();
+    }
+
+    @Test
+    @DisplayName("whether the money arrived is a fact about the PAYMENT, said once: 'it arrived' makes every debt out of that payment payable, a later debt out of it is payable from the start, and nobody can then say it never came")
+    void theMoneyOfOnePaymentArrivedForAllItsDebts() {
+        UUID order = UUID.randomUUID();
+        UUID confirmation = saleWhoseMoneyRecordWasCancelled(order);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        corrected("RETURN", first, order, confirmation, "90.00", "CUSTOMER");
+        corrected("RETURN", second, order, confirmation, "90.00", "CUSTOMER");
+        assertThat(debt(first)).containsEntry("status", "IN_QUESTION");
+        assertThat(debt(second)).containsEntry("status", "IN_QUESTION");
+
+        refunds.moneyCheck(first, true, "the MTN statement shows it on 3 November", SAM);
+
+        assertThat(debt(first)).containsEntry("status", "OWED");
+        assertThat(debt(second)).as("the same money: the answer is the same").containsEntry("status", "OWED");
+        assertThat(jdbc.queryForObject("SELECT money_arrived FROM refund_due_check WHERE refund_due_id = ?", Boolean.class, second)).isTrue();
+        assertThatThrownBy(() -> refunds.moneyCheck(second, false, "on second thoughts it did not", SAM))
+                .isInstanceOf(PaymentProblem.class).hasMessageContaining("already");
+        assertThat(debt(second)).containsEntry("status", "OWED");
+
+        // A third ring comes back later: the question was answered, so it is simply owed.
+        UUID third = UUID.randomUUID();
+        corrected("RETURN", third, order, confirmation, "90.00", "CUSTOMER");
+        assertThat(debt(third)).containsEntry("status", "OWED");
+        assertThat(eventTypes(first)).containsExactly("payment.refund_due_recorded");
+        assertThat(eventTypes(second)).containsExactly("payment.refund_due_recorded");
+        assertThat(eventTypes(third)).containsExactly("payment.refund_due_recorded");
+    }
+
+    @Test
+    @DisplayName("'the money never arrived' closes every debt out of that payment, each announced, a later debt out of it is closed as it is recorded, and nobody can then say it did arrive")
+    void theMoneyOfOnePaymentNeverArrivedForAllItsDebts() {
+        UUID order = UUID.randomUUID();
+        UUID confirmation = saleWhoseMoneyRecordWasCancelled(order);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        corrected("RETURN", first, order, confirmation, "90.00", "CUSTOMER");
+        corrected("RETURN", second, order, confirmation, "90.00", "CUSTOMER");
+
+        refunds.moneyCheck(second, false, "no such payment on the MTN statement", SAM);
+
+        assertThat(debt(first)).containsEntry("status", "CLOSED");
+        assertThat(debt(second)).containsEntry("status", "CLOSED");
+        assertThat(eventTypes(first)).containsExactly("payment.refund_due_recorded", "payment.refund_closed");
+        assertThat(eventTypes(second)).containsExactly("payment.refund_due_recorded", "payment.refund_closed");
+        assertThatThrownBy(() -> refunds.moneyCheck(first, true, "it turned up after all, I think", SAM)).isInstanceOf(PaymentProblem.class);
+
+        UUID third = UUID.randomUUID();
+        corrected("RETURN", third, order, confirmation, "90.00", "CUSTOMER");
+        assertThat(debt(third)).containsEntry("status", "CLOSED");
+        assertThat(eventTypes(third)).containsExactly("payment.refund_due_recorded", "payment.refund_closed");
+        assertThat((String) events(third).get(1).get("payload")).doesNotContain("statement");
+    }
+
+    @Test
+    @DisplayName("the database holds both rules too: two debts of one payment cannot carry opposite answers, and a payout that stands and was not cash keeps its reference")
+    void theDatabaseHoldsTheReviewRules() {
+        UUID order = UUID.randomUUID();
+        UUID confirmation = saleWhoseMoneyRecordWasCancelled(order);
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        corrected("RETURN", first, order, confirmation, "90.00", "CUSTOMER");
+        corrected("RETURN", second, order, confirmation, "90.00", "CUSTOMER");
+        String check = "INSERT INTO refund_due_check (id, refund_due_id, money_arrived, reason, checked_by, checked_at) VALUES (?, ?, ?, 'written by hand, past the service', 'user:x', now())";
+        jdbc.update(check, UUID.randomUUID(), first, true);
+
+        assertThatThrownBy(() -> jdbc.update(check, UUID.randomUUID(), second, false))
+                .hasMessageContaining("arrived or it did not");
+
+        // A mobile-money payout written with its reference but without the key that keeps a reference to one payout.
+        UUID plain = UUID.randomUUID();
+        UUID money = paidSale(UUID.randomUUID(), "90.00");
+        UUID plainOrder = jdbc.queryForObject("SELECT order_id FROM payment_confirmation WHERE id = ?", UUID.class, money);
+        corrected("RETURN", plain, plainOrder, money, "90.00", "CUSTOMER");
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO money_out (id, purpose, refund_due_id, live_for, order_id, confirmation_id, cause, gross, customer_fee, send_charge, fee_bearer,
+                                       currency, method, reference, reference_key, paid_at, paid_by, recorded_at, idempotency_key, request_fingerprint)
+                VALUES (?, 'REFUND', ?, ?, ?, ?, 'RETURN', 90.00, 0.00, 0.00, 'CUSTOMER', 'ZMW', 'MTN', 'ABC123', NULL, now(), 'user:x', now(), ?, ?)""",
+                UUID.randomUUID(), plain, plain, plainOrder, money, "k-" + UUID.randomUUID(), "a".repeat(64)))
+                .hasMessageContaining("money_out_live_reference_is_keyed");
+    }
+
+    // ---------------------------------------------------------------- what is announced, to the byte
     private static String contract(String name) throws Exception {
         return Files.readString(Path.of("src/test/resources/contracts/" + name)).strip();
     }

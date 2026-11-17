@@ -136,7 +136,16 @@ public class RefundDues {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 correctionId, kind, orderId, confirmationId, owed, currency, feeBearer, Timestamp.from(since), sourceEventId, Timestamp.from(now), status);
         events.dueRecorded(new RefundDueRecordedEvent(correctionId, kind, orderId, confirmationId, owed, currency, feeBearer, status, since, now), actor);
-        if (voided) {
+        Map<String, Object> said = voided ? answerFor(confirmationId) : null;
+        if (said != null) {
+            // Whether the money arrived is a fact about the PAYMENT, and the owner has already said it for another debt out of this one: the same
+            // answer holds here. Asking again could only get the opposite answer for the same money.
+            boolean arrived = (Boolean) said.get("money_arrived");
+            settle(correctionId, orderId, confirmationId, owed, currency, arrived, (String) said.get("reason"), (String) said.get("checked_by"),
+                    (String) said.get("checked_by_name"), now);
+            log.info("Refund {} of {} {} for order {}: it was already said that the money of this payment {}", correctionId, owed.toPlainString(), currency,
+                    orderId, arrived ? "arrived, so it is owed" : "never arrived, so it is closed");
+        } else if (voided) {
             log.error("Refund {} of {} {} for order {} is IN QUESTION: the money record that paid the sale was cancelled. The owner must say whether the money arrived",
                     correctionId, owed.toPlainString(), currency, orderId);
         } else {
@@ -144,8 +153,29 @@ public class RefundDues {
         }
     }
 
+    /** What was already said about the money of this payment, for any debt out of it; null when nothing was. The confirmation's lock is held. */
+    private Map<String, Object> answerFor(UUID confirmationId) {
+        return jdbc.queryForList("""
+                SELECT c.money_arrived, c.reason, c.checked_by, c.checked_by_name FROM refund_due_check c JOIN refund_due d ON d.id = c.refund_due_id
+                 WHERE d.confirmation_id = ? ORDER BY c.checked_at, c.id LIMIT 1""", confirmationId).stream().findFirst().orElse(null);
+    }
+
+    /** Writes the answer down for one debt in question and makes it payable, or closes it and announces that. */
+    private void settle(UUID dueId, UUID orderId, UUID confirmationId, BigDecimal owed, String currency, boolean moneyArrived, String why, String actor,
+                        String name, Instant now) {
+        jdbc.update("INSERT INTO refund_due_check (id, refund_due_id, money_arrived, reason, checked_by, checked_by_name, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                UUID.randomUUID(), dueId, moneyArrived, why, actor, name, Timestamp.from(now));
+        if (moneyArrived) {
+            jdbc.update("UPDATE refund_due SET status = 'OWED' WHERE id = ?", dueId);
+        } else {
+            jdbc.update("UPDATE refund_due SET status = 'CLOSED' WHERE id = ?", dueId);
+            events.closed(new RefundClosedEvent(dueId, orderId, confirmationId, owed, currency, RefundClosedEvent.MONEY_NEVER_ARRIVED, now, now), actor);
+        }
+    }
+
     /**
-     * The owner's word on a debt in question, once.
+     * The owner's word on a debt in question, once: it is about the money of the PAYMENT, so it settles every debt in question out of that payment
+     * and stands for any recorded later.
      *
      * @throws PaymentProblem 404 {@code refund-due-not-found}; 409 {@code already-checked}, {@code not-in-question}
      */
@@ -159,21 +189,22 @@ public class RefundDues {
                 .orElseThrow(() -> notFound(dueId));
         jdbc.query("SELECT id FROM payment_confirmation WHERE id = ? FOR UPDATE", rs -> { }, confirmation);
         Map<String, Object> due = jdbc.queryForMap("SELECT status, order_id, owed_gross, currency FROM refund_due WHERE id = ? FOR UPDATE", dueId);
-        if (jdbc.queryForObject("SELECT count(*) FROM refund_due_check WHERE refund_due_id = ?", Long.class, dueId) > 0) {
-            throw new PaymentProblem(HttpStatus.CONFLICT, "already-checked", "it was already said whether the money of refund " + dueId + " arrived: that is said once");
+        // Said once for the PAYMENT (the confirmation's lock is held): an answer already given for any debt out of it stands for this one too.
+        if (answerFor(confirmation) != null) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "already-checked", "it was already said whether the money of this payment arrived: that is said once, "
+                    + "and it holds for every refund out of the same payment");
         }
         if (!"IN_QUESTION".equals(due.get("status"))) {
             throw new PaymentProblem(HttpStatus.CONFLICT, "not-in-question", "refund " + dueId + " is " + due.get("status") + ": there is nothing to check");
         }
         Instant now = now();
-        jdbc.update("INSERT INTO refund_due_check (id, refund_due_id, money_arrived, reason, checked_by, checked_by_name, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                UUID.randomUUID(), dueId, moneyArrived, why, staff.actor(), staff.name(), Timestamp.from(now));
-        if (moneyArrived) {
-            jdbc.update("UPDATE refund_due SET status = 'OWED' WHERE id = ?", dueId);
-        } else {
-            jdbc.update("UPDATE refund_due SET status = 'CLOSED' WHERE id = ?", dueId);
-            events.closed(new RefundClosedEvent(dueId, (UUID) due.get("order_id"), confirmation, (BigDecimal) due.get("owed_gross"), (String) due.get("currency"),
-                    RefundClosedEvent.MONEY_NEVER_ARRIVED, now, now), staff.actor());
+        // The answer is about the money, so it settles EVERY debt in question out of this payment, this one first.
+        List<Map<String, Object>> inQuestion = jdbc.queryForList("""
+                SELECT id, order_id, owed_gross, currency FROM refund_due WHERE confirmation_id = ? AND status = 'IN_QUESTION'
+                 ORDER BY (id = ?) DESC, created_at, id FOR UPDATE""", confirmation, dueId);
+        for (Map<String, Object> other : inQuestion) {
+            settle((UUID) other.get("id"), (UUID) other.get("order_id"), confirmation, (BigDecimal) other.get("owed_gross"), (String) other.get("currency"),
+                    moneyArrived, why, staff.actor(), staff.name(), now);
         }
         // Which debt, who, and what was said. Never the reason: a person typed it.
         log.info("Refund {} checked by {}: the money {}", dueId, staff.actor(), moneyArrived ? "arrived, so it is owed" : "never arrived, so it is closed");
