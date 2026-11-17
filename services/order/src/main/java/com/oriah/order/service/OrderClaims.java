@@ -72,6 +72,8 @@ public class OrderClaims {
             throw new SalesProblem(HttpStatus.CONFLICT, "order-not-awaiting-payment",
                     "this order is " + order.status() + ": a payment reference can only be given for an order waiting for payment");
         }
+        // A payment through ZynlePay is in flight (Phase 13): a second way of paying now could pay the order twice.
+        ProviderPaymentHolds.refuseWhileInFlight(order);
         if (order.holdState() != HoldState.HELD) {
             throw new SalesProblem(HttpStatus.CONFLICT, "order-not-held", "this order does not hold its pieces: place it again");
         }

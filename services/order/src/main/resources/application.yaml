@@ -325,6 +325,11 @@ oriah:
     max-live-orders: 3
     max-held-pieces: 20
     payment-submitted-hold: PT24H
+    # A payment through ZynlePay (Phase 13): how long the pieces are held once the order has taken the attempt (long enough for the customer to
+    # approve it and for ZynlePay to answer; payment hands an unanswered attempt to the owner after 30 minutes), and the least time a hold must
+    # have left for an attempt to be taken at all.
+    provider-payment-hold: PT45M
+    provider-payment-min-hold-left: PT2M
     pending-grace: PT1M
     settlement-stuck-after: PT5M
     hold-job:

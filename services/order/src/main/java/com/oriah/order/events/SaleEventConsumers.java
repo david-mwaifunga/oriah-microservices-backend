@@ -37,7 +37,8 @@ public class SaleEventConsumers {
 
     @Bean
     public Consumer<Message<byte[]>> paymentEvents(Inbox inbox, PlatformTransactionManager transactions, SettlementService settlements, OrderEnds ends,
-                                                   SettlementDriver driver, com.oriah.order.service.RefundFacts refunds) {
+                                                   SettlementDriver driver, com.oriah.order.service.RefundFacts refunds,
+                                                   com.oriah.order.service.ProviderPaymentHolds providerPayments) {
         return OrderInbox.handler(inbox, transactions, (type, payload) -> switch (type) {
             case OrderInbox.CONFIRMED -> settlements.receive(InboundEvents.read(payload, PaymentConfirmed.class));
             case OrderInbox.REJECTED -> {
@@ -69,7 +70,12 @@ public class SaleEventConsumers {
                 yield null;
             }
             case OrderInbox.PROVIDER_PAYMENT_UPDATED -> {
-                // Nothing yet: the order has no mirror of an attempt until its own slice of Phase 13.
+                // Only a failure lets the order go. VERIFIED is not acted on: the money arrives as its own payment.confirmed, in either order, and
+                // the order stays closed until that is being applied. UNRESOLVED keeps it closed until the owner decides.
+                InboundEvents.ProviderPaymentUpdated updated = InboundEvents.read(payload, InboundEvents.ProviderPaymentUpdated.class);
+                if ("FAILED".equals(updated.status())) {
+                    providerPayments.failed(updated.orderId(), updated.providerPaymentId());
+                }
                 yield null;
             }
             default -> throw new IllegalStateException("declared as handled but not applied: " + type);

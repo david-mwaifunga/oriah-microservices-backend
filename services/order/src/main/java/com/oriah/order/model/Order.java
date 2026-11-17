@@ -212,6 +212,13 @@ public class Order extends BaseEntity {
     @Column(name = "hold_extension_pending", nullable = false)
     private boolean holdExtensionPending;
 
+    /**
+     * The payment through ZynlePay in flight for this order (Phase 13), or null. While it is set nothing else may pay or end the order. It has no
+     * clock: {@link #endProviderPayment} (the attempt FAILED) and {@link #beginSettlement} (money is being applied) let it go.
+     */
+    @Column(name = "provider_payment_id")
+    private UUID providerPaymentId;
+
     /** What the shopper SAID they paid with. Not money: staff confirm money, or reject the claim. */
     @Column(name = "claim_id")
     private UUID claimId;
@@ -532,6 +539,7 @@ public class Order extends BaseEntity {
     public String quoteDigest() { return quoteDigest; }
     public String idempotencyKey() { return idempotencyKey; }
     public boolean holdExtensionPending() { return holdExtensionPending; }
+    public UUID providerPaymentId() { return providerPaymentId; }
     public UUID claimId() { return claimId; }
     public ClaimMethod claimMethod() { return claimMethod; }
     public String claimReference() { return claimReference; }
@@ -554,7 +562,42 @@ public class Order extends BaseEntity {
             throw new IllegalStateException("order " + id + " is " + status + " and takes no payment");
         }
         this.settlingConfirmationId = confirmationId;
+        // Money is being applied: whatever attempt was in flight, the order is closed to everything else by the settlement itself from here.
+        this.providerPaymentId = null;
         this.updatedAt = Instant.now();
+    }
+
+    /**
+     * Takes an attempt to collect this order's total through ZynlePay: the order is closed to other money, and the stretch of its hold is still
+     * to be confirmed by inventory ({@link #holdExtended} clears that).
+     *
+     * @throws IllegalStateException when the order is not CREATED and held, is having money applied, or already carries another attempt
+     */
+    public void takeProviderPayment(UUID attemptId) {
+        if (status != OrderStatus.CREATED || holdState != HoldState.HELD || settlingConfirmationId != null) {
+            throw new IllegalStateException("order " + id + " is not waiting for payment (" + status + ", hold " + holdState + ")");
+        }
+        this.providerPaymentId = attemptId;
+        this.holdExtensionPending = true;
+        this.updatedAt = Instant.now();
+    }
+
+    /**
+     * The attempt is over without money (it FAILED, or the hold could not be stretched for it): the order is open again. Only the attempt the
+     * order carries ends it; nothing waits to be stretched any more.
+     *
+     * @return whether this was the attempt the order carried
+     */
+    public boolean endProviderPayment(UUID attemptId) {
+        if (providerPaymentId == null || !providerPaymentId.equals(attemptId)) {
+            return false;
+        }
+        this.providerPaymentId = null;
+        if (status == OrderStatus.CREATED) {
+            this.holdExtensionPending = false;
+        }
+        this.updatedAt = Instant.now();
+        return true;
     }
 
     /** The settlement in flight ended without paying the sale. */
@@ -771,6 +814,10 @@ public class Order extends BaseEntity {
         }
         if (settlingConfirmationId != null) {
             throw new IllegalStateException("being-applied");
+        }
+        if (providerPaymentId != null) {
+            // The amount ZynlePay was asked for is the total as it stood: lowering it now would make the money that comes the wrong amount.
+            throw new IllegalStateException("provider-payment");
         }
         if (deliveryWaivedAmount != null) {
             throw new IllegalStateException("already-waived");

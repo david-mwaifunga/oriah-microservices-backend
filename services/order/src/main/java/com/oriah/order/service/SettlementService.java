@@ -110,6 +110,11 @@ public class SettlementService {
         Instant now = now();
         String reason = unsettledReason(order, p);
         if (reason != null) {
+            if (order != null && p.providerPaymentId() != null && order.endProviderPayment(p.providerPaymentId())) {
+                // The attempt's own money came and cannot pay the order (held for the customer): the attempt is over. Other money held for the order
+                // (an earlier attempt's, recorded by the owner) leaves the attempt in flight standing.
+                repository.flush();
+            }
             if (insert(p, "UNSETTLED", reason, null, now) == 1) {
                 events.paymentUnsettled(p.orderId(), p.confirmationId(), reason, p.currency().toUpperCase(), now, ACTOR);
                 log.info("Confirmation {} of {} for order {} is UNSETTLED: {}", p.confirmationId(), p.gross(), p.orderId(), reason);

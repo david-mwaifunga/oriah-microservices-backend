@@ -58,10 +58,36 @@ public class OrderController {
     private final OrderClaimService claimService;
     private final DispatchViews views;
 
-    public OrderController(OrderService service, OrderClaimService claimService, DispatchViews views) {
+    private final com.oriah.order.service.ProviderPaymentHoldService providerPayments;
+
+    public OrderController(OrderService service, OrderClaimService claimService, DispatchViews views,
+                           com.oriah.order.service.ProviderPaymentHoldService providerPayments) {
+        this.providerPayments = providerPayments;
         this.views = views;
         this.service = service;
         this.claimService = claimService;
+    }
+
+    @Operation(operationId = "takeProviderPayment", summary = "Payment asks the order to take a payment through ZynlePay (internal)",
+            description = "Called by the payment service only, with the shopper's own token, before it asks ZynlePay for any money; the gateway refuses "
+                    + "this path to everyone. The order must be the caller's, waiting for payment and holding its pieces. It then carries the attempt "
+                    + "(nothing else may pay or end it meanwhile) and holds its pieces for 45 minutes. The answer is what is owed. The same attempt "
+                    + "again is the same answer.")
+    @ApiResponse(responseCode = "200", description = "The order took the attempt and its pieces are held for it")
+    @ApiResponse(responseCode = "404", description = "No such order of the caller's",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "`provider-payment-in-progress`, `payment-already-submitted`, `payment-being-applied`, "
+            + "`order-not-awaiting-payment`, `order-not-held`, `hold-expired` or `hold-too-short`",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503", description = "Inventory did not answer: the attempt is kept, ask again",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/{id}/provider-payment")
+    public com.oriah.order.dto.ProviderPaymentHoldResponse takeProviderPayment(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody com.oriah.order.dto.ProviderPaymentHoldRequest body) {
+        com.oriah.order.model.Order order = providerPayments.take(jwt.getSubject(), id, body.providerPaymentId(), body.supersedes(), Actor.of(jwt));
+        return new com.oriah.order.dto.ProviderPaymentHoldResponse(order.id(), order.total(), order.currency(), order.holdExpiresAt());
     }
 
     @Operation(operationId = "claimPayment", summary = "Say how you paid: a mobile-money or bank-transfer reference",

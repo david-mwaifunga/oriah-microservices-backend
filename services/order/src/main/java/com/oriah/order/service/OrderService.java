@@ -191,6 +191,9 @@ public class OrderService {
             throw switch (refused.getMessage()) {
                 case "being-applied" -> new SalesProblem(HttpStatus.CONFLICT, "payment-being-applied",
                         "a confirmed payment is being applied to this order right now: look at it again in a moment");
+                case "provider-payment" -> new SalesProblem(HttpStatus.CONFLICT, "provider-payment-in-progress",
+                        "a payment through ZynlePay is in progress for this order at its present total: delivery cannot be made free until it has "
+                                + "finished").with("providerPaymentId", order.providerPaymentId());
                 case "already-waived" -> new SalesProblem(HttpStatus.CONFLICT, "delivery-already-waived",
                         "this order's delivery was already made free: " + order.deliveryWaivedBy() + " did it");
                 case "nothing-to-waive" -> new SalesProblem(HttpStatus.CONFLICT, "no-delivery-to-waive",
@@ -219,6 +222,8 @@ public class OrderService {
             throw new SalesProblem(HttpStatus.CONFLICT, "payment-being-applied",
                     "a confirmed payment is being applied to this order right now: look at it again in a moment");
         }
+        // A payment through ZynlePay is in flight (Phase 13): its money may still come, for the order as it stands.
+        ProviderPaymentHolds.refuseWhileInFlight(order);
         return order;
     }
 

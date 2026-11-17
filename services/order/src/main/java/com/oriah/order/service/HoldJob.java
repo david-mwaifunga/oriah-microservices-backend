@@ -52,9 +52,15 @@ public class HoldJob {
     private final OrderEnds ends;
     private final Duration lapseGrace;
 
+    private final ProviderPaymentHolds providerPayments;
+    private final ProviderPaymentHoldService providerPaymentHolds;
+
     public HoldJob(JdbcTemplate jdbc, OrderRepository repository, OrderHolds holds, OrderClaims claims, OrderWriter writer, Clock clock,
                    @Value("${oriah.sales.pending-grace:PT1M}") Duration pendingGrace, OrderEnds ends,
-                   @Value("${oriah.sales.lapse-grace:PT2M}") Duration lapseGrace) {
+                   @Value("${oriah.sales.lapse-grace:PT2M}") Duration lapseGrace, ProviderPaymentHolds providerPayments,
+                   ProviderPaymentHoldService providerPaymentHolds) {
+        this.providerPayments = providerPayments;
+        this.providerPaymentHolds = providerPaymentHolds;
         this.jdbc = jdbc;
         this.repository = repository;
         this.holds = holds;
@@ -93,7 +99,8 @@ public class HoldJob {
 
     private void finishExtensions() {
         List<UUID> pending = jdbc.queryForList(
-                "SELECT id FROM orders WHERE hold_extension_pending AND status = 'PAYMENT_SUBMITTED' ORDER BY claim_submitted_at LIMIT ?", UUID.class, BATCH);
+                "SELECT id FROM orders WHERE hold_extension_pending AND status IN ('PAYMENT_SUBMITTED', 'CREATED') "
+                        + "ORDER BY COALESCE(claim_submitted_at, placed_at) LIMIT ?", UUID.class, BATCH);
         for (UUID id : pending) {
             try {
                 Order order = repository.findById(id).orElse(null);
@@ -101,7 +108,13 @@ public class HoldJob {
                     continue;
                 }
                 try {
-                    claims.extended(id, holds.extend(order), ACTOR);
+                    if (order.status() == com.oriah.order.model.OrderStatus.CREATED) {
+                        // A payment through ZynlePay was taken and its stretch never made (Phase 13). No claim exists, so none is announced: the
+                        // hold is stretched and that is all.
+                        providerPayments.extendedLater(id, holds.extend(order, providerPaymentHolds.until()));
+                    } else {
+                        claims.extended(id, holds.extend(order), ACTOR);
+                    }
                 } catch (OrderHolds.HoldGoneException gone) {
                     claims.lapsed(id, ACTOR);
                 }

@@ -25,7 +25,7 @@ public final class InboundEvents {
     /** {@code payment.confirmed}: staff recorded money that reached Oriah for an order. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record PaymentConfirmed(UUID confirmationId, UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net,
-                                   String currency, Instant arrivedAt, String confirmedBy) {
+                                   String currency, Instant arrivedAt, String confirmedBy, UUID providerPaymentId) {
         public PaymentConfirmed {
             need(confirmationId, "confirmationId");
             need(orderId, "orderId");
@@ -38,6 +38,19 @@ public final class InboundEvents {
             if (gross.signum() <= 0) {
                 throw new IllegalArgumentException("gross must be above zero, was " + gross);
             }
+        }
+    }
+
+    /**
+     * {@code payment.provider_payment_updated} (Phase 13): where an attempt to collect through ZynlePay stands. Order reads which attempt, for which
+     * order, and whether it FAILED: that alone lets the order go. Its money, if any, arrives as its own {@code payment.confirmed}.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record ProviderPaymentUpdated(UUID providerPaymentId, UUID orderId, String status) {
+        public ProviderPaymentUpdated {
+            need(providerPaymentId, "providerPaymentId");
+            need(orderId, "orderId");
+            need(status, "status");
         }
     }
 

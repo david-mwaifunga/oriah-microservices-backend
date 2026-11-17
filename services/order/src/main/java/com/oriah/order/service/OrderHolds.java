@@ -213,9 +213,18 @@ public class OrderHolds {
      * @throws HoldGoneException the hold lapsed or was released (409 {@code reservation-expired} / {@code reservation-not-held}) or is unknown (404)
      */
     public java.time.Instant extend(Order order) {
+        return extend(order, clock.instant().plus(maxHold));
+    }
+
+    /**
+     * Stretches the hold to {@code until} (Phase 13: for a payment through ZynlePay, long enough for the customer to approve it). Inventory caps
+     * it at a day from when the hold was made and never shortens it, so the time it answers is what the caller must judge by.
+     *
+     * @throws HoldGoneException as {@link #extend(Order)}
+     */
+    public java.time.Instant extend(Order order, java.time.Instant until) {
         try {
-            InventoryClient.Reservation stretched = inventory.extend(order.reservationId(),
-                    new InventoryClient.ExtendAsk(clock.instant().plus(maxHold)));
+            InventoryClient.Reservation stretched = inventory.extend(order.reservationId(), new InventoryClient.ExtendAsk(until));
             if (stretched == null || stretched.expiresAt() == null) {
                 log.error("inventory answered order {}'s extension with no time: {}", order.id(), stretched);
                 throw new UpstreamRejectedException("inventory answered the extension with no time");
