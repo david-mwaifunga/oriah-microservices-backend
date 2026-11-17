@@ -327,6 +327,37 @@ oriah:
     settlement-job:
       enabled: true
       delay: 15000
+    # Phase 12 (returns and refunds). correction-job: asks inventory again, every 15 s, for a paid cancellation or a return whose stock answer was never
+    #     heard, and for a returned piece whose outcome inventory has not recorded yet; the wait between tries doubles from 15 s up to five minutes.
+    # correction-stuck-after: how long a correction may wait on inventory before it is called STUCK (an ERROR in the log; staff see it in their list).
+    # return-duplicate-window: a second return of the same pieces of one order inside this window must be confirmed by the person (a double click).
+    correction-job:
+      enabled: true
+      delay: 15000
+    correction-stuck-after: PT5M
+    return-duplicate-window: PT10M
+
+  # -------------------------------------------------------------------------
+  # Refunds (Phase 12). Who bears the charge for sending a refund back, per reason: CUSTOMER (the charge is taken from the refund: the client's rule,
+  # CLIENT_DECISIONS) or ORIAH. Every reason must be set: a missing one refuses to start. The answer is written on the correction when it is recorded,
+  # so changing a setting never changes a debt already recorded. Typing K0.00 at the payout is how the owner waives the charge on one case.
+  # -------------------------------------------------------------------------
+  refunds:
+    bearer:
+      cancellation:
+        CUSTOMER_ASKED: CUSTOMER
+        PIECE_UNAVAILABLE: CUSTOMER
+        SHOP_ERROR: CUSTOMER
+        OTHER: CUSTOMER
+      return:
+        CHANGED_MIND: CUSTOMER
+        WRONG_SIZE: CUSTOMER
+        FAULTY: CUSTOMER
+        NOT_AS_DESCRIBED: CUSTOMER
+        WRONG_ITEM_SENT: CUSTOMER
+        DAMAGED_IN_TRANSIT: CUSTOMER
+        NOT_DELIVERED: CUSTOMER
+        OTHER: CUSTOMER
 
   # -------------------------------------------------------------------------
   # Local fallback for GET /api/v1/orders/contact-info.
