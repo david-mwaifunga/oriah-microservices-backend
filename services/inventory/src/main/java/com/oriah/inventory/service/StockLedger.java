@@ -117,14 +117,136 @@ class StockLedger {
     }
 
     void insertLot(NewLot l) {
+        insertLot(l, null, null);
+    }
+
+    /**
+     * The one-piece lot of a marked-down listing (Phase 12): a lot like any other, that also says which lot its piece came out of and which
+     * movement took it out. It shares that lot's delivery line, so the line still accounts for every piece it brought.
+     */
+    void insertChildLot(NewLot l, UUID sourceLotId, UUID sourceActionId) {
+        insertLot(l, sourceLotId, sourceActionId);
+    }
+
+    private void insertLot(NewLot l, UUID sourceLotId, UUID sourceActionId) {
         jdbc.update("""
                 INSERT INTO cost_lot (id, variant_id, kind, sku, product_title, variant_title, consignment_id, consignment_reference,
                                       consignment_line_id, supplier_id, supplier_name, received_at, fifo_tiebreak, slice_position,
-                                      revision, qty_received, qty_remaining, unit_cost, is_estimated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      revision, qty_received, qty_remaining, unit_cost, is_estimated, source_lot_id, source_action_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 l.id(), l.variantId(), l.kind(), l.sku(), l.productTitle(), l.variantTitle(), l.consignmentId(),
                 l.consignmentReference(), l.consignmentLineId(), l.supplierId(), l.supplierName(), Timestamp.from(l.receivedAt()),
-                l.fifoTiebreak(), l.slicePosition(), l.revision(), l.qtyReceived(), l.qtyRemaining(), l.unitCost(), l.estimated());
+                l.fifoTiebreak(), l.slicePosition(), l.revision(), l.qtyReceived(), l.qtyRemaining(), l.unitCost(), l.estimated(),
+                sourceLotId, sourceActionId);
+    }
+
+    // ---------------------------------------------------------------- the marked-down lot family (Phase 12)
+
+    /** A lot as it was made: everything a lot that takes its place (or its piece) copies from it. */
+    record LotIdentity(UUID id, UUID variantId, String kind, String sku, String productTitle, String variantTitle, UUID consignmentId,
+                       String consignmentReference, UUID consignmentLineId, UUID supplierId, String supplierName, Instant receivedAt, long fifoTiebreak,
+                       int slicePosition, int revision, BigDecimal unitCost, boolean estimated) {
+    }
+
+    LotIdentity lot(UUID lotId) {
+        return jdbc.queryForObject("""
+                SELECT id, variant_id, kind, sku, product_title, variant_title, consignment_id, consignment_reference, consignment_line_id, supplier_id,
+                       supplier_name, received_at, fifo_tiebreak, slice_position, revision, unit_cost, is_estimated FROM cost_lot WHERE id = ?""",
+                (rs, n) -> new LotIdentity(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getString("kind"), rs.getString("sku"),
+                        rs.getString("product_title"), rs.getString("variant_title"), rs.getObject("consignment_id", UUID.class),
+                        rs.getString("consignment_reference"), rs.getObject("consignment_line_id", UUID.class), rs.getObject("supplier_id", UUID.class),
+                        rs.getString("supplier_name"), rs.getTimestamp("received_at").toInstant(), rs.getLong("fifo_tiebreak"), rs.getInt("slice_position"),
+                        rs.getInt("revision"), rs.getBigDecimal("unit_cost"), rs.getBoolean("is_estimated")),
+                lotId);
+    }
+
+    /** The lot a returned piece left from, and at what cost: the live row of the movement that took it out. */
+    record Exit(UUID lotId, BigDecimal unitCost, boolean estimated) {
+    }
+
+    Exit exitOf(UUID exitActionId) {
+        return jdbc.queryForObject("SELECT lot_id, unit_cost, is_estimated FROM live_movement WHERE action_id = ?",
+                (rs, n) -> new Exit(rs.getObject("lot_id", UUID.class), rs.getBigDecimal("unit_cost"), rs.getBoolean("is_estimated")), exitActionId);
+    }
+
+    /** The marked-down listings that hold pieces of this variant: their stock rows are locked together with its own. */
+    List<UUID> childrenOf(UUID sourceVariantId) {
+        return jdbc.queryForList("SELECT child_variant_id FROM markdown_relist WHERE source_variant_id = ? ORDER BY child_variant_id", UUID.class, sourceVariantId);
+    }
+
+    /**
+     * One marked-down piece of a variant, as its family stands: the lot and cost its piece left at NOW (the live row of its exit), beside the
+     * one-piece lot that holds it. In step: the lot points at that lot and costs that cost. Any of the lot columns may be null when the
+     * books are broken, which is exactly what the reconciliation reports.
+     */
+    record Family(UUID pieceId, UUID childVariantId, UUID exitActionId, UUID exitLotId, BigDecimal exitUnitCost, Boolean exitEstimated, UUID childLotId,
+                  UUID sourceLotId, BigDecimal childUnitCost, Boolean childEstimated, Integer childRevision) {
+
+        boolean inStep() {
+            return exitLotId != null && childLotId != null && exitLotId.equals(sourceLotId) && exitUnitCost.compareTo(childUnitCost) == 0
+                    && exitEstimated.equals(childEstimated);
+        }
+    }
+
+    /** @param sourceVariantId one variant's marked-down pieces, or null for every one there is */
+    List<Family> families(UUID sourceVariantId) {
+        return jdbc.query("""
+                SELECT r.piece_id, r.child_variant_id, r.exit_action_id, x.lot_id AS exit_lot, x.unit_cost AS exit_cost, x.is_estimated AS exit_estimated,
+                       c.id AS child_lot, c.source_lot_id, c.unit_cost AS child_cost, c.is_estimated AS child_estimated, c.revision AS child_revision
+                  FROM markdown_relist r
+                  LEFT JOIN live_movement x ON x.action_id = r.exit_action_id
+                  LEFT JOIN cost_lot c ON c.variant_id = r.child_variant_id AND c.superseded_at IS NULL
+                 WHERE (?::uuid IS NULL OR r.source_variant_id = ?)
+                 ORDER BY r.piece_id""",
+                (rs, n) -> new Family(rs.getObject("piece_id", UUID.class), rs.getObject("child_variant_id", UUID.class), rs.getObject("exit_action_id", UUID.class),
+                        rs.getObject("exit_lot", UUID.class), rs.getBigDecimal("exit_cost"), (Boolean) rs.getObject("exit_estimated"),
+                        rs.getObject("child_lot", UUID.class), rs.getObject("source_lot_id", UUID.class), rs.getBigDecimal("child_cost"),
+                        (Boolean) rs.getObject("child_estimated"), (Integer) rs.getObject("child_revision")),
+                sourceVariantId, sourceVariantId);
+    }
+
+    /**
+     * Brings every marked-down lot of a variant back in step with its piece, after something changed WHICH lot the piece left from or what
+     * it cost there. Only two things can: a corrected cost (the lots are replaced) and an older delivery keyed late (oldest-first hands the
+     * sale, its return and the piece's exit to the older lot). Both run this right after re-cutting the variant.
+     *
+     * <p>For each piece out of step the one-piece lot is REPLACED, exactly as an amendment replaces a lot: a new one-piece lot at the piece's
+     * cost now, pointing at the lot it now came from (and carrying that lot's delivery line); whatever drained the old one (the marked-down
+     * piece's sale) is re-cut onto the new one at its own date; and the old one is closed and kept.
+     *
+     * <p>The caller holds the stock rows of the variant and of its marked-down listings, taken together in id order.
+     *
+     * @param eventId the event that caused it: with the piece's id it names the correction, so applying the event again changes nothing twice
+     * @return how many marked-down lots were replaced
+     */
+    int followFamily(UUID sourceVariantId, UUID eventId, Instant at, String actor) {
+        int replaced = 0;
+        for (Family family : families(sourceVariantId)) {
+            if (family.inStep()) {
+                continue;
+            }
+            if (family.exitLotId() == null || family.childLotId() == null) {
+                throw new IllegalStateException("marked-down piece " + family.pieceId() + " has lost " + (family.exitLotId() == null ? "the movement that took it out"
+                        : "its own lot") + ": the books need a person");
+            }
+            UUID child = family.childVariantId();
+            LotIdentity from = lot(family.exitLotId());
+            LotIdentity old = lot(family.childLotId());
+            UUID correctionId = UUID.nameUUIDFromBytes(("markdown-recost:" + eventId + ":" + family.pieceId()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            UUID lotId = UUID.randomUUID();
+            insertAction(correctionId, child, "CORRECTION", StockReason.COST_CORRECTED, 1, at, actor, "the marked-down piece follows the lot it came from", null, null);
+            insertChildLot(new NewLot(lotId, child, old.kind(), old.sku(), from.productTitle(), old.variantTitle(), from.consignmentId(), from.consignmentReference(),
+                    from.consignmentLineId(), from.supplierId(), from.supplierName(), from.receivedAt(), from.fifoTiebreak(), from.slicePosition(),
+                    old.revision() + 1, 1, 1, family.exitUnitCost(), family.exitEstimated()), from.id(), family.exitActionId());
+            insertMovement(child, correctionId, lotId, StockReason.COST_CORRECTED, "LOT_OPEN", 1, family.exitUnitCost(), family.exitEstimated(), old.kind(), null, null,
+                    at, actor);
+            java.util.Set<UUID> staged = java.util.Set.of(old.id());
+            conform(child, actor, staged);
+            closeLots(child, staged, correctionId, StockReason.COST_CORRECTED, at, actor);
+            verify(child, jdbc.queryForObject("SELECT on_hand FROM inventory WHERE variant_id = ?", Integer.class, child));
+            replaced++;
+        }
+        return replaced;
     }
 
     long insertMovement(UUID variantId, UUID actionId, UUID lotId, StockReason reason, String role, int qtyDelta, BigDecimal unitCost,
@@ -165,12 +287,16 @@ class StockLedger {
                    int revision, int qtyReceived, BigDecimal unitCost, boolean estimated) {
     }
 
-    /** The lots of one consignment line that are current (not replaced), in slice order. */
+    /**
+     * The lots of one consignment line that are current (not replaced), in slice order: the line's OWN lots. A marked-down piece's one-piece
+     * lot carries the line too (the line still accounts for that piece), but it is not a slice of the delivery and an amendment does not
+     * restate it: it follows ({@link #followFamily}).
+     */
     List<LineLot> currentLotsOfLine(UUID consignmentLineId) {
         return jdbc.query("""
                 SELECT id, variant_id, kind, sku, product_title, variant_title, consignment_id, consignment_reference, supplier_id, supplier_name,
                        received_at, fifo_tiebreak, slice_position, revision, qty_received, unit_cost, is_estimated
-                  FROM cost_lot WHERE consignment_line_id = ? AND superseded_at IS NULL ORDER BY slice_position""",
+                  FROM cost_lot WHERE consignment_line_id = ? AND superseded_at IS NULL AND source_lot_id IS NULL ORDER BY slice_position""",
                 (rs, n) -> new LineLot(rs.getObject("id", UUID.class), rs.getObject("variant_id", UUID.class), rs.getString("kind"), rs.getString("sku"),
                         rs.getString("product_title"), rs.getString("variant_title"), rs.getObject("consignment_id", UUID.class),
                         rs.getString("consignment_reference"), rs.getObject("supplier_id", UUID.class), rs.getString("supplier_name"),
@@ -204,6 +330,10 @@ class StockLedger {
      * The valuation invariant for one line: what its current lots still hold, at their cost, plus what has been recognised
      * out of them (sales, write-offs, give-aways, net of take-backs, over the rows in force), is exactly the line's landed
      * total, to the ngwee. Whatever has happened to the line, no ngwee has been lost or invented.
+     *
+     * <p>A returned piece moved to a marked-down listing recognises nothing: it left one lot of the line and sits in another lot of the same
+     * line (its own), at the same cost. So those two rows are not "recognised", the one-piece lot counts as held, and when the marked-down
+     * piece is sold its sale is recognised like any other.
      */
     void verifyLineValuation(UUID consignmentLineId, BigDecimal landedTotal) {
         BigDecimal held = jdbc.queryForObject(
@@ -212,7 +342,8 @@ class StockLedger {
         BigDecimal recognised = jdbc.queryForObject("""
                 SELECT coalesce(sum(-m.qty_delta * m.unit_cost), 0)
                   FROM live_movement m JOIN cost_lot l ON l.id = m.lot_id
-                 WHERE l.consignment_line_id = ? AND l.superseded_at IS NULL AND m.reason <> 'CONSIGNMENT_RECEIVED'""",
+                 WHERE l.consignment_line_id = ? AND l.superseded_at IS NULL
+                   AND m.reason NOT IN ('CONSIGNMENT_RECEIVED', 'RELISTED_MARKED_DOWN')""",
                 BigDecimal.class, consignmentLineId);
         if (held.add(recognised).compareTo(landedTotal) != 0) {
             throw new IllegalStateException("line " + consignmentLineId + " is worth " + held.add(recognised).toPlainString()
@@ -345,6 +476,14 @@ class StockLedger {
         int held = heldQuantity(variantId);
         if (held != onHand) {
             throw new IllegalStateException("stock count " + onHand + " and its lots (" + held + ") disagree for variant " + variantId);
+        }
+        // Every marked-down piece of this variant still costs what its piece left at. Only a corrected cost or an older delivery keyed late
+        // can change that, and both bring the family back in step before they get here: anything else that did would be a bug, said loudly.
+        for (Family family : families(variantId)) {
+            if (!family.inStep()) {
+                throw new IllegalStateException("marked-down piece " + family.pieceId() + " is out of step with the lot it came from (lot "
+                        + family.exitLotId() + " at " + family.exitUnitCost() + ", its own lot " + family.childLotId() + " at " + family.childUnitCost() + ")");
+            }
         }
     }
 }

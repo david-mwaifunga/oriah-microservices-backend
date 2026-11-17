@@ -51,9 +51,13 @@ public class StockCostEvents {
         this.entityManager = entityManager;
     }
 
-    /** Whether a ledger row moves a cost: not a receipt, and not the transfer of a lot an amendment replaced. */
+    /**
+     * Whether a ledger row moves a cost: not a receipt, not the transfer of a lot an amendment replaced, and not a returned piece moving to
+     * its own marked-down listing (it only changed shelf: its cost is recognised when the marked-down piece is sold).
+     */
     public static boolean qualifies(String role, StockReason reason) {
-        return ("ORIGINAL".equals(role) || "RECUT_REVERSAL".equals(role) || "RECUT_REPLACEMENT".equals(role)) && reason != StockReason.CONSIGNMENT_RECEIVED;
+        return ("ORIGINAL".equals(role) || "RECUT_REVERSAL".equals(role) || "RECUT_REPLACEMENT".equals(role)) && reason != StockReason.CONSIGNMENT_RECEIVED
+                && reason != StockReason.RELISTED_MARKED_DOWN;
     }
 
     /** Called by the ledger for every row it writes; announces those that move a cost, just before the transaction commits. */

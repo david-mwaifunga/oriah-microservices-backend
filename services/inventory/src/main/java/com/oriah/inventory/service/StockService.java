@@ -85,6 +85,15 @@ public class StockService {
     public record ReservedMismatch(UUID variantId, int reserved, int sumOfHeldLines) {
     }
 
+    /** A marked-down piece whose one-piece lot does not say what its piece left at: another lot, another cost, or one of the two is missing. */
+    public record FamilyMismatch(UUID pieceId, UUID childVariantId, UUID childLotId, BigDecimal childUnitCost, UUID sourceLotId, UUID exitLotId,
+                                 BigDecimal exitUnitCost) {
+    }
+
+    /** A marked-down listing that holds stock and that catalog's snapshots no longer describe. */
+    public record StrandedChild(UUID variantId) {
+    }
+
     /** The count of returned pieces waiting on a stock row, against the returned pieces themselves that nobody has decided yet. */
     public record QuarantineMismatch(UUID variantId, int quarantined, int piecesWaiting) {
     }
@@ -96,7 +105,8 @@ public class StockService {
      */
     public record ReconciliationReport(int checkedVariants, List<CountMismatch> countMismatches, List<LedgerMismatch> ledgerMismatches,
                                        List<CommitmentMismatch> commitmentMismatches, List<ReservedMismatch> reservedMismatches,
-                                       List<QuarantineMismatch> quarantineMismatches) {
+                                       List<QuarantineMismatch> quarantineMismatches, List<FamilyMismatch> familyMismatches,
+                                       List<StrandedChild> strandedChildren) {
     }
 
     private final InventoryRepository inventories;
@@ -167,6 +177,9 @@ public class StockService {
             log.info("Amendment {} of line {} changes no cost: nothing to do", snapshot.revision(), snapshot.consignmentLineId());
             return;
         }
+        // The stock rows of the variant and of its marked-down listings, taken together in id order (the order an order holding both takes
+        // them in): the correction re-costs both, and locking the parent first would let it wait for ever on such an order.
+        lockWithChildren(variantId);
         Inventory inventory = inventories.findById(variantId)
                 .orElseThrow(() -> new IllegalStateException("the stock row of variant " + variantId + " is gone"));
         // A correction changes lots, not the count, so nothing would move the stock row's version on its own: force it, so a
@@ -193,11 +206,23 @@ public class StockService {
                     snapshot.isEstimated(), first.kind(), null, null, amendedAt, context.actor());
         }
         int recut = ledger.conform(variantId, context.actor(), staged);
+        // The pieces of this variant that were moved to marked-down listings left at the old costs: their one-piece lots follow.
+        ledger.followFamily(variantId, context.eventId(), amendedAt, context.actor());
         ledger.closeLots(variantId, staged, context.eventId(), StockReason.COST_CORRECTED, amendedAt, context.actor());
         ledger.verify(variantId, inventory.onHand());
         ledger.verifyLineValuation(snapshot.consignmentLineId(), snapshot.landedTotal());
         log.info("Amended line {} of {} to revision {}: {} action(s) re-cut", snapshot.consignmentLineId(), snapshot.consignmentReference(),
                 snapshot.revision(), recut);
+    }
+
+    /** Locks the stock rows of a variant and of every marked-down listing that holds a piece of it, together, in id order. */
+    private void lockWithChildren(UUID variantId) {
+        List<UUID> children = ledger.childrenOf(variantId);
+        if (!children.isEmpty()) {
+            java.util.TreeSet<UUID> all = new java.util.TreeSet<>(children);
+            all.add(variantId);
+            inventories.findAllForUpdate(all);
+        }
     }
 
     private static boolean sameCosts(List<StockLedger.LineLot> current, ReceiptSnapshot snapshot) {
@@ -222,6 +247,8 @@ public class StockService {
         if (ledger.actionExists(snapshot.consignmentLineId()) || ledger.lineHasLots(snapshot.consignmentLineId())) {
             throw new IllegalStateException("consignment line " + snapshot.consignmentLineId() + " was already received");
         }
+        // With the rows of its marked-down listings, in id order, when it has any (see applyAmendment).
+        lockWithChildren(variantId);
         // Read WITH its row lock, before the check below: a sale, write-off or take-back that commits between a plain read
         // and the check would make a valid receipt look corrupt, and a corrupt-looking receipt is parked for good. Locked,
         // such a change either commits first (and is seen) or waits, and then finds the row's version moved (a retry).
@@ -258,6 +285,9 @@ public class StockService {
 
         // A receipt older than stock already sold from newer lots re-cuts those sales to take it first.
         int recut = ledger.conform(variantId, context.actor());
+        // If that moved a sale whose piece later came back and was marked down, the piece now left from another lot at another cost: its
+        // one-piece lot follows. (A receipt that is the newest, the ordinary case, moves nothing and this does nothing.)
+        ledger.followFamily(variantId, context.eventId(), context.occurredAt().truncatedTo(java.time.temporal.ChronoUnit.MICROS), context.actor());
         ledger.verify(variantId, inventory.onHand());
         ledger.verifyLineValuation(snapshot.consignmentLineId(), snapshot.landedTotal());
         log.info("Received line {} of {}: {} units of {} in {} lot(s); {} sale(s) re-cut", snapshot.consignmentLineId(),
@@ -596,7 +626,15 @@ public class StockService {
                          ON p.variant_id = i.variant_id
                  WHERE i.quarantined <> coalesce(p.total, 0)""" + forVariant + " ORDER BY i.variant_id",
                 (rs, n) -> new QuarantineMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("quarantined"), rs.getInt("total")), filter);
-        return new ReconciliationReport(checked, counts, ledgers, setAside, reserved, waiting);
+        List<FamilyMismatch> families = ledger.families(variantId).stream().filter(family -> !family.inStep())
+                .map(family -> new FamilyMismatch(family.pieceId(), family.childVariantId(), family.childLotId(), family.childUnitCost(), family.sourceLotId(),
+                        family.exitLotId(), family.exitUnitCost())).toList();
+        String forSource = variantId == null ? "" : " AND r.source_variant_id = ?";
+        List<StrandedChild> stranded = jdbc.query("""
+                SELECT r.child_variant_id FROM markdown_relist r
+                 WHERE NOT EXISTS (SELECT 1 FROM product_index p WHERE p.variant_id = r.child_variant_id)""" + forSource + " ORDER BY r.child_variant_id",
+                (rs, n) -> new StrandedChild(rs.getObject(1, UUID.class)), filter);
+        return new ReconciliationReport(checked, counts, ledgers, setAside, reserved, waiting, families, stranded);
     }
 
     /** The variant's current lots, oldest first (the order FIFO draws in). */

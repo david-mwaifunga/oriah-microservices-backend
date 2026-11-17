@@ -112,12 +112,24 @@ public class ReturnedPieceService {
         }
 
         UUID variantId = piece.variantId();
-        Inventory row = inventories.findAllForUpdate(List.of(variantId)).stream().findFirst()
-                .orElseThrow(() -> new IllegalStateException("the stock row of variant " + variantId + " is gone while piece " + pieceId + " waits in it"));
+        java.util.TreeSet<UUID> toLock = new java.util.TreeSet<>(List.of(variantId));
+        if (childVariantId != null) {
+            // Everything that changes the stock of either variant waits here, the listing's too: its stock row does not exist yet, so only this
+            // can keep two pieces from being moved onto one listing at once.
+            ledger.lockVariant(variantId);
+            ledger.lockVariant(childVariantId);
+            toLock.add(childVariantId);
+        }
+        java.util.Map<UUID, Inventory> rows = new java.util.HashMap<>();
+        inventories.findAllForUpdate(toLock).forEach(found -> rows.put(found.variantId(), found));
+        Inventory row = rows.get(variantId);
+        if (row == null) {
+            throw new IllegalStateException("the stock row of variant " + variantId + " is gone while piece " + pieceId + " waits in it");
+        }
         UUID actionId = switch (outcome) {
             case "RELEASED" -> release(piece, row, when, actor);
             case "WRITTEN_OFF" -> writeOff(piece, row, when, actor);
-            default -> throw new IllegalArgumentException("a piece cannot be relisted yet");
+            default -> relist(piece, row, childVariantId, rows.get(childVariantId), when, now, actor);
         };
         inventories.saveAndFlush(row);
         ledger.conform(variantId, actor);
@@ -142,6 +154,69 @@ public class ReturnedPieceService {
         row.exitQuarantined();
         ledger.insertAction(actionId, piece.variantId(), "RETURN_EXIT", StockReason.WRITE_OFF_RETURNED, 1, when, actor, null, null, piece.pieceId(), null);
         return actionId;
+    }
+
+    /**
+     * Marked down: out of the lot it went back to and into a one-piece lot of its own listing, at exactly the cost it had. Nothing is
+     * recognised: the piece only changed shelf.
+     *
+     * @throws CommitmentProblem 409 {@code markdown-variant-not-known-yet} (catalog's snapshot of the listing has not arrived: try again),
+     *                           {@code markdown-variant-of-another-product}, {@code markdown-variant-in-use}, {@code already-marked-down}
+     */
+    private UUID relist(Waiting piece, Inventory row, UUID childVariantId, Inventory childRow, Instant when, Instant now, String actor) {
+        UUID source = piece.variantId();
+        // What catalog has told inventory about the two variants. Judged before anything is written: a refusal means nothing moved.
+        List<java.util.Map<String, Object>> listing = jdbc.queryForList("SELECT product_id, title, sku FROM product_index WHERE variant_id = ?", childVariantId);
+        if (listing.isEmpty() || listing.get(0).get("sku") == null) {
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "markdown-variant-not-known-yet", "inventory has not heard of the marked-down listing "
+                    + childVariantId + " yet: it learns of it from catalog a moment after it is made");
+        }
+        List<UUID> ofProduct = jdbc.queryForList("SELECT product_id FROM product_index WHERE variant_id = ?", UUID.class, source);
+        if (ofProduct.isEmpty()) {
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "markdown-variant-not-known-yet", "inventory has not heard of variant " + source + " from catalog yet");
+        }
+        if (!ofProduct.get(0).equals(listing.get(0).get("product_id"))) {
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "markdown-variant-of-another-product", "the listing " + childVariantId
+                    + " belongs to another product than the piece");
+        }
+        if (childRow != null || ledger.heldQuantity(childVariantId) > 0
+                || Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM cost_lot WHERE variant_id = ?)", Boolean.class, childVariantId))) {
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "markdown-variant-in-use", "the listing " + childVariantId
+                    + " already holds stock: a marked-down listing is made for one piece");
+        }
+        if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM markdown_relist WHERE child_variant_id = ?)", Boolean.class, source))) {
+            throw new CommitmentProblem(HttpStatus.CONFLICT, "already-marked-down", "this piece is already a marked-down piece: it is put back on sale as it is, "
+                    + "or written off, never marked down a second time");
+        }
+
+        // 1. Out of the lot it went back to.
+        UUID exitId = named("piece-exit:" + piece.pieceId());
+        row.exitQuarantined();
+        inventories.saveAndFlush(row);
+        ledger.insertAction(exitId, source, "RETURN_EXIT", StockReason.RELISTED_MARKED_DOWN, 1, when, actor, null, null, piece.pieceId(), null);
+        ledger.conform(source, actor);
+        StockLedger.Exit exit = ledger.exitOf(exitId);
+        StockLedger.LotIdentity from = ledger.lot(exit.lotId());
+
+        // 2. Into a one-piece lot of its own listing, at exactly that cost. It keeps the delivery line it arrived on (the line still accounts
+        //    for it), and takes its name and SKU from the listing.
+        UUID inId = named("relist-in:" + piece.pieceId());
+        UUID lotId = UUID.randomUUID();
+        Inventory child = Inventory.open(childVariantId, "SELLABLE");
+        child.receive(1);
+        inventories.saveAndFlush(child);
+        ledger.insertChildLot(new StockLedger.NewLot(lotId, childVariantId, "SELLABLE", (String) listing.get(0).get("sku"), from.productTitle(),
+                (String) listing.get(0).get("title"), from.consignmentId(), from.consignmentReference(), from.consignmentLineId(), from.supplierId(),
+                from.supplierName(), from.receivedAt(), from.fifoTiebreak(), from.slicePosition(), 1, 1, 1, exit.unitCost(), exit.estimated()), from.id(), exitId);
+        ledger.insertAction(inId, childVariantId, "RELIST_IN", StockReason.RELISTED_MARKED_DOWN, 1, when, actor, null, null, null, null);
+        ledger.insertMovement(childVariantId, inId, lotId, StockReason.RELISTED_MARKED_DOWN, "ORIGINAL", 1, exit.unitCost(), exit.estimated(), "SELLABLE", null,
+                null, when, actor);
+        jdbc.update("""
+                INSERT INTO markdown_relist (piece_id, source_variant_id, child_variant_id, exit_action_id, in_action_id, occurred_at, recorded_at, actor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                piece.pieceId(), source, childVariantId, exitId, inId, Timestamp.from(when), Timestamp.from(now), actor);
+        ledger.verify(childVariantId, child.onHand());
+        return exitId;
     }
 
     private static UUID named(String name) {
