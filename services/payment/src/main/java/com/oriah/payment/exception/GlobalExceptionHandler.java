@@ -19,11 +19,22 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class GlobalExceptionHandler extends OriahExceptionHandlerSupport {
 
+    /** The property a problem carries when the caller should come back later: it is sent as the {@code Retry-After} header, not in the body. */
+    private static final String RETRY_AFTER = "retryAfterSeconds";
+
     @ExceptionHandler(PaymentProblem.class)
-    public ProblemDetail paymentProblem(PaymentProblem ex) {
+    public org.springframework.http.ResponseEntity<ProblemDetail> paymentProblem(PaymentProblem ex) {
         log.debug("{} payment problem {}: {}", ex.status().value(), ex.code(), ex.getMessage());
         ProblemDetail pd = problem(ex.status(), URI.create("https://oriah.dev/problems/" + ex.code()), ex.status().getReasonPhrase(), ex.getMessage());
-        ex.properties().forEach(pd::setProperty);
-        return pd;
+        org.springframework.http.ResponseEntity.BodyBuilder response = org.springframework.http.ResponseEntity.status(ex.status())
+                .contentType(org.springframework.http.MediaType.APPLICATION_PROBLEM_JSON);
+        ex.properties().forEach((name, value) -> {
+            if (RETRY_AFTER.equals(name)) {
+                response.header(org.springframework.http.HttpHeaders.RETRY_AFTER, String.valueOf(value));
+            } else {
+                pd.setProperty(name, value);
+            }
+        });
+        return response.body(pd);
     }
 }
