@@ -199,6 +199,11 @@ public class SecurityConfig {
                         // books cost of goods). Inventory also wants the service account behind them, so a port left open does not
                         // admit a person; here they are not routed to anyone at all. Before the broad inventory rule below.
                         .pathMatchers("/api/v1/admin/inventory/reservations/**", "/api/v1/admin/inventory/box-swaps/**").denyAll()
+                        // Phase 12: putting a paid sale's stock back (a cancellation or a return) and saying what became of a returned
+                        // piece are the order system's acts as well: they move stock and cost of goods for a sale ORDER has corrected, and
+                        // done by hand they would leave the order paid with its stock back. Order decides who may ask (ORDER_ADMIN, and
+                        // more for a write-off or a markdown) and calls inventory itself. Before the broad inventory rule below.
+                        .pathMatchers("/api/v1/admin/inventory/sale-reversals/**", "/api/v1/admin/inventory/returned-pieces/**").denyAll()
                         .pathMatchers("/api/v1/admin/orders/*/dispatch/**").hasRole("FULFILMENT_AGENT")
                         // Phase 8: the packer's work list (what is waiting to be packed, packed, on its way), served by order from a controller of its
                         // own. An EXACT path, not a prefix: anything else under /orders/dispatch/ falls through to the ORDER_ADMIN prefix below and

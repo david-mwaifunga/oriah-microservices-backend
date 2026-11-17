@@ -478,6 +478,69 @@ class GatewaySecurityConfigTest {
         as(jobRole).post().uri("/api/v1/admin/inventory/box-swaps").exchange().expectStatus().isForbidden();
     }
 
+    @ParameterizedTest(name = "{0} cannot reverse a sale or decide a returned piece through the gateway")
+    @DisplayName("Phase 12: putting a paid sale's stock back and deciding what became of a returned piece are the order system's acts: the gateway refuses them to every person, owner included")
+    @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
+    void nobodyReversesASaleByHand(String jobRole) {
+        // MANAGER and OWNER hold INVENTORY_ADMIN, which opens the rest of /api/v1/admin/inventory/**. A reversal moves stock AND cost of goods for a
+        // sale order has corrected; done by hand it would leave the order paid and its stock back. Order calls inventory directly (service to service).
+        String id = "00000000-0000-0000-0000-000000000001";
+
+        as(jobRole).post().uri("/api/v1/admin/inventory/sale-reversals").exchange().expectStatus().isForbidden();
+        as(jobRole).get().uri("/api/v1/admin/inventory/sale-reversals/" + id).exchange().expectStatus().isForbidden();
+        as(jobRole).post().uri("/api/v1/admin/inventory/returned-pieces/" + id + "/outcome").exchange().expectStatus().isForbidden();
+    }
+
+    @Test
+    @DisplayName("Phase 12: refunds are the owner's: what is owed, the money check, paying out and voiding a payout need PAYMENT_ADMIN, which only OWNER holds")
+    void onlyTheOwnerPaysRefunds() {
+        String id = "00000000-0000-0000-0000-000000000001";
+        String[] paths = {"/api/v1/admin/payments/refunds-due", "/api/v1/admin/payments/refunds-due/" + id, "/api/v1/admin/payments/payouts",
+                "/api/v1/admin/payments/payouts/" + id};
+        for (String path : paths) {
+            assertAdmitted(as("OWNER").get().uri(path));
+            for (String jobRole : new String[] {"MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"}) {
+                as(jobRole).get().uri(path).exchange().expectStatus().isForbidden();
+            }
+        }
+        assertAdmitted(as("OWNER").post().uri("/api/v1/admin/payments/payouts"));
+        assertAdmitted(as("OWNER").post().uri("/api/v1/admin/payments/payouts/" + id + "/void"));
+        assertAdmitted(as("OWNER").post().uri("/api/v1/admin/payments/refunds-due/" + id + "/money-check"));
+        for (String jobRole : new String[] {"MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"}) {
+            as(jobRole).post().uri("/api/v1/admin/payments/payouts").exchange().expectStatus().isForbidden();
+            as(jobRole).post().uri("/api/v1/admin/payments/payouts/" + id + "/void").exchange().expectStatus().isForbidden();
+            as(jobRole).post().uri("/api/v1/admin/payments/refunds-due/" + id + "/money-check").exchange().expectStatus().isForbidden();
+        }
+    }
+
+    @Test
+    @DisplayName("Phase 12: cancelling a paid order, recording and reading returns, assessing a piece, linking an exchange and abandoning a correction are ORDER_ADMIN's: the owner and the manager, never sales, a packer or the bookkeeper")
+    void correctionsAreTheOrderAdministrators() {
+        String id = "00000000-0000-0000-0000-000000000001";
+        String[] posts = {AN_ORDER + "/cancellation", AN_ORDER + "/returns", "/api/v1/admin/orders/returns/" + id + "/pieces/" + id + "/assessment",
+                "/api/v1/admin/orders/returns/" + id + "/exchange", "/api/v1/admin/orders/corrections/" + id + "/abandon"};
+        String[] gets = {AN_ORDER + "/cancellation", "/api/v1/admin/orders/returns", "/api/v1/admin/orders/returns/" + id, "/api/v1/admin/orders/corrections"};
+        for (String jobRole : new String[] {"OWNER", "MANAGER"}) {
+            for (String path : posts) {
+                assertAdmitted(as(jobRole).post().uri(path));
+            }
+            for (String path : gets) {
+                assertAdmitted(as(jobRole).get().uri(path));
+            }
+        }
+        for (String jobRole : new String[] {"SALES", "DISPATCH", "BOOKKEEPER"}) {
+            for (String path : posts) {
+                as(jobRole).post().uri(path).exchange().expectStatus().isForbidden();
+            }
+            for (String path : gets) {
+                as(jobRole).get().uri(path).exchange().expectStatus().isForbidden();
+            }
+        }
+        // The marked-down listing is the catalogue's own door: a manager (CATALOG_ADMIN) reaches it, a salesperson does not.
+        assertAdmitted(as("MANAGER").post().uri("/api/v1/admin/products/" + id + "/variants/marked-down"));
+        as("SALES").post().uri("/api/v1/admin/products/" + id + "/variants/marked-down").exchange().expectStatus().isForbidden();
+    }
+
     @ParameterizedTest(name = "{0} cannot reach a service's internal reads through the gateway")
     @DisplayName("/internal/** is service to service only: the gateway refuses it to every person, owner included, so a promotion list that needs no token is never public")
     @ValueSource(strings = {"OWNER", "MANAGER", "SALES", "DISPATCH", "BOOKKEEPER"})
