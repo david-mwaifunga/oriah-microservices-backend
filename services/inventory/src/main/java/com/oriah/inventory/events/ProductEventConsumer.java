@@ -99,6 +99,9 @@ public class ProductEventConsumer {
             .handles(OrderEventConsumer.ORDER, OrderEventConsumer.EXPIRED, 1)
             .ignores("order.created", "order.payment_submitted", "order.payment_unsettled", "order.paid", "order.fulfilled", "order.shipped",
                     "order.delivered")
+            // Phase 12, declared here BEFORE order emits them: a paid order cancelled and a return recorded. Order asks inventory for
+            // that stock itself, by a call it can retry (the sale-reversals door), never by an event: a refused event is parked, not retried.
+            .ignores("order.sale_cancelled", "order.return_recorded")
             // Procurement's month bills (Phase 10: finance's feed, declared here BEFORE procurement emits it): not stock, so ignored.
             .ignores("consignment.period_costs");
 

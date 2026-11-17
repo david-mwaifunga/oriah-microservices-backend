@@ -406,6 +406,21 @@ class SettlementReceiveTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("payment's four facts about money going back out (Phase 12: a refund owed, a refund closed, a payout, a payout cancelled) are declared and ignored: order never acts on them")
+    void theFourPaymentFactsAreIgnored() {
+        UUID id = UUID.randomUUID();
+
+        for (String type : List.of("payment.refund_due_recorded", "payment.refund_closed")) {
+            paymentEvents.accept(message("refund_due", id, type, 1, "{}", "payment"));
+        }
+        for (String type : List.of("payment.paid_out", "payment.payout_voided")) {
+            paymentEvents.accept(message("money_out", id, type, 1, "{}", "payment"));
+        }
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM order_settlement", Long.class)).isZero();
+    }
+
+    @Test
     @DisplayName("a type nobody declared, or a version of one that was never agreed, is refused on its first delivery (never retried)")
     void anUndeclaredEventIsRefused() {
         UUID id = UUID.randomUUID();

@@ -247,6 +247,20 @@ class OrderEventConsumerTest {
     }
 
     @Test
+    @DisplayName("a paid order cancelled and a return recorded (Phase 12) are declared and ignored: order asks inventory for that stock itself, by a call, never by an event")
+    void theTwoCorrectionFactsAreIgnored() {
+        UUID order = UUID.randomUUID();
+        UUID id = hold(order, 1);
+
+        for (String type : List.of("order.sale_cancelled", "order.return_recorded")) {
+            // Handed straight to the consumer: through the binder a refusal would be parked on the dead-letter topic and this test could not fail.
+            orderEvents.accept(message(type, order, "{\"orderId\":\"" + order + "\",\"reservationId\":\"" + id + "\"}", "order"));
+        }
+
+        assertThat(reservations.get(id).status()).as("never read as a hold to let go").isEqualTo(Status.HELD);
+    }
+
+    @Test
     @DisplayName("an order event type nobody declared is refused, and so is one about another kind of thing")
     void undeclaredEventsAreRefused() {
         UUID order = UUID.randomUUID();

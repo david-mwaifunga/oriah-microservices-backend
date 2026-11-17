@@ -39,7 +39,10 @@ public final class OrderInbox {
             .handles(RESERVATION, EXPIRED, 1)
             // payment's card events (until Phase 13) and held money, and inventory's sale and box swap: facts order never acts on;
             // and inventory's cost of each stock movement (Phase 10: finance's feed, declared here BEFORE inventory emits it)
-            .ignores("payment.succeeded", "payment.failed", "payment.held", "reservation.consumed", "box.swapped", "stock.cost_recorded");
+            .ignores("payment.succeeded", "payment.failed", "payment.held", "reservation.consumed", "box.swapped", "stock.cost_recorded")
+            // Phase 12, declared here BEFORE payment emits them: money going back out (a refund owed, a debt closed, a payout, a payout
+            // cancelled). Order announces what is owed and never acts on what payment then does with it.
+            .ignores("payment.refund_due_recorded", "payment.refund_closed", "payment.paid_out", "payment.payout_voided");
 
     private OrderInbox() {
     }
