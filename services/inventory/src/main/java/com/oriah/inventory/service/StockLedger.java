@@ -246,7 +246,10 @@ class StockLedger {
                  ORDER BY seq""",
                 (RowCallbackHandler) rs -> {
                     UUID id = rs.getObject("id", UUID.class);
-                    Kind kind = "TAKE_BACK".equals(rs.getString("kind")) ? Kind.RESTORE : Kind.DRAIN;
+                    // A take-back puts units back where they came from. A RETURNED piece is put back and HELD there (not for sale
+                    // until somebody has looked at it); every other take-back is ordinary stock again.
+                    Kind kind = !"TAKE_BACK".equals(rs.getString("kind")) ? Kind.DRAIN
+                            : "RETURN".equals(rs.getString("reason")) ? Kind.RESTORE_HELD : Kind.RESTORE;
                     actions.add(new Action(id, rs.getLong("seq"), kind, rs.getInt("qty"), rs.getObject("reverses_action_id", UUID.class)));
                     info.put(id, new ActionInfo(kind, StockReason.fromCode(rs.getString("reason")), rs.getTimestamp("occurred_at").toInstant()));
                 }, variantId);
@@ -299,7 +302,7 @@ class StockLedger {
             HeldLotRow lot = lots.get(chunk.lotId());
             int delta = action.kind() == Kind.DRAIN ? -chunk.qty() : chunk.qty();
             Long restores = null;
-            if (action.kind() == Kind.RESTORE) {
+            if (action.kind() == Kind.RESTORE || action.kind() == Kind.RESTORE_HELD) {
                 UUID drain = jdbc.queryForObject("SELECT reverses_action_id FROM stock_action WHERE id = ?", UUID.class, recut.actionId());
                 restores = jdbc.queryForObject("""
                         SELECT id FROM live_movement WHERE action_id = ? AND lot_id = ? AND qty_delta < 0""",

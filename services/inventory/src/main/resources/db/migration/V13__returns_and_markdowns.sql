@@ -70,6 +70,8 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER stock_action_walls_row BEFORE INSERT ON stock_action FOR EACH ROW EXECUTE FUNCTION stock_action_walls();
+-- Every movement of one sale reversal carries 'reversal:<its id>' here, so they can be found again without reading the whole table.
+CREATE INDEX stock_action_of_reversal ON stock_action (request_digest) WHERE request_digest LIKE 'reversal:%';
 
 -- 3. The marked-down lot family: a one-piece lot that says which lot its piece came from, and which movement took it out.
 ALTER TABLE cost_lot ADD COLUMN source_lot_id    UUID REFERENCES cost_lot (id);

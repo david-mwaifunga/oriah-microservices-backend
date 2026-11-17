@@ -85,13 +85,18 @@ public class StockService {
     public record ReservedMismatch(UUID variantId, int reserved, int sumOfHeldLines) {
     }
 
+    /** The count of returned pieces waiting on a stock row, against the returned pieces themselves that nobody has decided yet. */
+    public record QuarantineMismatch(UUID variantId, int quarantined, int piecesWaiting) {
+    }
+
     /**
      * The one-count-not-three check: every stock count against its lots, every lot against its ledger, every box's set-aside count
-     * against the products' records (promised, less what orders hold), and every reserved count against the held reservation lines.
-     * Counts only, no cost.
+     * against the products' records (promised, less what orders hold), every reserved count against the held reservation lines, and
+     * (Phase 12) every count of returned pieces waiting against the pieces themselves. Counts only, no cost.
      */
     public record ReconciliationReport(int checkedVariants, List<CountMismatch> countMismatches, List<LedgerMismatch> ledgerMismatches,
-                                       List<CommitmentMismatch> commitmentMismatches, List<ReservedMismatch> reservedMismatches) {
+                                       List<CommitmentMismatch> commitmentMismatches, List<ReservedMismatch> reservedMismatches,
+                                       List<QuarantineMismatch> quarantineMismatches) {
     }
 
     private final InventoryRepository inventories;
@@ -584,7 +589,14 @@ public class StockService {
                               WHERE r.status = 'HELD' GROUP BY l.variant_id) h ON h.variant_id = i.variant_id
                  WHERE i.reserved <> coalesce(h.total, 0)""" + forVariant + " ORDER BY i.variant_id",
                 (rs, n) -> new ReservedMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("reserved"), rs.getInt("total")), filter);
-        return new ReconciliationReport(checked, counts, ledgers, setAside, reserved);
+        List<QuarantineMismatch> waiting = jdbc.query("""
+                SELECT i.variant_id, i.quarantined, coalesce(p.total, 0) AS total
+                  FROM inventory i
+                  LEFT JOIN (SELECT variant_id, count(*) AS total FROM returned_piece WHERE outcome IS NULL GROUP BY variant_id) p
+                         ON p.variant_id = i.variant_id
+                 WHERE i.quarantined <> coalesce(p.total, 0)""" + forVariant + " ORDER BY i.variant_id",
+                (rs, n) -> new QuarantineMismatch(rs.getObject("variant_id", UUID.class), rs.getInt("quarantined"), rs.getInt("total")), filter);
+        return new ReconciliationReport(checked, counts, ledgers, setAside, reserved, waiting);
     }
 
     /** The variant's current lots, oldest first (the order FIFO draws in). */

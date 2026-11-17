@@ -397,6 +397,31 @@ public class BoxCommitmentService {
         return off;
     }
 
+    /** How many boxes a sale line took out of a product's set-aside (the rest of the line came from free boxes). */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public int soldFromSetAside(UUID boxLineId) {
+        return jdbc.queryForObject("SELECT coalesce(sum(-qty_delta), 0) FROM box_commitment_change WHERE action_id = ? AND kind = 'CONSUME'",
+                Integer.class, boxLineId);
+    }
+
+    /**
+     * Boxes of a cancelled order go back into the set-aside they were sold out of (Phase 12): the promise grows by what came back. The
+     * caller has put the boxes back on the shelf and sets them aside on the stock row for what this answers.
+     *
+     * @return how many went back into the promise; 0 if the product has no promise on this box any more (the boxes are then simply free)
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public int returnSold(UUID productId, UUID boxVariantId, int qty, UUID actionId, String actor, Instant when) {
+        Commitment record = lockedCommitmentOf(productId).filter(c -> c.boxVariantId().equals(boxVariantId)).orElse(null);
+        if (record == null || qty <= 0) {
+            return 0;
+        }
+        int after = record.quantity() + qty;
+        jdbc.update("UPDATE box_commitment SET quantity = ? WHERE id = ?", after, record.id());
+        change(record, "RETURN", qty, after, actionId, null, when, actor);
+        return qty;
+    }
+
     // ---------------------------------------------------------------- reads and checks
 
     @Transactional(readOnly = true)
