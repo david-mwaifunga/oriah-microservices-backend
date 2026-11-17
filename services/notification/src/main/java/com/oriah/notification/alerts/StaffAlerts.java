@@ -53,7 +53,9 @@ public class StaffAlerts {
         PAYMENT_TO_CONFIRM(false), SETTLEMENT_STUCK(false), VOID_AFTER_SALE(false), CLAIM_EMAIL_LIMIT(false), EMAIL_DOWN(false),
         BELOW_COST(true), BELOW_COST_CHECK_DOWN(true),
         /** A refund is owed to a customer and is not recorded as paid (Phase 12). Its subject is the debt's id. */
-        REFUND_TO_PAY(false);
+        REFUND_TO_PAY(false),
+        /** A payment through ZynlePay that ZynlePay did not settle (Phase 13). Its subject is the payment attempt's id. */
+        PROVIDER_PAYMENT_UNRESOLVED(false);
 
         private final boolean cost;
 

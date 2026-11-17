@@ -45,6 +45,7 @@ public class PaymentEventConsumer {
     /** Money that went out to a customer, and a debt to one, exactly as payment writes their aggregate types (Phase 12). */
     static final String MONEY_OUT = "money_out";
     static final String REFUND_DUE = "refund_due";
+    static final String PROVIDER_PAYMENT = "provider_payment";
 
     /**
      * The same consumer name as for order's events: one service, one name in {@code processed_event}. A rejected claim is about a claim, not
@@ -60,13 +61,14 @@ public class PaymentEventConsumer {
             .handles(MONEY_OUT, "payment.payout_voided", 1)
             .handles(REFUND_DUE, "payment.refund_closed", 1)
             .ignores("payment.rejected", "payment.succeeded", "payment.failed", "payment.refund_due_recorded")
-            // Phase 13, declared BEFORE payment emits it: where a ZynlePay attempt stands. Its messages are written in this phase's own slice.
-            .ignores("payment.provider_payment_updated");
+            // Phase 13, declared BEFORE payment emits it: where an attempt to collect through ZynlePay stands. Staff are told of one ZynlePay did
+            // not settle (ProviderPaymentWatch).
+            .handles(PROVIDER_PAYMENT, "payment.provider_payment_updated", 1);
 
     @Bean
     public Consumer<Message<byte[]>> paymentEvents(Inbox inbox, ConfirmationWatch watch, com.oriah.notification.alerts.RefundWatch refunds, Clock clock,
-                                                   ObjectMapper objectMapper) {
-        return new Handler(inbox, watch, refunds, clock, objectMapper);
+                                                   ObjectMapper objectMapper, com.oriah.notification.alerts.ProviderPaymentWatch providerPayments) {
+        return new Handler(inbox, watch, refunds, clock, objectMapper, providerPayments);
     }
 
     static class Handler implements Consumer<Message<byte[]>> {
@@ -76,7 +78,11 @@ public class PaymentEventConsumer {
         private final Clock clock;
         private final ObjectMapper objectMapper;
 
-        Handler(Inbox inbox, ConfirmationWatch watch, com.oriah.notification.alerts.RefundWatch refunds, Clock clock, ObjectMapper objectMapper) {
+        private final com.oriah.notification.alerts.ProviderPaymentWatch providerPayments;
+
+        Handler(Inbox inbox, ConfirmationWatch watch, com.oriah.notification.alerts.RefundWatch refunds, Clock clock, ObjectMapper objectMapper,
+                com.oriah.notification.alerts.ProviderPaymentWatch providerPayments) {
+            this.providerPayments = providerPayments;
             this.refunds = refunds;
             this.inbox = inbox;
             this.watch = watch;
@@ -136,6 +142,16 @@ public class PaymentEventConsumer {
                     }
                     refunds.closed(fact.dueId(), facts.recordedAt(), clock.instant());
                 }
+                case "payment.provider_payment_updated" -> {
+                    ProviderPaymentUpdated fact = read(message.getPayload(), ProviderPaymentUpdated.class);
+                    if (fact.providerPaymentId() == null || !fact.providerPaymentId().equals(facts.aggregateId()) || fact.orderId() == null
+                            || fact.status() == null) {
+                        throw new IllegalArgumentException("a provider payment update names payment " + fact.providerPaymentId() + " but arrived in an "
+                                + "envelope for " + facts.aggregateId());
+                    }
+                    providerPayments.updated(fact.providerPaymentId(), fact.orderId(), fact.method(), fact.status(), fact.unresolvedReason(), fact.amount(),
+                            fact.currency(), facts.recordedAt(), clock.instant());
+                }
                 default -> throw new IllegalArgumentException("there is nothing to do for a declared payment event of type '" + facts.eventType() + "'");
             }
             log.info("{} for {} noted", facts.eventType(), facts.aggregateId());
@@ -187,6 +203,15 @@ public class PaymentEventConsumer {
     /** {@code payment.refund_closed} (Phase 12): a debt closed without a payout, because the money never arrived. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     record RefundClosed(UUID dueId) {
+    }
+
+    /**
+     * {@code payment.provider_payment_updated} (Phase 13): where an attempt to collect through ZynlePay stands. It carries no number, no
+     * reference and nothing a person typed, so none is declared.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record ProviderPaymentUpdated(UUID providerPaymentId, UUID orderId, String method, String status, String unresolvedReason, BigDecimal amount,
+                                  String currency) {
     }
 
     /** {@code payment.confirmed}: staff recorded money for an order. {@code attempt} counts payment's announcements of it: 1, then 2, 3 ... */

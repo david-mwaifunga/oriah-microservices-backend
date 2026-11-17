@@ -15,6 +15,8 @@ public final class Screens {
 
     /** Where the owner pays a refund that is owed (Phase 12). */
     public static final String REFUNDS_OWED = "Payments, Refunds owed";
+    /** Where staff see each payment through ZynlePay and may ask ZynlePay about one (Phase 13). */
+    public static final String PROVIDER_PAYMENTS = "Payments, ZynlePay payments";
 
     private Screens() {
     }

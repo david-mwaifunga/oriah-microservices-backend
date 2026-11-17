@@ -365,6 +365,35 @@ public final class MessageTexts {
                         + "heard that the sale was completed. Please open " + Screens.SETTLEMENTS + ".");
     }
 
+    /**
+     * Phase 13: a payment through ZynlePay that ZynlePay did not settle. It says what the payment is, why the system could not settle it, what
+     * NOT to do, and what to do. It names no number and no reference: payment sends neither.
+     *
+     * @param reason why it is not settled: NO_ANSWER, AMOUNT_DIFFERS, PAID_AFTER_FAILED, SAME_MONEY_ON_RECORD or CONFIRMATION_VOIDED
+     */
+    public static Text providerPaymentUnresolved(MoneyWords money, String reason) {
+        String why = switch (reason == null ? "" : reason) {
+            case "AMOUNT_DIFFERS" -> "ZynlePay says it was paid, but for a different amount than was asked";
+            case "PAID_AFTER_FAILED" -> "ZynlePay first said it had failed and now says it was paid";
+            case "SAME_MONEY_ON_RECORD" -> "ZynlePay says it was paid, and the same money is already recorded as a payment keyed by hand";
+            case "CONFIRMATION_VOIDED" -> "its payment record was cancelled, so it has to be decided again";
+            default -> "ZynlePay has not said whether it was paid";
+        };
+        return new Text("A ZynlePay payment has not been settled - order " + money.order(),
+                "A " + methodWords(money.method()) + " payment" + money.amount() + " for order " + money.order() + " was started through ZynlePay and "
+                        + "has not been settled: " + why + ". The customer may have paid. Do not ask the customer to pay again, and do not confirm "
+                        + "it by hand. Open " + Screens.PROVIDER_PAYMENTS + " and press Check now; if ZynlePay still does not settle it, the owner "
+                        + "can mark it paid or not paid from ZynlePay's own records.");
+    }
+
+    /** The reminder of {@link #providerPaymentUnresolved}, a day later. */
+    public static Text providerPaymentUnresolvedReminder(MoneyWords money) {
+        return new Text("A ZynlePay payment is still not settled - order " + money.order(),
+                "The " + methodWords(money.method()) + " payment" + money.amount() + " for order " + money.order() + " through ZynlePay is still not "
+                        + "settled. Open " + Screens.PROVIDER_PAYMENTS + ": the owner can mark it paid or not paid from ZynlePay's own records. Until "
+                        + "then the order cannot be paid another way.");
+    }
+
     /** A6: a payment record was cancelled, and the sale it paid had already gone through. */
     public static Text voidAfterSale(MoneyWords money) {
         return new Text("A cancelled payment record paid a sale anyway - order " + money.order(),
@@ -442,6 +471,7 @@ public final class MessageTexts {
             case "ZAMTEL" -> "Zamtel mobile money";
             case "BANK_TRANSFER" -> "bank transfer";
             case "CASH" -> "cash";
+            case "CARD" -> "card";
             default -> method;
         };
     }
