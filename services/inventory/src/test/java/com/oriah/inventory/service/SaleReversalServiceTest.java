@@ -282,6 +282,78 @@ class SaleReversalServiceTest {
         assertConsistent();
     }
 
+    @Test
+    @DisplayName("boxes sold out of a set-aside that has been let go since are simply free when they come back")
+    void aSetAsideThatIsGoneLeavesTheBoxesFree() {
+        UUID other = UUID.randomUUID();
+        commitments.applyProduct(new ProductSnapshot(other, "SELLABLE", "ACTIVE", box, 0, false), UUID.randomUUID(), "system:test");
+        commitments.set(other, 10, ACTOR);
+        Line second = new Line(UUID.randomUUID(), ring, other, 2, UUID.randomUUID(), null);
+        UUID hold = UUID.randomUUID();
+        UUID secondOrder = UUID.randomUUID();
+        reservations.reserve(hold, secondOrder, List.of(second), null, ACTOR);
+        reservations.consume(hold, SOLD_ON, ACTOR);
+        commitments.release(other, UUID.randomUUID(), ACTOR);
+        assertThat(commitments.commitments(other, null)).isEmpty();
+
+        Reversal done = reversals.reverse(new Request(UUID.randomUUID(), "CANCELLATION", secondOrder, hold, BACK_ON,
+                List.of(new GoodsLine(second.saleLineId(), ring, 2)), List.of(new BoxLine(second.boxLineId(), box, other, 2)), List.of()), ORDER_SYSTEM);
+
+        assertThat(done.boxes()).singleElement().satisfies(back -> {
+            assertThat(back.toSetAside()).isZero();
+            assertThat(back.toFree()).isEqualTo(2);
+        });
+        assertThat(row(box).committed()).isZero();
+        assertThat(row(box).onHand()).isEqualTo(198);   // the first sale's two boxes are still out
+        assertConsistent();
+    }
+
+    @Test
+    @DisplayName("a box swapped twice: the box to put back is the last one, and either earlier one is refused")
+    void aSwapOfASwapIsFollowed() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        swaps.swap(UUID.randomUUID(), order, product, sale.boxLineId(), first, velvetBox, "the customer asked for the velvet box", ACTOR);
+        swaps.swap(UUID.randomUUID(), order, product, first, second, box, "the customer changed their mind again", ACTOR);
+
+        assertThatThrownBy(() -> reversals.reverse(new Request(UUID.randomUUID(), "CANCELLATION", order, reservation, BACK_ON,
+                List.of(new GoodsLine(sale.saleLineId(), ring, 2)), List.of(new BoxLine(first, velvetBox, product, 2)), List.of()), ORDER_SYSTEM))
+                .isInstanceOfSatisfying(CommitmentProblem.class, problem -> assertThat(problem.code()).isEqualTo("box-line-not-live"));
+
+        reversals.reverse(new Request(UUID.randomUUID(), "CANCELLATION", order, reservation, BACK_ON,
+                List.of(new GoodsLine(sale.saleLineId(), ring, 2)), List.of(new BoxLine(second, box, product, 2)), List.of()), ORDER_SYSTEM);
+
+        assertThat(row(box).onHand()).isEqualTo(200);
+        assertThat(row(velvetBox).onHand()).isEqualTo(200);
+        assertThat(row(ring).onHand()).isEqualTo(6);
+        assertConsistent();
+    }
+
+    @Test
+    @DisplayName("the same request sent twice at the same moment is one reversal: one of the two answers is a repeat and the stock moved once")
+    void twoAtOnceAreOne() throws Exception {
+        UUID id = UUID.randomUUID();
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Reversal> ask = () -> {
+                go.await();
+                return reversals.reverse(cancellation(id), ORDER_SYSTEM);
+            };
+            java.util.concurrent.Future<Reversal> one = pool.submit(ask);
+            java.util.concurrent.Future<Reversal> two = pool.submit(ask);
+            go.countDown();
+
+            assertThat(List.of(one.get(30, java.util.concurrent.TimeUnit.SECONDS).replay(), two.get(30, java.util.concurrent.TimeUnit.SECONDS).replay()))
+                    .containsExactlyInAnyOrder(false, true);
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(row(ring).onHand()).isEqualTo(6);
+        assertThat(row(box).onHand()).isEqualTo(200);
+        assertConsistent();
+    }
+
     // ---- asked once, answered the same for ever ------------------------------------------------------------------------------------------
 
     @Test
