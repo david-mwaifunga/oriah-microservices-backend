@@ -278,6 +278,43 @@ class RefundMessagesTest {
     }
 
     @Test
+    @DisplayName("a payout that is cancelled before its message went out is never emailed as paid: the waiting message is withdrawn (superseded), and the cancellation's own message still goes")
+    void aPayoutCancelledBeforeItsMessageWentIsNeverEmailed() {
+        orderPaid();
+        dispatcher().run();
+        cancelled();
+        // The cancellation's message cannot go yet, so the refund's message waits behind it.
+        jdbc.update("UPDATE notification_log SET next_attempt_at = ? WHERE id = ?", Timestamp.from(clock.instant().plus(Duration.ofMinutes(10))),
+                shopperRow("order.sale_cancelled").get("id"));
+        paidOut("225.00", "5.00");
+        assertThat(shopperRow("payment.paid_out")).containsEntry("status", "RECORDED");
+
+        // The owner keyed the payout by mistake and cancels it: the money has NOT been paid back.
+        payoutVoided();
+
+        assertThat(shopperRow("payment.paid_out")).containsEntry("status", "NOT_SENT").containsEntry("status_reason", "SUPERSEDED");
+        assertThat(alerts("REFUND_TO_PAY").getLast()).as("and the refund is owed again: a new alert stands open").containsEntry("state", "OPEN");
+        clock.advance(Duration.ofMinutes(11));
+        dispatcher().run();
+        dispatcher().run();
+        assertThat(emailsTo("alice@oriah.local")).extracting(Email::subject)
+                .contains("Order OR-000123 has been cancelled").doesNotContain("Your refund for order OR-000123 has been paid");
+    }
+
+    @Test
+    @DisplayName("a cancelled money record heard AFTER its sale was already corrected raises no 'a cancelled record paid a sale' alert: the order system has dealt with it")
+    void aVoidHeardAfterTheCorrectionRaisesNothing() {
+        orderPaid();
+        cancelled();
+
+        paymentEvents.accept(paymentFact("payment.voided", "payment_confirmation", confirmationId, "{\"confirmationId\":\"" + confirmationId + "\",\"orderId\":\""
+                + orderId + "\",\"method\":\"MTN\",\"reference\":\"MP2411\",\"gross\":225.00,\"fee\":3.40,\"net\":221.60,\"currency\":\"ZMW\",\"outcome\":\"SETTLED\","
+                + "\"reason\":\"keyed against the wrong order\",\"voidedBy\":\"Sam Phiri\",\"voidedAt\":\"" + justNow() + "\",\"arrivedAt\":\"2026-11-03T08:00:00Z\"}"));
+
+        assertThat(alerts("VOID_AFTER_SALE")).as("nothing is left open for staff to chase").noneMatch(alert -> "OPEN".equals(alert.get("state")));
+    }
+
+    @Test
     @DisplayName("a payout that reaches notification before the cancellation writes nothing until the cancellation is known; a refund paid in full says so in one sentence")
     void aPayoutThatArrivesFirstWritesNothingUntilTheCorrectionIsKnown() {
         orderPaid();

@@ -133,9 +133,16 @@ public class ConfirmationWatch {
         Watch watch = read(confirmationId);
         answer(watch, "VOIDED", fresh(at, now), now);
         reopenTheClaim(orderId, now);
-        if (watch.paidAt() != null) {
+        // Not when the sale was already corrected (the correction can be heard before the void: they travel on different topics): the order
+        // system has dealt with it, and an alert raised now would have nothing left to end it.
+        if (watch.paidAt() != null && !saleCorrected(confirmationId)) {
             voidAfterSale(watch, fresh(at, now), now);
         }
+    }
+
+    private boolean saleCorrected(UUID confirmationId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT corrected_at IS NOT NULL FROM confirmation_watch WHERE confirmation_id = ?", Boolean.class,
+                confirmationId));
     }
 
     /**
@@ -147,6 +154,7 @@ public class ConfirmationWatch {
      */
     public boolean corrected(UUID confirmationId, UUID orderId, Instant at, Instant now) {
         lock(confirmationId, orderId, at);
+        jdbc.update("UPDATE confirmation_watch SET corrected_at = COALESCE(corrected_at, ?) WHERE confirmation_id = ?", Timestamp.from(at), confirmationId);
         Watch watch = read(confirmationId);
         alerts.resolve(Kind.VOID_AFTER_SALE, confirmationId.toString(), "SALE_CORRECTED", now);
         return watch.voidedAt() != null;

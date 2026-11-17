@@ -109,6 +109,15 @@ public class RefundWatch {
         jdbc.update("""
                 INSERT INTO refund_watch_payout (payout_id, debt_id, voided_seen) VALUES (?, ?, TRUE)
                 ON CONFLICT (payout_id) DO UPDATE SET voided_seen = TRUE""", payoutId, debtId);
+        // "Your refund has been paid" may already be written down and still waiting (behind the correction's message, for an address, for the
+        // mail server): it is no longer true, so it is withdrawn before it can go. One that was already sent stays as it is.
+        int withdrawn = jdbc.update("""
+                UPDATE notification_log SET status = 'NOT_SENT', status_reason = 'SUPERSEDED', status_at = ?, next_attempt_at = NULL
+                 WHERE status = 'RECORDED' AND event_type = 'payment.paid_out'
+                   AND event_id = (SELECT event_id FROM refund_watch_payout WHERE payout_id = ?)""", Timestamp.from(now), payoutId);
+        if (withdrawn > 0) {
+            log.info("A payout was cancelled before its 'refund paid' message went out: the message is withdrawn");
+        }
         decide(debtId, now);
     }
 
