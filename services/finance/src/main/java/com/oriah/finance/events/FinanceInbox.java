@@ -41,6 +41,8 @@ public final class FinanceInbox {
             .handles(CONFIRMATION, "payment.voided", 1)
             .handles(CONFIRMATION, "payment.held", 1)
             .ignores("payment.rejected", "payment.succeeded", "payment.failed")
+            // payment, Phase 13: where a ZynlePay attempt stands is not money; its money is the payment.confirmed it is recorded as
+            .ignores("payment.provider_payment_updated")
             // payment, Phase 12: what is owed for a correction, and a debt closed without a payout
             .handles(REFUND_DUE, "payment.refund_due_recorded", 1)
             .handles(REFUND_DUE, "payment.refund_closed", 1)

@@ -68,6 +68,10 @@ public class SaleEventConsumers {
                 refunds.closed(closed.dueId(), closed.closedAt());
                 yield null;
             }
+            case OrderInbox.PROVIDER_PAYMENT_UPDATED -> {
+                // Nothing yet: the order has no mirror of an attempt until its own slice of Phase 13.
+                yield null;
+            }
             default -> throw new IllegalStateException("declared as handled but not applied: " + type);
         }, drivenBy(driver));
     }

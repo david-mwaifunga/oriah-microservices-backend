@@ -388,6 +388,17 @@ class RefundMessagesTest {
         assertThat(alerts("REFUND_TO_PAY")).isEmpty();
     }
 
+    @Test
+    @DisplayName("a ZynlePay payment's update (Phase 13) is declared before payment emits it, so it never lands on the dead-letter topic")
+    void aProviderPaymentUpdateIsDeclared() {
+        UUID attempt = UUID.randomUUID();
+
+        paymentEvents.accept(paymentFact("payment.provider_payment_updated", "provider_payment", attempt,
+                "{\"providerPaymentId\":\"" + attempt + "\",\"orderId\":\"" + orderId + "\",\"status\":\"VERIFIED\"}"));
+
+        assertThat(shopperRows()).isEmpty();
+    }
+
     // ---- the alert: a refund is waiting to be paid ----------------------------------------------------------------------------------------
 
     @Test

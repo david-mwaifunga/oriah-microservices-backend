@@ -396,6 +396,19 @@ class SettlementReceiveTest extends SaleTestBase {
     }
 
     @Test
+    @DisplayName("a ZynlePay payment's update (Phase 13) is declared here BEFORE payment emits it: one that is not about a failure changes nothing")
+    void aProviderPaymentUpdateIsDeclared() {
+        UUID attempt = UUID.randomUUID();
+
+        for (String status : List.of("UNRESOLVED", "VERIFIED")) {
+            paymentEvents.accept(message("provider_payment", attempt, "payment.provider_payment_updated", 1, "{\"providerPaymentId\":\"" + attempt
+                    + "\",\"orderId\":\"" + UUID.randomUUID() + "\",\"status\":\"" + status + "\"}", "payment"));
+        }
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM order_settlement", Long.class)).isZero();
+    }
+
+    @Test
     @DisplayName("inventory's cost of a stock movement (Phase 10, finance's feed) is declared and ignored here, so it never lands on the dead-letter topic")
     void aStockCostIsIgnored() {
         UUID action = UUID.randomUUID();

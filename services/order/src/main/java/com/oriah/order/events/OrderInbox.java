@@ -35,6 +35,8 @@ public final class OrderInbox {
     static final String PAID_OUT = "payment.paid_out";
     static final String PAYOUT_VOIDED = "payment.payout_voided";
     static final String REFUND_CLOSED = "payment.refund_closed";
+    static final String PROVIDER_PAYMENT = "provider_payment";
+    static final String PROVIDER_PAYMENT_UPDATED = "payment.provider_payment_updated";
     /** The one declaration of order as a consumer of the event log. */
     public static final InboxConsumer ORDER = InboxConsumer.named("order")
             .handles(CONFIRMATION, CONFIRMED, 1)
@@ -50,7 +52,10 @@ public final class OrderInbox {
             .handles(MONEY_OUT, PAID_OUT, 1)
             .handles(MONEY_OUT, PAYOUT_VOIDED, 1)
             .handles(REFUND_DUE, REFUND_CLOSED, 1)
-            .ignores("payment.refund_due_recorded");
+            .ignores("payment.refund_due_recorded")
+            // Phase 13, declared here BEFORE payment emits it: where an attempt to collect through ZynlePay stands. Only a FAILED one is acted on
+            // (the order lets go of the attempt); the money of a verified one arrives as its own payment.confirmed.
+            .handles(PROVIDER_PAYMENT, PROVIDER_PAYMENT_UPDATED, 1);
     private OrderInbox() {
     }
 

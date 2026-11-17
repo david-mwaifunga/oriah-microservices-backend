@@ -59,7 +59,9 @@ public class PaymentEventConsumer {
             .handles(MONEY_OUT, "payment.paid_out", 1)
             .handles(MONEY_OUT, "payment.payout_voided", 1)
             .handles(REFUND_DUE, "payment.refund_closed", 1)
-            .ignores("payment.rejected", "payment.succeeded", "payment.failed", "payment.refund_due_recorded");
+            .ignores("payment.rejected", "payment.succeeded", "payment.failed", "payment.refund_due_recorded")
+            // Phase 13, declared BEFORE payment emits it: where a ZynlePay attempt stands. Its messages are written in this phase's own slice.
+            .ignores("payment.provider_payment_updated");
 
     @Bean
     public Consumer<Message<byte[]>> paymentEvents(Inbox inbox, ConfirmationWatch watch, com.oriah.notification.alerts.RefundWatch refunds, Clock clock,

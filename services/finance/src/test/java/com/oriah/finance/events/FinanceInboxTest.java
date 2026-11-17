@@ -247,7 +247,9 @@ class FinanceInboxTest {
                 relay("order.payment_unsettled", "order", UUID.randomUUID(), ARRIVED, "order", "{}".getBytes()),
                 relay("payment.rejected", "payment_claim", UUID.randomUUID(), ARRIVED, "payment", "{}".getBytes()),
                 relay("reservation.consumed", "reservation", UUID.randomUUID(), ARRIVED, "inventory", "{}".getBytes()),
-                relay("box.swapped", "box_swap", UUID.randomUUID(), ARRIVED, "inventory", "{}".getBytes()));
+                relay("box.swapped", "box_swap", UUID.randomUUID(), ARRIVED, "inventory", "{}".getBytes()),
+                // Phase 13, declared BEFORE payment emits it: where a ZynlePay attempt stands is not money (its money is a payment.confirmed)
+                relay("payment.provider_payment_updated", "provider_payment", UUID.randomUUID(), ARRIVED, "payment", "{}".getBytes()));
 
         orderEvents.accept(ignored.get(0));
         orderEvents.accept(ignored.get(1));
@@ -255,6 +257,7 @@ class FinanceInboxTest {
         paymentEvents.accept(ignored.get(3));
         inventoryEvents.accept(ignored.get(4));
         inventoryEvents.accept(ignored.get(5));
+        paymentEvents.accept(ignored.get(6));
 
         for (Message<byte[]> m : ignored) {
             assertThat(processed(m)).isTrue();
