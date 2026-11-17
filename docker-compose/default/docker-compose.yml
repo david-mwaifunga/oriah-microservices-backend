@@ -706,9 +706,10 @@ services:
     # Pinned, never :latest.
     image: axllent/mailpit:v1.21
     container_name: oriah-mailcatcher
-    # Limit measured 2026-11-16 (docker stats after taking mail): about 10 MiB.
-    mem_limit: 64m
-    memswap_limit: 64m
+    # Limit measured 2026-11-17 (scripts/measure-stack.ps1 during a full smoke run): about 17 MiB idle, peak 41 MiB while taking a few dozen
+    # messages. It may hold 500, which was not measured, so the limit leaves three times the measured peak.
+    mem_limit: 128m
+    memswap_limit: 128m
     environment:
       # Keep the newest 500 messages; a long-lived development stack must not fill its disk with test mail.
       MP_MAX_MESSAGES: "500"
@@ -1257,6 +1258,8 @@ services:
       service: microservice-keycloak-config
     image: oriah/notification:dev
     container_name: oriah-notification
+    # Memory: the shared 640m limit. Measured again 2026-11-17 on the Phase 11 code (a mail client, two scheduled jobs, two Kafka
+    # bindings), scripts/measure-stack.ps1 over the second half of a full smoke run and the idle time after it: peak 462 MiB = 72% of it.
     environment:
       SPRING_DATASOURCE_USERNAME: notification
       SPRING_DATASOURCE_PASSWORD: notification
