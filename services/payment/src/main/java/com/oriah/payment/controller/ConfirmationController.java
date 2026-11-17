@@ -102,8 +102,10 @@ public class ConfirmationController {
             content = @Content(mediaType = PROBLEMS, schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "200", description = "The confirmation, voided")
     @PostMapping("/{id}/void")
-    public ConfirmationView voidConfirmation(@PathVariable("id") UUID id, @Valid @RequestBody VoidConfirmationRequest request, @AuthenticationPrincipal Jwt jwt) {
-        return confirmations.voidConfirmation(id, request.reason(), Staff.of(jwt, false));
+    public ConfirmationView voidConfirmation(@PathVariable("id") UUID id, @Valid @RequestBody VoidConfirmationRequest request,
+                                             Authentication authentication, @AuthenticationPrincipal Jwt jwt) {
+        boolean owner = authentication != null && authentication.getAuthorities().stream().anyMatch(a -> "ROLE_PAYMENT_ADMIN".equals(a.getAuthority()));
+        return confirmations.voidConfirmation(id, request.reason(), Staff.of(jwt, false), owner);
     }
 
     @Operation(operationId = "getConfirmation", summary = "One confirmation, with what became of the money")

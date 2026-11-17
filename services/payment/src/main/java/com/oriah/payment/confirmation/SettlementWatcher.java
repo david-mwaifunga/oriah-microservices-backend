@@ -39,7 +39,8 @@ public class SettlementWatcher {
     private static final int PER_PASS = 50;
 
     private record Row(UUID id, UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net, String currency,
-                       Instant arrivedAt, String backdateReason, String confirmedBy, Instant confirmedAt, int attempts) {
+                       Instant arrivedAt, String backdateReason, String confirmedBy, Instant confirmedAt, int attempts, String provider,
+                       UUID providerPaymentId) {
     }
 
     private static final String DUE = """
@@ -96,10 +97,11 @@ public class SettlementWatcher {
             return false;
         }
         List<Row> locked = jdbc.query("SELECT c.id, c.order_id, c.method, c.reference, c.gross, c.fee, c.net, c.currency, c.arrived_at, c.backdate_reason, "
-                + "c.confirmed_by, c.confirmed_at, c.emit_attempts" + DUE + " AND c.id = ?", (rs, n) -> new Row(rs.getObject("id", UUID.class),
+                + "c.confirmed_by, c.confirmed_at, c.emit_attempts, c.provider, c.provider_payment_id" + DUE + " AND c.id = ?", (rs, n) -> new Row(rs.getObject("id", UUID.class),
                 rs.getObject("order_id", UUID.class), rs.getString("method"), rs.getString("reference"), rs.getBigDecimal("gross"), rs.getBigDecimal("fee"),
                 rs.getBigDecimal("net"), rs.getString("currency"), rs.getTimestamp("arrived_at").toInstant(), rs.getString("backdate_reason"),
-                rs.getString("confirmed_by"), rs.getTimestamp("confirmed_at").toInstant(), rs.getInt("emit_attempts")),
+                rs.getString("confirmed_by"), rs.getTimestamp("confirmed_at").toInstant(), rs.getInt("emit_attempts"), rs.getString("provider"),
+                rs.getObject("provider_payment_id", UUID.class)),
                 stuckBefore, settings.maxEmitAttempts(), Timestamp.from(now), id);
         if (locked.isEmpty()) {
             return false;
@@ -107,7 +109,7 @@ public class SettlementWatcher {
         Row row = locked.getFirst();
         int attempt = row.attempts() + 1;
         events.confirmed(row.id(), row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.arrivedAt(),
-                row.backdateReason(), row.confirmedBy(), row.confirmedAt(), attempt, ACTOR, null, null);
+                row.backdateReason(), row.confirmedBy(), row.confirmedAt(), attempt, ACTOR, row.provider(), row.providerPaymentId());
         jdbc.update("UPDATE payment_confirmation SET emit_attempts = ?, next_emit_at = ? WHERE id = ?", attempt, Timestamp.from(now.plus(backoff(attempt))), id);
         if (attempt >= settings.maxEmitAttempts()) {
             log.error("confirmation {} (order {}, {} {} {}) has been announced {} times and order has not answered: it needs a person, it stays in the pending list",

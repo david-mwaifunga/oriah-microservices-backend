@@ -62,8 +62,11 @@ public class ConfirmationService {
     private final Clock clock;
     private final ConfirmationEvents events;
     private final SalesSettings sales;
+    private final com.oriah.payment.events.ProviderPaymentEvents providerPaymentEvents;
 
-    public ConfirmationService(JdbcTemplate jdbc, ConfirmationSettings settings, Clock clock, ConfirmationEvents events, SalesSettings sales) {
+    public ConfirmationService(JdbcTemplate jdbc, ConfirmationSettings settings, Clock clock, ConfirmationEvents events, SalesSettings sales,
+                               com.oriah.payment.events.ProviderPaymentEvents providerPaymentEvents) {
+        this.providerPaymentEvents = providerPaymentEvents;
         this.jdbc = jdbc;
         this.settings = settings;
         this.clock = clock;
@@ -82,6 +85,9 @@ public class ConfirmationService {
         String key = idempotencyKey == null ? "" : idempotencyKey.strip();
         if (key.isEmpty() || key.length() > 128) {
             throw new IllegalArgumentException("Idempotency-Key must be 1 to 128 characters");
+        }
+        if (key.startsWith(ProviderConfirmations.KEY_PREFIX)) {
+            throw new IllegalArgumentException("Idempotency-Key cannot begin with '" + ProviderConfirmations.KEY_PREFIX + "': those keys are the system's own");
         }
         PaymentMethod method = PaymentMethod.parse(request.method());
         String reference = method.requiresReference() || (request.reference() != null && !request.reference().isBlank())
@@ -102,6 +108,18 @@ public class ConfirmationService {
         Optional<UUID> prior = repeat(key, fingerprint);
         if (prior.isPresent()) {
             return new Confirmed(get(prior.get()), false);
+        }
+
+        // One writer at a time for an order's money, and the first lock taken (Phase 13): a payment through ZynlePay starting for this order at this
+        // moment either sees this confirmation or is seen by it, never neither.
+        ProviderConfirmations.lockOrder(jdbc, request.orderId());
+        Optional<UUID> waitedForItself = repeat(key, fingerprint);
+        if (waitedForItself.isPresent()) {
+            return new Confirmed(get(waitedForItself.get()), false);
+        }
+        refuseWhileAProviderPaymentHoldsTheOrder(request.orderId());
+        if (reference != null) {
+            refuseAProvidersReference(reference);
         }
 
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
@@ -157,6 +175,32 @@ public class ConfirmationService {
      */
     @Transactional
     public ConfirmationView voidConfirmation(UUID id, String reason, Staff staff) {
+        return voidConfirmation(id, reason, staff, false);
+    }
+
+    /**
+     * @param ownerMayCancelProviderMoney whether the caller is the owner (PAYMENT_ADMIN). A record written from a ZynlePay payment rests on
+     *                                    ZynlePay's own answer, not on a person's keying, so only the owner overrules it; the attempt then goes
+     *                                    back to the owner to decide, and the machine never records it again.
+     * @throws org.springframework.security.access.AccessDeniedException (403) for a ZynlePay record cancelled by anyone but the owner
+     */
+    @Transactional
+    public ConfirmationView voidConfirmation(UUID id, String reason, Staff staff, boolean ownerMayCancelProviderMoney) {
+        // What it is, read before any lock (neither ever changes), so that the locks are taken in the one order: order, attempt, then the record.
+        record Origin(UUID orderId, UUID providerPaymentId) {
+        }
+        Origin origin = jdbc.query("SELECT order_id, provider_payment_id FROM payment_confirmation WHERE id = ?",
+                        (rs, n) -> new Origin(rs.getObject("order_id", UUID.class), rs.getObject("provider_payment_id", UUID.class)), id)
+                .stream().findFirst().orElseThrow(() -> new PaymentProblem(HttpStatus.NOT_FOUND, "confirmation-not-found", "there is no confirmation " + id));
+        if (origin.providerPaymentId() != null && !ownerMayCancelProviderMoney) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "a payment recorded from ZynlePay is cancelled by the owner only: it rests on ZynlePay's answer, not on a person's keying");
+        }
+        ProviderConfirmations.lockOrder(jdbc, origin.orderId());
+        if (origin.providerPaymentId() != null) {
+            jdbc.query("SELECT id FROM provider_payment WHERE id = ? FOR UPDATE", rs -> {
+            }, origin.providerPaymentId());
+        }
         String why = reason == null ? "" : reason.strip();
         if (why.length() < 10 || why.length() > 200) {
             throw new IllegalArgumentException("a void needs a reason of 10 to 200 characters, written for the person who reads the books");
@@ -190,12 +234,55 @@ public class ConfirmationService {
         jdbc.update("INSERT INTO payment_confirmation_void (id, confirmation_id, voided_by, voided_by_name, reason, voided_at) VALUES (?, ?, ?, ?, ?, ?)",
                 UUID.randomUUID(), id, staff.actor(), staff.name(), why, Timestamp.from(now));
         // The reference is freed, so the corrected confirmation can use it. The money held for this confirmation, if any, is closed with it.
-        jdbc.update("UPDATE payment_confirmation SET reference_key = NULL WHERE id = ?", id);
+        jdbc.update("UPDATE payment_confirmation SET reference_key = NULL, provider_payment_key = NULL WHERE id = ?", id);
+        if (origin.providerPaymentId() != null) {
+            handBackToTheOwner(origin.providerPaymentId(), id, now, staff.actor());
+        }
         jdbc.update("UPDATE held_money SET status = 'VOIDED', voided_at = ? WHERE confirmation_id = ? AND status = 'OWED'", Timestamp.from(now), id);
         events.voided(id, row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.outcome(), why, staff.actor(), now, row.arrivedAt());
         // Which record, who, and what it was. Never the reason: a person typed it, so it can hold a customer's name; it is in the row and the event.
         log.info("Confirmation {} voided by {} ({})", id, staff.actor(), row.outcome());
         return get(id);
+    }
+
+    /**
+     * The attempt whose money record was just cancelled is the owner's to decide again: UNRESOLVED / CONFIRMATION_VOIDED, holding no order, and not
+     * asked about any more (ZynlePay would only repeat the answer that is in doubt, and the machine's word is taken once).
+     */
+    private void handBackToTheOwner(UUID providerPaymentId, UUID confirmationId, Instant now, String actor) {
+        int moved = jdbc.update("""
+                UPDATE provider_payment
+                   SET status = 'UNRESOLVED', unresolved_reason = 'CONFIRMATION_VOIDED', confirmation_id = NULL, unresolved_at = ?, next_check_at = NULL,
+                       final_recheck_at = NULL, check_lease_until = NULL, version = version + 1
+                 WHERE id = ? AND status = 'VERIFIED' AND confirmation_id = ?""", Timestamp.from(now), providerPaymentId, confirmationId);
+        if (moved == 0) {
+            return;     // not the attempt's standing record (an earlier, already replaced one): nothing about the attempt changes
+        }
+        jdbc.query("SELECT order_id, keycloak_id, channel, method, amount, currency, started_at FROM provider_payment WHERE id = ?", rs -> {
+            providerPaymentEvents.updated(providerPaymentId, rs.getObject("order_id", UUID.class), rs.getString("keycloak_id"), rs.getString("channel"),
+                    rs.getString("method"), "UNRESOLVED", null, "CONFIRMATION_VOIDED", rs.getBigDecimal("amount"), rs.getString("currency"), null,
+                    rs.getTimestamp("started_at").toInstant(), now, actor);
+        }, providerPaymentId);
+    }
+
+    /** No other money is recorded for an order while a ZynlePay payment for it is in flight: that payment may still come. */
+    private void refuseWhileAProviderPaymentHoldsTheOrder(UUID orderId) {
+        jdbc.query("SELECT id FROM provider_payment WHERE order_id = ? AND holds_order", (rs, row) -> {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "provider-payment-in-progress",
+                    "a payment through ZynlePay is in progress for this order: wait for it to finish, or for the owner to settle it, before recording other money")
+                    .with("providerPaymentId", rs.getObject("id", UUID.class));
+        }, orderId);
+    }
+
+    /** Money ZynlePay collected is recorded from ZynlePay's own answer, never keyed: not under our reference, its transaction id or the network's. */
+    private void refuseAProvidersReference(String reference) {
+        jdbc.query("SELECT id, order_id FROM provider_payment WHERE reference_no = ? OR provider_transaction_key = ? OR operator_reference_key = ? LIMIT 1",
+                (rs, row) -> {
+                    throw new PaymentProblem(HttpStatus.CONFLICT, "provider-payment-reference",
+                            "that reference belongs to a payment through ZynlePay: its money is recorded from ZynlePay's own answer, never keyed by hand. "
+                                    + "Open Provider payments to see where it stands")
+                            .with("providerPaymentId", rs.getObject("id", UUID.class)).with("orderId", rs.getObject("order_id", UUID.class));
+                }, reference, reference, reference);
     }
 
     /** Confirmations order has not answered yet, oldest first, as of {@code now}. */
