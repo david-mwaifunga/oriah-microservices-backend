@@ -58,7 +58,7 @@ public class ProductStorefrontQueriesImpl implements ProductStorefrontQueries {
      */
     private static final String LOWEST_PURCHASABLE_PRICE = """
             (SELECT MIN(pv.unit_price) FROM product_variants pv
-              WHERE pv.product_id = p.id AND pv.active AND pv.unit_price > 0)""";
+              WHERE pv.product_id = p.id AND pv.active AND pv.unit_price > 0 AND pv.condition = 'NEW')""";
 
     @Override
     public List<UUID> findStorefrontIds(StorefrontFilter filter, ProductSort sort, int page, int size) {
@@ -139,7 +139,7 @@ public class ProductStorefrontQueriesImpl implements ProductStorefrontQueries {
         // SQL can, and a priceless card is not something to render.
         conditions.add("""
                 EXISTS (SELECT 1 FROM product_variants pv
-                         WHERE pv.product_id = p.id AND pv.active AND pv.unit_price > 0)""");
+                         WHERE pv.product_id = p.id AND pv.active AND pv.unit_price > 0 AND pv.condition = 'NEW')""");
 
         if (filter.typeCode() != null) {
             conditions.add("p.product_type_code = :typeCode");

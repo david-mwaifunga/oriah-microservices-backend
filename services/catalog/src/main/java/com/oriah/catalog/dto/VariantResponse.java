@@ -35,6 +35,10 @@ public record VariantResponse(
         Map<String, String> options,
         boolean active,
         List<UUID> imageIds,
-        String availability
+        String availability,
+        /** {@code NEW}, or {@code MARKED_DOWN} for the listing of one returned piece sold again at a lower price. */
+        String condition,
+        /** For a marked-down variant, the variant its piece was sold as; absent otherwise. */
+        UUID sourceVariantId
 ) {
 }

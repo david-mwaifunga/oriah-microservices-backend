@@ -191,7 +191,9 @@ public final class ProductMapper {
                         v.options(),
                         v.isActive(),
                         List.of(),
-                        badges.containsKey(v.id()) ? badges.get(v.id()).name() : null))
+                        badges.containsKey(v.id()) ? badges.get(v.id()).name() : null,
+                        v.condition().name(),
+                        v.sourceVariantId()))
                 .toList();
     }
 

@@ -474,11 +474,34 @@ public class Product extends BaseEntity {
         }
         requireNoSellingPriceForPackaging(variant.unitPrice());
         requireUniformCurrency(variant.currency(), variant);
+        if (variant.isMarkedDown()) {
+            throw new IllegalArgumentException("a marked-down piece is added with addMarkedDown");
+        }
+        // Among the ordinary variants only: a marked-down piece repeats the options of the variant it came from, on purpose.
         boolean duplicate = variants.stream()
+                .filter(existing -> !existing.isMarkedDown())
                 .anyMatch(existing -> existing.optionDigest().equals(variant.optionDigest()));
         if (duplicate) {
             throw new IllegalArgumentException(
                     "a variant with options " + variant.options() + " already exists");
+        }
+        variant.setPosition(variants.size());
+        variants.add(variant);
+        return variant;
+    }
+
+    /**
+     * Adds the listing of one returned piece (Phase 12). It repeats its source's options, so the "one variant per combination" rule is not
+     * asked of it; everything else a variant must be still holds, because it was built from a variant of this product.
+     *
+     * @throws IllegalStateException if this is packaging: a box is never sold, marked down or not
+     */
+    public ProductVariant addMarkedDown(ProductVariant variant) {
+        if (variant == null || !variant.isMarkedDown() || variant.product() != this) {
+            throw new IllegalArgumentException("only a marked-down variant of this product is added here");
+        }
+        if (kind == ProductKind.PACKAGING) {
+            throw new IllegalStateException("packaging '" + slug + "' is never sold, so no piece of it is marked down");
         }
         variant.setPosition(variants.size());
         variants.add(variant);
@@ -536,7 +559,7 @@ public class Product extends BaseEntity {
         // Packaging is never listed, whatever its variants say: the cost of a
         // box goes onto the sale it went out with, not onto a shelf.
         return kind == ProductKind.SELLABLE
-                && variants.stream().anyMatch(ProductVariant::isPurchasable);
+                && variants.stream().anyMatch(ProductVariant::carriesTheListing);
     }
 
     /**
@@ -586,7 +609,7 @@ public class Product extends BaseEntity {
      */
     public Optional<BigDecimal> lowestActivePrice() {
         return variants.stream()
-                .filter(ProductVariant::isPurchasable)
+                .filter(ProductVariant::carriesTheListing)
                 .map(ProductVariant::unitPrice)
                 .min(BigDecimal::compareTo);
     }
@@ -594,7 +617,7 @@ public class Product extends BaseEntity {
     /** Dearest purchasable variant, for a "K4,000 - K5,000" range on a card. */
     public Optional<BigDecimal> highestActivePrice() {
         return variants.stream()
-                .filter(ProductVariant::isPurchasable)
+                .filter(ProductVariant::carriesTheListing)
                 .map(ProductVariant::unitPrice)
                 .max(BigDecimal::compareTo);
     }
@@ -663,7 +686,7 @@ public class Product extends BaseEntity {
         }
         boolean anotherRemains = variants.stream()
                 .filter(v -> !v.id().equals(variant.id()))
-                .anyMatch(ProductVariant::isPurchasable);
+                .anyMatch(ProductVariant::carriesTheListing);
         if (!anotherRemains) {
             throw new IllegalStateException(
                     "variant " + variant.sku() + " is the last purchasable variant of the "

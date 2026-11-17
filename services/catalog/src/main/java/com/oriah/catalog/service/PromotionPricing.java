@@ -28,8 +28,13 @@ import com.oriah.catalog.repository.CategoryAncestry;
 @Service
 public class PromotionPricing {
 
-    /** A piece to be discounted: the variant, the product it belongs to, and its price (the list price at the instant being priced). */
-    public record Piece(UUID variantId, UUID productId, BigDecimal price) {
+    /**
+     * A piece to be discounted: the variant, the product it belongs to, its price (the list price at the instant being priced), and whether
+     * it is a returned piece sold again at a lower price. Such a piece NEVER takes a promotion: its price was set by a person, for that one
+     * piece, against that piece's own cost, and a shop-wide "10% off" on top would sell it below what was decided. Every caller has to say
+     * which it is, so no pricing path can forget.
+     */
+    public record Piece(UUID variantId, UUID productId, BigDecimal price, boolean markedDown) {
     }
 
     private final PromotionLookup lookup;
@@ -46,7 +51,9 @@ public class PromotionPricing {
      */
     public Map<UUID, Discount> discountsAt(Collection<Piece> pieces, Instant at) {
         Map<UUID, Discount> discounts = new LinkedHashMap<>();
+        pieces = pieces.stream().filter(piece -> !piece.markedDown()).toList();
         if (pieces.isEmpty()) {
+            // Nothing that could take a promotion: promotion is not even asked.
             return discounts;
         }
         List<PromotionDefinition> inForce = lookup.inForce(at);

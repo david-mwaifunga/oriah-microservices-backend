@@ -75,16 +75,19 @@ public class AsOfPricingService {
             throw new IllegalArgumentException("a sale can only be priced at a moment that has happened: " + at + " is in the future");
         }
         List<UUID> distinct = variantIds.stream().distinct().toList();
+        java.util.Set<UUID> markedDown = new java.util.HashSet<>();
         List<Entry> listed = readOnly.execute(status -> {
             Map<UUID, ProductVariant> found = variants.findAllByIdInWithProduct(distinct).stream()
                     .collect(Collectors.toMap(ProductVariant::id, Function.identity()));
+            found.values().stream().filter(ProductVariant::isMarkedDown).forEach(v -> markedDown.add(v.id()));
             return variantIds.stream().map(id -> entry(id, found.get(id), at)).toList();
         });
 
         Map<UUID, PromotionPricing.Piece> toDiscount = new LinkedHashMap<>();
         for (Entry entry : listed) {
             if (entry.status() == Status.PRICED) {
-                toDiscount.putIfAbsent(entry.variantId(), new PromotionPricing.Piece(entry.variantId(), entry.productId(), entry.unitPrice()));
+                toDiscount.putIfAbsent(entry.variantId(),
+                        new PromotionPricing.Piece(entry.variantId(), entry.productId(), entry.unitPrice(), markedDown.contains(entry.variantId())));
             }
         }
         Map<UUID, Discount> discounts = promotions.discountsAt(toDiscount.values(), at);

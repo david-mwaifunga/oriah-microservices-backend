@@ -52,7 +52,34 @@ class PromotionPricingTest {
     }
 
     private static Piece piece(UUID product, String price) {
-        return new Piece(UUID.randomUUID(), product, new BigDecimal(price));
+        return new Piece(UUID.randomUUID(), product, new BigDecimal(price), false);
+    }
+
+    @Test
+    @DisplayName("a returned piece sold again at a lower price takes no promotion: shop-wide, on its category or on its own product, now or as of a past day")
+    void aMarkdownTakesNoPromotion() {
+        UUID product = UUID.randomUUID();
+        UUID category = UUID.randomUUID();
+        when(lookup.inForce(any())).thenReturn(List.of(promo("SHOP", null, "PERCENTAGE", "10.00"), promo("PRODUCT", product, "FIXED", "50.00"),
+                promo("CATEGORY", category, "PERCENTAGE", "20.00")));
+        when(ancestry.categoriesWithAncestors(anyCollection())).thenReturn(Map.of(product, java.util.Set.of(category)));
+        Piece ordinary = piece(product, "1000.00");
+        Piece markedDown = new Piece(UUID.randomUUID(), product, new BigDecimal("700.00"), true);
+
+        for (Instant at : new Instant[] {null, AT}) {
+            Map<UUID, Discount> answer = pricing.discountsAt(List.of(ordinary, markedDown), at);
+
+            assertThat(answer).containsOnlyKeys(ordinary.variantId());
+            assertThat(answer.get(ordinary.variantId()).perPiece()).isEqualByComparingTo("200.00");
+        }
+    }
+
+    @Test
+    @DisplayName("a bag of marked-down pieces only is no question to promotion at all")
+    void onlyMarkdownsAskNobody() {
+        assertThat(pricing.discountsAt(List.of(new Piece(UUID.randomUUID(), UUID.randomUUID(), new BigDecimal("700.00"), true)), AT)).isEmpty();
+
+        verify(lookup, never()).inForce(any());
     }
 
     @Test

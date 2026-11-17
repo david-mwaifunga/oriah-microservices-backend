@@ -581,6 +581,64 @@ public class ProductService {
         });
     }
 
+    /** The product after a marked-down variant was asked for. {@code created} is false for a repeat of a request already done. */
+    public record MarkedDown(ProductResponse product, boolean created) {
+    }
+
+    /** The source SKU is cut to this, so that with "-R-" and eight characters of the piece's id the whole fits the 64 a SKU may be. */
+    private static final int MARKDOWN_SKU_STEM = 53;
+
+    /**
+     * Makes the listing of ONE returned piece that is sold again at a lower price (Phase 12): a {@code MARKED_DOWN} variant of the same
+     * product, with the options of the variant the piece was sold as, unpriced. The pricing endpoint prices it, against the cost of its own
+     * one-piece lot. The order system chooses its id (it is the key of the piece's stock in inventory) and names the piece, so asking again
+     * changes nothing.
+     *
+     * @return empty when there is no such product
+     * @throws PricingProblem 404 {@code variant-not-found} (the source is not a variant of this product); 409 {@code markdown-piece-used}
+     *                        (the piece or the id already belongs to another request), {@code already-marked-down} (the source is itself
+     *                        a marked-down piece), {@code packaging-is-not-priced}, {@code sku-unavailable}
+     */
+    @Transactional
+    public Optional<MarkedDown> addMarkedDownVariant(UUID productId, UUID variantId, UUID sourceVariantId, UUID pieceId, String actor) {
+        // Under the product's lock, like every write to it: two requests for one piece wait for each other here.
+        return repository.findByIdForUpdate(productId).filter(NOT_DELETED).map(product -> {
+            List<Map<String, Object>> taken = jdbc.queryForList(
+                    "SELECT id, product_id, source_variant_id, markdown_piece_id FROM product_variants WHERE markdown_piece_id = ? OR id = ?", pieceId, variantId);
+            if (!taken.isEmpty()) {
+                boolean same = taken.size() == 1 && variantId.equals(taken.get(0).get("id")) && productId.equals(taken.get(0).get("product_id"))
+                        && sourceVariantId.equals(taken.get(0).get("source_variant_id")) && pieceId.equals(taken.get(0).get("markdown_piece_id"));
+                if (!same) {
+                    throw new PricingProblem(HttpStatus.CONFLICT, "markdown-piece-used",
+                            "the returned piece " + pieceId + " or the id " + variantId + " already belongs to another marked-down listing");
+                }
+                return new MarkedDown(ProductMapper.toAdminResponse(product), false);
+            }
+            if (product.kind() == ProductKind.PACKAGING) {
+                throw new PricingProblem(HttpStatus.CONFLICT, "packaging-is-not-priced",
+                        "'" + product.title() + "' is packaging: a box is never sold on its own, so no piece of it is marked down");
+            }
+            ProductVariant source = product.variants().stream().filter(v -> v.id().equals(sourceVariantId)).findFirst()
+                    .orElseThrow(() -> new PricingProblem(HttpStatus.NOT_FOUND, "variant-not-found",
+                            "'" + product.title() + "' has no variant " + sourceVariantId));
+            if (source.isMarkedDown()) {
+                throw new PricingProblem(HttpStatus.CONFLICT, "already-marked-down",
+                        "variant " + source.sku() + " is itself a returned piece that was marked down: a new listing is made from the ordinary variant");
+            }
+            String stem = source.sku().length() > MARKDOWN_SKU_STEM ? source.sku().substring(0, MARKDOWN_SKU_STEM) : source.sku();
+            String sku = stem + "-R-" + pieceId.toString().substring(0, 8);
+            if (Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM product_variants WHERE sku = ?)", Boolean.class, sku))) {
+                throw new PricingProblem(HttpStatus.CONFLICT, "sku-unavailable", "the SKU " + sku + " is already in use");
+            }
+            ProductVariant variant = ProductVariant.markedDown(variantId, source, sku, pieceId);
+            product.addMarkedDown(variant);
+            log.info("Added marked-down variant sku=\"{}\" to product id={} from variant id={} (unpriced)", sku, productId, sourceVariantId);
+            // Recorded like any new variant, so inventory learns its title and SKU before the piece is moved onto it.
+            record(product, ProductUpdatedEvent.TYPE, productUpdated(product), actor);
+            return new MarkedDown(ProductMapper.toAdminResponse(product), true);
+        });
+    }
+
     /**
      * Takes a published product off sale: ACTIVE goes back to DRAFT, so it can be changed and published again, and the unpublish is
      * counted. The count rides on the product's snapshot, and inventory lets go of the boxes it set aside for the product when it goes
@@ -1074,14 +1132,8 @@ public class ProductService {
      * product always read in the same order.
      */
     private static String variantTitle(Product product, ProductVariant variant) {
-        if (variant.options().isEmpty()) {
-            return product.title();
-        }
-        String options = product.optionNames().stream()
-                .filter(variant.options()::containsKey)
-                .map(axis -> axis + " " + variant.options().get(axis))
-                .collect(java.util.stream.Collectors.joining(", "));
-        return options.isEmpty() ? product.title() : product.title() + " - " + options;
+        // One place composes a variant's title, so a marked-down piece reads the same in an event, a bag and a staff screen.
+        return DefaultVariantPricingService.variantTitle(product, variant);
     }
 
     /**

@@ -8,6 +8,8 @@ import java.util.UUID;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -93,6 +95,21 @@ public class ProductVariant extends BaseEntity {
     @Column(nullable = false)
     private boolean active;
 
+    /**
+     * {@code NEW} for every ordinary variant. {@code MARKED_DOWN} for the listing of ONE returned piece sold again at a lower price
+     * (Phase 12): it names the variant the piece was sold as and the piece it is for, copies that variant's options, and is kept apart
+     * from the ordinary ones (see {@link #carriesTheListing()}). Fixed at creation.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, updatable = false, length = 12)
+    private VariantCondition condition = VariantCondition.NEW;
+
+    @Column(name = "source_variant_id", updatable = false)
+    private UUID sourceVariantId;
+
+    @Column(name = "markdown_piece_id", updatable = false)
+    private UUID markdownPieceId;
+
     protected ProductVariant() {
         // For JPA hydration only.
     }
@@ -127,6 +144,27 @@ public class ProductVariant extends BaseEntity {
         applyOptions(options);
         this.position = 0;
         this.active = true;
+    }
+
+    /**
+     * The listing of one returned piece, sold again at a lower price: a variant of the same product as {@code source}, with its options and
+     * currency, UNPRICED (only the pricing endpoint prices it, against the cost of its own one-piece lot).
+     *
+     * @param id      the id the order system chose for it (it is the key of its stock and its lot in inventory)
+     * @param pieceId the returned piece it is for
+     */
+    public static ProductVariant markedDown(UUID id, ProductVariant source, String sku, UUID pieceId) {
+        if (id == null || source == null || pieceId == null) {
+            throw new IllegalArgumentException("a marked-down variant needs its id, the variant it came from and the piece it is for");
+        }
+        if (source.isMarkedDown()) {
+            throw new IllegalStateException("variant " + source.sku() + " is itself a marked-down piece");
+        }
+        ProductVariant variant = new ProductVariant(id, source.product(), sku, BigDecimal.ZERO.setScale(2), source.currency(), source.options());
+        variant.condition = VariantCondition.MARKED_DOWN;
+        variant.sourceVariantId = source.id();
+        variant.markdownPieceId = pieceId;
+        return variant;
     }
 
     private static String normaliseCurrency(String currency) {
@@ -181,6 +219,33 @@ public class ProductVariant extends BaseEntity {
 
     public boolean isActive() {
         return active;
+    }
+
+    public VariantCondition condition() {
+        return condition;
+    }
+
+    public boolean isMarkedDown() {
+        return condition == VariantCondition.MARKED_DOWN;
+    }
+
+    /** For a marked-down variant, the variant its piece was sold as; null for an ordinary one. */
+    public UUID sourceVariantId() {
+        return sourceVariantId;
+    }
+
+    /** For a marked-down variant, the returned piece it is for; null for an ordinary one. */
+    public UUID markdownPieceId() {
+        return markdownPieceId;
+    }
+
+    /**
+     * Whether this variant counts for the PRODUCT's place in the shop: its "from" price, whether it can be published, whether it may be
+     * the last thing for sale. Only an ordinary variant that can be bought does. A marked-down piece is one returned unit: it must never
+     * advertise the product at its reduced price, nor keep a product on the shop when nothing ordinary is left to buy.
+     */
+    public boolean carriesTheListing() {
+        return condition == VariantCondition.NEW && isPurchasable();
     }
 
     public void reprice(BigDecimal newPrice, String newCurrency) {

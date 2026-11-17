@@ -252,6 +252,43 @@ public class AdminProductController {
         return ResponseEntity.status(HttpStatus.CREATED).body(updated);
     }
 
+    /** What the order system sends to list one returned piece at a lower price: the id it chose, the variant the piece was sold as, the piece. */
+    public record MarkedDownVariantRequest(
+            @jakarta.validation.constraints.NotNull(message = "variantId is required") UUID variantId,
+            @jakarta.validation.constraints.NotNull(message = "sourceVariantId is required") UUID sourceVariantId,
+            @jakarta.validation.constraints.NotNull(message = "pieceId is required") UUID pieceId) {
+    }
+
+    /**
+     * List one returned piece on its own, to be sold again at a lower price (Phase 12).
+     *
+     * <p>The new variant copies the options of the variant the piece was sold as and starts unpriced; it is priced with the pricing
+     * endpoint, against the cost of its own one-piece lot. Asking again for the same piece with the same ids answers 200 and makes nothing.
+     */
+    @PostMapping("/{id}/variants/marked-down")
+    @Operation(operationId = "addMarkedDownVariant", summary = "List one returned piece as a marked-down variant of its product",
+            description = "Made for ONE returned piece. Unpriced until the pricing endpoint prices it; never promoted, never the product's "
+                    + "'from' price, and it does not keep a product published by itself. Its SKU is the source's (cut to 53 characters), "
+                    + "then -R- and the first eight characters of the piece id. Idempotent by piece.")
+    @ApiResponse(responseCode = "201", description = "The product, with the new marked-down variant")
+    @ApiResponse(responseCode = "200", description = "The same request again: the product as it is, nothing made")
+    @ApiResponse(responseCode = "400", description = "Validation failure; see fieldErrors",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No product with that id, or variant-not-found: the source is not a variant of it",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "markdown-piece-used, already-marked-down, packaging-is-not-priced, sku-unavailable",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    public ResponseEntity<ProductResponse> addMarkedDownVariant(
+            @PathVariable("id") UUID id,
+            @Valid @RequestBody MarkedDownVariantRequest request,
+            @AuthenticationPrincipal Jwt jwt) {
+        log.debug("POST /api/v1/admin/products/{}/variants/marked-down source={}", id, request.sourceVariantId());
+        com.oriah.catalog.service.ProductService.MarkedDown made = service
+                .addMarkedDownVariant(id, request.variantId(), request.sourceVariantId(), request.pieceId(), actor(jwt))
+                .orElseThrow(() -> new ResourceNotFoundException("Product", "id", id.toString()));
+        return ResponseEntity.status(made.created() ? HttpStatus.CREATED : HttpStatus.OK).body(made.product());
+    }
+
     /**
      * Take a published product off sale.
      *

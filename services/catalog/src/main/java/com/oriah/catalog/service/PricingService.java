@@ -80,7 +80,7 @@ public class PricingService {
     /** What is read about a variant before anything else is done: no lock is held, and no entity leaves this class. */
     private record Target(UUID productId, UUID variantId, String productTitle, String variantTitle, String sku, ProductStatus productStatus,
                           ProductKind kind, UUID boxVariantId, BigDecimal currentPrice, String currentCurrency,
-                          PriceHistoryRepository.Entry latest, List<PriceHistoryRepository.Entry> history) {
+                          PriceHistoryRepository.Entry latest, List<PriceHistoryRepository.Entry> history, boolean markedDown) {
     }
 
     private final ProductVariantRepository variants;
@@ -108,8 +108,10 @@ public class PricingService {
      * judges (what a customer pays per piece). Promotion being unable to answer is a 503 ({@link com.oriah.catalog.exception.PromotionsUnavailableException}),
      * never "no promotion": a price is not saved, or read as fine, without knowing what a customer would pay.
      */
-    private Promoted promotedAt(UUID variantId, UUID productId, BigDecimal listPrice, Instant at) {
-        Map<UUID, Discount> discounts = promotions.discountsAt(List.of(new PromotionPricing.Piece(variantId, productId, listPrice)), at);
+    private Promoted promotedAt(Target target, BigDecimal listPrice, Instant at) {
+        UUID variantId = target.variantId();
+        Map<UUID, Discount> discounts = promotions.discountsAt(
+                List.of(new PromotionPricing.Piece(variantId, target.productId(), listPrice, target.markedDown())), at);
         return Promoted.of(listPrice, discounts.get(variantId));
     }
 
@@ -131,8 +133,16 @@ public class PricingService {
         PriceCheck.Reading reading = check.read(variantId, target.boxVariantId(), bearer);
         // The price is judged on what a customer pays per piece: the list price less the promotion in force when it takes effect (now, or for a HISTORICAL row the day
         // it belongs to: today's promotion says nothing about what a customer paid ten days ago).
-        Promoted promoted = promotedAt(variantId, target.productId(), request.unitPrice(), dated.historical() ? dated.effectiveFrom() : null);
+        Promoted promoted = promotedAt(target, request.unitPrice(), dated.historical() ? dated.effectiveFrom() : null);
         GuardResult result = PriceGuard.evaluate(promoted.netPrice(), currency, reading.goods(), target.boxVariantId(), reading.box());
+        if (target.markedDown() && result.assessment() == PriceAssessment.NO_COST_KNOWN) {
+            // An ordinary piece with no stock may be priced ahead of its first delivery. A marked-down piece IS one unit of stock: with no
+            // cost known it is either not in its own lot yet (its return is still being assessed) or already sold, and a price saved now
+            // would be a price nobody compared with what the piece cost.
+            throw new PricingProblem(HttpStatus.CONFLICT, "markdown-cost-not-ready", "'" + target.variantTitle()
+                    + "' has no cost to compare a price with: its piece is not in stock under this listing yet, or it has been sold. "
+                    + "Price it once the return has been assessed.");
+        }
         String reason = request.belowCostReason() == null ? null : request.belowCostReason().strip();
         if (reason != null && !reason.isEmpty() && (reason.length() < 5 || reason.length() > 200)) {
             // Bean validation judged the raw text; the reason is kept trimmed, and the database refuses a short one. Said here, as a 400.
@@ -208,7 +218,7 @@ public class PricingService {
         Promoted promoted = null;
         if (target.latest() != null) {
             // The standing is that of the NET price: what a customer pays per piece under the promotion in force now.
-            promoted = promotedAt(variantId, target.productId(), target.currentPrice(), null);
+            promoted = promotedAt(target, target.currentPrice(), null);
             GuardResult result = PriceGuard.evaluate(promoted.netPrice(), target.currentCurrency(), reading.goods(), target.boxVariantId(), reading.box());
             assessment = result.assessment();
             shortfall = result.shortfall();
@@ -235,7 +245,7 @@ public class PricingService {
             List<PriceHistoryRepository.Entry> history = priceHistory.history(variantId);
             return new Target(product.id(), variantId, product.title(), DefaultVariantPricingService.variantTitle(product, variant), variant.sku(),
                     product.status(), product.kind(), product.defaultPackagingVariantId(), variant.unitPrice(), variant.currency(),
-                    history.isEmpty() ? null : history.get(0), history);
+                    history.isEmpty() ? null : history.get(0), history, variant.isMarkedDown());
         });
         if (target == null) {
             throw new ResourceNotFoundException("Variant", "id", variantId.toString());
@@ -284,7 +294,7 @@ public class PricingService {
         // Promotion is asked ONCE for the whole list, after stock and outside any transaction. If it cannot answer the list is a 503: it is never
         // shown judged on list prices while a promotion may be running.
         Map<UUID, Discount> discounts = promotions.discountsAt(priced.stream()
-                .map(v -> new PromotionPricing.Piece(v.id(), v.product().id(), v.unitPrice())).toList(), at);
+                .map(v -> new PromotionPricing.Piece(v.id(), v.product().id(), v.unitPrice(), v.isMarkedDown())).toList(), at);
 
         Map<PriceAssessment, Long> counts = new EnumMap<>(PriceAssessment.class);
         for (PriceAssessment each : PriceAssessment.values()) {

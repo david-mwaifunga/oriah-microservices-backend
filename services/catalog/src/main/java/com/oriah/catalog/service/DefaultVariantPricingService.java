@@ -97,16 +97,19 @@ public class DefaultVariantPricingService implements VariantPricingService {
         // same variant twice in one request and the database should not be
         // asked twice.
         List<UUID> distinctIds = variantIds.stream().distinct().toList();
+        java.util.Set<UUID> markedDown = new java.util.HashSet<>();
         List<Entry> listed = readOnly.execute(status -> {
             Map<UUID, ProductVariant> found = variants.findAllByIdInWithProduct(distinctIds).stream()
                     .collect(Collectors.toMap(ProductVariant::id, Function.identity()));
+            found.values().stream().filter(ProductVariant::isMarkedDown).forEach(v -> markedDown.add(v.id()));
             return variantIds.stream().map(id -> toEntry(id, found.get(id))).toList();
         });
 
         Map<UUID, PromotionPricing.Piece> toDiscount = new LinkedHashMap<>();
         for (Entry entry : listed) {
             if (entry.status() == Status.PRICED) {
-                toDiscount.putIfAbsent(entry.variantId(), new PromotionPricing.Piece(entry.variantId(), entry.productId(), entry.unitPrice()));
+                toDiscount.putIfAbsent(entry.variantId(),
+                        new PromotionPricing.Piece(entry.variantId(), entry.productId(), entry.unitPrice(), markedDown.contains(entry.variantId())));
             }
         }
         Map<UUID, Discount> discounts = promotions.discountsAt(toDiscount.values(), null);
@@ -174,6 +177,14 @@ public class DefaultVariantPricingService implements VariantPricingService {
      * plain title rather than a trailing separator.
      */
     static String variantTitle(Product product, ProductVariant variant) {
+        // A marked-down piece says what it is wherever its title is read: a bag, a receipt, a stock screen, a staff alert.
+        return ordinaryTitle(product, variant) + (variant.isMarkedDown() ? MARKED_DOWN_SUFFIX : "");
+    }
+
+    /** What every title of a returned piece sold again at a lower price ends with. */
+    static final String MARKED_DOWN_SUFFIX = " - returned, marked down";
+
+    private static String ordinaryTitle(Product product, ProductVariant variant) {
         if (variant.options().isEmpty()) {
             return product.title();
         }
