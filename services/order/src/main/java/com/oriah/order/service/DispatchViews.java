@@ -25,19 +25,24 @@ import com.oriah.order.model.Order;
 public class DispatchViews {
 
     private final JdbcTemplate jdbc;
+    private final CorrectionViews corrections;
 
-    public DispatchViews(JdbcTemplate jdbc) {
+    public DispatchViews(JdbcTemplate jdbc, CorrectionViews corrections) {
         this.jdbc = jdbc;
+        this.corrections = corrections;
     }
-
     /** The order as its shopper may read it, with its dispatch dates. */
     public OrderResponse shopper(Order order) {
-        return OrderResponse.from(order).withDispatch(stepsOf(List.of(order.id())).get(order.id()));
+        List<UUID> id = List.of(order.id());
+        return OrderResponse.from(order).withDispatch(stepsOf(id).get(order.id()))
+                .withCorrections(corrections.of(id, false).get(order.id()), corrections.exchangesFor(id).get(order.id()));
     }
 
     /** The order as staff read it, with its dispatch dates. */
     public OrderResponse staff(Order order) {
-        return OrderResponse.forStaff(order).withDispatch(stepsOf(List.of(order.id())).get(order.id()));
+        List<UUID> id = List.of(order.id());
+        return OrderResponse.forStaff(order).withDispatch(stepsOf(id).get(order.id()))
+                .withCorrections(corrections.of(id, true).get(order.id()), corrections.exchangesFor(id).get(order.id()));
     }
 
     public Optional<OrderResponse> shopper(Optional<Order> order) {
@@ -49,13 +54,19 @@ public class DispatchViews {
     }
 
     public Page<OrderResponse> shopper(Page<Order> page) {
-        Map<UUID, OrderResponse.Dispatch> steps = stepsOf(page.map(Order::id).getContent());
-        return page.map(o -> OrderResponse.from(o).withDispatch(steps.get(o.id())));
+        List<UUID> ids = page.map(Order::id).getContent();
+        Map<UUID, OrderResponse.Dispatch> steps = stepsOf(ids);
+        Map<UUID, List<OrderResponse.Correction>> corrected = corrections.of(ids, false);
+        Map<UUID, OrderResponse.Exchange> exchanges = corrections.exchangesFor(ids);
+        return page.map(o -> OrderResponse.from(o).withDispatch(steps.get(o.id())).withCorrections(corrected.get(o.id()), exchanges.get(o.id())));
     }
 
     public Page<OrderResponse> staff(Page<Order> page) {
-        Map<UUID, OrderResponse.Dispatch> steps = stepsOf(page.map(Order::id).getContent());
-        return page.map(o -> OrderResponse.forStaff(o).withDispatch(steps.get(o.id())));
+        List<UUID> ids = page.map(Order::id).getContent();
+        Map<UUID, OrderResponse.Dispatch> steps = stepsOf(ids);
+        Map<UUID, List<OrderResponse.Correction>> corrected = corrections.of(ids, true);
+        Map<UUID, OrderResponse.Exchange> exchanges = corrections.exchangesFor(ids);
+        return page.map(o -> OrderResponse.forStaff(o).withDispatch(steps.get(o.id())).withCorrections(corrected.get(o.id()), exchanges.get(o.id())));
     }
 
     /** The dispatch dates of these orders, in one read; an order with no step is not in the map. */

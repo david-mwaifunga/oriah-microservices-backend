@@ -103,6 +103,10 @@ public class DispatchReadService {
                        (SELECT s.occurred_at FROM order_dispatch_step s WHERE s.order_id = o.id AND s.step = 'DISPATCHED') AS dispatched_at
                   FROM orders o
                  WHERE o.status = ?
+                   -- A parcel whose every piece has been recorded as returned is no longer on its way to anybody (Phase 12).
+                   AND COALESCE((SELECT sum(l.quantity) FROM order_correction_line l JOIN order_correction c ON c.id = l.correction_id
+                                  WHERE c.order_id = o.id AND c.kind = 'RETURN' AND c.state <> 'REFUSED'), 0)
+                       < GREATEST(COALESCE((SELECT sum(i.quantity) FROM order_items i WHERE i.order_id = o.id), 0), 1)
                  ORDER BY o.paid_at, o.id
                  LIMIT ?""", (rs, n) -> {
             boolean pickup = "SELF_COLLECT".equals(rs.getString("delivery_option"));

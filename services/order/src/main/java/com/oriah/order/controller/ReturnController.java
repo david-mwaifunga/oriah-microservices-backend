@@ -87,16 +87,45 @@ public class ReturnController {
         }
     }
 
+    /**
+     * @param outcome FINE (back on sale), MARKED_DOWN (sold again on its own, cheaper; also needs CATALOG_ADMIN) or UNSELLABLE (written off; also needs
+     *                STOCK_WRITE_OFF and a note)
+     * @param note    in the person's words, 5 to 200 characters; required for UNSELLABLE
+     */
+    public record AssessmentRequest(
+            @NotNull(message = "outcome is required")
+            @Pattern(regexp = "FINE|MARKED_DOWN|UNSELLABLE", message = "outcome is one of FINE, MARKED_DOWN, UNSELLABLE") String outcome,
+            @Size(min = 5, max = 200, message = "the note must be 5 to 200 characters") String note) {
+        public AssessmentRequest {
+            note = note == null || note.isBlank() ? null : note.trim();
+        }
+    }
+
+    /** What became of one piece. {@code state} is DONE, or IN_PROGRESS while the stock system has not recorded the outcome yet. Never the note. */
+    @Schema(name = "PieceAssessment")
+    public record AssessmentView(UUID pieceId, String state, String outcome,
+                                 @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) Instant assessedAt,
+                                 @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL) UUID markdownVariantId,
+                                 boolean replay) {
+    }
+
+    public record ExchangeRequest(@NotNull(message = "newOrderId is required") UUID newOrderId) {
+    }
+
     private final CorrectionService service;
     private final Corrections corrections;
     private final ReturnViews views;
+    private final com.oriah.order.service.AssessmentService assessments;
+    private final com.oriah.order.service.Exchanges exchanges;
 
-    public ReturnController(CorrectionService service, Corrections corrections, ReturnViews views) {
+    public ReturnController(CorrectionService service, Corrections corrections, ReturnViews views, com.oriah.order.service.AssessmentService assessments,
+                            com.oriah.order.service.Exchanges exchanges) {
         this.service = service;
         this.corrections = corrections;
         this.views = views;
+        this.assessments = assessments;
+        this.exchanges = exchanges;
     }
-
     @Operation(operationId = "recordReturn", summary = "Record pieces that came back after dispatch or hand-over",
             description = "The customer is owed each returned piece's own list price less its own discount: never delivery, never the box. Each piece is put "
                     + "back into the lot it was sold from and held there, not for sale, until it is assessed "
@@ -134,6 +163,62 @@ public class ReturnController {
         Correction correction = outcome.correction();
         HttpStatus status = correction.inFlight() ? HttpStatus.ACCEPTED : outcome.replay() ? HttpStatus.OK : HttpStatus.CREATED;
         return ResponseEntity.status(status).body(views.of(correction, outcome.replay()));
+    }
+
+    @Operation(operationId = "assessReturnedPiece", summary = "Say what became of a piece that came back",
+            description = "FINE puts the piece back on sale. MARKED_DOWN (also needs CATALOG_ADMIN) lists it on its own, to be priced lower, and moves it there. "
+                    + "UNSELLABLE (also needs STOCK_WRITE_OFF, and a note) writes it off. Until the stock system has recorded the outcome the piece is held, not "
+                    + "for sale: if its answer settles nothing the reply is 202 with state IN_PROGRESS and the same request, or the job, finishes it. An "
+                    + "assessment is made once: the same outcome again is a replay, another is refused.")
+    @ApiResponse(responseCode = "200", description = "Assessed (replay: true when it already was)")
+    @ApiResponse(responseCode = "202", description = "Decided, and the stock system has not recorded it yet (state IN_PROGRESS): repeat the request, or wait")
+    @ApiResponse(responseCode = "400", description = "Validation failure, or note-required (UNSELLABLE says why)",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "404", description = "No such return, or the piece is not a piece of it",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "return-not-received-yet, piece-already-assessed, assessment-in-progress, or the catalogue's or the "
+            + "stock system's own refusal (already-marked-down, markdown-variant-in-use, markdown-variant-of-another-product, sku-unavailable, ...): the piece "
+            + "is still waiting",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "503", description = "catalog-unavailable: the piece was not marked down; nothing was changed",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/returns/{returnId}/pieces/{pieceId}/assessment")
+    public ResponseEntity<AssessmentView> assess(@AuthenticationPrincipal Jwt jwt, Authentication authentication, @PathVariable("returnId") UUID returnId,
+                                                 @PathVariable("pieceId") UUID pieceId, @Valid @RequestBody AssessmentRequest body) {
+        // Who may say what, before anything is read or written: marking down makes a catalogue listing, writing off takes stock off the books.
+        String needs = switch (body.outcome()) {
+            case "MARKED_DOWN" -> "ROLE_CATALOG_ADMIN";
+            case "UNSELLABLE" -> "ROLE_STOCK_WRITE_OFF";
+            default -> null;
+        };
+        if (needs != null && authentication.getAuthorities().stream().noneMatch(a -> needs.equals(a.getAuthority()))) {
+            throw new org.springframework.security.access.AccessDeniedException("assessing a piece as " + body.outcome() + " needs " + needs.substring(5));
+        }
+        if ("UNSELLABLE".equals(body.outcome()) && body.note() == null) {
+            throw new SalesProblem(HttpStatus.BAD_REQUEST, "note-required", "a piece that is not sellable needs a note of 5 to 200 characters saying why");
+        }
+        com.oriah.order.service.AssessmentService.Assessed assessed = assessments.assess(returnId, pieceId, body.outcome(), body.note(), Actor.of(jwt));
+        Corrections.Piece piece = assessed.piece();
+        boolean done = "DONE".equals(piece.state());
+        return ResponseEntity.status(done ? HttpStatus.OK : HttpStatus.ACCEPTED).body(new AssessmentView(piece.id(), piece.state(), piece.outcome(),
+                piece.assessedAt(), piece.markdownVariantId(), assessed.replay()));
+    }
+
+    @Operation(operationId = "linkExchange", summary = "Link a return to the new order the customer took instead",
+            description = "An exchange is a return and a new order, linked: nothing else happens. The refund for the return is paid like any refund and the "
+                    + "new order is paid like any sale; no money is netted between them and nothing is announced. One link per return and one per new order; "
+                    + "the same pair again answers the same link (200, replay: true).")
+    @ApiResponse(responseCode = "201", description = "Linked")
+    @ApiResponse(responseCode = "200", description = "This pair was already linked (replay: true)")
+    @ApiResponse(responseCode = "404", description = "No such return, or order-not-found (the new order)",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @ApiResponse(responseCode = "409", description = "return-not-received-yet, exchange-needs-another-order, not-an-exchange-order, exchange-already-recorded",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+    @PostMapping("/returns/{returnId}/exchange")
+    public ResponseEntity<com.oriah.order.service.Exchanges.Exchange> exchange(@AuthenticationPrincipal Jwt jwt, @PathVariable("returnId") UUID returnId,
+                                                                               @Valid @RequestBody ExchangeRequest body) {
+        com.oriah.order.service.Exchanges.Exchange linked = exchanges.link(returnId, body.newOrderId(), Actor.of(jwt));
+        return ResponseEntity.status(linked.replay() ? HttpStatus.OK : HttpStatus.CREATED).body(linked);
     }
 
     @Operation(operationId = "listReturns", summary = "Returns, by where they stand",

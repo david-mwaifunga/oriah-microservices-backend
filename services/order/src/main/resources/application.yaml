@@ -143,6 +143,11 @@ spring:
           catalogAsOf:
             connect-timeout: 500
             read-timeout: 4000
+          # Making a returned piece a listing of its own (Phase 12): asked once per assessment on the request thread with the person's token, never on
+          # the shopper's placement path (so it does not count in WritePathBudgetTest). One product saved: 0.5s to connect, 4s to answer.
+          catalogMarkdown:
+            connect-timeout: 500
+            read-timeout: 4000
           # 0.5s to connect, 2s to answer: see "Where those 2s came from"
           # above. WritePathBudgetTest.shippingHasItsOwnTimeouts pins the
           # numbers; OutboundIdentityTest.aHangingShippingTimesOut shows a

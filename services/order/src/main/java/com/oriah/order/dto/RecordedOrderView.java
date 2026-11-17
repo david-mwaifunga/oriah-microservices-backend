@@ -28,8 +28,8 @@ import com.oriah.order.model.OrderStatus;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record RecordedOrderView(UUID id, String status, String channel, String kind, Instant occurredAt, Instant placedAt, Instant holdExpiresAt, String receiptNumber,
                                 Instant paidAt, Caller caller, Recipient recipient, Address address, String currency, List<Line> lines, BigDecimal subtotal,
-                                BigDecimal discountAmount, Delivery delivery, BigDecimal total, Dispatch dispatch, Boolean replay) {
-
+                                BigDecimal discountAmount, Delivery delivery, BigDecimal total, Dispatch dispatch, Boolean replay,
+                                List<OrderResponse.Correction> corrections, OrderResponse.Exchange exchange) {
     /** Who is buying. */
     public record Caller(String name, String phone) {
     }
@@ -57,19 +57,30 @@ public record RecordedOrderView(UUID id, String status, String channel, String k
 
     /** The order as a recorder reads it just after recording (or a repeat), nothing finished yet. */
     public static RecordedOrderView of(Order order, boolean replay) {
-        return build(order, null, replay);
+        return build(order, null, replay, null, null, false);
     }
-
     /** The order read later, with its dispatch dates, the person withheld once it is finished. */
     public static RecordedOrderView read(Order order, OrderResponse.Dispatch dispatch) {
-        return build(order, dispatch, null);
+        return build(order, dispatch, null, null, null, false);
     }
 
+    /**
+     * The order read later, with what was corrected on it (Phase 12): the returns and cancellations that are done and what is owed for each, with no
+     * reason, actor or cost.
+     *
+     * @param callerInFull show the caller's phone unmasked although the order is finished: only for a reader who pays refunds, while one is owed (the
+     *                     caller has no account, so the phone on the order is the only way to reach them)
+     */
+    public static RecordedOrderView read(Order order, OrderResponse.Dispatch dispatch, List<OrderResponse.Correction> corrections,
+                                         OrderResponse.Exchange exchange, boolean callerInFull) {
+        return build(order, dispatch, null, corrections, exchange, callerInFull);
+    }
     private static boolean finished(Order order) {
         return order.status() == OrderStatus.DELIVERED || order.status() == OrderStatus.CANCELLED;
     }
 
-    private static RecordedOrderView build(Order order, OrderResponse.Dispatch dispatch, Boolean replay) {
+    private static RecordedOrderView build(Order order, OrderResponse.Dispatch dispatch, Boolean replay, List<OrderResponse.Correction> corrections,
+                                           OrderResponse.Exchange exchange, boolean callerInFull) {
         boolean finished = finished(order);
         List<Line> lines = order.items().stream().map(RecordedOrderView::line).toList();
         Delivery delivery = order.isSelfCollect() ? null : new Delivery(order.deliveryPriceSource(), order.deliveryOption(), order.deliveryOptionName(), order.deliveryTownId(),
@@ -81,8 +92,8 @@ public record RecordedOrderView(UUID id, String status, String channel, String k
                 : new Dispatch(dispatch.packedAt(), dispatch.dispatchedAt(), dispatch.deliveredAt());
         return new RecordedOrderView(order.id(), order.status().name(), order.channel().name(), order.saleKind() == null ? null : order.saleKind().name(), order.occurredAt(),
                 order.placedAt(), order.holdExpiresAt(), order.receiptNumber(), order.paidAt(),
-                new Caller(order.callerName(), finished ? mask(order.callerPhone()) : order.callerPhone()), recipient, address, order.currency(), lines, order.subtotal(),
-                order.discountAmount(), delivery, order.total(), dates, replay);
+                new Caller(order.callerName(), finished && !callerInFull ? mask(order.callerPhone()) : order.callerPhone()), recipient, address, order.currency(), lines,
+                order.subtotal(), order.discountAmount(), delivery, order.total(), dates, replay, corrections, exchange);
     }
 
     /** {@code +260971234567} as {@code +2609*****567}: enough to recognise, not enough to ring. Null stays null. */

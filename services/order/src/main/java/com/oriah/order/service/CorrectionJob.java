@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * The safety net of a correction (Phase 12, plan 4.2): asks inventory again for every paid cancellation and return that is still in flight and whose
  * time has come. The request that recorded it asks inventory at once; when the answer settled nothing, the correction waits with a time to try again
  * (15 s, then longer, up to five minutes), and this job is what tries. It also finds any that were never asked at all (this service stopped between
- * writing the correction and asking inventory).
+ * writing the correction and asking inventory). And it asks again for a returned piece whose outcome inventory has not recorded (section 4.6).
  *
  * <p>One pass takes a bounded batch, each correction in turn, each in transactions of its own; one that fails does not hold the others up. Once a pass
  * it says how many are STUCK (in flight for longer than {@code oriah.sales.correction-stuck-after}): an order nobody can pack, ship or correct until
@@ -38,14 +38,18 @@ public class CorrectionJob {
 
     private final JdbcTemplate jdbc;
     private final CorrectionService corrections;
+    private final AssessmentService assessments;
+    private final ReturnPieces pieces;
     private final Clock clock;
     private final Duration stuckAfter;
     private final AtomicLong stuckNow = new AtomicLong();
 
-    public CorrectionJob(JdbcTemplate jdbc, CorrectionService corrections, Clock clock,
+    public CorrectionJob(JdbcTemplate jdbc, CorrectionService corrections, AssessmentService assessments, ReturnPieces pieces, Clock clock,
                          @Value("${oriah.sales.correction-stuck-after:PT5M}") Duration stuckAfter, ObjectProvider<MeterRegistry> meters) {
         this.jdbc = jdbc;
         this.corrections = corrections;
+        this.assessments = assessments;
+        this.pieces = pieces;
         this.clock = clock;
         this.stuckAfter = stuckAfter;
         meters.ifAvailable(registry -> Gauge.builder("order.corrections.stuck", stuckNow, AtomicLong::doubleValue)
@@ -64,6 +68,14 @@ public class CorrectionJob {
                 corrections.resume(correction);
             } catch (RuntimeException e) {
                 log.warn("Correction {} could not be driven this pass: {}", correction, e.getClass().getSimpleName());
+            }
+        }
+        // A returned piece whose outcome inventory has not recorded yet (it had not heard of the marked-down listing, or did not answer).
+        for (UUID piece : pieces.due(now, now.minus(NEVER_ASKED_AFTER), BATCH)) {
+            try {
+                assessments.resume(piece);
+            } catch (RuntimeException e) {
+                log.warn("Returned piece {} could not be driven this pass: {}", piece, e.getClass().getSimpleName());
             }
         }
         long stuck = stuck(clock.instant());

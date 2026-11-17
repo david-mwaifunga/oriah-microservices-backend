@@ -117,13 +117,16 @@ public class RecordedOrderController {
     }
 
     @Operation(operationId = "getRecordedOrder", summary = "One recorded order",
-            description = "The caller's phone and the parcel's address are shown while the order is alive and withheld once it is delivered. A web order is 404.")
+            description = "The caller's phone and the parcel's address are shown while the order is alive and withheld once it is delivered. A web order is 404. "
+                    + "Since Phase 12 it also carries the returns and cancellations that are done and what is owed for each (no reason, actor or cost); a reader "
+                    + "who also holds PAYMENT_ADMIN reads the caller's phone in full while a refund is owed, and that read is logged.")
     @ApiResponse(responseCode = "200", description = "The order")
     @ApiResponse(responseCode = "404", description = "No such recorded order (a web order is not one)",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @GetMapping("/{id}")
-    public RecordedOrderView get(@AuthenticationPrincipal Jwt jwt, @PathVariable("id") UUID id) {
-        return reads.detail(id, Actor.of(jwt));
+    public RecordedOrderView get(@AuthenticationPrincipal Jwt jwt, Authentication auth, @PathVariable("id") UUID id) {
+        // Whoever pays refunds reads the caller's phone in full while one is owed (Phase 12): a caller has no account, so there is no other way to them.
+        return reads.detail(id, Actor.of(jwt), auth.getAuthorities().stream().anyMatch(a -> "ROLE_PAYMENT_ADMIN".equals(a.getAuthority())));
     }
 
     @Operation(operationId = "receiptOfRecordedOrder", summary = "The receipt to give the caller",

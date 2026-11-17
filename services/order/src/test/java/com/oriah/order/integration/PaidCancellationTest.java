@@ -275,6 +275,16 @@ class PaidCancellationTest extends SaleTestBase {
         assertThat(corrections(id).get(0).get("status_before")).isEqualTo("FULFILLED");
         assertThat(row(id).get("status")).isEqualTo("CANCELLED");
         assertThat(payloadOf(events(id, "order.sale_cancelled").get(0)).get("statusBefore").asText()).isEqualTo("FULFILLED");
+
+        // The packer is told plainly: it was paid and then cancelled, so the parcel is unpacked, not "not paid yet".
+        MvcResult slip = mvc.perform(get("/api/v1/admin/orders/" + id + "/dispatch").with(packer())).andReturn();
+        assertThat(slip.getResponse().getStatus()).isEqualTo(409);
+        assertThat(type(slip)).endsWith("/order-cancelled");
+        assertThat(json.readTree(slip.getResponse().getContentAsString()).get("detail").asText()).contains("cancelled").doesNotContain("not paid");
+        MvcResult handOver = step(id, "deliver", "{}");
+        assertThat(handOver.getResponse().getStatus()).isEqualTo(409);
+        assertThat(type(handOver)).endsWith("/order-cancelled");
+        assertThat(row(id).get("status")).isEqualTo("CANCELLED");
     }
 
     @Test

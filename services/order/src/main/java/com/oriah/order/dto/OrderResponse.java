@@ -57,9 +57,40 @@ public record OrderResponse(
         /** WEB or PHONE; staff's views only (the shopper's own answers never carry it). */
         @JsonInclude(JsonInclude.Include.NON_NULL) String channel,
         /** What staff recorded of a phone sale: who keyed it, when it really happened, why it was keyed late and the paper slip; staff's views only, PHONE orders only. */
-        @JsonInclude(JsonInclude.Include.NON_NULL) Recorded recorded
+        @JsonInclude(JsonInclude.Include.NON_NULL) Recorded recorded,
+        /**
+         * Phase 12: what was undone of this sale and what the customer is owed for it, oldest first; absent on an order nothing was corrected on. The
+         * shopper's answers carry only corrections that are done, with no reason and no actor.
+         */
+        @JsonInclude(JsonInclude.Include.NON_NULL) List<Correction> corrections,
+        /** Phase 12: only on an order the customer took INSTEAD of pieces they returned: the return, and the order it was a return of. */
+        @JsonInclude(JsonInclude.Include.NON_NULL) Exchange exchange
 ) {
 
+    /**
+     * One correction of a paid sale: a CANCELLATION before dispatch or a RETURN after it. {@code owedGross} is what the customer is owed for it before
+     * any charge for sending it. Never a note, a cost or a payout.
+     *
+     * @param pieces            how many pieces it undid
+     * @param exchangedForOrderId the new order the customer took instead, when the return was linked to one
+     * @param reasonCode        staff's views only
+     * @param recordedBy        staff's views only: {@code user:<keycloak subject>}
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record Correction(UUID id, String kind, String state, Instant occurredAt, int pieces, BigDecimal owedGross, String currency,
+                             UUID exchangedForOrderId, String reasonCode, String recordedBy) {
+    }
+
+    /** The return this order was taken instead of. No money is netted between the two orders: the link is all there is. */
+    public record Exchange(UUID returnId, UUID returnedOrderId) {
+    }
+
+    /** This answer with its corrections and its exchange link (read in one batch by {@code CorrectionViews}); null leaves either out. */
+    public OrderResponse withCorrections(List<Correction> corrections, Exchange exchange) {
+        return new OrderResponse(id, keycloakId, status, subtotal, shippingAmount, discountAmount, total, currency, deliveryOption, paymentIntentId,
+                shippingAddressId, placedAt, updatedAt, items, deliveryTownId, deliveryPayer, holdExpiresAt, deliveryWaivedAmount, deliveryWaivedBy,
+                deliveryWaiverReason, deliveryWaivedAt, receiptNumber, paidAt, delivery, dispatch, channel, recorded, corrections, exchange);
+    }
     /** The shopper's own delivery details (their data, read back to them), with the names of the option and the town. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record Delivery(String recipientName, String recipientPhone, Address address, String optionName, String townName) {
@@ -83,7 +114,7 @@ public record OrderResponse(
     public OrderResponse withDispatch(Dispatch dispatch) {
         return new OrderResponse(id, keycloakId, status, subtotal, shippingAmount, discountAmount, total, currency, deliveryOption, paymentIntentId,
                 shippingAddressId, placedAt, updatedAt, items, deliveryTownId, deliveryPayer, holdExpiresAt, deliveryWaivedAmount, deliveryWaivedBy,
-                deliveryWaiverReason, deliveryWaivedAt, receiptNumber, paidAt, delivery, dispatch, channel, recorded);
+                deliveryWaiverReason, deliveryWaivedAt, receiptNumber, paidAt, delivery, dispatch, channel, recorded, corrections, exchange);
     }
 
     /**
@@ -119,7 +150,8 @@ public record OrderResponse(
                 null,
                 staff ? o.channel().name() : null,
                 staff && o.channel() == com.oriah.order.model.Channel.PHONE
-                        ? new Recorded(o.saleKind() == null ? null : o.saleKind().name(), o.occurredAt(), o.recordedBy(), o.callerName(), o.backdateReason(), o.slipReference()) : null
+                        ? new Recorded(o.saleKind() == null ? null : o.saleKind().name(), o.occurredAt(), o.recordedBy(), o.callerName(), o.backdateReason(), o.slipReference()) : null,
+                null, null
         );
     }
 }

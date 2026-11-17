@@ -187,6 +187,9 @@ public class DispatchService {
         if (order.status() == needed) {
             return;
         }
+        if (order.status() == OrderStatus.CANCELLED && order.paidAt() != null) {
+            throw new SalesProblem(HttpStatus.CONFLICT, "order-cancelled", "this order was paid and then cancelled: nothing more is packed, sent or handed over; any piece already packed goes back on the shelf");
+        }
         if (List.of(OrderStatus.CREATED, OrderStatus.PAYMENT_SUBMITTED, OrderStatus.EXPIRED, OrderStatus.CANCELLED).contains(order.status())) {
             throw new SalesProblem(HttpStatus.CONFLICT, "order-not-paid", "this order is " + order.status() + ", not paid: nothing is packed or sent until it is");
         }

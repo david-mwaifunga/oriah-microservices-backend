@@ -49,6 +49,10 @@ public class DispatchSlips {
     @Transactional(readOnly = true)
     public Slip read(UUID orderId, Viewer viewer) {
         Order order = orders.findById(orderId).orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId.toString()));
+        if (order.status() == OrderStatus.CANCELLED && order.paidAt() != null) {
+            // Phase 12: a paid order that was cancelled. Said plainly, before anything personal is read (it has been forgotten anyway).
+            throw new SalesProblem(HttpStatus.CONFLICT, "order-cancelled", "this order was paid and then cancelled: nothing more is packed, sent or handed over; any piece already packed goes back on the shelf");
+        }
         if (order.paidAt() == null || List.of(OrderStatus.CREATED, OrderStatus.PAYMENT_SUBMITTED, OrderStatus.EXPIRED, OrderStatus.CANCELLED).contains(order.status())) {
             throw new SalesProblem(HttpStatus.CONFLICT, "order-not-paid", "this order is " + order.status() + ", not paid: there is nothing to pack or send yet");
         }
