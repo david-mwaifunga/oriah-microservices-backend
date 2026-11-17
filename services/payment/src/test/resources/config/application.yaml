@@ -13,3 +13,8 @@ oriah:
   payment:
     watcher:
       enabled: false
+    # The checker that asks ZynlePay about payments (Phase 13) is off in tests too, for the same reason: tests call ProviderPaymentChecks.poll(now)
+    # themselves; ProviderPollScheduleTest switches the schedule back on to prove it.
+    zynlepay:
+      poll:
+        enabled: false

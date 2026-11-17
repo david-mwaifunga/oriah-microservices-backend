@@ -150,7 +150,9 @@ BEGIN
         WHEN 'UNRESOLVED' THEN
             NEW.status = 'VERIFIED'
             OR (NEW.status = 'FAILED' AND NEW.failure_code IN ('DECLINED', 'MARKED_NOT_PAID'))
-            OR (NEW.status = 'UNRESOLVED' AND NEW.unresolved_reason = 'SAME_MONEY_ON_RECORD' AND OLD.unresolved_reason IN ('NO_ANSWER', 'AMOUNT_DIFFERS'))
+            -- an attempt already the owner's for want of an answer may still learn why the machine cannot settle it
+            OR (NEW.status = 'UNRESOLVED' AND NEW.unresolved_reason IN ('SAME_MONEY_ON_RECORD', 'AMOUNT_DIFFERS')
+                AND OLD.unresolved_reason IN ('NO_ANSWER', 'AMOUNT_DIFFERS'))
         WHEN 'FAILED' THEN
             -- Never to VERIFIED: ZynlePay saying "paid" of a failed attempt is the owner's to decide. And never from a failure that proves
             -- nothing reached ZynlePay.

@@ -224,6 +224,25 @@ oriah:
       delay: 30000
       max-emit-attempts: 10
 
+    # -------------------------------------------------------------------------
+    # Collecting through ZynlePay: mobile money and cards (Phase 13). See ZynlePaySettings for every key and its default; only what must be
+    # stated is stated here.
+    #
+    # WHICH ZynlePay this process talks to is not set in any file. "Live" is the exact word true in the environment variable ORIAH_ZYNLEPAY_LIVE,
+    # with ORIAH_ZYNLEPAY_MERCHANT_ID / _API_ID / _API_KEY and ORIAH_ZYNLEPAY_WIRE_CHECKED beside it; a live start also needs wire.* and fees.*
+    # below to be stated (they have no defaults). Without it, mode chooses payment's own stand-in (SIMULATOR, the default: this service itself,
+    # under /internal/zynlepay-sim) or ZynlePay's sandbox (SANDBOX, with ORIAH_ZYNLEPAY_SANDBOX_* credentials). ZynlePayModeGuard refuses a start
+    # that mixes them.
+    #
+    # poll: the checker that asks ZynlePay what became of each payment in flight. On in every profile (the tests switch it off and call it
+    #   themselves; see src/test/resources/config/application.yaml). delay is milliseconds between the end of one pass and the start of the next.
+    # -------------------------------------------------------------------------
+    zynlepay:
+      mode: SIMULATOR
+      poll:
+        enabled: true
+        delay: 5000
+
     # ---------------------------------------------------------------------------
     # Local fallback for GET /api/v1/payments/contact-info.
     #

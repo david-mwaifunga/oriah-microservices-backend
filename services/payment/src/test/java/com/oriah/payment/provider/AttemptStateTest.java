@@ -96,6 +96,12 @@ class AttemptStateTest {
             assertThat(unresolved(reason).failed(FailureCode.MARKED_NOT_PAID).holdsOrder()).isFalse();
             assertThat(unresolved(reason).unresolved(UnresolvedReason.SAME_MONEY_ON_RECORD).unresolvedReason()).isEqualTo(UnresolvedReason.SAME_MONEY_ON_RECORD);
         }
+        // Unanswered, then ZynlePay says paid for another amount: it stays the owner's, and now says why. Never back to "no answer".
+        assertThat(unresolved(UnresolvedReason.NO_ANSWER).unresolved(UnresolvedReason.AMOUNT_DIFFERS).unresolvedReason()).isEqualTo(UnresolvedReason.AMOUNT_DIFFERS);
+        assertThat(unresolved(UnresolvedReason.NO_ANSWER).unresolved(UnresolvedReason.AMOUNT_DIFFERS).holdsOrder()).isTrue();
+        for (UnresolvedReason back : new UnresolvedReason[] {UnresolvedReason.NO_ANSWER, UnresolvedReason.AMOUNT_DIFFERS}) {
+            assertThatThrownBy(() -> unresolved(UnresolvedReason.AMOUNT_DIFFERS).unresolved(back)).isInstanceOf(IllegalStateException.class);
+        }
     }
 
     @Test

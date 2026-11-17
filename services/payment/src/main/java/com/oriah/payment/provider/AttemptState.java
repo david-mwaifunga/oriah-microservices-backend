@@ -10,7 +10,7 @@ import java.util.Set;
  * <pre>
  * STARTING   -> PENDING (sent) | FAILED(ORDER_REFUSED | NOT_SENT)                    nothing has reached ZynlePay yet
  * PENDING    -> VERIFIED | FAILED(NOT_SENT | PROVIDER_REFUSED | DECLINED) | UNRESOLVED(NO_ANSWER | AMOUNT_DIFFERS | SAME_MONEY_ON_RECORD)
- * UNRESOLVED -> VERIFIED | FAILED(DECLINED | MARKED_NOT_PAID) | UNRESOLVED(SAME_MONEY_ON_RECORD)
+ * UNRESOLVED -> VERIFIED | FAILED(DECLINED | MARKED_NOT_PAID) | UNRESOLVED(AMOUNT_DIFFERS | SAME_MONEY_ON_RECORD)
  * FAILED(PROVIDER_REFUSED | DECLINED | MARKED_NOT_PAID) -> UNRESOLVED(PAID_AFTER_FAILED)   ZynlePay later said "paid": the owner's, never the machine's
  * VERIFIED   -> UNRESOLVED(CONFIRMATION_VOIDED)                                      the owner cancelled its money record
  * </pre>
@@ -94,7 +94,9 @@ public record AttemptState(Status status, FailureCode failureCode, UnresolvedRea
     public AttemptState unresolved(UnresolvedReason reason) {
         boolean allowed = switch (status) {
             case PENDING -> OF_A_PENDING_ATTEMPT.contains(reason);
-            case UNRESOLVED -> reason == UnresolvedReason.SAME_MONEY_ON_RECORD && !OWNER_ONLY.contains(unresolvedReason);
+            // An attempt already the owner's for want of an answer may still learn WHY it cannot be settled by the machine.
+            case UNRESOLVED -> !OWNER_ONLY.contains(unresolvedReason) && reason != unresolvedReason
+                    && (reason == UnresolvedReason.SAME_MONEY_ON_RECORD || reason == UnresolvedReason.AMOUNT_DIFFERS);
             case STARTING, VERIFIED, FAILED -> false;
         };
         require(allowed, "go unresolved as " + reason);
