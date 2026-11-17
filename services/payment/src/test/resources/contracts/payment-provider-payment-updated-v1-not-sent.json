@@ -1,0 +1,1 @@
+{"providerPaymentId":"a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d","orderId":"0f9a4c2e-6b1d-4e8f-a3c5-7d9e1b2f4a60","keycloakId":"kc-alice","channel":"CARD","method":"CARD","status":"FAILED","failureCode":"ORDER_REFUSED","startedAt":"2026-11-05T09:14:55Z","at":"2026-11-05T09:14:56Z"}

@@ -107,7 +107,7 @@ public class SettlementWatcher {
         Row row = locked.getFirst();
         int attempt = row.attempts() + 1;
         events.confirmed(row.id(), row.orderId(), row.method(), row.reference(), row.gross(), row.fee(), row.net(), row.currency(), row.arrivedAt(),
-                row.backdateReason(), row.confirmedBy(), row.confirmedAt(), attempt, ACTOR);
+                row.backdateReason(), row.confirmedBy(), row.confirmedAt(), attempt, ACTOR, null, null);
         jdbc.update("UPDATE payment_confirmation SET emit_attempts = ?, next_emit_at = ? WHERE id = ?", attempt, Timestamp.from(now.plus(backoff(attempt))), id);
         if (attempt >= settings.maxEmitAttempts()) {
             log.error("confirmation {} (order {}, {} {} {}) has been announced {} times and order has not answered: it needs a person, it stays in the pending list",

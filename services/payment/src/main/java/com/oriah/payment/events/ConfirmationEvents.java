@@ -35,10 +35,11 @@ public class ConfirmationEvents {
     /** @param attempt which announcement of this confirmation this is: 1 when it is first recorded, then one more each time it is announced again */
     @Transactional(propagation = Propagation.MANDATORY)
     public void confirmed(UUID confirmationId, UUID orderId, String method, String reference, BigDecimal gross, BigDecimal fee, BigDecimal net,
-                          String currency, Instant arrivedAt, String backdateReason, String confirmedBy, Instant confirmedAt, int attempt, String actor) {
+                          String currency, Instant arrivedAt, String backdateReason, String confirmedBy, Instant confirmedAt, int attempt, String actor,
+                          String provider, UUID providerPaymentId) {
         append(CONFIRMATION, confirmationId, PaymentConfirmedEvent.TYPE, arrivedAt, actor,
                 new PaymentConfirmedEvent(confirmationId, orderId, method, reference, gross, fee, net, currency, arrivedAt, backdateReason, confirmedBy,
-                        confirmedAt, attempt));
+                        confirmedAt, attempt, provider, providerPaymentId));
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

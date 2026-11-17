@@ -11,6 +11,9 @@ import java.util.UUID;
  *
  * <p>{@code attempt} says which announcement of this confirmation this is: a confirmation that has no outcome yet is announced again (the same
  * confirmation id, a new event) until order answers, and order treats a confirmation id it has already seen as a repeat.
+ *
+ * <p>{@code provider} and {@code providerPaymentId} are present only for money a payment provider collected (Phase 13: {@code ZYNLEPAY} and the
+ * attempt it was collected by), on every announcement of it. A confirmation staff keyed has neither member, so its bytes are Phase 7's.
  */
 public record PaymentConfirmedEvent(
         UUID confirmationId,
@@ -25,7 +28,11 @@ public record PaymentConfirmedEvent(
         String backdateReason,
         String confirmedBy,
         Instant confirmedAt,
-        int attempt) {
+        int attempt,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        String provider,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        UUID providerPaymentId) {
 
     public static final String TYPE = "payment.confirmed";
 }

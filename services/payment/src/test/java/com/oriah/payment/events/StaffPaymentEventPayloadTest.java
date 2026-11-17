@@ -29,7 +29,7 @@ class StaffPaymentEventPayloadTest {
     @DisplayName("payment.confirmed, exactly: the money as recorded, net worked out, and which announcement of it this is")
     void paymentConfirmed() {
         String json = EventJson.write(new PaymentConfirmedEvent(CONFIRMATION, ORDER, "MTN", "MP2411ABC", new BigDecimal("1000.00"),
-                new BigDecimal("10.00"), new BigDecimal("990.00"), "ZMW", ARRIVED, null, "user:kc-sam", KEYED, 1));
+                new BigDecimal("10.00"), new BigDecimal("990.00"), "ZMW", ARRIVED, null, "user:kc-sam", KEYED, 1, null, null));
 
         assertThat(json).isEqualTo("{"
                 + "\"confirmationId\":\"11111111-1111-1111-1111-111111111111\","
@@ -52,7 +52,7 @@ class StaffPaymentEventPayloadTest {
     @DisplayName("payment.confirmed for cash has no reference, and a late one carries the reason it was recorded late")
     void paymentConfirmedCashAndLate() {
         String json = EventJson.write(new PaymentConfirmedEvent(CONFIRMATION, ORDER, "CASH", null, new BigDecimal("250.00"),
-                new BigDecimal("0.00"), new BigDecimal("250.00"), "ZMW", ARRIVED, "paid on Friday, keyed Monday", "user:kc-maya", KEYED, 3));
+                new BigDecimal("0.00"), new BigDecimal("250.00"), "ZMW", ARRIVED, "paid on Friday, keyed Monday", "user:kc-maya", KEYED, 3, null, null));
 
         assertThat(json).contains("\"method\":\"CASH\",\"reference\":null,").contains("\"backdateReason\":\"paid on Friday, keyed Monday\"").endsWith("\"attempt\":3}");
     }

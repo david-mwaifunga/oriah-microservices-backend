@@ -144,7 +144,7 @@ public class ConfirmationService {
 
         ConfirmationView view = get(id);
         events.confirmed(view.id(), view.orderId(), view.method(), view.reference(), view.gross(), view.fee(), view.net(), view.currency(), view.arrivedAt(),
-                view.backdateReason(), view.confirmedBy(), view.confirmedAt(), 1, staff.actor());
+                view.backdateReason(), view.confirmedBy(), view.confirmedAt(), 1, staff.actor(), null, null);
         log.info("Confirmation {} recorded: {} {} {} for order {} by {}", id, method, gross.toPlainString(), currency, request.orderId(), staff.actor());
         return new Confirmed(view, true);
     }
