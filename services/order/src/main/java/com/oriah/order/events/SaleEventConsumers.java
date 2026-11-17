@@ -37,7 +37,7 @@ public class SaleEventConsumers {
 
     @Bean
     public Consumer<Message<byte[]>> paymentEvents(Inbox inbox, PlatformTransactionManager transactions, SettlementService settlements, OrderEnds ends,
-                                                   SettlementDriver driver) {
+                                                   SettlementDriver driver, com.oriah.order.service.RefundFacts refunds) {
         return OrderInbox.handler(inbox, transactions, (type, payload) -> switch (type) {
             case OrderInbox.CONFIRMED -> settlements.receive(InboundEvents.read(payload, PaymentConfirmed.class));
             case OrderInbox.REJECTED -> {
@@ -46,6 +46,26 @@ public class SaleEventConsumers {
             }
             case OrderInbox.VOIDED -> {
                 settlements.voided(InboundEvents.read(payload, PaymentVoided.class));
+                yield null;
+            }
+            // Phase 12: what payment did about a refund order announced. Only remembered; a payout of HELD money is not a refund of a correction.
+            case OrderInbox.PAID_OUT -> {
+                InboundEvents.PaidOut paid = InboundEvents.read(payload, InboundEvents.PaidOut.class);
+                if (paid.isRefund()) {
+                    refunds.paidOut(paid.debtId(), paid.payoutId(), paid.paidAt());
+                }
+                yield null;
+            }
+            case OrderInbox.PAYOUT_VOIDED -> {
+                InboundEvents.PayoutVoided voided = InboundEvents.read(payload, InboundEvents.PayoutVoided.class);
+                if (voided.isRefund()) {
+                    refunds.payoutVoided(voided.debtId(), voided.payoutId(), voided.voidedAt());
+                }
+                yield null;
+            }
+            case OrderInbox.REFUND_CLOSED -> {
+                InboundEvents.RefundClosed closed = InboundEvents.read(payload, InboundEvents.RefundClosed.class);
+                refunds.closed(closed.dueId(), closed.closedAt());
                 yield null;
             }
             default -> throw new IllegalStateException("declared as handled but not applied: " + type);

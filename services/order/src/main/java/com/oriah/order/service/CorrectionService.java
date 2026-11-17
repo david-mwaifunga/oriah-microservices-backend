@@ -116,9 +116,9 @@ public class CorrectionService {
     }
 
     /**
-     * Gives up a correction that is stuck in flight, by hand. Allowed only when inventory ITSELF says it holds no such reversal (its typed 404, read
-     * under the reversal's own lock): then nothing moved, the attempt is REFUSED and the order is free again. If inventory does hold it, the stock moved:
-     * the correction is finished instead and the person is told so. Any other answer proves nothing, and nothing is changed.
+     * Gives up a correction that is stuck in flight, by hand. Inventory is asked to abandon the reversal id: if it had NOT been applied, inventory
+     * records the abandon (no later request under that id is ever applied), the attempt is REFUSED and the order is free again. If it had been
+     * applied, the stock moved: the correction is finished instead and the person is told so. No answer proves nothing, and nothing is changed.
      *
      * @throws ResourceNotFoundException 404
      * @throws SalesProblem 409 {@code not-in-flight}, 409 {@code it-did-move}, 503 {@code inventory-unavailable}
@@ -129,19 +129,25 @@ public class CorrectionService {
             throw new SalesProblem(HttpStatus.CONFLICT, "not-in-flight", "this correction is " + correction.state() + ": only one that is still with the stock "
                     + "system can be abandoned").with("state", correction.state());
         }
-        // Keep the job away from it while this is decided.
-        corrections.retryLater(correctionId);
+        // Inventory decides, under the reversal's own lock, and REMEMBERS an abandon: a request for this id that is still on its way (the job's, a
+        // person's repeat, one queued behind a slow connection) is then refused by name and moves nothing. Reading "there is none" and writing
+        // REFUSED here would leave that request free to put the stock back for an order that carries on as paid.
+        InventoryClient.Abandoned answer;
         try {
-            inventory.reversal(correctionId);
+            answer = inventory.abandonReversal(correctionId);
         } catch (FeignException e) {
-            if (CorrectionReplies.saysThereIsNoReversal(e.status(), InventoryProblems.code(e))) {
-                Correction abandoned = corrections.refuse(correctionId, "abandoned-nothing-moved");
-                log.warn("Correction {} of order {} was abandoned by hand: inventory holds no such reversal, nothing moved", correctionId, correction.orderId());
-                return abandoned;
-            }
             throw unknown(e.status());
         } catch (RuntimeException e) {
             throw unknown(-1);
+        }
+        if (answer == null) {
+            throw unknown(-1);
+        }
+        if (!answer.applied()) {
+            Correction abandoned = corrections.refuse(correctionId, "abandoned-nothing-moved");
+            log.warn("Correction {} of order {} was abandoned by hand: inventory recorded the abandon, nothing moved and nothing will under this id",
+                    correctionId, correction.orderId());
+            return abandoned;
         }
         corrections.finish(correctionId);
         throw new SalesProblem(HttpStatus.CONFLICT, "it-did-move", "the stock system had already put the stock back for this correction, so it could not be "

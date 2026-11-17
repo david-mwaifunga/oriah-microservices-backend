@@ -30,7 +30,11 @@ public final class OrderInbox {
     static final String REJECTED = "payment.rejected";
     static final String VOIDED = "payment.voided";
     static final String EXPIRED = "reservation.expired";
-
+    static final String MONEY_OUT = "money_out";
+    static final String REFUND_DUE = "refund_due";
+    static final String PAID_OUT = "payment.paid_out";
+    static final String PAYOUT_VOIDED = "payment.payout_voided";
+    static final String REFUND_CLOSED = "payment.refund_closed";
     /** The one declaration of order as a consumer of the event log. */
     public static final InboxConsumer ORDER = InboxConsumer.named("order")
             .handles(CONFIRMATION, CONFIRMED, 1)
@@ -40,10 +44,13 @@ public final class OrderInbox {
             // payment's card events (until Phase 13) and held money, and inventory's sale and box swap: facts order never acts on;
             // and inventory's cost of each stock movement (Phase 10: finance's feed, declared here BEFORE inventory emits it)
             .ignores("payment.succeeded", "payment.failed", "payment.held", "reservation.consumed", "box.swapped", "stock.cost_recorded")
-            // Phase 12, declared here BEFORE payment emits them: money going back out (a refund owed, a debt closed, a payout, a payout
-            // cancelled). Order announces what is owed and never acts on what payment then does with it.
-            .ignores("payment.refund_due_recorded", "payment.refund_closed", "payment.paid_out", "payment.payout_voided");
-
+            // Phase 12, declared here BEFORE payment emits them: money going back out. Order announces what is owed and never acts on what
+            // payment then does with it; it only REMEMBERS a payout, a payout cancelled and a debt closed (RefundFacts), so that it can say
+            // whether a refund is still owed. The debt being recorded tells it nothing new.
+            .handles(MONEY_OUT, PAID_OUT, 1)
+            .handles(MONEY_OUT, PAYOUT_VOIDED, 1)
+            .handles(REFUND_DUE, REFUND_CLOSED, 1)
+            .ignores("payment.refund_due_recorded");
     private OrderInbox() {
     }
 

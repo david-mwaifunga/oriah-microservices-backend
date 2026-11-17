@@ -324,6 +324,8 @@ class PaidCancellationTest extends SaleTestBase {
         assertThat(cancel(manager(), id, "{\"reasonCode\":\"CHANGED_MIND\"}").getResponse().getStatus()).isEqualTo(400);
         assertThat(cancel(manager(), id, "{\"reasonCode\":\"OTHER\"}").getResponse().getStatus()).isEqualTo(400);
         assertThat(cancel(manager(), id, "{\"reasonCode\":\"SHOP_ERROR\",\"note\":\"no\"}").getResponse().getStatus()).isEqualTo(400);
+        // Three emoji are three characters to the database and six to Java: counted as characters, so a 400 here and never a database error.
+        assertThat(cancel(manager(), id, "{\"reasonCode\":\"OTHER\",\"note\":\"\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\"}").getResponse().getStatus()).isEqualTo(400);
         assertThat(corrections(id)).isEmpty();
 
         JsonNode view = body(cancel(manager(), id, "{\"reasonCode\":\"OTHER\",\"note\":\"  the owner asked for it  \"}"), 201);
@@ -623,10 +625,19 @@ class PaidCancellationTest extends SaleTestBase {
 
             assertThat(view.get("state").asText()).as(code).isEqualTo("REQUESTED");
         }
+        // A token inventory rejects says nothing about the request: an earlier try whose reply was lost may have moved the stock.
+        inventoryAnswersTheReversal(401, null);
+        assertThat(body(cancel(id), 202).get("state").asText()).as("401").isEqualTo("REQUESTED");
         assertThat(corrections(id)).hasSize(1);
         assertThat(row(id).get("status")).isEqualTo("PAID");
-    }
 
+        // A request that arrives after its id was abandoned is refused by name, which IS proof: that attempt is over.
+        inventoryAnswersTheReversal(409, "reversal-abandoned");
+        MvcResult late = cancel(id);
+        assertThat(late.getResponse().getStatus()).isEqualTo(409);
+        assertThat(type(late)).endsWith("/cancellation-refused");
+        assertThat(corrections(id).get(0).get("refused_code")).isEqualTo("reversal-abandoned");
+    }
     @Test
     @DisplayName("a stuck cancellation is abandoned by hand only when inventory itself says it holds no such reversal; a bare 404 proves nothing (503), and if it did move the cancellation is finished instead (409 it-did-move)")
     void abandonOnlyWhenInventorySaysNothingMoved() throws Exception {
@@ -639,13 +650,16 @@ class PaidCancellationTest extends SaleTestBase {
         JsonNode list = body(mvc.perform(get("/api/v1/admin/orders/corrections").param("state", "REQUESTED").with(manager())).andReturn(), 200);
         assertThat(list.findValuesAsText("correctionId")).contains(correctionId.toString());
 
-        inventoryReadsTheReversal(404, null);
+        // Inventory cannot be asked: nothing is concluded and nothing changes.
+        doThrow(SaleStubs.feign(503, null)).when(inventory).abandonReversal(any());
         MvcResult unknown = mvc.perform(post(abandon).with(manager())).andReturn();
         assertThat(unknown.getResponse().getStatus()).as(unknown.getResponse().getContentAsString()).isEqualTo(503);
         assertThat(corrections(id).get(0).get("state")).isEqualTo("REQUESTED");
 
-        inventoryReadsTheReversal(404, "reversal-not-found");
+        // Inventory records the abandon under the reversal's own lock: nothing moved, and nothing ever will under this id.
+        doReturn(new InventoryClient.Abandoned(correctionId, false)).when(inventory).abandonReversal(correctionId);
         JsonNode abandoned = body(mvc.perform(post(abandon).with(manager())).andReturn(), 200);
+        verify(inventory, never()).reversal(any());
         assertThat(abandoned.get("state").asText()).isEqualTo("REFUSED");
         assertThat(abandoned.get("refusedCode").asText()).isEqualTo("abandoned-nothing-moved");
         assertThat(row(id).get("status")).isEqualTo("PAID");
@@ -660,7 +674,7 @@ class PaidCancellationTest extends SaleTestBase {
 
         // A second attempt, stuck too, but this time inventory DID put the stock back: abandoning finishes it.
         UUID second = UUID.fromString(body(cancel(id), 202).get("correctionId").asText());
-        inventoryHasTheReversal();
+        doReturn(new InventoryClient.Abandoned(second, true)).when(inventory).abandonReversal(second);
         MvcResult moved = mvc.perform(post("/api/v1/admin/orders/corrections/" + second + "/abandon").with(manager())).andReturn();
         assertThat(moved.getResponse().getStatus()).isEqualTo(409);
         assertThat(type(moved)).endsWith("/it-did-move");

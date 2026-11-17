@@ -52,7 +52,8 @@ public class Corrections {
     public static final String REQUESTED = "REQUESTED";
     public static final String DONE = "DONE";
     public static final String REFUSED = "REFUSED";
-
+    /** The class of the advisory lock taken on a return's Idempotency-Key ("RKEY"). */
+    private static final int RETURN_KEY_LOCK = 0x524B4559;
     /** A correction as it is stored. */
     public record Correction(UUID id, UUID orderId, String kind, String state, String reasonCode, String note, String statusBefore, UUID confirmationId,
                              String receiptNumber, Instant saleArrivedAt, Instant occurredAt, String backdateReason, BigDecimal goodsAtList,
@@ -221,6 +222,9 @@ public class Corrections {
     public Begun beginReturn(UUID orderId, ReturnAsk ask, String key, String actor, boolean mayBackdate) {
         Order order = locks.lock(orderId).orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId.toString()));
         String hash = hash(orderId, ask);
+        // One request per key at a time, whichever order it names: two requests with one key for two orders hold different order locks, and the
+        // second must see what the first wrote (409 idempotency-key-reused), not run into the unique index.
+        jdbc.query("SELECT pg_advisory_xact_lock(?, hashtext(?))", (org.springframework.jdbc.core.RowCallbackHandler) rs -> { }, RETURN_KEY_LOCK, key);
         Optional<Correction> keyed = jdbc.query("SELECT * FROM order_correction WHERE idempotency_key = ?", CORRECTION, key).stream().findFirst();
         if (keyed.isPresent()) {
             if (!keyed.get().orderId().equals(orderId) || !hash.equals(keyed.get().requestHash())) {
@@ -356,6 +360,12 @@ public class Corrections {
         Order order = locks.lock(orderId).orElseThrow(() -> new IllegalStateException("correction " + correctionId + " names an order that does not exist"));
         Correction correction = lock(correctionId);
         if (!correction.inFlight()) {
+            if (REFUSED.equals(correction.state())) {
+                // Inventory says it put the stock back, and this attempt was already written off as "nothing moved". It must not happen (a refusal
+                // is written only on proof, and an abandon is recorded at inventory first); if it ever does, the books and the shelf disagree.
+                log.error("Order {}: inventory APPLIED {} {} but it is REFUSED here ({}): the stock is back while the order was not corrected -- "
+                        + "someone must look at this order now", orderId, correction.kind(), correctionId, correction.refusedCode());
+            }
             return correction;
         }
         if (CANCELLATION.equals(correction.kind())) {

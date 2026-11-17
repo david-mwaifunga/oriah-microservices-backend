@@ -270,12 +270,51 @@ class ExchangeAndReadsTest extends ReturnTestBase {
         assertThat(body(mvc.perform(get("/api/v1/admin/orders/recorded/" + order).with(owner)).andReturn(), 200).get("caller").get("phone").asText())
                 .isEqualTo("+2609*****567");
 
-        returned(order, 1);
+        UUID debt = UUID.fromString(returned(order, 1).get("returnId").asText());
 
-        assertThat(body(mvc.perform(get("/api/v1/admin/orders/recorded/" + order).with(owner)).andReturn(), 200).get("caller").get("phone").asText())
-                .isEqualTo("+260971234567");
+        assertThat(callerPhone(order, owner)).isEqualTo("+260971234567");
+        assertThat(callerPhone(order, manager())).as("someone who does not pay refunds").isEqualTo("+2609*****567");
+
+        // Payment says the refund was paid: nothing is owed any more, so the phone is withheld again.
+        UUID payout = UUID.randomUUID();
+        paymentEvents.accept(message("money_out", payout, "payment.paid_out", 1, paidOut(payout, "REFUND", debt, order), "payment"));
+        assertThat(callerPhone(order, owner)).isEqualTo("+2609*****567");
+        // The payout was keyed by mistake and cancelled: it is owed again.
+        paymentEvents.accept(message("money_out", payout, "payment.payout_voided", 1, payoutVoided(payout, debt, order), "payment"));
+        assertThat(callerPhone(order, owner)).isEqualTo("+260971234567");
+        // A payout of held money for the same order is not this refund.
+        UUID heldPayout = UUID.randomUUID();
+        paymentEvents.accept(message("money_out", heldPayout, "payment.paid_out", 1, paidOut(heldPayout, "HELD_MONEY", UUID.randomUUID(), order), "payment"));
+        assertThat(callerPhone(order, owner)).isEqualTo("+260971234567");
+        // The owner says the money never arrived: the debt is closed, nothing is owed.
+        paymentEvents.accept(message("refund_due", debt, "payment.refund_closed", 1, "{\"dueId\":\"" + debt + "\",\"orderId\":\"" + order
+                + "\",\"confirmationId\":\"" + UUID.randomUUID() + "\",\"owedGross\":4500.00,\"currency\":\"ZMW\",\"outcome\":\"MONEY_NEVER_ARRIVED\","
+                + "\"closedAt\":\"2026-11-17T08:30:00Z\",\"recordedAt\":\"2026-11-17T08:30:00.750Z\"}", "payment"));
+        assertThat(callerPhone(order, owner)).isEqualTo("+2609*****567");
     }
 
+    private String callerPhone(UUID order, RequestPostProcessor reader) throws Exception {
+        RequestPostProcessor who = reader;
+        MvcResult read = mvc.perform(get("/api/v1/admin/orders/recorded/" + order).with(who)).andReturn();
+        if (read.getResponse().getStatus() == 403) {
+            // The recorded door is the sales staff's: an order administrator reads the same order as a salesperson would.
+            read = mvc.perform(get("/api/v1/admin/orders/recorded/" + order)
+                    .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_SALES_AGENT")).jwt(j -> j.subject("kc-sam")))).andReturn();
+        }
+        return body(read, 200).get("caller").get("phone").asText();
+    }
+
+    private static String paidOut(UUID payout, String purpose, UUID debt, UUID order) {
+        return "{\"payoutId\":\"" + payout + "\",\"purpose\":\"" + purpose + "\",\"debtId\":\"" + debt + "\",\"cause\":\"RETURN\",\"orderId\":\"" + order
+                + "\",\"confirmationId\":\"" + UUID.randomUUID() + "\",\"method\":\"MTN\",\"gross\":4500.00,\"customerFee\":2.50,\"net\":4497.50,\"sendCharge\":2.50,"
+                + "\"feeBearer\":\"CUSTOMER\",\"currency\":\"ZMW\",\"paidAt\":\"2026-11-17T08:00:00Z\",\"recordedAt\":\"2026-11-17T08:03:10.250Z\"}";
+    }
+
+    private static String payoutVoided(UUID payout, UUID debt, UUID order) {
+        return "{\"payoutId\":\"" + payout + "\",\"purpose\":\"REFUND\",\"debtId\":\"" + debt + "\",\"orderId\":\"" + order + "\",\"confirmationId\":\""
+                + UUID.randomUUID() + "\",\"method\":\"MTN\",\"gross\":4500.00,\"customerFee\":2.50,\"net\":4497.50,\"sendCharge\":2.50,\"currency\":\"ZMW\","
+                + "\"paidAt\":\"2026-11-17T08:00:00Z\",\"voidedAt\":\"2026-11-17T09:45:00.500Z\"}";
+    }
     // ------------------------------------------------------------------ the packer's list
 
     @Test

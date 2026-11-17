@@ -41,6 +41,48 @@ public final class InboundEvents {
         }
     }
 
+    /**
+     * {@code payment.paid_out} (Phase 12): money went back to a customer. Order reads only which debt it paid ({@code debtId} is the correction's id
+     * for a REFUND; for HELD_MONEY it is not a correction at all) and when: never an amount, a method or a reference.
+     */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record PaidOut(UUID payoutId, String purpose, UUID debtId, Instant paidAt) {
+        public PaidOut {
+            need(payoutId, "payoutId");
+            need(purpose, "purpose");
+            need(debtId, "debtId");
+            need(paidAt, "paidAt");
+        }
+
+        public boolean isRefund() {
+            return "REFUND".equals(purpose);
+        }
+    }
+
+    /** {@code payment.payout_voided} (Phase 12): a payout was keyed by mistake and cancelled; what it paid is owed again. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record PayoutVoided(UUID payoutId, String purpose, UUID debtId, Instant voidedAt) {
+        public PayoutVoided {
+            need(payoutId, "payoutId");
+            need(purpose, "purpose");
+            need(debtId, "debtId");
+            need(voidedAt, "voidedAt");
+        }
+
+        public boolean isRefund() {
+            return "REFUND".equals(purpose);
+        }
+    }
+
+    /** {@code payment.refund_closed} (Phase 12): the owner said the money for the sale never arrived; nothing is owed. */
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record RefundClosed(UUID dueId, Instant closedAt) {
+        public RefundClosed {
+            need(dueId, "dueId");
+            need(closedAt, "closedAt");
+        }
+    }
+
     /** {@code payment.rejected}: staff could not find the money a shopper's claim named. Bound to the CLAIM. */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record PaymentRejected(UUID claimId, UUID orderId) {

@@ -61,8 +61,11 @@ public class Exchanges {
     public Exchange link(UUID returnId, UUID newOrderId, String actor) {
         Correction ret = corrections.find(returnId).filter(c -> Corrections.RETURN.equals(c.kind()))
                 .orElseThrow(() -> new ResourceNotFoundException("Return", "id", returnId.toString()));
-        // The returned order's lock: two links for one return, or a link racing the return's own finish, queue behind each other.
-        locks.lock(ret.orderId());
+        // Both orders' locks, in id order (so two links can never wait on each other): two links for one return, a link racing the return's own
+        // finish, and two returns reaching for the same new order all queue, and the second sees what the first wrote.
+        for (UUID order : new java.util.TreeSet<>(List.of(ret.orderId(), newOrderId))) {
+            jdbc.queryForList("SELECT id FROM orders WHERE id = ? FOR UPDATE", UUID.class, order);
+        }
         Correction locked = corrections.lock(returnId);
         if (!Corrections.DONE.equals(locked.state())) {
             throw new SalesProblem(HttpStatus.CONFLICT, "return-not-received-yet", "this return is " + locked.state() + ": it is exchanged once the stock "
@@ -89,8 +92,13 @@ public class Exchanges {
                     .with("status", status);
         }
         UUID id = UUID.randomUUID();
-        jdbc.update("INSERT INTO order_exchange (id, return_id, new_order_id, linked_by, linked_at) VALUES (?, ?, ?, ?, ?)", id, returnId, newOrderId, actor,
-                Timestamp.from(Instant.now().truncatedTo(ChronoUnit.MICROS)));
+        try {
+            jdbc.update("INSERT INTO order_exchange (id, return_id, new_order_id, linked_by, linked_at) VALUES (?, ?, ?, ?, ?)", id, returnId, newOrderId, actor,
+                    Timestamp.from(Instant.now().truncatedTo(ChronoUnit.MICROS)));
+        } catch (org.springframework.dao.DuplicateKeyException raced) {
+            // The locks above make this unreachable from here; the database's own rule is answered by name all the same.
+            throw alreadyRecorded("this return or that order is already part of an exchange");
+        }
         log.info("Return {} of order {} linked to new order {} as an exchange by {}", returnId, ret.orderId(), newOrderId, actor);
         return new Exchange(id, returnId, ret.orderId(), newOrderId, false);
     }

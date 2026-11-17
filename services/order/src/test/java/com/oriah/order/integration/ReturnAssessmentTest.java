@@ -159,6 +159,8 @@ class ReturnAssessmentTest extends ReturnTestBase {
         assertThat(type(noNote)).endsWith("/note-required");
         assertThat(assess(owner(), ids[0], ids[1], "{\"outcome\":\"UNSELLABLE\",\"note\":\"no\"}").getResponse().getStatus()).isEqualTo(400);
         assertThat(assess(owner(), ids[0], ids[1], "{\"outcome\":\"LOST\"}").getResponse().getStatus()).isEqualTo(400);
+        assertThat(assess(owner(), ids[0], ids[1], "{\"outcome\":\"UNSELLABLE\",\"note\":\"\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\"}").getResponse().getStatus())
+                .as("three emoji are three characters, not six").isEqualTo(400);
         assertThat(piece(ids[1]).get("state")).isEqualTo("AWAITING");
         verify(inventory, never()).decidePiece(any(), any());
 

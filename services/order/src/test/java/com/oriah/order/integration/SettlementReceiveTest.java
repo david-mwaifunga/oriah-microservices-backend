@@ -406,18 +406,23 @@ class SettlementReceiveTest extends SaleTestBase {
     }
 
     @Test
-    @DisplayName("payment's four facts about money going back out (Phase 12: a refund owed, a refund closed, a payout, a payout cancelled) are declared and ignored: order never acts on them")
-    void theFourPaymentFactsAreIgnored() {
-        UUID id = UUID.randomUUID();
+    @DisplayName("payment's four facts about money going back out (Phase 12) are all declared: a refund owed is ignored, and a payout, a cancelled payout and a closed debt are only remembered (whether a refund is still owed); none touches a sale")
+    void theFourPaymentFactsNeverTouchASale() {
+        UUID debt = UUID.randomUUID();
+        UUID payout = UUID.randomUUID();
+        UUID order = UUID.randomUUID();
 
-        for (String type : List.of("payment.refund_due_recorded", "payment.refund_closed")) {
-            paymentEvents.accept(message("refund_due", id, type, 1, "{}", "payment"));
-        }
-        for (String type : List.of("payment.paid_out", "payment.payout_voided")) {
-            paymentEvents.accept(message("money_out", id, type, 1, "{}", "payment"));
-        }
+        paymentEvents.accept(message("refund_due", debt, "payment.refund_due_recorded", 1, "{}", "payment"));
+        paymentEvents.accept(message("refund_due", debt, "payment.refund_closed", 1,
+                "{\"dueId\":\"" + debt + "\",\"orderId\":\"" + order + "\",\"closedAt\":\"2026-11-12T08:30:00Z\"}", "payment"));
+        paymentEvents.accept(message("money_out", payout, "payment.paid_out", 1,
+                "{\"payoutId\":\"" + payout + "\",\"purpose\":\"REFUND\",\"debtId\":\"" + debt + "\",\"orderId\":\"" + order + "\",\"paidAt\":\"2026-11-12T09:00:00Z\"}", "payment"));
+        paymentEvents.accept(message("money_out", payout, "payment.payout_voided", 1,
+                "{\"payoutId\":\"" + payout + "\",\"purpose\":\"REFUND\",\"debtId\":\"" + debt + "\",\"orderId\":\"" + order + "\",\"voidedAt\":\"2026-11-12T10:00:00Z\"}", "payment"));
 
         assertThat(jdbc.queryForObject("SELECT count(*) FROM order_settlement", Long.class)).isZero();
+        assertThat(jdbc.queryForList("SELECT kind FROM order_refund_fact WHERE correction_id = ? ORDER BY kind", String.class, debt))
+                .containsExactly("CLOSED", "PAID_OUT", "PAYOUT_VOIDED");
     }
 
     @Test

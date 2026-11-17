@@ -296,6 +296,12 @@ class ReturnRecordingTest extends ReturnTestBase {
         MvcResult noReason = recordReturn(owner(), id, key(), "{\"reasonCode\":\"WRONG_SIZE\",\"returnedAt\":\"" + cameBack + "\"," + lines(line, 1) + "}");
         assertThat(noReason.getResponse().getStatus()).isEqualTo(400);
         assertThat(type(noReason)).endsWith("/backdate-reason-required");
+        MvcResult emojiReason = recordReturn(owner(), id, key(), "{\"reasonCode\":\"WRONG_SIZE\",\"returnedAt\":\"" + cameBack
+                + "\",\"backdateReason\":\"\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\"," + lines(line, 1) + "}");
+        assertThat(emojiReason.getResponse().getStatus()).as("three emoji are three characters, not six").isEqualTo(400);
+        assertThat(type(emojiReason)).endsWith("/backdate-reason-required");
+        assertThat(recordReturn(owner(), id, key(), "{\"reasonCode\":\"OTHER\",\"note\":\"\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\"," + lines(line, 1) + "}").getResponse().getStatus())
+                .isEqualTo(400);
         assertThat(corrections(id)).isEmpty();
 
         body(recordReturn(owner(), id, key(), "{\"reasonCode\":\"WRONG_SIZE\",\"returnedAt\":\"" + cameBack

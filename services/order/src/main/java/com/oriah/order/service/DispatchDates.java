@@ -68,7 +68,9 @@ public final class DispatchDates {
             throw new AccessDeniedException("a step that happened more than " + window.toHours() + " hours ago is recorded by someone who may back-date a sale");
         }
         String reason = backdateReason == null ? "" : backdateReason.strip();
-        if (reason.length() < REASON_MIN || reason.length() > REASON_MAX) {
+        // Counted in characters, as the database's CHECK counts them (an emoji is one character there and two units in a Java String).
+        int characters = reason.codePointCount(0, reason.length());
+        if (characters < REASON_MIN || characters > REASON_MAX) {
             throw new SalesProblem(HttpStatus.BAD_REQUEST, "backdate-reason-required",
                     "a step that happened more than " + window.toHours() + " hours ago needs a reason of " + REASON_MIN + " to " + REASON_MAX + " characters");
         }

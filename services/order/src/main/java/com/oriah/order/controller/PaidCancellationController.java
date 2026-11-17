@@ -121,6 +121,7 @@ public class PaidCancellationController {
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @PostMapping("/{id}/cancellation")
     public ResponseEntity<CancellationView> cancel(@AuthenticationPrincipal Jwt jwt, @PathVariable("id") UUID id, @Valid @RequestBody CancellationRequest body) {
+        Words.requireLength(body.note(), 5, 200, "note");
         if ("OTHER".equals(body.reasonCode()) && body.note() == null) {
             throw new SalesProblem(HttpStatus.BAD_REQUEST, "note-required", "the reason OTHER needs a note of 5 to 200 characters saying why");
         }

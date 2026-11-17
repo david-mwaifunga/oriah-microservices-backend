@@ -97,6 +97,18 @@ public interface InventoryClient {
     Reversal reversal(@PathVariable("reversalId") UUID reversalId);
 
     /**
+     * Gives a reversal id up, for good. Inventory takes the reversal's own lock (so it waits out a request in flight): if the reversal was applied
+     * it says so ({@code applied: true}) and abandons nothing; otherwise it REMEMBERS the abandon, and any request that arrives later under that id
+     * is 409 {@code reversal-abandoned} and moves nothing. That is what makes "nothing moved" stay true after order writes it down.
+     */
+    @PostMapping("/api/v1/admin/inventory/sale-reversals/{reversalId}/abandon")
+    Abandoned abandonReversal(@PathVariable("reversalId") UUID reversalId);
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record Abandoned(UUID reversalId, boolean applied) {
+    }
+
+    /**
      * What became of a piece that came back: {@code RELEASED} (fine: on sale again), {@code WRITTEN_OFF} (not sellable) or {@code RELISTED} (moved
      * to its own marked-down listing, {@code childVariantId}). Keyed by the piece: the same outcome again is answered once.
      */

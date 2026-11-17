@@ -152,6 +152,7 @@ public class ReturnController {
         if (key.isEmpty() || key.length() > 128) {
             throw new IllegalArgumentException("Idempotency-Key must be 1 to 128 characters");
         }
+        Words.requireLength(body.note(), 5, 200, "note");
         if ("OTHER".equals(body.reasonCode()) && body.note() == null) {
             throw new SalesProblem(HttpStatus.BAD_REQUEST, "note-required", "the reason OTHER needs a note of 5 to 200 characters saying why");
         }
@@ -194,6 +195,7 @@ public class ReturnController {
         if (needs != null && authentication.getAuthorities().stream().noneMatch(a -> needs.equals(a.getAuthority()))) {
             throw new org.springframework.security.access.AccessDeniedException("assessing a piece as " + body.outcome() + " needs " + needs.substring(5));
         }
+        Words.requireLength(body.note(), 5, 200, "note");
         if ("UNSELLABLE".equals(body.outcome()) && body.note() == null) {
             throw new SalesProblem(HttpStatus.BAD_REQUEST, "note-required", "a piece that is not sellable needs a note of 5 to 200 characters saying why");
         }

@@ -13,7 +13,7 @@ public final class CorrectionReplies {
     /** Inventory's 404s on a reversal that it raises itself, before it writes anything. */
     private static final Set<String> NOT_FOUND = Set.of("sale-line-not-found", "reservation-not-found");
     /** Inventory's 409s on a reversal that say it did not start. */
-    private static final Set<String> REFUSED = Set.of("not-a-sale", "reservation-not-consumed", "box-line-not-live");
+    private static final Set<String> REFUSED = Set.of("not-a-sale", "reservation-not-consumed", "box-line-not-live", "reversal-abandoned");
     /** Inventory's 409s on a piece's outcome that say the piece is still waiting. */
     private static final Set<String> PIECE_REFUSED = Set.of("markdown-variant-of-another-product", "markdown-variant-in-use", "already-marked-down");
 
@@ -25,8 +25,9 @@ public final class CorrectionReplies {
 
     /**
      * Whether inventory's refusal of a sale reversal proves it moved nothing. NOT proof: a timeout, a 5xx, a 408, 425 or 429 (anything on the way can
-     * produce those after inventory has acted), a bare 404, {@code reversal-id-used} and {@code more-than-outstanding} (what a repeat of a reversal that DID
-     * happen can look like) and any 409 nobody has heard of.
+     * produce those after inventory has acted), a 401 (order's own token was rejected: see below), a bare 404, {@code reversal-id-used} and
+     * {@code more-than-outstanding} (what a repeat of a reversal that DID happen can look like) and any 409 nobody has heard of.
+     * {@code reversal-abandoned} IS proof: inventory recorded that this id was given up, and does nothing under it.
      *
      * @param status the HTTP status (-1 when there was none)
      * @param code   inventory's problem type without its prefix; empty when the answer carried none
@@ -64,7 +65,12 @@ public final class CorrectionReplies {
         return wait.compareTo(LONGEST_WAIT) > 0 ? LONGEST_WAIT : wait;
     }
 
+    /**
+     * Refused before inventory looked at what was asked: malformed, not allowed, not processable. NOT 401: a rejected token is about order's own
+     * token at that moment (expired, or signed by keys Keycloak has since replaced), so it can answer a REPEAT of a request whose first try moved
+     * the stock and whose reply was lost. It proves nothing, and the correction waits.
+     */
     private static boolean refusedBeforeItWasLookedAt(int status) {
-        return status == 400 || status == 401 || status == 403 || status == 422;
+        return status == 400 || status == 403 || status == 422;
     }
 }

@@ -42,10 +42,12 @@ public class RecordedReadService {
     private final OrderService orders;
     private final CatalogLookupClient catalogLookup;
     private final CorrectionViews corrections;
+    private final RefundFacts refunds;
 
     public RecordedReadService(OrderRepository repository, JdbcTemplate jdbc, DispatchViews dispatchViews, OrderService orders, CatalogLookupClient catalogLookup,
-                               CorrectionViews corrections) {
+                               CorrectionViews corrections, RefundFacts refunds) {
         this.corrections = corrections;
+        this.refunds = refunds;
         this.catalogLookup = catalogLookup;
         this.repository = repository;
         this.jdbc = jdbc;
@@ -85,8 +87,8 @@ public class RecordedReadService {
     public RecordedOrderView detail(UUID id, String reader, boolean paysRefunds) {
         Order order = recorded(id);
         List<com.oriah.order.dto.OrderResponse.Correction> corrected = corrections.of(List.of(id), false).get(id);
-        boolean owed = corrected != null && corrected.stream().anyMatch(c -> c.owedGross().signum() > 0);
-        boolean callerInFull = paysRefunds && owed;
+        // Still owed, by payment's own facts (RefundFacts): once the refund is paid, or closed, the phone is withheld again like anyone's.
+        boolean callerInFull = paysRefunds && refunds.stillOwes(id);
         log.info("Recorded order {} read by {}{}", id, reader, callerInFull ? " with the caller's phone in full (a refund is owed)" : "");
         return RecordedOrderView.read(order, dispatchViews.stepsOf(List.of(id)).get(id), corrected, corrections.exchangesFor(List.of(id)).get(id), callerInFull);
     }
