@@ -45,17 +45,23 @@ public class OrderEventConsumer {
     static final String SUBMITTED = "order.payment_submitted";
     static final String PAID = "order.paid";
     static final String UNSETTLED = "order.payment_unsettled";
+    static final String SALE_CANCELLED = "order.sale_cancelled";
+    static final String RETURN_RECORDED = "order.return_recorded";
 
     /** The one declaration of payment as a consumer of the event log. */
     static final InboxConsumer PAYMENT = InboxConsumer.named("payment")
             .handles(ORDER, SUBMITTED, 1)
             .handles(ORDER, PAID, 1, 2)
             .handles(ORDER, UNSETTLED, 1)
+            // Phase 12: a paid order cancelled before it left, and pieces that came back. Each says what is owed; payment keeps the debt.
+            .handles(ORDER, SALE_CANCELLED, 1)
+            .handles(ORDER, RETURN_RECORDED, 1)
             .ignores("order.created", "order.expired", "order.cancelled", "order.fulfilled", "order.shipped", "order.delivered");
 
     @Bean
-    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, ClaimService claims, SettlementOutcomes outcomes, ObjectMapper objectMapper) {
-        return new Handler(inbox, claims, outcomes, objectMapper);
+    public Consumer<Message<byte[]>> orderEvents(Inbox inbox, ClaimService claims, SettlementOutcomes outcomes, com.oriah.payment.refund.RefundDues refunds,
+                                                 ObjectMapper objectMapper) {
+        return new Handler(inbox, claims, outcomes, refunds, objectMapper);
     }
 
     /** Inner handler, so {@code @Transactional} goes through the proxy (a {@code @Bean} method on this class does not). */
@@ -63,9 +69,11 @@ public class OrderEventConsumer {
         private final Inbox inbox;
         private final ClaimService claims;
         private final SettlementOutcomes outcomes;
+        private final com.oriah.payment.refund.RefundDues refunds;
         private final ObjectMapper objectMapper;
 
-        Handler(Inbox inbox, ClaimService claims, SettlementOutcomes outcomes, ObjectMapper objectMapper) {
+        Handler(Inbox inbox, ClaimService claims, SettlementOutcomes outcomes, com.oriah.payment.refund.RefundDues refunds, ObjectMapper objectMapper) {
+            this.refunds = refunds;
             this.inbox = inbox;
             this.claims = claims;
             this.outcomes = outcomes;
@@ -94,6 +102,17 @@ public class OrderEventConsumer {
                     }
                 }
                 case UNSETTLED -> outcomes.unsettled(id(body, "confirmationId"), text(body, "reason"));
+                case SALE_CANCELLED, RETURN_RECORDED -> {
+                    java.util.UUID order = id(body, "orderId");
+                    if (!order.toString().equals(header(message, EventHeaders.AGGREGATE_ID))) {
+                        throw new IllegalArgumentException("a sale correction names order " + order + " but arrived in an envelope for order "
+                                + header(message, EventHeaders.AGGREGATE_ID));
+                    }
+                    // Only ids, a code, an amount and a date are read: who the customer is, the receipt number and the reason are left alone.
+                    refunds.owe(id(body, "correctionId"), SALE_CANCELLED.equals(type) ? "CANCELLATION" : "RETURN", order, id(body, "confirmationId"),
+                            amount(body, "owedGross"), text(body, "currency"), text(body, "feeBearer"), instant(body, "occurredAt", true),
+                            id(message, EventHeaders.EVENT_ID), header(message, EventHeaders.ACTOR));
+                }
                 default -> throw new IllegalStateException("declared as handled but not applied: " + type);
             }
         }
@@ -117,6 +136,23 @@ public class OrderEventConsumer {
                 throw new IllegalArgumentException("the event has no " + field);
             }
             return node.asText();
+        }
+
+        private static UUID id(Message<byte[]> message, String name) {
+            String value = header(message, name);
+            try {
+                return UUID.fromString(value);
+            } catch (IllegalArgumentException | NullPointerException e) {
+                throw new IllegalArgumentException("the event's " + name + " header '" + value + "' is not an id", e);
+            }
+        }
+
+        private static java.math.BigDecimal amount(JsonNode body, String field) {
+            JsonNode node = body.get(field);
+            if (node == null || !node.isNumber()) {
+                throw new IllegalArgumentException("the event has no amount in " + field);
+            }
+            return node.decimalValue();
         }
 
         private static UUID id(JsonNode body, String field) {

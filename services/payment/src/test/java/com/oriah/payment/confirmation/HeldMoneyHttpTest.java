@@ -98,6 +98,8 @@ class HeldMoneyHttpTest {
         mvc.perform(get(HELD).param("status", "ALL").with(owner()))
                 .andExpect(jsonPath("$[?(@.confirmationId=='" + voided + "')]").isNotEmpty())
                 .andExpect(jsonPath("$[?(@.confirmationId=='" + owed + "')]").isNotEmpty());
-        mvc.perform(get(HELD).param("status", "REPAID").with(owner())).andExpect(status().isBadRequest());
+        // REPAID is a status since Phase 12 (held money can be paid back); a status nobody knows is still refused.
+        mvc.perform(get(HELD).param("status", "REPAID").with(owner())).andExpect(status().isOk());
+        mvc.perform(get(HELD).param("status", "SPENT").with(owner())).andExpect(status().isBadRequest());
     }
 }

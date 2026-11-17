@@ -176,6 +176,17 @@ public class ConfirmationService {
                     "confirmation " + id + " paid a sale and is the record that sale stands on: it is never voided (correcting it is Phase 12's)");
         }
         Instant now = clock.instant().truncatedTo(ChronoUnit.MICROS);
+        // Read again under the confirmation's lock: held money that was paid back is money that has LEFT. Cancelling its record now would close a debt that was
+        // already paid out, and the books would show money returned that was never recorded as received.
+        java.util.List<String> held = jdbc.query("SELECT status FROM held_money WHERE confirmation_id = ? FOR UPDATE", (rs, n) -> rs.getString(1), id);
+        if (held.contains("REPAID")) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "held-money-repaid", "the money of confirmation " + id + " was held and has been paid back to the customer: "
+                    + "cancel that payout first if it was recorded wrongly");
+        }
+        // A defence: a refund is only ever owed out of money that paid a sale, which is refused above already.
+        if (jdbc.queryForObject("SELECT count(*) FROM refund_due WHERE confirmation_id = ?", Long.class, id) > 0) {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "confirmation-settled", "confirmation " + id + " paid a sale that was since corrected: a refund stands on it");
+        }
         jdbc.update("INSERT INTO payment_confirmation_void (id, confirmation_id, voided_by, voided_by_name, reason, voided_at) VALUES (?, ?, ?, ?, ?, ?)",
                 UUID.randomUUID(), id, staff.actor(), staff.name(), why, Timestamp.from(now));
         // The reference is freed, so the corrected confirmation can use it. The money held for this confirmation, if any, is closed with it.
@@ -229,6 +240,14 @@ public class ConfirmationService {
     }
 
     private void refuseIfUsed(String referenceKey) {
+        // A record that was cancelled (its reference freed) and then turned out to have paid a sale after all: that money is in the books as a sale, so the same
+        // transfer can never be recorded a second time, or it would be counted, and could be paid back, twice.
+        jdbc.query("SELECT id, order_id FROM payment_confirmation WHERE outcome_reason = 'SETTLED_AFTER_VOID' AND method || ':' || reference = ?", (rs, row) -> {
+            throw new PaymentProblem(HttpStatus.CONFLICT, "reference-paid-a-sale",
+                    "that reference belongs to a payment record that was cancelled and then paid a sale after all (confirmation " + rs.getObject("id", UUID.class)
+                            + "): the same payment is not recorded twice")
+                    .with("confirmationId", rs.getObject("id", UUID.class)).with("orderId", rs.getObject("order_id", UUID.class));
+        }, referenceKey);
         jdbc.query("SELECT id, order_id FROM payment_confirmation WHERE reference_key = ?", (rs, row) -> {
             throw new PaymentProblem(HttpStatus.CONFLICT, "reference-already-used",
                     "that reference has already confirmed money (confirmation " + rs.getObject("id", UUID.class) + "): the same payment is not counted twice. "

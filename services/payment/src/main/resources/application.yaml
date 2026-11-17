@@ -195,6 +195,22 @@ oriah:
       enabled: true
       topics: oriah.order
 
+  # Phase 12: money that goes back to customers.
+  refunds:
+    # The most a provider's charge for sending money back can be: a larger figure is a typing mistake (400 invalid-send-charge).
+    max-send-charge: 500.00
+    bearer:
+      # Who bears the provider's charge when HELD money is paid back, by why it was held. (For a refund the order system decides, from why
+      # the sale was corrected, and says so on the debt.) A missing line refuses to start: this is never guessed.
+      held:
+        # The customer sent the wrong amount, paid twice, or paid for an order already cancelled: the customer bears it.
+        WRONG_AMOUNT: CUSTOMER
+        ALREADY_PAID: CUSTOMER
+        ORDER_CANCELLED: CUSTOMER
+        # The piece was sold while the money was on its way, or staff keyed it against an order nobody knows: the delay was Oriah's.
+        PIECE_SOLD: ORIAH
+        ORDER_UNKNOWN: ORIAH
+
   payment:
     # -------------------------------------------------------------------------
     # The card path (Phase 7): the intent endpoints (/api/v1/payments/intents), the service behind them, the fake card gateway, the

@@ -185,11 +185,17 @@ class ConfirmationSchemaTest {
     @Test
     @DisplayName("no table of these records can be emptied: a truncate is refused (by the trigger, or by Postgres itself where other tables refer to it)")
     void nothingCanBeTruncated() {
-        for (String table : new String[] {"payment_claim", "payment_confirmation", "payment_confirmation_void", "held_money", "payment_rejection"}) {
+        for (String table : new String[] {"payment_claim", "payment_confirmation", "payment_confirmation_void", "held_money", "payment_rejection",
+                "refund_due", "refund_due_check", "money_out", "money_out_void"}) {
             assertThatThrownBy(() -> jdbc.execute("TRUNCATE " + table)).as(table).isInstanceOf(DataAccessException.class);
         }
         assertThatThrownBy(() -> jdbc.execute("TRUNCATE payment_rejection")).hasMessageContaining("append-only");
-        assertThatThrownBy(() -> jdbc.execute("TRUNCATE held_money")).hasMessageContaining("append-only");
+        // Since Phase 12 payouts refer to held money, so Postgres itself refuses a truncate of it alone. Emptied together with what refers to it, it is its
+        // own trigger that refuses; and so do the triggers of the Phase 12 records.
+        assertThatThrownBy(() -> jdbc.execute("TRUNCATE held_money, money_out, money_out_void")).hasMessageContaining("append-only");
+        assertThatThrownBy(() -> jdbc.execute("TRUNCATE money_out_void")).hasMessageContaining("append-only");
+        assertThatThrownBy(() -> jdbc.execute("TRUNCATE refund_due_check")).hasMessageContaining("append-only");
+        assertThatThrownBy(() -> jdbc.execute("TRUNCATE refund_due, refund_due_check, money_out, money_out_void")).hasMessageContaining("append-only");
     }
 
     @Test

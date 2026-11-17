@@ -40,12 +40,16 @@ public class HeldMoneyController {
 
     private final JdbcTemplate jdbc;
 
-    public HeldMoneyController(JdbcTemplate jdbc) {
+    private final com.oriah.payment.refund.RefundSettings refunds;
+
+    public HeldMoneyController(JdbcTemplate jdbc, com.oriah.payment.refund.RefundSettings refunds) {
+        this.refunds = refunds;
         this.jdbc = jdbc;
     }
 
     @Operation(operationId = "listHeldMoney", summary = "Money owed back to customers, newest first",
-            description = "`status` is OWED (the default), VOIDED (its confirmation was voided as keyed wrongly) or ALL.")
+            description = "`status` is OWED (the default), VOIDED (its confirmation was voided as keyed wrongly), REPAID (it was paid back) or ALL. "
+                    + "`feeBearer` says who bears the provider's charge when it is paid back, from why it was held.")
     @ApiResponse(responseCode = "400", description = "A status that does not exist",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
     @ApiResponse(responseCode = "200", description = "The held money, newest first")
@@ -53,12 +57,13 @@ public class HeldMoneyController {
     @Transactional(readOnly = true)
     public List<HeldMoneyView> list(@RequestParam(name = "status", defaultValue = "OWED") String status) {
         String wanted = status.strip().toUpperCase(java.util.Locale.ROOT);
-        if (!List.of("OWED", "VOIDED", "ALL").contains(wanted)) {
-            throw new IllegalArgumentException("status must be OWED, VOIDED or ALL, was '" + status + "'");
+        if (!List.of("OWED", "VOIDED", "REPAID", "ALL").contains(wanted)) {
+            throw new IllegalArgumentException("status must be OWED, VOIDED, REPAID or ALL, was '" + status + "'");
         }
         String where = "ALL".equals(wanted) ? "" : " WHERE h.status = ?";
         String sql = """
-                SELECT h.id, h.confirmation_id, h.order_id, h.reason, h.owed_gross, h.currency, h.status, h.created_at, h.voided_at,
+                SELECT h.id, h.confirmation_id, h.order_id, h.reason, h.owed_gross, h.currency, h.status, h.created_at, h.voided_at, h.repaid_at,
+                       (SELECT m.id FROM money_out m WHERE m.live_for = h.id) AS payout_id,
                        c.method, c.reference, c.arrived_at, c.confirmed_by
                   FROM held_money h JOIN payment_confirmation c ON c.id = h.confirmation_id""" + where + " ORDER BY h.created_at DESC, h.id";
         org.springframework.jdbc.core.RowMapper<HeldMoneyView> mapper = (rs, n) -> {
@@ -66,7 +71,9 @@ public class HeldMoneyController {
             return new HeldMoneyView(rs.getObject("id", java.util.UUID.class), rs.getObject("confirmation_id", java.util.UUID.class),
                     rs.getObject("order_id", java.util.UUID.class), rs.getString("reason"), rs.getBigDecimal("owed_gross"), rs.getString("currency"),
                     rs.getString("status"), rs.getTimestamp("created_at").toInstant(), voidedAt == null ? null : voidedAt.toInstant(), rs.getString("method"),
-                    rs.getString("reference"), rs.getTimestamp("arrived_at").toInstant(), rs.getString("confirmed_by"));
+                    rs.getString("reference"), rs.getTimestamp("arrived_at").toInstant(), rs.getString("confirmed_by"),
+                    rs.getTimestamp("repaid_at") == null ? null : rs.getTimestamp("repaid_at").toInstant(), refunds.bearerOfHeld(rs.getString("reason")),
+                    rs.getObject("payout_id", java.util.UUID.class));
         };
         return "ALL".equals(wanted) ? jdbc.query(sql, mapper) : jdbc.query(sql, mapper, wanted);
     }
