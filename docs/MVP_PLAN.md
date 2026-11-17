@@ -2561,7 +2561,7 @@ Settled in round 4 and by review (`CLIENT_DECISIONS.md` §1.3):
 ### Phase 13 — Payment integration: ZynlePay, for mobile money and cards
 
 > **Status: built, 2026-11-17, against a stand-in for ZynlePay** (Oriah has no merchant account yet; what is known of ZynlePay's API is second-hand).
-> Committed in `oriah-api` on the branch `phase13` (not pushed): checkout's item H1 `ae2953f`; the event contracts and the consumers' declarations (`b1982e3`,
+> Committed in `oriah-api` on the branch `phase13`, fast-forwarded into `main` the same day (not pushed): checkout's item H1 `ae2953f`; the event contracts and the consumers' declarations (`b1982e3`,
 > `faa2cc4`); the pure rules (the fee tariff, ZynlePay's codes, our reference, the wallets, the attempt's states, the check schedule: `f5368b6`, `45ab336`, `ee1ce68`);
 > the port and the ZynlePay adapter `72b6f5a`; the stand-in (`21f7e03`, `e138b34`) and the guard that decides stand-in, sandbox or live `5db6590`; the first card path
 > retired (payment V10, `29fdd43`); the attempt's tables (payment V11, `5a5530b`); the machine's money record `ff367d0`; order V18 `13b6d72`; the start `3c7f134`; the
