@@ -17,6 +17,9 @@ public final class CorrectionReplies {
     /** Inventory's 409s on a piece's outcome that say the piece is still waiting. */
     private static final Set<String> PIECE_REFUSED = Set.of("markdown-variant-of-another-product", "markdown-variant-in-use", "already-marked-down");
 
+    /** Inventory's 400 that it raises itself, after reading the request and before writing anything: the date is before the sale, or in the future. */
+    private static final String TOO_EARLY = "invalid-occurred-at";
+
     private static final Duration FIRST_WAIT = Duration.ofSeconds(15);
     private static final Duration LONGEST_WAIT = Duration.ofMinutes(5);
 
@@ -29,6 +32,12 @@ public final class CorrectionReplies {
      * {@code more-than-outstanding} (what a repeat of a reversal that DID happen can look like) and any 409 nobody has heard of.
      * {@code reversal-abandoned} IS proof: inventory recorded that this id was given up, and does nothing under it.
      *
+     * <p><b>Only a refusal inventory NAMES is proof.</b> A status alone never is: a 401 or 403 is about WHO is asking at that moment (order's token
+     * expired or was signed by keys Keycloak has since replaced; its service account lost a role) and is decided before inventory looks at the
+     * reversal; a bare 400 or 422 could come from anything on the way. Any of them can answer a REPEAT of a request whose first try moved the
+     * stock and whose reply was lost. The correction then waits, and the way out is to abandon it, which inventory decides under the reversal's
+     * own lock.
+     *
      * @param status the HTTP status (-1 when there was none)
      * @param code   inventory's problem type without its prefix; empty when the answer carried none
      */
@@ -39,7 +48,7 @@ public final class CorrectionReplies {
         if (status == 409) {
             return REFUSED.contains(code);
         }
-        return refusedBeforeItWasLookedAt(status);
+        return status == 400 && TOO_EARLY.equals(code);
     }
 
     /** Reading a reversal back: only inventory's own typed 404 says it has none (it takes the reversal's lock first, so it waits out one being written). */
@@ -56,7 +65,7 @@ public final class CorrectionReplies {
         if (status == 409) {
             return PIECE_REFUSED.contains(code);
         }
-        return refusedBeforeItWasLookedAt(status);
+        return status == 400 && TOO_EARLY.equals(code);
     }
 
     /** How long to wait before asking again: 15 seconds, doubling, five minutes at most. */
@@ -65,12 +74,4 @@ public final class CorrectionReplies {
         return wait.compareTo(LONGEST_WAIT) > 0 ? LONGEST_WAIT : wait;
     }
 
-    /**
-     * Refused before inventory looked at what was asked: malformed, not allowed, not processable. NOT 401: a rejected token is about order's own
-     * token at that moment (expired, or signed by keys Keycloak has since replaced), so it can answer a REPEAT of a request whose first try moved
-     * the stock and whose reply was lost. It proves nothing, and the correction waits.
-     */
-    private static boolean refusedBeforeItWasLookedAt(int status) {
-        return status == 400 || status == 403 || status == 422;
-    }
 }

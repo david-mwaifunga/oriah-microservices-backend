@@ -284,7 +284,8 @@ class ExchangeAndReadsTest extends ReturnTestBase {
         assertThat(callerPhone(order, owner)).isEqualTo("+260971234567");
         // A payout of held money for the same order is not this refund.
         UUID heldPayout = UUID.randomUUID();
-        paymentEvents.accept(message("money_out", heldPayout, "payment.paid_out", 1, paidOut(heldPayout, "HELD_MONEY", UUID.randomUUID(), order), "payment"));
+        // (It names an id equal to the correction's on purpose: only its PURPOSE says it is not this refund.)
+        paymentEvents.accept(message("money_out", heldPayout, "payment.paid_out", 1, paidOut(heldPayout, "HELD_MONEY", debt, order), "payment"));
         assertThat(callerPhone(order, owner)).isEqualTo("+260971234567");
         // The owner says the money never arrived: the debt is closed, nothing is owed.
         paymentEvents.accept(message("refund_due", debt, "payment.refund_closed", 1, "{\"dueId\":\"" + debt + "\",\"orderId\":\"" + order

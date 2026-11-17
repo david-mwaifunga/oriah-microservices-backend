@@ -331,6 +331,12 @@ class PaidCancellationTest extends SaleTestBase {
         JsonNode view = body(cancel(manager(), id, "{\"reasonCode\":\"OTHER\",\"note\":\"  the owner asked for it  \"}"), 201);
         assertThat(view.get("reasonCode").asText()).isEqualTo("OTHER");
         assertThat(corrections(id).get(0).get("note")).isEqualTo("the owner asked for it");
+
+        // The upper bound is counted in characters too: 113 characters (90 of them emoji, so 203 Java units) fit in 200.
+        UUID another = heldOrder(2);
+        confirmed(another, "9000.00");
+        body(cancel(manager(), another, "{\"reasonCode\":\"OTHER\",\"note\":\"a note with many faces \uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\uD83D\uDE00\"}"), 201);
+        assertThat(((String) corrections(another).get(0).get("note")).codePointCount(0, ((String) corrections(another).get(0).get("note")).length())).isEqualTo(113);
     }
 
     // ------------------------------------------------------------------ what is owed

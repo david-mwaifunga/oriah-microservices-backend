@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CorrectionRepliesTest {
 
     @ParameterizedTest
-    @CsvSource({"400,", "403,", "422,", "400,invalid-occurred-at", "404,sale-line-not-found", "404,reservation-not-found", "409,not-a-sale",
+    @CsvSource({"400,invalid-occurred-at", "404,sale-line-not-found", "404,reservation-not-found", "409,not-a-sale",
             "409,reservation-not-consumed", "409,box-line-not-live", "409,reversal-abandoned"})
     void theseProveNothingMoved(int status, String code) {
         assertThat(CorrectionReplies.provesNothingMoved(status, code == null ? "" : code)).isTrue();
@@ -26,7 +26,13 @@ class CorrectionRepliesTest {
             "404,reversal-not-found", "408,", "425,", "429,", "500,", "502,", "503,", "504,", "-1,",
             // 401 is about ORDER's own token at that moment (expired, or signed by keys Keycloak has since replaced), not about the request: an
             // earlier try whose reply was lost may have moved the stock, so a rejected token proves nothing.
-            "401,"})
+            "401,",
+            // 403 likewise: inventory checks who is calling before it looks at the reversal, so it answers a repeat the same way whether or not the
+            // first try moved the stock.
+            "403,",
+            // A bare 400 or 422 names no reason of inventory's own: it could come from anything on the way, or from a build of inventory that reads
+            // the same request differently than the one that applied it. Only a refusal inventory NAMES is proof.
+            "400,", "422,", "400,validation"})
     void theseProveNothing(int status, String code) {
         assertThat(CorrectionReplies.provesNothingMoved(status, code == null ? "" : code)).isFalse();
     }
@@ -43,15 +49,14 @@ class CorrectionRepliesTest {
 
     /** A returned piece's outcome: these refusals prove the piece is still waiting, so another outcome may be chosen. */
     @ParameterizedTest
-    @CsvSource({"409,markdown-variant-of-another-product", "409,markdown-variant-in-use", "409,already-marked-down", "400,", "400,invalid-occurred-at",
-            "403,", "422,"})
+    @CsvSource({"409,markdown-variant-of-another-product", "409,markdown-variant-in-use", "409,already-marked-down", "400,invalid-occurred-at"})
     void thesePutAPieceBackToWaiting(int status, String code) {
         assertThat(CorrectionReplies.provesThePieceWasNotDecided(status, code == null ? "" : code)).isTrue();
     }
 
     /** "The listing is not known yet" is a wait, a different outcome already recorded is a fault to look at: neither frees the piece. */
     @ParameterizedTest
-    @CsvSource({"409,markdown-variant-not-known-yet", "409,piece-outcome-recorded", "404,returned-piece-not-found", "404,", "409,", "500,", "503,", "429,", "401,"})
+    @CsvSource({"409,markdown-variant-not-known-yet", "409,piece-outcome-recorded", "404,returned-piece-not-found", "404,", "409,", "500,", "503,", "429,", "401,", "403,", "400,", "422,"})
     void theseLeaveAPieceInProgress(int status, String code) {
         assertThat(CorrectionReplies.provesThePieceWasNotDecided(status, code == null ? "" : code)).isFalse();
     }

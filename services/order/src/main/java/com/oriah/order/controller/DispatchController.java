@@ -63,8 +63,9 @@ public class DispatchController {
      */
     public record StepRequest(
             @Schema(description = "When it happened (ISO-8601, UTC); absent means now") Instant occurredAt,
-            @Size(max = 200, message = "the reason must be at most 200 characters") String backdateReason) {
-
+            // 5 to 200 CHARACTERS is judged by DispatchDates, which counts as the database does; this bound is only a guard on the size of the body
+            // (an emoji is one character and two of the units @Size counts).
+            @Size(max = 400, message = "the reason must be at most 200 characters") String backdateReason) {
         public StepRequest {
             backdateReason = backdateReason == null ? null : backdateReason.trim();
         }
@@ -78,8 +79,7 @@ public class DispatchController {
             @Pattern(regexp = "^[A-Za-z0-9 ./#-]{1,40}$", message = "may hold letters, digits, space and . / # - only, 1 to 40 characters") String reference,
             @DecimalMin(value = "0.00", message = "the fare cannot be negative") @NgweeAmount BigDecimal farePaid,
             Instant occurredAt,
-            @Size(max = 200, message = "the reason must be at most 200 characters") String backdateReason) {
-
+            @Size(max = 400, message = "the reason must be at most 200 characters") String backdateReason) {
         public ShipRequest {
             reference = reference == null || reference.isBlank() ? null : reference.trim();
             backdateReason = backdateReason == null ? null : backdateReason.trim();

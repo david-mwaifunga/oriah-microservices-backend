@@ -312,8 +312,26 @@ class RefundMessagesTest {
                 + "\"reason\":\"keyed against the wrong order\",\"voidedBy\":\"Sam Phiri\",\"voidedAt\":\"" + justNow() + "\",\"arrivedAt\":\"2026-11-03T08:00:00Z\"}"));
 
         assertThat(alerts("VOID_AFTER_SALE")).as("nothing is left open for staff to chase").noneMatch(alert -> "OPEN".equals(alert.get("state")));
+
+        // The sale's payment announced once more (order answers a repeated confirmation with the same order.paid): still nothing.
+        orderPaid();
+        assertThat(alerts("VOID_AFTER_SALE")).as("a repeated order.paid after the correction").noneMatch(alert -> "OPEN".equals(alert.get("state")));
     }
 
+    @Test
+    @DisplayName("a 'refund paid' message that may already have reached the customer when its payout is cancelled is never recorded as 'not sent': it ends as outcome unknown")
+    void aMessageThatMayHaveGoneIsNotCalledUnsent() {
+        orderPaid();
+        dispatcher().run();
+        cancelled();
+        paidOut("225.00", "5.00");
+        // A try that got no answer from the mail server: the message may have been handed over.
+        jdbc.update("UPDATE notification_log SET maybe_handed_over = TRUE, attempts = 1 WHERE id = ?", shopperRow("payment.paid_out").get("id"));
+
+        payoutVoided();
+
+        assertThat(shopperRow("payment.paid_out")).containsEntry("status", "FAILED").containsEntry("status_reason", "OUTCOME_UNKNOWN");
+    }
     @Test
     @DisplayName("a payout that reaches notification before the cancellation writes nothing until the cancellation is known; a refund paid in full says so in one sentence")
     void aPayoutThatArrivesFirstWritesNothingUntilTheCorrectionIsKnown() {

@@ -133,9 +133,7 @@ public class ConfirmationWatch {
         Watch watch = read(confirmationId);
         answer(watch, "VOIDED", fresh(at, now), now);
         reopenTheClaim(orderId, now);
-        // Not when the sale was already corrected (the correction can be heard before the void: they travel on different topics): the order
-        // system has dealt with it, and an alert raised now would have nothing left to end it.
-        if (watch.paidAt() != null && !saleCorrected(confirmationId)) {
+        if (watch.paidAt() != null) {
             voidAfterSale(watch, fresh(at, now), now);
         }
     }
@@ -208,7 +206,9 @@ public class ConfirmationWatch {
     /** Both "cancelled" and "paid" are known for one confirmation: goods may have left with no money behind them. Told once. */
     private void voidAfterSale(Watch watch, boolean fresh, Instant now) {
         String subject = watch.confirmationId().toString();
-        if (!fresh || alerts.newest(Kind.VOID_AFTER_SALE, subject).isPresent()) {
+        // Not when the sale was already corrected (the correction can be heard before the void, and a repeated order.paid after both: they travel on
+        // different topics): the order system has dealt with it, and an alert raised now would have nothing left to end it.
+        if (!fresh || saleCorrected(watch.confirmationId()) || alerts.newest(Kind.VOID_AFTER_SALE, subject).isPresent()) {
             return;
         }
         Text words = MessageTexts.voidAfterSale(money(watch));

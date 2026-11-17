@@ -16,7 +16,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -63,7 +62,8 @@ public class PaidCancellationController {
             @NotNull(message = "reasonCode is required")
             @Pattern(regexp = "CUSTOMER_ASKED|PIECE_UNAVAILABLE|SHOP_ERROR|OTHER", message = "reasonCode is one of CUSTOMER_ASKED, PIECE_UNAVAILABLE, SHOP_ERROR, OTHER")
             String reasonCode,
-            @Size(min = 5, max = 200, message = "the note must be 5 to 200 characters") String note) {
+            @io.swagger.v3.oas.annotations.media.Schema(minLength = 5, maxLength = 200, description = "5 to 200 characters, counted as characters (an emoji is one)")
+            String note) {
         /** The note is judged as it will be kept, trimmed; a blank one is no note. */
         public CancellationRequest {
             note = note == null || note.isBlank() ? null : note.trim();

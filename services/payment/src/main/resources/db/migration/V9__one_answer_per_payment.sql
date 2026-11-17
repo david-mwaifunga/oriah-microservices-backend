@@ -7,6 +7,9 @@
 
 CREATE FUNCTION refund_due_check_one_answer_per_payment() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    -- One writer per payment at a time: without this, two answers for two debts of one payment, written at the same moment, would each see no
+    -- other and both commit. The service takes this same lock first, so it never waits here.
+    PERFORM 1 FROM payment_confirmation pc JOIN refund_due d ON d.confirmation_id = pc.id WHERE d.id = NEW.refund_due_id FOR UPDATE OF pc;
     IF EXISTS (SELECT 1
                  FROM refund_due_check c
                  JOIN refund_due theirs ON theirs.id = c.refund_due_id

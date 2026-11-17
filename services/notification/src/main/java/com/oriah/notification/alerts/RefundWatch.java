@@ -111,12 +111,18 @@ public class RefundWatch {
                 ON CONFLICT (payout_id) DO UPDATE SET voided_seen = TRUE""", payoutId, debtId);
         // "Your refund has been paid" may already be written down and still waiting (behind the correction's message, for an address, for the
         // mail server): it is no longer true, so it is withdrawn before it can go. One that was already sent stays as it is.
+        // A try that got no answer from the mail server may have delivered it: that one is never called "not sent" (the rule the sweep keeps too).
         int withdrawn = jdbc.update("""
-                UPDATE notification_log SET status = 'NOT_SENT', status_reason = 'SUPERSEDED', status_at = ?, next_attempt_at = NULL
+                UPDATE notification_log
+                   SET status = CASE WHEN maybe_handed_over THEN 'FAILED' ELSE 'NOT_SENT' END,
+                       status_reason = CASE WHEN maybe_handed_over THEN 'OUTCOME_UNKNOWN' ELSE 'SUPERSEDED' END,
+                       status_at = ?, next_attempt_at = NULL
                  WHERE status = 'RECORDED' AND event_type = 'payment.paid_out'
                    AND event_id = (SELECT event_id FROM refund_watch_payout WHERE payout_id = ?)""", Timestamp.from(now), payoutId);
         if (withdrawn > 0) {
-            log.info("A payout was cancelled before its 'refund paid' message went out: the message is withdrawn");
+            // If the dispatcher is handing this very message to the mail server at this moment and the server takes it, the row ends SENT after
+            // all (MessageStore.sentAfterItsClaimWasLost): what is recorded is always what happened.
+            log.info("A payout was cancelled before its 'refund paid' message was known to be sent: the message is withdrawn");
         }
         decide(debtId, now);
     }

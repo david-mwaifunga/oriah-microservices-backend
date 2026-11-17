@@ -78,7 +78,8 @@ public class ReturnController {
             String reasonCode,
             Instant returnedAt,
             String backdateReason,
-            @Size(min = 5, max = 200, message = "the note must be 5 to 200 characters") String note,
+            @io.swagger.v3.oas.annotations.media.Schema(minLength = 5, maxLength = 200, description = "5 to 200 characters, counted as characters (an emoji is one)")
+            String note,
             Boolean confirmDuplicate,
             @NotEmpty(message = "at least one line is required") List<@NotNull @Valid ReturnLineRequest> lines) {
         /** The note is judged as it will be kept, trimmed; a blank one is no note. */
@@ -95,7 +96,8 @@ public class ReturnController {
     public record AssessmentRequest(
             @NotNull(message = "outcome is required")
             @Pattern(regexp = "FINE|MARKED_DOWN|UNSELLABLE", message = "outcome is one of FINE, MARKED_DOWN, UNSELLABLE") String outcome,
-            @Size(min = 5, max = 200, message = "the note must be 5 to 200 characters") String note) {
+            @io.swagger.v3.oas.annotations.media.Schema(minLength = 5, maxLength = 200, description = "5 to 200 characters, counted as characters (an emoji is one)")
+            String note) {
         public AssessmentRequest {
             note = note == null || note.isBlank() ? null : note.trim();
         }
