@@ -188,7 +188,8 @@ class CallbackIsOnlyANudgeTest {
         assertThat(row(id).get("callback_count")).isEqualTo(21);
         assertThat(at(row(id).get("next_check_at"))).as("not before ten seconds after it was last asked about")
                 .isAfterOrEqualTo(at(row(id).get("last_checked_at")).plusSeconds(10)).isBefore(asked.plusSeconds(61));
-        assertThat(checks.poll(Instant.now())).isZero();
+        // Judged at a fixed moment, five seconds after it was last asked about (the messages themselves can take long on a slow machine).
+        assertThat(checks.poll(at(row(id).get("last_checked_at")).plusSeconds(5))).isZero();
         assertThat(zynlePay.statusCalls(reference(id))).isEqualTo(1);
 
         // And a check that was due sooner than the message would make it is left where it was.
