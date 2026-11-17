@@ -394,6 +394,35 @@ class ProviderPaymentAdminTest {
     }
 
     @Test
+    @DisplayName("money staff already keyed under the network's own reference is not recorded a second time by the owner either; it is marked not paid without asking ZynlePay")
+    void theSameMoneyIsAlreadyOnRecord() throws Exception {
+        UUID id = pending();
+        String theirs = "MP" + UUID.randomUUID().toString().substring(0, 10).toUpperCase();
+        UUID keyed = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO payment_confirmation (id, order_id, method, reference, reference_key, gross, fee, currency, arrived_at, confirmed_by, confirmed_at,
+                                                  idempotency_key, request_fingerprint)
+                VALUES (?, ?, 'MTN', ?, ?, 180.00, 0, 'ZMW', now(), 'user:kc-sara', now(), ?, 'fp')""", keyed, UUID.randomUUID(), theirs, "MTN:" + theirs,
+                "idem-" + UUID.randomUUID());
+        zynlePay.statusOf(reference(id), new Paid("100", new BigDecimal("180.00"), "ZMW", null, null, theirs, "MTN"));
+        checks.checkOne(id, Instant.now(), "STAFF", "user:kc-sara");
+        assertThat(row(id).get("unresolved_reason")).isEqualTo("SAME_MONEY_ON_RECORD");
+        int askedBefore = zynlePay.statusCalls(reference(id));
+
+        MvcResult twice = resolve(olive(), id, "res-" + UUID.randomUUID(), decision("PAID", null));
+        assertThat(twice.getResponse().getStatus()).isEqualTo(409);
+        assertThat(problem(twice)).isEqualTo("same-money-on-record");
+        assertThat(body(twice).get("confirmationId").asString()).isEqualTo(keyed.toString());
+        assertThat(confirmations(id)).isEmpty();
+        assertThat(row(id).get("status")).as("nothing of the refused decision is kept").isEqualTo("UNRESOLVED");
+
+        MvcResult notPaid = resolve(olive(), id, "res-" + UUID.randomUUID(), decision("NOT_PAID", null));
+        assertThat(notPaid.getResponse().getStatus()).as(notPaid.getResponse().getContentAsString()).isEqualTo(200);
+        assertThat(row(id).get("failure_code")).isEqualTo("MARKED_NOT_PAID");
+        assertThat(zynlePay.statusCalls(reference(id))).as("ZynlePay would only say 'paid' again").isEqualTo(askedBefore);
+    }
+
+    @Test
     @DisplayName("a failed payment the owner knows was paid is recorded on the owner's word; one still in flight, or never sent, is not the owner's to decide")
     void whichPaymentsTheOwnerDecides() throws Exception {
         UUID declined = pending();
