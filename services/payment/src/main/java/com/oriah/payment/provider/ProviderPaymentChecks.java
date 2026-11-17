@@ -161,6 +161,32 @@ public class ProviderPaymentChecks {
         return ask(id, at, source, askedBy);
     }
 
+    /**
+     * ZynlePay's callback named this reference. The callback is not signed, so this changes nothing about the payment: it only brings forward the
+     * moment ZynlePay is asked, never to less than {@code callback-min-gap} after it was last asked, and never later than it was already due.
+     *
+     * <p>Only a payment there is something to ask about: one in flight, or one ZynlePay itself said failed or refused not long ago (it may
+     * contradict itself). Never one that is recorded, was never sent, or was settled by the owner.
+     *
+     * @return whether there was such a payment
+     */
+    public boolean nudge(String referenceNo, Instant now) {
+        Instant at = now.truncatedTo(ChronoUnit.MICROS);
+        ZynlePaySetup zynlePay = setup;
+        return jdbc.update("""
+                UPDATE provider_payment
+                   SET next_check_at = LEAST(COALESCE(next_check_at, 'infinity'::timestamptz),
+                                             GREATEST(?::timestamptz, COALESCE(last_checked_at, '-infinity'::timestamptz) + (? * interval '1 second'))),
+                       callback_count = callback_count + 1,
+                       last_callback_at = ?
+                 WHERE reference_no = ?
+                   AND (status = 'PENDING'
+                        OR (status = 'UNRESOLVED' AND unresolved_reason IN ('NO_ANSWER', 'AMOUNT_DIFFERS'))
+                        OR (status = 'FAILED' AND failure_code IN ('PROVIDER_REFUSED', 'DECLINED') AND sent_at IS NOT NULL AND failed_at > ?))""",
+                Timestamp.from(at), zynlePay.settings().poll().callbackMinGap().toSeconds(), Timestamp.from(at), referenceNo,
+                Timestamp.from(at.minus(zynlePay.settings().poll().lateCheckWindow()))) > 0;
+    }
+
     // ---------------------------------------------------------------- asking, and applying the answer
 
     /** The caller holds the attempt's check lease. */
@@ -291,7 +317,9 @@ public class ProviderPaymentChecks {
 
     private void failed(Row row, Instant now) {
         if (row.state().status() == Status.FAILED) {
-            return;     // the one more question said the same: it is simply done
+            // The one more question (or a callback's) said the same: it is simply done, and not asked about again by itself.
+            jdbc.update("UPDATE provider_payment SET next_check_at = NULL WHERE id = ?", row.id());
+            return;
         }
         AttemptState declined = row.state().failed(FailureCode.DECLINED);
         jdbc.update("""
@@ -321,9 +349,8 @@ public class ProviderPaymentChecks {
             }
             case UNRESOLVED -> jdbc.update("UPDATE provider_payment SET next_check_at = ? WHERE id = ?",
                     stamp(setup.schedule().afterUnresolved(row.unresolvedAt() == null ? now : row.unresolvedAt(), now)), row.id());
-            default -> {
-                // A failed attempt's one more question brought nothing: it is done.
-            }
+            // A failed attempt's one more question (or a callback's) brought nothing: it is done, and not asked about again by itself.
+            default -> jdbc.update("UPDATE provider_payment SET next_check_at = NULL WHERE id = ?", row.id());
         }
     }
 

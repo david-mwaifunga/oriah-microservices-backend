@@ -28,6 +28,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * is on, quickly.
  */
 @SpringBootTest
+// Closed when this class is done: left open, its checker would go on asking about the payments of every test that runs after it.
+@org.springframework.test.annotation.DirtiesContext(classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 @Import({TestcontainersConfiguration.class, ScriptedProvider.Config.class})
 @TestPropertySource(properties = {"eureka.client.enabled=false", "oriah.payment.zynlepay.poll.enabled=true", "oriah.payment.zynlepay.poll.delay=200"})
 class ProviderPollScheduleTest {
