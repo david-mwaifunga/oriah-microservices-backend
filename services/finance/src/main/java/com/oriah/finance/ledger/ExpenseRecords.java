@@ -29,4 +29,16 @@ public class ExpenseRecords {
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'POSTED', ?)""",
                 UUID.randomUUID(), ledgerEntryId, kind, category, description, reason, linkedOrderId, linkedConfirmationId, SYSTEM);
     }
+
+    /**
+     * An expense row the system posts from a payout (Phase 12): the charge for sending money back, the part of it the customer bore (a RECOVERY), or the negation of
+     * either. It names the payout and never a confirmation; a wrong one is corrected by cancelling the payout in payment, never by hand.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void postedForPayout(long ledgerEntryId, String kind, String category, String description, String reason, UUID linkedOrderId, UUID payoutId) {
+        jdbc.update("""
+                INSERT INTO expense (expense_id, ledger_entry_id, kind, category, description, reason, linked_order_id, linked_payout_id, origin, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'POSTED', ?)""",
+                UUID.randomUUID(), ledgerEntryId, kind, category, description, reason, linkedOrderId, payoutId, SYSTEM);
+    }
 }

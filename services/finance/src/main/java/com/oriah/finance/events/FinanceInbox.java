@@ -18,6 +18,7 @@ public final class FinanceInbox {
     static final String ORDER = "order";
     static final String CONFIRMATION = "payment_confirmation";
     static final String REFUND_DUE = "refund_due";
+    static final String MONEY_OUT = "money_out";
     static final String STOCK_ACTION = "stock_action";
     static final String CONSIGNMENT_LINE = "consignment_line";
     static final String CONSIGNMENT = "consignment";
@@ -43,6 +44,9 @@ public final class FinanceInbox {
             // payment, Phase 12: what is owed for a correction, and a debt closed without a payout
             .handles(REFUND_DUE, "payment.refund_due_recorded", 1)
             .handles(REFUND_DUE, "payment.refund_closed", 1)
+            // ... and money that went out (a refund, held money returned), and a payout cancelled
+            .handles(MONEY_OUT, "payment.paid_out", 1)
+            .handles(MONEY_OUT, "payment.payout_voided", 1)
             // inventory: what every stock movement cost; a hold and a box swap are not costs (the swap's movements arrive as costs)
             .handles(STOCK_ACTION, "stock.cost_recorded", 1)
             .ignores("reservation.consumed", "reservation.expired", "box.swapped")

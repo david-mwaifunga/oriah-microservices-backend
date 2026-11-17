@@ -46,8 +46,10 @@ public class FeeDerivation {
     private final AnomalyService anomalies;
     private final ExpenseRecords expenses;
     private final BusinessCalendar calendar;
+    private final PayoutDerivation payouts;
 
-    public FeeDerivation(JdbcTemplate jdbc, LedgerWriter ledger, AnomalyService anomalies, ExpenseRecords expenses, BusinessCalendar calendar) {
+    public FeeDerivation(JdbcTemplate jdbc, LedgerWriter ledger, AnomalyService anomalies, ExpenseRecords expenses, BusinessCalendar calendar, PayoutDerivation payouts) {
+        this.payouts = payouts;
         this.jdbc = jdbc;
         this.ledger = ledger;
         this.anomalies = anomalies;
@@ -77,8 +79,9 @@ public class FeeDerivation {
             if (feeEntry != null && keyExists("fee-void:" + conf) && !keyExists("fee-reinstated:" + conf)) {
                 putFeeBack(conf, confirmed, sold, feeEntry);
             }
-            if (moneyNeverArrived(conf)) {
-                // The owner has said what became of the money: the question is settled, and is not asked again.
+            if (moneyNeverArrived(conf) || refundPaidOut(conf)) {
+                // What became of the money is known (the owner said it never arrived, or it did arrive and has been paid back): the question is settled, and is
+                // not asked again.
                 anomalies.autoResolve("paid-after-void", conf.toString());
             } else {
                 anomalies.raise("paid-after-void", conf.toString(), Severity.ERROR,
@@ -99,6 +102,15 @@ public class FeeDerivation {
         if (moneyNeverArrived(conf)) {
             removeFeeThatNeverCame(conf);
         }
+        // Held money that was returned before finance heard it was held can be cleared now.
+        payouts.deriveForConfirmation(conf);
+    }
+
+    /** A refund of this confirmation's sale was paid out and still stands (it was not cancelled in payment). */
+    private boolean refundPaidOut(UUID conf) {
+        return jdbc.queryForObject("""
+                SELECT count(*) FROM payout_fact p WHERE p.confirmation_id = ? AND p.kind = 'PAID_OUT' AND p.purpose = 'REFUND'
+                   AND NOT EXISTS (SELECT 1 FROM payout_fact v WHERE v.payout_id = p.payout_id AND v.kind = 'VOIDED')""", Long.class, conf) > 0;
     }
 
     // ------------------------------------------------------------------ money that never arrived (Phase 12)

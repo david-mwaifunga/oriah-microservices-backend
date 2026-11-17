@@ -168,4 +168,96 @@ final class RefundEvents {
     static EventContext closedContext(UUID dueId, Instant at) {
         return Events.ctx("payment.refund_closed", "refund_due", dueId, at);
     }
+
+    /** Money that went out, as payment announces it: a refund of a correction, or held money returned. Net is what the customer received. */
+    static final class PaidOut {
+        UUID id = UUID.randomUUID();
+        String purpose = "REFUND";
+        UUID debt;
+        UUID order;
+        UUID confirmation;
+        String method = "MTN";
+        String gross;
+        String customerFee = "0.00";
+        String sendCharge = "0.00";
+        Instant paidAt = Instant.parse("2026-11-06T12:00:00Z");
+        Instant voidedAt = Instant.parse("2026-11-08T07:45:00Z");
+        final Map<String, Object> overrides = new LinkedHashMap<>();
+
+        /** The refund of a correction, in full. */
+        static PaidOut refunding(Corrected c) {
+            PaidOut p = new PaidOut();
+            p.debt = c.id;
+            p.order = c.order;
+            p.confirmation = c.confirmation;
+            p.gross = c.owed().toPlainString();
+            return p;
+        }
+
+        /** Held money returned: the debt is the confirmation whose money is held. */
+        static PaidOut returningHeld(UUID confirmation, UUID order, String amount) {
+            PaidOut p = new PaidOut();
+            p.purpose = "HELD_MONEY";
+            p.debt = confirmation;
+            p.order = order;
+            p.confirmation = confirmation;
+            p.gross = amount;
+            return p;
+        }
+
+        PaidOut charges(String send, String borneByCustomer) { sendCharge = send; customerFee = borneByCustomer; return this; }
+        PaidOut by(String v) { method = v; return this; }
+        PaidOut on(String instant) { paidAt = Instant.parse(instant); return this; }
+        PaidOut set(String field, Object value) { overrides.put(field, value); return this; }
+
+        EventContext context() {
+            return Events.ctx("payment.paid_out", "money_out", id, paidAt);
+        }
+
+        EventContext voidContext() {
+            return Events.ctx("payment.payout_voided", "money_out", id, voidedAt);
+        }
+
+        private Map<String, Object> common() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("payoutId", id);
+            m.put("purpose", purpose);
+            m.put("debtId", debt);
+            return m;
+        }
+
+        byte[] body() {
+            Map<String, Object> m = common();
+            m.put("cause", "REFUND".equals(purpose) ? "CANCELLATION" : "WRONG_AMOUNT");
+            m.put("orderId", order);
+            m.put("confirmationId", confirmation);
+            m.put("method", method);
+            m.put("gross", k(gross));
+            m.put("customerFee", k(customerFee));
+            m.put("net", k(gross).subtract(k(customerFee)));
+            m.put("sendCharge", k(sendCharge));
+            m.put("feeBearer", k(customerFee).signum() > 0 ? "CUSTOMER" : "ORIAH");
+            m.put("currency", "ZMW");
+            m.put("paidAt", paidAt);
+            m.put("recordedAt", paidAt.plusSeconds(190));
+            m.putAll(overrides);
+            return Events.bytes(m);
+        }
+
+        byte[] voidBody() {
+            Map<String, Object> m = common();
+            m.put("orderId", order);
+            m.put("confirmationId", confirmation);
+            m.put("method", method);
+            m.put("gross", k(gross));
+            m.put("customerFee", k(customerFee));
+            m.put("net", k(gross).subtract(k(customerFee)));
+            m.put("sendCharge", k(sendCharge));
+            m.put("currency", "ZMW");
+            m.put("paidAt", paidAt);
+            m.put("voidedAt", voidedAt);
+            m.putAll(overrides);
+            return Events.bytes(m);
+        }
+    }
 }

@@ -40,8 +40,10 @@ public class CorrectionDerivation {
     private final LedgerWriter ledger;
     private final AnomalyService anomalies;
     private final BusinessCalendar calendar;
+    private final PayoutDerivation payouts;
 
-    public CorrectionDerivation(JdbcTemplate jdbc, LedgerWriter ledger, AnomalyService anomalies, BusinessCalendar calendar) {
+    public CorrectionDerivation(JdbcTemplate jdbc, LedgerWriter ledger, AnomalyService anomalies, BusinessCalendar calendar, PayoutDerivation payouts) {
+        this.payouts = payouts;
         this.jdbc = jdbc;
         this.ledger = ledger;
         this.anomalies = anomalies;
@@ -68,6 +70,8 @@ public class CorrectionDerivation {
             againstTheSale(c, ctx);
             againstTheDebt(c, ctx);
         }
+        // A refund that was paid before finance heard of its correction can clear the debt now.
+        payouts.deriveForOrder(orderId);
     }
 
     private void waiver(Correction c, EventContext ctx) {
