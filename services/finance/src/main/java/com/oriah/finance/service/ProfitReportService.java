@@ -53,11 +53,15 @@ public class ProfitReportService {
     private final JdbcTemplate jdbc;
     private final BusinessCalendar calendar;
     private final Clock clock;
+    /** How long a correction that owes money may wait for payment's debt before the report says the two disagree. */
+    private final java.time.Duration refundDebtGrace;
 
-    public ProfitReportService(JdbcTemplate jdbc, BusinessCalendar calendar, Clock clock) {
+    public ProfitReportService(JdbcTemplate jdbc, BusinessCalendar calendar, Clock clock,
+                               @org.springframework.beans.factory.annotation.Value("${oriah.finance.refund-debt-grace:PT24H}") java.time.Duration refundDebtGrace) {
         this.jdbc = jdbc;
         this.calendar = calendar;
         this.clock = clock;
+        this.refundDebtGrace = refundDebtGrace;
     }
 
     // ------------------------------------------------------------------ the month
@@ -154,23 +158,54 @@ public class ProfitReportService {
         Instant end = calendar.endOf(ym);
         Integer late = jdbc.queryForObject("SELECT count(*) FROM sale WHERE channel = 'PHONE' AND sale_occurred_at IS NOT NULL AND arrived_at >= ? AND arrived_at < ? AND created_at <= ? "
                 + "AND (sale_occurred_at < ? OR sale_occurred_at >= ?)", Integer.class, Timestamp.from(start), Timestamp.from(end), cut, Timestamp.from(start), Timestamp.from(end));
-        return new Memo(waived, held, late == null ? 0 : late, agreedDeliveries(start, end, cut), statementLines(first, cut), overhead(start, end, cut, expenses));
+        Integer lateCancelled = jdbc.queryForObject("""
+                SELECT count(*) FROM sale s WHERE s.channel = 'PHONE' AND s.sale_occurred_at IS NOT NULL AND s.arrived_at >= ? AND s.arrived_at < ? AND s.created_at <= ?
+                   AND (s.sale_occurred_at < ? OR s.sale_occurred_at >= ?)
+                   AND EXISTS (SELECT 1 FROM sale_correction c WHERE c.confirmation_id = s.confirmation_id AND c.kind = 'CANCELLATION' AND c.recorded_at <= ?)""",
+                Integer.class, Timestamp.from(start), Timestamp.from(end), cut, Timestamp.from(start), Timestamp.from(end), cut);
+        return new Memo(waived, held, late == null ? 0 : late, agreedDeliveries(start, end, cut), statementLines(first, cut), overhead(start, end, cut, expenses),
+                refunds(first, start, cut), lateCancelled == null ? 0 : lateCancelled);
+    }
+
+    /** What cancellations and returns took back in the month, what is still owed, and what paying it back cost: every figure a sum of the month's own rows. */
+    private ProfitReportResponse.Refunds refunds(LocalDate first, Instant start, Timestamp cut) {
+        Map<String, BigDecimal> back = new HashMap<>();
+        jdbc.query("SELECT account, -sum(amount) FROM ledger_entry WHERE source = 'SALE_CORRECTED' AND effect_month = ? AND recorded_at <= ? GROUP BY account",
+                rs -> { back.put(rs.getString(1), rs.getBigDecimal(2)); }, first, cut);
+        BigDecimal earlier = nz(jdbc.queryForObject("""
+                SELECT -sum(l.amount * a.profit_sign) FROM ledger_entry l JOIN ledger_account a ON a.code = l.account JOIN sale_correction c ON c.correction_id = l.correction_id
+                 WHERE l.source = 'SALE_CORRECTED' AND l.effect_month = ? AND l.recorded_at <= ? AND a.profit_sign <> 0 AND c.sale_arrived_at < ?""",
+                BigDecimal.class, first, cut, Timestamp.from(start)));
+        BigDecimal owed = nz(jdbc.queryForObject("SELECT sum(amount) FROM ledger_entry WHERE account = 'MEMO_REFUNDS_OWED' AND effect_day < ? AND recorded_at <= ?", BigDecimal.class,
+                first.plusMonths(1), cut));
+        BigDecimal sent = nz(jdbc.queryForObject("SELECT sum(amount) FROM ledger_entry WHERE account = 'EXPENSE' AND category = 'PAYMENT_CHARGES' AND payout_id IS NOT NULL "
+                + "AND effect_month = ? AND recorded_at <= ?", BigDecimal.class, first, cut));
+        BigDecimal recovered = nz(jdbc.queryForObject("SELECT -sum(amount) FROM ledger_entry WHERE account = 'EXPENSE' AND category = 'REFUND_FEE_RECOVERED' AND effect_month = ? "
+                + "AND recorded_at <= ?", BigDecimal.class, first, cut));
+        BigDecimal heldRepaid = nz(jdbc.queryForObject("SELECT -sum(amount) FROM ledger_entry WHERE account = 'MEMO_HELD_MONEY' AND payout_id IS NOT NULL AND effect_month = ? "
+                + "AND recorded_at <= ?", BigDecimal.class, first, cut));
+        return new ProfitReportResponse.Refunds(nz(back.get("REVENUE_GOODS")), nz(back.get("DISCOUNTS")), nz(back.get("REVENUE_DELIVERY")), earlier, owed, sent, recovered, heldRepaid);
     }
 
     private ProfitReportResponse.AgreedDeliveries agreedDeliveries(Instant start, Instant end, Timestamp cut) {
         return jdbc.queryForObject("""
                 SELECT count(*), coalesce(sum(agreed_amount), 0), coalesce(sum(quoted_amount), 0), coalesce(sum(quoted_amount - agreed_amount) FILTER (WHERE quoted_amount IS NOT NULL), 0),
-                       count(*) FILTER (WHERE quoted_amount IS NULL)
-                  FROM sale WHERE delivery_price_source = 'AGREED' AND arrived_at >= ? AND arrived_at < ? AND created_at <= ?""",
-                (rs, n) -> new ProfitReportResponse.AgreedDeliveries(rs.getInt(1), rs.getBigDecimal(2), rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getInt(5)),
-                Timestamp.from(start), Timestamp.from(end), cut);
+                       count(*) FILTER (WHERE quoted_amount IS NULL), count(*) FILTER (WHERE cancelled), coalesce(sum(agreed_amount) FILTER (WHERE cancelled), 0)
+                  FROM (SELECT s.*, EXISTS (SELECT 1 FROM sale_correction c WHERE c.confirmation_id = s.confirmation_id AND c.kind = 'CANCELLATION' AND c.recorded_at <= ?) AS cancelled
+                          FROM sale s WHERE s.delivery_price_source = 'AGREED' AND s.arrived_at >= ? AND s.arrived_at < ? AND s.created_at <= ?) agreed""",
+                (rs, n) -> new ProfitReportResponse.AgreedDeliveries(rs.getInt(1), rs.getBigDecimal(2), rs.getBigDecimal(3), rs.getBigDecimal(4), rs.getInt(5), rs.getInt(6),
+                        rs.getBigDecimal(7)),
+                cut, Timestamp.from(start), Timestamp.from(end), cut);
     }
 
     private ProfitReportResponse.Overhead overhead(Instant start, Instant end, Timestamp cut, BigDecimal expenses) {
         Long pieces = jdbc.queryForObject("SELECT coalesce(sum(l.quantity), 0) FROM sale_line l JOIN sale s ON s.confirmation_id = l.confirmation_id WHERE s.arrived_at >= ? AND s.arrived_at < ? AND s.created_at <= ?",
                 Long.class, Timestamp.from(start), Timestamp.from(end), cut);
-        long n = pieces == null ? 0 : pieces;
-        return new ProfitReportResponse.Overhead(expenses, n, n == 0 ? null : expenses.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP));
+        // Less the pieces a cancellation or a return took back in the month: a piece that came back was not sold.
+        Long back = jdbc.queryForObject("SELECT coalesce(sum(l.quantity), 0) FROM sale_correction_line l JOIN sale_correction c ON c.correction_id = l.correction_id "
+                + "WHERE c.occurred_at >= ? AND c.occurred_at < ? AND c.recorded_at <= ?", Long.class, Timestamp.from(start), Timestamp.from(end), cut);
+        long n = (pieces == null ? 0 : pieces) - (back == null ? 0 : back);
+        return new ProfitReportResponse.Overhead(expenses, n, n <= 0 ? null : expenses.divide(BigDecimal.valueOf(n), 2, RoundingMode.HALF_UP));
     }
 
     // ------------------------------------------------------------------ the estimated opening stock
@@ -223,6 +258,12 @@ public class ProfitReportService {
                 SELECT x.provider, sum(l.amount) FROM ledger_entry l JOIN expense x ON x.ledger_entry_id = l.entry_id
                  WHERE l.account = 'EXPENSE' AND l.category = 'BANK_MOBILE_ACCOUNT_FEES' AND l.effect_month = ? AND l.recorded_at <= ? AND x.provider IS NOT NULL GROUP BY x.provider""",
                 rs -> { recorded.merge(rs.getString(1), rs.getBigDecimal(2), BigDecimal::add); }, first, cut);
+        // What a provider charged to send money BACK is on its statement too. Those rows name a payout (never a confirmation), and a payout cancelled in payment
+        // negates its own row, so the sum is net. What the customer bore of the charge is Oriah's own bookkeeping, not the provider's: it is not part of this.
+        jdbc.query("""
+                SELECT p.method, sum(l.amount) FROM ledger_entry l JOIN payout_fact p ON p.payout_id = l.payout_id AND p.kind = 'PAID_OUT'
+                 WHERE l.account = 'EXPENSE' AND l.category = 'PAYMENT_CHARGES' AND l.effect_month = ? AND l.recorded_at <= ? GROUP BY p.method""",
+                rs -> { recorded.merge(rs.getString(1), rs.getBigDecimal(2), BigDecimal::add); }, first, cut);
         Map<String, Boolean> methods = new TreeMap<>();
         statements.keySet().forEach(m -> methods.put(m, true));
         recorded.keySet().forEach(m -> methods.put(m, true));
@@ -255,8 +296,14 @@ public class ProfitReportService {
                     SELECT sum(l.amount * a.profit_sign) FROM ledger_entry l JOIN ledger_account a ON a.code = l.account
                      WHERE l.effect_month = ? AND l.recorded_at > ? AND l.recorded_at <= ? AND a.profit_sign <> 0 AND l.account <> 'TAX_ENTERED'""", BigDecimal.class, first, issuedAsOf, cut));
         }
+        // The check against payment: a correction that owes a customer money and for which payment has announced no debt, although it has had time to.
+        Integer noDebt = jdbc.queryForObject("""
+                SELECT count(*) FROM sale_correction c WHERE c.owed_gross > 0 AND c.recorded_at <= ?
+                   AND NOT EXISTS (SELECT 1 FROM refund_due_fact d WHERE d.due_id = c.correction_id AND d.recorded_at <= ?)""",
+                Integer.class, Timestamp.from(cut.toInstant().minus(refundDebtGrace)), cut);
+        int owedWithoutDebt = noDebt == null ? 0 : noDebt;
         return new Status(issued, issued ? (Integer) last.get(0)[0] : null, issued ? ((Timestamp) last.get(0)[2]).toInstant() : null, changed > 0, changed, effect, errors, warnings, catchUp, notTied,
-                errors > 0 || !catchUp || notTied.signum() != 0);
+                errors > 0 || !catchUp || notTied.signum() != 0 || owedWithoutDebt > 0, owedWithoutDebt);
     }
 
     // ------------------------------------------------------------------ the rows behind a figure
@@ -266,7 +313,8 @@ public class ProfitReportService {
             Map.entry("goodsAfterDiscounts", List.of("REVENUE_GOODS", "DISCOUNTS")), Map.entry("costOfGoodsGoods", List.of("COGS_GOODS")),
             Map.entry("costOfGoodsPackaging", List.of("COGS_PACKAGING")), Map.entry("costOfGoodsSold", List.of("COGS_GOODS", "COGS_PACKAGING")),
             Map.entry("grossProfit", List.of("REVENUE_GOODS", "DISCOUNTS", "COGS_GOODS", "COGS_PACKAGING")), Map.entry("deliveryCharges", List.of("REVENUE_DELIVERY")),
-            Map.entry("stockWrittenOff", List.of("STOCK_OUT")), Map.entry("expenses", List.of("EXPENSE")), Map.entry("turnoverTaxEntered", List.of("TAX_ENTERED")));
+            Map.entry("stockWrittenOff", List.of("STOCK_OUT")), Map.entry("expenses", List.of("EXPENSE")), Map.entry("turnoverTaxEntered", List.of("TAX_ENTERED")),
+            Map.entry("refundsOwed", List.of("MEMO_REFUNDS_OWED")));
 
     /** The ledger rows behind the month's figures, newest first; {@code line} is one of the report's line keys. */
     public com.oriah.finance.dto.EntryPage entries(String month, String line, String product, String category, String orderId, boolean changedSinceIssue, String asOfText, int page, int size) {

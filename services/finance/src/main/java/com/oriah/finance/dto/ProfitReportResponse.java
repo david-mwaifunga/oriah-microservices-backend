@@ -31,12 +31,24 @@ public record ProfitReportResponse(String month, Instant asOf, String currency, 
     }
 
     @Schema(name = "ProfitReportMemo")
-    public record Memo(BigDecimal deliveryGivenUp, BigDecimal heldMoneyAtMonthEnd, int lateKeyedSales, AgreedDeliveries agreedDeliveries, List<StatementLine> statementChecks, Overhead overhead) {
+    public record Memo(BigDecimal deliveryGivenUp, BigDecimal heldMoneyAtMonthEnd, int lateKeyedSales, AgreedDeliveries agreedDeliveries, List<StatementLine> statementChecks, Overhead overhead,
+                       Refunds refunds, int lateKeyedSalesSinceCancelled) {
+    }
+
+    /**
+     * Cancellations of paid orders and returns counted in the month (Phase 12), in plain figures. What was taken back is already inside lines 1, 2 and 8 (each as a
+     * negative on the day of the correction); it is repeated here so a month that reads low, or below nothing, says why. {@code ofWhichFromEarlierMonths} is the part
+     * of it (goods less discounts plus delivery) that belongs to sales of earlier months. {@code owedAtMonthEnd} is what customers were still owed when the month
+     * closed. {@code sendChargesPaid} is what providers charged Oriah to send money back, and {@code recoveredFromCustomers} the part of it customers bore.
+     */
+    @Schema(name = "ProfitReportRefunds")
+    public record Refunds(BigDecimal goodsTakenBackAtList, BigDecimal discountsTakenBack, BigDecimal deliveryRefunded, BigDecimal ofWhichFromEarlierMonths, BigDecimal owedAtMonthEnd,
+                          BigDecimal sendChargesPaid, BigDecimal recoveredFromCustomers, BigDecimal heldMoneyRepaid) {
     }
 
     /** Deliveries agreed by phone against the shop's own quote at the time: what was conceded. {@code notRecorded} counts agreed deliveries whose quote was not kept. */
     @Schema(name = "ProfitReportAgreedDeliveries")
-    public record AgreedDeliveries(int count, BigDecimal agreed, BigDecimal quoted, BigDecimal conceded, int notRecorded) {
+    public record AgreedDeliveries(int count, BigDecimal agreed, BigDecimal quoted, BigDecimal conceded, int notRecorded, int sinceCancelled, BigDecimal sinceCancelledAgreed) {
     }
 
     /** A provider's own statement fees for the month against what finance recorded for that provider; the difference is exact (K0.00 is a match). */
@@ -44,7 +56,10 @@ public record ProfitReportResponse(String month, Instant asOf, String currency, 
     public record StatementLine(String method, BigDecimal statementFees, BigDecimal recordedFees, BigDecimal difference) {
     }
 
-    /** The month's expenses over the pieces sold, for information beside a suggested price: nothing is spread across products. */
+    /**
+     * The month's expenses over the pieces sold, for information beside a suggested price: nothing is spread across products. {@code piecesSold} is the pieces sold in
+     * the month less the pieces taken back in it (a cancellation, a return).
+     */
     @Schema(name = "ProfitReportOverhead")
     public record Overhead(BigDecimal expenses, long piecesSold, BigDecimal perPiece) {
     }
@@ -61,6 +76,6 @@ public record ProfitReportResponse(String month, Instant asOf, String currency, 
 
     @Schema(name = "ProfitReportStatus")
     public record Status(boolean issued, Integer lastIssueNo, Instant lastIssuedAt, boolean changedSinceIssue, long changedEntries, BigDecimal changedEffectOnProfit, int openErrors,
-                         int openWarnings, boolean catchUpComplete, BigDecimal notTiedToProduct, boolean doNotRelyYet) {
+                         int openWarnings, boolean catchUpComplete, BigDecimal notTiedToProduct, boolean doNotRelyYet, int refundsOwedWithoutDebt) {
     }
 }

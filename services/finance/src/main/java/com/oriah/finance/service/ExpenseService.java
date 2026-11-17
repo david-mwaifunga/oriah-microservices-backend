@@ -214,6 +214,11 @@ public class ExpenseService {
         if ("REVERSAL".equals(row.kind())) {
             throw new FinanceProblem(HttpStatus.CONFLICT, "not-reversible", "That row is itself a taking-back: to put the expense back, add it again");
         }
+        if (jdbc.queryForObject("SELECT count(*) FROM expense WHERE expense_id = ? AND linked_payout_id IS NOT NULL", Long.class, id) > 0) {
+            // What a refund cost to send, and what the customer bore of it, are facts of the payout: changed here, payment and finance would disagree for ever.
+            throw new FinanceProblem(HttpStatus.CONFLICT, "expense-posted-from-payout",
+                    "That charge was posted from money paid back to a customer: if it is wrong, cancel the payout in payments and record it again, not here");
+        }
         if (jdbc.queryForObject("SELECT count(*) FROM ledger_entry WHERE reverses_entry_id = ?", Long.class, row.entryId()) > 0) {
             throw new FinanceProblem(HttpStatus.CONFLICT, "expense-already-reversed", "That expense was already taken back");
         }

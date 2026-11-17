@@ -157,6 +157,55 @@ class FinanceInboxTest {
         assertThat(sum(paid.order, "EXPENSE")).isEqualByComparingTo("10.00");
     }
 
+    /** A refund story as its producers announce it: a sale cancelled, its debt, a payout, the payout cancelled; in the order given. */
+    private List<Object[]> refundStory(Paid paid, RefundEvents.Corrected cancelled, RefundEvents.PaidOut payout) {
+        return List.of(
+                new Object[] {orderPaid(paid), "order"},
+                new Object[] {relay("order.sale_cancelled", "order", paid.order, cancelled.occurredAt, "order", cancelled.body()), "order"},
+                new Object[] {relay("payment.refund_due_recorded", "refund_due", cancelled.id, cancelled.occurredAt, "payment",
+                        RefundEvents.due(cancelled.id, paid.order, paid.confirmation, "1000.00", "OWED", cancelled.occurredAt)), "payment"},
+                new Object[] {relay("payment.paid_out", "money_out", payout.id, payout.paidAt, "payment", payout.body()), "payment"},
+                new Object[] {relay("payment.payout_voided", "money_out", payout.id, payout.voidedAt, "payment", payout.voidBody()), "payment"});
+    }
+
+    private String books(UUID order) {
+        return jdbc.queryForList("""
+                SELECT account || ' ' || coalesce(category, '-') || ' ' || effect_day || ' ' || amount FROM ledger_entry WHERE order_id = ?
+                 ORDER BY account, category, effect_day, amount""", String.class, order).toString();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    @DisplayName("THE REPLAY TEST, with refunds: a cancelled sale, its debt, a payout and the payout's cancellation brought by the replay book exactly what the same story books live, once")
+    void aRefundStoryFromBeforeFinanceExistedBooksTheSameAsLive() {
+        Paid replayed = aSale();
+        RefundEvents.Corrected cancelled = RefundEvents.Corrected.cancelling(replayed);
+        RefundEvents.PaidOut payout = RefundEvents.PaidOut.refunding(cancelled).charges("5.00", "5.00");
+        List<Object[]> story = refundStory(replayed, cancelled, payout);
+        for (Object[] step : story) {
+            input.send(replayOf((Message<byte[]>) step[0], (String) step[1]), "oriah.replay.finance");
+        }
+        String afterReplay = books(replayed.order);
+        assertThat(sum(replayed.order, "REVENUE_GOODS")).as("sold, then cancelled").isEqualByComparingTo("0.00");
+        assertThat(sum(replayed.order, "MEMO_REFUNDS_OWED")).as("owed, paid, and owed again when the payout was cancelled").isEqualByComparingTo("1000.00");
+        assertThat(sum(replayed.order, "EXPENSE")).as("the sending charge and its recovery, both negated").isEqualByComparingTo("0.00");
+
+        // The same events, delivered live afterwards, change nothing.
+        for (Object[] step : story) {
+            ("order".equals(step[1]) ? orderEvents : paymentEvents).accept((Message<byte[]>) step[0]);
+        }
+        assertThat(books(replayed.order)).isEqualTo(afterReplay);
+
+        // And a twin story heard live only books the same rows, figure for figure.
+        Paid live = aSale();
+        RefundEvents.Corrected liveCancelled = RefundEvents.Corrected.cancelling(live);
+        RefundEvents.PaidOut livePayout = RefundEvents.PaidOut.refunding(liveCancelled).charges("5.00", "5.00");
+        for (Object[] step : refundStory(live, liveCancelled, livePayout)) {
+            ("order".equals(step[1]) ? orderEvents : paymentEvents).accept((Message<byte[]>) step[0]);
+        }
+        assertThat(books(live.order)).isEqualTo(afterReplay);
+    }
+
     // ------------------------------------------------------------------ the live topics
 
     @Test
