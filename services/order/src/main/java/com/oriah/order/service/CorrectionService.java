@@ -61,6 +61,30 @@ public class CorrectionService {
     }
 
     /**
+     * Records pieces that came back after the order was dispatched or handed over: each is put back into its lot at inventory and held there, not for
+     * sale, until it is assessed; the customer is owed the pieces' own price less their own discount.
+     *
+     * @param key   the caller's Idempotency-Key
+     * @param actor {@code user:<keycloak subject>} of the member of staff
+     * @return the return: DONE, or still REQUESTED when inventory's answer settled nothing
+     * @throws SalesProblem the refusals of {@link Corrections#beginReturn}; 409 {@code return-refused} when inventory proved it moved nothing (also
+     *                      when this key is repeated for an attempt that was refused: a new attempt needs a new key)
+     */
+    public Outcome recordReturn(UUID orderId, Corrections.ReturnAsk ask, String key, String actor, boolean mayBackdate) {
+        Begun begun = corrections.beginReturn(orderId, ask, key, actor, mayBackdate);
+        Correction correction = begun.correction();
+        if (Corrections.REFUSED.equals(correction.state())) {
+            throw new SalesProblem(HttpStatus.CONFLICT, "return-refused", "this return was refused by the stock system and nothing was changed: record it "
+                    + "again with a new Idempotency-Key once the cause is dealt with").with("correctionId", correction.id().toString())
+                    .with("refusedCode", correction.refusedCode());
+        }
+        if (!correction.inFlight()) {
+            return new Outcome(correction, true);
+        }
+        return new Outcome(askInventory(correction, "return-refused"), !begun.created());
+    }
+
+    /**
      * The job's turn at a correction that is still in flight: first ask inventory whether it already holds the reversal (the reply may have been lost,
      * or this service stopped between the two halves); if it says it has none, send the same request again; any other answer waits for the next pass.
      */

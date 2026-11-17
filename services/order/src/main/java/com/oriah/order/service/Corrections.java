@@ -111,9 +111,14 @@ public class Corrections {
     private final RefundBearers bearers;
     private final BoxSwaps swaps;
     private final CorrectionGuard guard;
-
+    private final java.time.Duration backdateWindow;
+    private final java.time.Duration duplicateWindow;
     public Corrections(JdbcTemplate jdbc, OrderLocks locks, OrderRepository repository, OrderEventLog events, RefundBearers bearers, BoxSwaps swaps,
-                       CorrectionGuard guard) {
+                       CorrectionGuard guard,
+                       @org.springframework.beans.factory.annotation.Value("${oriah.sales.backdate-window:PT72H}") java.time.Duration backdateWindow,
+                       @org.springframework.beans.factory.annotation.Value("${oriah.sales.return-duplicate-window:PT10M}") java.time.Duration duplicateWindow) {
+        this.backdateWindow = backdateWindow;
+        this.duplicateWindow = duplicateWindow;
         this.jdbc = jdbc;
         this.locks = locks;
         this.repository = repository;
@@ -185,8 +190,139 @@ public class Corrections {
         return new Begun(get(id), true);
     }
 
-    // ------------------------------------------------------------------ what inventory is asked
+    // ------------------------------------------------------------------ pieces that came back after dispatch
 
+    /** One line of a return: how many pieces of this sale line came back. */
+    public record ReturnLine(UUID lineId, int quantity) {
+    }
+
+    /**
+     * @param returnedAt       when the parcel came back; null means now
+     * @param backdateReason   why it is keyed beyond the 72 hours, when it is
+     * @param confirmDuplicate the person has confirmed that this is not the return they recorded a moment ago
+     */
+    public record ReturnAsk(String reasonCode, Instant returnedAt, String backdateReason, String note, boolean confirmDuplicate, List<ReturnLine> lines) {
+    }
+
+    /**
+     * Decides whether these pieces may be recorded as returned and writes the return down, REQUESTED, with its lines, one row per piece (each with the id
+     * inventory will know it by) and what is owed: the pieces' own price less their own discount, never delivery, never the box. One transaction, under
+     * the order's lock. The order itself is not changed.
+     *
+     * @param key         the caller's Idempotency-Key: the same key with the same request answers the return it recorded, BEFORE any rule is looked at
+     * @param mayBackdate whether the caller holds BACKDATE_SALE (a parcel that came back more than 72 hours ago)
+     * @throws ResourceNotFoundException 404, no such order
+     * @throws SalesProblem 409 {@code idempotency-key-reused}, {@code return-not-allowed}, {@code correction-in-progress},
+     *                      {@code order-too-old-to-correct}, {@code more-than-was-sold}, {@code similar-return-just-recorded}; 400 {@code invalid-line},
+     *                      {@code invalid-occurred-at}, {@code backdate-reason-required}
+     * @throws org.springframework.security.access.AccessDeniedException 403, a date beyond the window by someone who may not back-date
+     */
+    @Transactional
+    public Begun beginReturn(UUID orderId, ReturnAsk ask, String key, String actor, boolean mayBackdate) {
+        Order order = locks.lock(orderId).orElseThrow(() -> new ResourceNotFoundException("Order", "id", orderId.toString()));
+        String hash = hash(orderId, ask);
+        Optional<Correction> keyed = jdbc.query("SELECT * FROM order_correction WHERE idempotency_key = ?", CORRECTION, key).stream().findFirst();
+        if (keyed.isPresent()) {
+            if (!keyed.get().orderId().equals(orderId) || !hash.equals(keyed.get().requestHash())) {
+                throw new SalesProblem(HttpStatus.CONFLICT, "idempotency-key-reused", "this Idempotency-Key was already used for a different return: use a new key");
+            }
+            return new Begun(keyed.get(), false);
+        }
+        if (order.status() != OrderStatus.SHIPPED && order.status() != OrderStatus.DELIVERED) {
+            SalesProblem refused = new SalesProblem(HttpStatus.CONFLICT, "return-not-allowed", "only an order that was dispatched or handed over takes a "
+                    + "return; this one is " + order.status()).with("status", order.status().name());
+            if (order.status() == OrderStatus.PAID || order.status() == OrderStatus.FULFILLED) {
+                refused.with("use", "the-paid-cancellation");
+            }
+            throw refused;
+        }
+        guard.requireNoneInFlight(orderId);
+        Sale sale = saleOf(order);
+
+        java.util.Map<UUID, Integer> asked = new java.util.TreeMap<>();
+        for (ReturnLine line : ask.lines()) {
+            SoldLine sold = sale.lines().stream().filter(l -> l.id().equals(line.lineId())).findFirst().orElseThrow(() ->
+                    new SalesProblem(HttpStatus.BAD_REQUEST, "invalid-line", "line " + line.lineId() + " is not a line of this order").with("lineId", String.valueOf(line.lineId())));
+            if (line.quantity() < 1 || asked.put(line.lineId(), line.quantity()) != null) {
+                throw new SalesProblem(HttpStatus.BAD_REQUEST, "invalid-line", "each line of the order is named once, with at least one piece")
+                        .with("lineId", line.lineId().toString());
+            }
+            int taken = jdbc.queryForObject("""
+                    SELECT COALESCE(sum(l.quantity), 0) FROM order_correction_line l JOIN order_correction c ON c.id = l.correction_id
+                     WHERE l.sale_line_id = ? AND c.state <> 'REFUSED'""", Integer.class, line.lineId());
+            if (taken + line.quantity() > sold.quantity()) {
+                throw new SalesProblem(HttpStatus.CONFLICT, "more-than-was-sold", sold.quantity() + " of this line were sold and " + taken
+                        + " have already come back: " + line.quantity() + " more cannot be returned").with("lineId", line.lineId().toString())
+                        .with("sold", sold.quantity()).with("alreadyReturned", taken);
+            }
+        }
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        if (!ask.confirmDuplicate()) {
+            refuseALikelyDoubleEntry(orderId, asked, now);
+        }
+        // Dated when the parcel came back: never before the order went out (a pickup: was handed over), and beyond 72 hours by someone who may back-date.
+        Instant wentOut = jdbc.query("SELECT occurred_at FROM order_dispatch_step WHERE order_id = ? AND step = ?",
+                (rs, n) -> rs.getTimestamp(1).toInstant(), orderId, order.isSelfCollect() ? "DELIVERED" : "DISPATCHED").stream().findFirst().orElse(sale.arrivedAt());
+        DispatchDates.Dated when = DispatchDates.check(ask.returnedAt(), wentOut, now, backdateWindow, mayBackdate, ask.backdateReason());
+
+        List<SoldLine> returned = sale.lines().stream().filter(l -> asked.containsKey(l.id())).toList();
+        CorrectionAmounts.Amounts owed = CorrectionAmounts.ofReturn(returned.stream()
+                .map(l -> new CorrectionAmounts.Line(l.id(), asked.get(l.id()), l.unitPrice(), l.discountPerPiece())).toList());
+        UUID id = UUID.randomUUID();
+        insert(id, order, RETURN, ask.reasonCode(), ask.note(), sale, when.occurredAt(), when.backdateReason(), owed, bearers.forReturn(ask.reasonCode()), key, hash,
+                actor, now);
+        for (SoldLine line : returned) {
+            insertLine(id, line, asked.get(line.id()), null, null);
+            for (int pieceNo = 1; pieceNo <= asked.get(line.id()); pieceNo++) {
+                jdbc.update("INSERT INTO order_return_piece (id, correction_id, sale_line_id, piece_no) VALUES (?, ?, ?, ?)", pieceId(id, line.id(), pieceNo), id,
+                        line.id(), pieceNo);
+            }
+        }
+        log.info("Order {}: return {} recorded by {} ({}), {} piece(s), {} {} owed; asking inventory", orderId, id, actor, ask.reasonCode(),
+                asked.values().stream().mapToInt(Integer::intValue).sum(), owed.owedGross(), order.currency());
+        return new Begun(get(id), true);
+    }
+
+    /**
+     * The id of one piece that came back: the same on every try, and the id inventory holds the piece under. Derived from the return, the line and the
+     * piece's number, so two returns of one line never share a piece.
+     */
+    static UUID pieceId(UUID correctionId, UUID saleLineId, int pieceNo) {
+        return UUID.nameUUIDFromBytes(("return-piece:" + correctionId + ":" + saleLineId + ":" + pieceNo).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    /**
+     * A second return of exactly the same pieces of one order, minutes after the first, is far more often a double entry than a second parcel: it is
+     * refused until the person confirms it ({@code confirmDuplicate}).
+     */
+    private void refuseALikelyDoubleEntry(UUID orderId, java.util.Map<UUID, Integer> asked, Instant now) {
+        for (Correction recent : jdbc.query("SELECT * FROM order_correction WHERE order_id = ? AND kind = 'RETURN' AND state <> 'REFUSED' AND recorded_at > ?",
+                CORRECTION, orderId, Timestamp.from(now.minus(duplicateWindow)))) {
+            java.util.Map<UUID, Integer> theirs = new java.util.TreeMap<>();
+            lines(recent.id()).forEach(l -> theirs.put(l.saleLineId(), l.quantity()));
+            if (theirs.equals(asked)) {
+                throw new SalesProblem(HttpStatus.CONFLICT, "similar-return-just-recorded", "a return of exactly these pieces was recorded for this order at "
+                        + recent.recordedAt() + ": if this is another parcel, send it again with confirmDuplicate true")
+                        .with("returnId", recent.id().toString()).with("recordedAt", recent.recordedAt().toString());
+            }
+        }
+    }
+
+    /** The fingerprint of a return request: what makes the return (the order, the reason, when it came back, the lines), not the words typed beside it. */
+    private static String hash(UUID orderId, ReturnAsk ask) {
+        StringBuilder canonical = new StringBuilder("return/1;").append(orderId).append(';').append(ask.reasonCode()).append(';')
+                .append(ask.returnedAt() == null ? "now" : ask.returnedAt().truncatedTo(ChronoUnit.MICROS)).append(';');
+        ask.lines().stream().sorted(java.util.Comparator.comparing(l -> String.valueOf(l.lineId())))
+                .forEach(l -> canonical.append(l.lineId()).append('x').append(l.quantity()).append(';'));
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is part of every JDK", e);
+        }
+    }
+
+    // ------------------------------------------------------------------ what inventory is asked
     /** The request for inventory, rebuilt from what is stored: the same bytes on every try, whoever makes it. */
     public InventoryClient.ReversalAsk ask(UUID correctionId) {
         Correction correction = get(correctionId);
