@@ -1425,6 +1425,10 @@ services:
     build:
       context: ../../../oriah-web
       dockerfile: Dockerfile
+      # The browser's /api/* forwarding rule is fixed when the image is BUILT (see the Dockerfile): it must be the
+      # same address as INTERNAL_API_BASE_URL below, or the browser's calls go somewhere else than the server's.
+      args:
+        INTERNAL_API_BASE_URL: http://gatewayserver:8080
     container_name: oriah-web
     # Limit measured 2026-11-11 (scripts/measure-stack.ps1: cold start, the smoke saga, idle): peak 82 MiB = 21% of it.
     mem_limit: 384m
