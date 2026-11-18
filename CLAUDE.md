@@ -1243,6 +1243,11 @@ users-file format), imported beside the realm in the dev stack only:
   sale and read no cost or margin. Applied to a dev stack by the Keycloak volume reset below.
 - `alice` — password `password`; **only `USER`**. The customer account the
   smoke test drives.
+- `mark` — password `password`; `MANAGER` + `USER` (frontend Stage 11): a manager, the account the browser tests use to prove a
+  manager sees no refunds to pay, no held money, no write-offs and none of the books.
+- `bella` — password `password`; `BOOKKEEPER` + `USER` (frontend Stage 11): the bookkeeper (`FINANCE_ADMIN` + `COST_VIEWER`), the account
+  the browser tests use to prove the bookkeeper sees the books and the costs and nothing else. Both are applied to a dev stack by the
+  Keycloak volume reset below.
 - `olive` — password `password`; **`OWNER` and no `USER`** (Phase 11): the owner as she will be in production. She
   reads both staff lists and has no shopper's bell (403).
 - `nora` — password `password`; `USER`, address `nora@example.com` (Phase 11): proves a dev stack never emails an

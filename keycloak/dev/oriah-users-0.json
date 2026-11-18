@@ -120,6 +120,40 @@
         }
       ],
       "realmRoles": ["USER"]
+    },
+    {
+      "id": "bf518f21-134a-4214-bb04-2aececff32df",
+      "username": "mark",
+      "enabled": true,
+      "email": "mark@oriah.local",
+      "emailVerified": true,
+      "firstName": "Mark",
+      "lastName": "Manager",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["MANAGER", "USER"]
+    },
+    {
+      "id": "a98c50a2-ebab-4232-8730-fa3eed07de2c",
+      "username": "bella",
+      "enabled": true,
+      "email": "bella@oriah.local",
+      "emailVerified": true,
+      "firstName": "Bella",
+      "lastName": "Books",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["BOOKKEEPER", "USER"]
     }
   ]
 }
